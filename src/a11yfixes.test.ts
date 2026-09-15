@@ -1364,4 +1364,141 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     `fixture precondition: the naive [^>]* regex must NOT see 'placeholder=' on the admin password tag (proves this is the real blind spot), got: ${JSON.stringify(naiveAttrs)}`);
 }
 
+
+/**
+ * RED-APP-21/002 — every transient success/failure message is ANNOUNCED.
+ *
+ * The auth modal's `authError` and the Danger Zone's `deleteError` rendered
+ * into plain `<div>`s: the text appeared, but with no `role="alert"`,
+ * `role="status"` or `aria-live` anywhere in the ancestor chain, a screen
+ * reader whose focus was still on the submit button said nothing at all. The
+ * red walked the real rendered DOM to `<html>` and found `liveAncestor: null,
+ * roleAncestor: null`, against the sim log (App.tsx aria-live) as the control
+ * that proves the walk finds live regions when they exist.
+ *
+ * The fix is structural: `FeedbackBox` owns the role, so a call site cannot
+ * render one of these boxes and forget it. This scan is what keeps a SEVENTH
+ * site from being hand-rolled next to it — it flags any conditional render of
+ * an `*Error`/`*Success` value that is not inside a FeedbackBox and carries no
+ * live role of its own.
+ *
+ * MUTATION-TESTED, by name, on the real files (each reverted after):
+ *   - FeedbackBox's `role={...}` attribute deleted            => F1 fails
+ *   - FeedbackBox's error tone given role="status"            => F1 fails
+ *   - authError reverted to its plain-div markup              => F3 fails
+ *   - MenuDrawer deleteError reverted to its plain div        => F3 fails
+ *   - the `<p role="alert">{editError}</p>` role removed      => F4 fails
+ *   - the role removed from saveError's indigo ANCESTOR div   => F4 fails
+ */
+{
+  const feedbackBox = readFileSync('src/components/FeedbackBox.tsx', 'utf8');
+
+  // F1/F2: the shared element's own contract. Errors interrupt, successes do not.
+  ok(/role=\{tone === 'error' \? 'alert' : 'status'\}/.test(feedbackBox),
+    'F1: FeedbackBox must set a live role from its tone — that is the whole reason the component exists (RED-APP-21/002)');
+  ok(/'alert'/.test(feedbackBox) && /'status'/.test(feedbackBox),
+    'F2: FeedbackBox must use role="alert" for errors and role="status" for successes');
+
+  // F3: it is actually USED at the two sites the red measured, plus the four
+  // siblings that shared the identical unannounced markup.
+  const drawer = readFileSync('src/components/MenuDrawer.tsx', 'utf8');
+  for (const [src, name, value] of [
+    [app, 'App.tsx', 'authError'], [app, 'App.tsx', 'authSuccess'],
+    [app, 'App.tsx', 'saveError'], [app, 'App.tsx', 'feedbackError'],
+    [drawer, 'MenuDrawer.tsx', 'deleteError'],
+    // Reviewer (round 21): deleteSuccess was the sixth site the comment above
+    // already claimed. It kept a hand-rolled div with role="status" pasted on —
+    // announced, but outside the one component that makes that impossible to
+    // forget. `[^}]*` covers the `{x || 'fallback'}` form this site uses.
+    [drawer, 'MenuDrawer.tsx', 'deleteSuccess'],
+  ] as const) {
+    ok(new RegExp(`<FeedbackBox tone="(error|success)"[^>]*>\\s*\\{${value}[^}]*\\}\\s*</FeedbackBox>`).test(src),
+      `F3: ${name}'s ${value} must render through FeedbackBox, so its live role cannot be omitted`);
+  }
+  // Reviewer (round 21): the account-deletion SUCCESS STEP is a static branch,
+  // not a `{value}` interpolation, so every guard here was blind to it — an AT
+  // heard silence at the one moment the app destroys everything. Anchored on
+  // the words the user is shown.
+  ok(/role="status"[^>]*>[\s\S]{0,400}?Account Wiped Successfully/.test(drawer),
+    'F3b: the account-deletion success step must sit in a live region (it announces an irreversible action)');
+
+  // F4: the class guard. Anchored on where the value is RENDERED, not on the
+  // shape of the condition that guards it: the first draft keyed on
+  // `{xError && (` and silently passed the two biggest sites, because both
+  // really open `{(editError || deadSession === 'edit') && (` — a guard that
+  // matches only the tidy shape is a guard that misses the untidy one. Every
+  // `{someError}` / `{someError || '...'}` interpolation in markup is checked,
+  // against the nearest enclosing tag, so each arm of a ternary answers for
+  // itself.
+  const LIVE = /role="(alert|status)"|aria-live=/;
+  function unannouncedSites(src: string): string[] {
+    const clean = src.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\/[^\n]*/g, '');
+    const bad: string[] = [];
+    // `{x && (` and `{x ? (` USE the value as a condition; the text they render
+    // is its own interpolation and is scanned on its own line, so skipping the
+    // condition here loses nothing (F5f pins that).
+    for (const hit of clean.matchAll(/\{(\w*(?:Error|Success))\b(?!\s*(?:&&|\?\s*\())[^}]*\}/g)) {
+      const before = clean.slice(0, hit.index ?? 0);
+      // The innermost tag still open at this point: push on open, pop on close.
+      const stack: string[] = [];
+      for (const t of before.matchAll(/<(\/?)(div|p|span|FeedbackBox)\b([^>]*)>/g)) {
+        if (t[1] === '/') stack.pop();
+        else if (!/\/\s*$/.test(t[3])) stack.push(t[0]);
+      }
+      const wrapper = stack.length ? stack[stack.length - 1] : '';
+      // An ANCESTOR with the role covers its descendants, exactly like the
+      // red's DOM walk: check the whole open stack, not only the innermost tag.
+      const announced = stack.some((tag) => /^<FeedbackBox\b/.test(tag) || LIVE.test(tag));
+      if (!announced) bad.push(`${hit[0].slice(0, 40)} inside ${wrapper.slice(0, 60) || '(no wrapping tag)'}`);
+    }
+    return bad;
+  }
+
+  const offenders: string[] = [];
+  const sources: Record<string, string> = { 'App.tsx': app, ...readComponents() };
+  for (const [file, raw] of Object.entries(sources)) {
+    if (file === 'FeedbackBox.tsx') continue;
+    unannouncedSites(raw).forEach((h) => offenders.push(`${file}: ${h}`));
+  }
+  ok(offenders.length === 0,
+    'F4: every rendered *Error/*Success message must be announced — render it through '
+    + '<FeedbackBox tone="error|success"> (which owns the role), or put role="alert"/"status" on the '
+    + 'element that holds the text (an ancestor counts, as it does for a real screen reader). A plain '
+    + `<div> shows it to sighted users and says nothing (RED-APP-21/002):\n  ${offenders.join('\n  ')}`);
+
+  // F5: known-positives. The EXACT pre-fix markup of BOTH measured sites, and
+  // of the `||`-guarded shape the first draft missed, must be flagged by this
+  // same scanner — a guard that cannot fail on the defect it names is not one.
+  const preFixAuth = `
+    {authError && (
+      <div className="bg-rose-50 text-rose-700 text-xs rounded-xl p-3 flex gap-2 font-medium">
+        <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+        <span>{authError}</span>
+      </div>
+    )}`;
+  const preFixEdit = `
+    {(editError || deadSession === 'edit') && (
+      <div className="bg-indigo-50 text-indigo-800 text-xs rounded-xl p-3 flex gap-2 font-medium">
+        <LogIn className="w-4 h-4 shrink-0" />
+        <div className="flex flex-col items-start gap-2">
+          <span>{editError || 'Invalid or expired session.'} Your changes will stay right here.</span>
+        </div>
+      </div>
+    )}`;
+  ok(unannouncedSites(preFixAuth).length === 1,
+    'F5: fixture — the real pre-fix authError markup must be FLAGGED by this scan');
+  ok(unannouncedSites(preFixEdit).length === 1,
+    'F5b: fixture — the `||`-guarded editError shape must be flagged too (the first draft of this scan missed it entirely, and it was a real unannounced site)');
+  ok(unannouncedSites(preFixAuth.replace('<span>{authError}', '<span role="alert">{authError}')).length === 0,
+    'F5c: control — the same markup WITH role="alert" passes, so F4 is not merely matching every site');
+  ok(unannouncedSites(preFixEdit.replace('<div className="bg-indigo-50', '<div role="alert" className="bg-indigo-50')).length === 0,
+    'F5d: control — a role on an ANCESTOR covers the text it wraps, as it does for a screen reader');
+  ok(unannouncedSites('<FeedbackBox tone="error">{authError}</FeedbackBox>').length === 0,
+    'F5e: control — the shared component satisfies the scan without a hand-written role');
+  ok(unannouncedSites("{feedbackSuccess ? (\n  <div className=\"x\"><p>{feedbackSuccess}</p></div>\n) : null}").length === 1,
+    'F5f: the ternary-CONDITION skip must not hide the text it renders — the inner {feedbackSuccess} is still flagged when nothing announces it');
+  ok(unannouncedSites("{feedbackSuccess ? (\n  <div role=\"status\"><p>{feedbackSuccess}</p></div>\n) : null}").length === 0,
+    'F5g: control — announcing that same ternary branch clears it');
+}
+
 console.log(`a11yfixes.test.ts: ${checks} checks passed`);

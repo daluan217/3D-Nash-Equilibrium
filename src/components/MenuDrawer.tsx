@@ -10,8 +10,9 @@ import { labelFor } from '../utils/a11y';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
 import { ModalSurface } from './ModalSurface';
+import { FeedbackBox } from './FeedbackBox';
 import { SavedGamesList, formatSavedGames } from './SavedGamesList';
-import { describeRequestFailure, type AccountApi } from '../utils/apiClient';
+import { accountVerdict, type AccountApi } from '../utils/apiClient';
 import {
   X,
   HelpCircle,
@@ -146,19 +147,18 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       // RED-DESKTOP-20/002 family sweep: only a parsed success can prove the
       // backend created the destructive-action challenge. A captive portal's
       // 200 HTML must not advance this state machine.
-      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
-        // STRUCT-DESKTOP-19/002: this used to be `setDeleteError(err.message)`,
-        // which put the browser's own text ("Failed to fetch" in Chrome,
-        // "Load failed" in WebKit) in the Danger Zone's error line. That is
-        // not an explanation, and it differs per engine.
-        setDeleteError(describeRequestFailure(res, 'start the deletion'));
-        return;
-      }
-      if (!res.ok) {
-        // The session verdict came from the ONE client, which cleared the
-        // token only if the 401 was for the token that is still committed.
-        setDeleteError(res.data.error
-          || (res.dataParsed ? 'Failed to initialize deletion request.' : `Server returned invalid response (Status ${res.status}).`));
+      // RED-APP-21/003: the same ONE verdict App.tsx's auth branches read —
+      // this path already had the ok-before-body order right, and sharing it is
+      // what stops the two from drifting apart again. STRUCT-DESKTOP-19/002:
+      // the browser's own text ("Failed to fetch"/"Load failed") never reaches
+      // this line; `subject` completes the sentence instead.
+      const verdict = accountVerdict(res, {
+        subject: 'start the deletion',
+        failure: 'Failed to initialize deletion request.',
+        badSuccessShape: res.data?.success !== true,
+      });
+      if (verdict.outcome === 'error') {
+        setDeleteError(verdict.message);
         return;
       }
       setDeleteStep('inputCode');
@@ -179,13 +179,13 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
       if (res.stale) return;
       // Same acknowledgement rule as delete-request and saved-game Delete:
       // never claim an account was destroyed from an unreadable 2xx body.
-      if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true))) {
-        setDeleteError(describeRequestFailure(res, 'confirm the deletion'));
-        return;
-      }
-      if (!res.ok) {
-        setDeleteError(res.data.error
-          || (res.dataParsed ? 'Incorrect security verification code.' : `Server returned invalid response (Status ${res.status}).`));
+      const verdict = accountVerdict(res, {
+        subject: 'confirm the deletion',
+        failure: 'Incorrect security verification code.',
+        badSuccessShape: res.data?.success !== true,
+      });
+      if (verdict.outcome === 'error') {
+        setDeleteError(verdict.message);
         return;
       }
       setDeleteStep('success');
@@ -865,10 +865,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     </p>
 
                     {deleteError && (
-                      <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                        <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                        <span>{deleteError}</span>
-                      </div>
+                      <FeedbackBox tone="error" testId="delete-error">{deleteError}</FeedbackBox>
                     )}
 
                     {deleteStep === 'initial' && (
@@ -921,10 +918,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                     {deleteStep === 'inputCode' && (
                       <form onSubmit={handleDeleteConfirm} className="space-y-4">
-                        <div className="bg-emerald-50 dark:bg-emerald-950/15 border border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
-                          <span>{deleteSuccess || 'Check your email inbox for a confirmation security code.'}</span>
-                        </div>
+                        <FeedbackBox tone="success" testId="delete-success">
+                          {deleteSuccess || 'Check your email inbox for a confirmation security code.'}
+                        </FeedbackBox>
 
                         <div>
                           <label htmlFor={labelFor('drawer-delete', 'code')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
@@ -975,7 +971,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     )}
 
                     {deleteStep === 'success' && (
-                      <div className="bg-emerald-50 dark:bg-emerald-950/10 border border-emerald-200 dark:border-emerald-900 rounded-xl p-5 text-center text-emerald-800 dark:text-emerald-300 space-y-2">
+                      /* Reviewer (round 21): the most consequential message in the app
+                         was the one nobody announced. It is a STEP, not a {value}, so
+                         the FeedbackBox guard could not see it — role added in place. */
+                      <div role="status" className="bg-emerald-50 dark:bg-emerald-950/10 border border-emerald-200 dark:border-emerald-900 rounded-xl p-5 text-center text-emerald-800 dark:text-emerald-300 space-y-2">
                         <CheckCircle2 className="w-8 h-8 mx-auto text-emerald-500" />
                         <h5 className="font-bold text-sm">Account Wiped Successfully</h5>
                         <p className="text-xs">

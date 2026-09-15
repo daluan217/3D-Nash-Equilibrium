@@ -109,3 +109,20 @@ for (const s of KNOWN_GOOD_STRINGS) {
 }
 
 console.log(`presetprose.test.ts: ${checks} checks passed`);
+
+// ── 7. RED-APP-21/004: "Label/Label" between two inline spans must be breakable ─
+// A "/" between two <span>s is not a line-break opportunity, so
+// "Cooperate/Cooperate" rendered as one unbreakable token wider than a 390px
+// viewport under browser zoom (the document scrolled sideways). A U+200B after
+// each such slash lets the line wrap; it is invisible and stripped by textOf-style
+// readers. The predicate fires on the exact pre-fix shape: `</span>/<span`.
+const UNBREAKABLE_SLASH = /<\/span>\/<span/;
+for (const key of STANDARD_KEYS) {
+  ok(!UNBREAKABLE_SLASH.test(PRESETS[key].desc),
+    `${key}: a "/" joining two spans needs a U+200B break opportunity after it (RED-APP-21/004)`);
+}
+ok(UNBREAKABLE_SLASH.test('can <span class="a">Cooperate</span>/<span class="b">Cooperate</span> with'),
+  'predicate must fire on the pre-fix pd shape');
+ok(!UNBREAKABLE_SLASH.test('can <span class="a">Cooperate</span>/​<span class="b">Cooperate</span> with'),
+  'predicate must accept the fixed shape');
+ok(/Cooperate<\/span>\/​<span/.test(PRESETS.pd.desc), 'pd: the Cooperate/Cooperate slash carries the break');

@@ -1033,10 +1033,31 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   const deleteSlice = app.slice(app.indexOf('const handleDeleteGame'), app.indexOf('const handleGenerateGame'));
   const DELETE_STALE_GATE = 'if (res.stale) return;';
   const DELETE_PARSED_SUCCESS_GATE = "if (res.kind !== 'response' || (res.ok && (!res.dataParsed || res.data?.success !== true)))";
+  /**
+   * RED-APP-21/003: two spellings of the SAME acknowledgement gate now exist.
+   * The four game routes still hand-roll it; the two Danger Zone routes ask the
+   * shared `accountVerdict` (which enforces ok-before-body for every caller, the
+   * ordering defect App.tsx's auth branches had). Both must reject an
+   * unreadable 2xx before any success commit, and the fixtures below mutate
+   * BOTH spellings — a gate that cannot be broken in its own dialect is not a
+   * gate. `badSuccessShape:` is the part that carries `res.data?.success !==
+   * true` into the shared helper, so it is what a mutation removes.
+   */
+  const VERDICT_GATE = "if (verdict.outcome === 'error')";
+  const gateHead = (source: string): string | null => {
+    if (source.includes(DELETE_PARSED_SUCCESS_GATE)) return DELETE_PARSED_SUCCESS_GATE;
+    // The shared-helper spelling only counts when the verdict was asked for
+    // WITH this route's success shape — `accountVerdict(res, { … })` alone
+    // proves nothing if `badSuccessShape` was dropped.
+    if (source.includes(VERDICT_GATE) && /accountVerdict\(res, \{[\s\S]*?badSuccessShape:/.test(source)) return VERDICT_GATE;
+    return null;
+  };
   const parsedGateRange = (source: string): { start: number; open: number; close: number } | null => {
-    const parsedGate = source.indexOf(DELETE_PARSED_SUCCESS_GATE);
+    const head = gateHead(source);
+    if (!head) return null;
+    const parsedGate = source.indexOf(head);
     if (parsedGate < 0) return null;
-    const open = source.indexOf('{', parsedGate + DELETE_PARSED_SUCCESS_GATE.length);
+    const open = source.indexOf('{', parsedGate + head.length);
     if (open < 0) return null;
     let depth = 0;
     for (let i = open; i < source.length; i += 1) {
@@ -1117,24 +1138,36 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   for (const [name, slice, commitMarker] of parsedSuccessFamily) {
     check(`${name} rejects an unreadable 2xx before its success commit`,
       rejectsUnreadable2xxBefore(slice, commitMarker));
-    const statusOnly = slice.replace(" || (res.ok && (!res.dataParsed || res.data?.success !== true))", '');
+    // Each mutation is applied in the dialect the site actually speaks, so
+    // every fixture below really lands (the `!== slice` assertions prove it).
+    const sharedHelper = gateHead(slice) === VERDICT_GATE;
+    const statusOnly = sharedHelper
+      // Drop the body-shape half of what the verdict is asked, leaving a
+      // verdict that accepts any 2xx — the shared-helper spelling of the
+      // RED-DESKTOP-20/002 defect.
+      ? slice.replace(/,\s*badSuccessShape: [^\n]*\n/, '\n')
+      : slice.replace(" || (res.ok && (!res.dataParsed || res.data?.success !== true))", '');
     check(`fixture: ${name} status-only success fails the family contract`,
       statusOnly !== slice && !rejectsUnreadable2xxBefore(statusOnly, commitMarker));
-    const parsedOnly = slice.replace('(!res.dataParsed || res.data?.success !== true)', '!res.dataParsed');
+    const parsedOnly = sharedHelper
+      ? slice.replace(/badSuccessShape: res\.data\?\.success !== true,/, 'badSuccessShape: false,')
+        .replace(/,\s*badSuccessShape: false,/, ',')
+      : slice.replace('(!res.dataParsed || res.data?.success !== true)', '!res.dataParsed');
     check(`fixture: ${name} parsed junk without success:true fails the acknowledgement contract`,
       parsedOnly !== slice && !rejectsUnreadable2xxBefore(parsedOnly, commitMarker));
     const inert = removeParsedGateReturn(slice);
     check(`fixture: ${name} inert parsed-response guard fails the family contract`,
       inert !== slice && !rejectsUnreadable2xxBefore(inert, commitMarker));
+    const gateText = sharedHelper ? VERDICT_GATE : DELETE_PARSED_SUCCESS_GATE;
     const commentedReturn = inert.replace(
-      DELETE_PARSED_SUCCESS_GATE + ' {',
-      DELETE_PARSED_SUCCESS_GATE + ' {\n        // return;',
+      gateText + ' {',
+      gateText + ' {\n        // return;',
     );
     check(`fixture: ${name} a commented return cannot satisfy the family contract`,
       commentedReturn !== inert && !rejectsUnreadable2xxBefore(commentedReturn, commitMarker));
     const nestedReturn = inert.replace(
-      DELETE_PARSED_SUCCESS_GATE + ' {',
-      DELETE_PARSED_SUCCESS_GATE + ' {\n        (() => { return; })();',
+      gateText + ' {',
+      gateText + ' {\n        (() => { return; })();',
     );
     check(`fixture: ${name} a nested return cannot satisfy the family contract`,
       nestedReturn !== inert && !rejectsUnreadable2xxBefore(nestedReturn, commitMarker));
@@ -1250,8 +1283,35 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
     /api\.request\('\/api\/auth\/delete-request'/.test(drawer) && /api\.request\('\/api\/auth\/delete-confirm'/.test(drawer));
   check('the menu drawer no longer carries its own copy of the dead-session rule',
     !/clearTokenIfExpired/.test(codeOnly(drawer)) && !/updateAuthToken/.test(codeOnly(drawer)));
+  // STRUCT-DESKTOP-19/002 unchanged; RED-APP-21/003 moved WHERE it is enforced.
+  // The drawer now asks `accountVerdict` (which calls describeRequestFailure
+  // itself for a no-response kind, and never reaches for `res.error`), so the
+  // check is that it passes the `subject:` that completes the sentence and
+  // still shows nothing the browser wrote. The helper's own copy is pinned by
+  // the accountVerdict matrix in unit.test.ts.
+  // Reviewer (round 21): `.test(drawer)` over the WHOLE file passes while only
+  // ONE of the two deletion routes still carries `subject:` — a guard that
+  // cannot fail for the reason it claims. Count instead: EVERY accountVerdict
+  // call in the drawer must carry its own subject, so dropping either one fails.
+  const drawerVerdicts = drawer.match(/accountVerdict\(res, \{[\s\S]*?\}\)/g) ?? [];
+  const verdictsWithSubject = drawerVerdicts.filter((v) => /subject: '/.test(v));
   check('the menu drawer never shows the browser\'s own network wording (it describes the failure itself)',
-    /describeRequestFailure\(res, /.test(drawer) && !/setDeleteError\(err\.message\)/.test(codeOnly(drawer)));
+    drawerVerdicts.length === 2
+    && verdictsWithSubject.length === drawerVerdicts.length
+    && !/setDeleteError\(err\.message\)/.test(codeOnly(drawer))
+    && !/setDeleteError\([^)]*res\.error/.test(codeOnly(drawer)),
+    `${verdictsWithSubject.length}/${drawerVerdicts.length} drawer verdicts carry a subject`);
+  // The fixture drops the subject from ONE route only — the case the old
+  // whole-file regex could not see.
+  {
+    const first = drawerVerdicts[0] ?? '';
+    const oneRouteStripped = drawer.replace(first, first.replace(/subject: '[^']*',\n\s*/, ''));
+    const mutantVerdicts = oneRouteStripped.match(/accountVerdict\(res, \{[\s\S]*?\}\)/g) ?? [];
+    check('fixture: a drawer where only ONE route dropped its `subject:` is caught',
+      mutantVerdicts.filter((v) => /subject: '/.test(v)).length < mutantVerdicts.length);
+  }
+  check('fixture: a drawer that showed the raw transport error is caught',
+    /setDeleteError\([^)]*res\.error/.test(codeOnly('setDeleteError(String(res.error));')));
 
   // The credential is built in exactly one place, in the client.
   check('the Authorization header is built in exactly one place in the app',

@@ -154,6 +154,72 @@ export function describeRequestFailure(res: AccountResponse, subject: string): s
   return `Connection error. Could not ${subject}.`;
 }
 
+/**
+ * RED-APP-21/003: the ONE verdict every account-request caller reads, so the
+ * five auth-modal branches and the Danger Zone cannot drift apart again.
+ *
+ * `handleAuthSubmit` tested `!res.dataParsed` BEFORE `res.ok`, so a real HTTP
+ * 500 with an empty body was reported as `'Connection error.'` — the same
+ * words a genuine offline failure gets, with the status code dropped. The
+ * status-coded message was written five times and was structurally unreachable
+ * for any non-2xx. MenuDrawer had it right: `ok` first, then the body.
+ *
+ * The order here is the invariant. A response the SERVER sent is never
+ * described as a connection failure, whatever its body:
+ *   1. no response at all (network/timeout)  -> connection/timeout copy
+ *   2. 2xx with an unreadable or wrong-shaped body -> not trustworthy either
+ *      (a captive portal's 200 HTML is not a login), status-coded
+ *   3. non-2xx -> the server's own `error` string when it sent one, else
+ *      status-coded
+ * Callers supply the copy for 2 and 3 that is theirs; nothing here invents
+ * user-facing words beyond the two shared sentences `describeRequestFailure`
+ * already owned.
+ */
+export interface AccountVerdictCopy {
+  /** Completes "Could not …" for a request that never produced a response. */
+  subject?: string;
+  /** Shown for a NON-2xx whose body parsed but carried no `error` string. */
+  failure: string;
+  /** True when the 2xx body is present but not the shape this caller needs. */
+  badSuccessShape?: boolean;
+}
+
+export type AccountVerdict =
+  | { outcome: 'success' }
+  | { outcome: 'error'; message: string };
+
+export function accountVerdict(res: AccountResponse, copy: AccountVerdictCopy): AccountVerdict {
+  // 1. The request never produced a response. This is the ONLY connection copy.
+  if (res.kind !== 'response') {
+    return {
+      outcome: 'error',
+      message: copy.subject
+        ? describeRequestFailure(res, copy.subject)
+        : (res.kind === 'timeout' ? 'The server did not answer in time.' : 'Connection error.'),
+    };
+  }
+  // 2. A 2xx we cannot read, or can read but does not say what it must.
+  if (res.ok && (!res.dataParsed || copy.badSuccessShape)) {
+    return { outcome: 'error', message: `Server returned invalid response (Status ${res.status}).` };
+  }
+  if (res.ok) return { outcome: 'success' };
+  // 3. The server refused, and says why when it can. `dataParsed` decides
+  //    whether `copy.failure` describes anything real: without a body there is
+  //    no server verdict to paraphrase, only a status.
+  //    Self-attack on this helper: `"   "` is falsy-adjacent but truthy, so an
+  //    all-whitespace `error` rendered an EMPTY role="alert" — a box a sighted
+  //    user sees blank and a screen reader announces as nothing. Trim decides
+  //    whether the server actually said something, the same test adopt-local
+  //    already applies (App.tsx, `said`).
+  const said = typeof res.data?.error === 'string' ? res.data.error.trim() : '';
+  const serverSaid = res.dataParsed && said ? said : null;
+  return {
+    outcome: 'error',
+    message: serverSaid
+      ?? (res.dataParsed ? copy.failure : `Server returned invalid response (Status ${res.status}).`),
+  };
+}
+
 export function createAccountApi(deps: AccountApiDeps): AccountApi {
   const request = async (path: string, init: AccountRequestInit = {}): Promise<AccountResponse> => {
     // An EMPTY string is not a credential: it attaches no header, so it must not

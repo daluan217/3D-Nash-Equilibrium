@@ -34,6 +34,11 @@ import {
   containsAmbiguousComma,
   numericInputProblem,
   commitStepSize,
+  commitStepSizeField,
+  commitNumericField,
+  PAYOFF_RANGE,
+  START_RANGE,
+  STEP_SIZE_RANGE,
   commitStepIndex,
   precomputeThinHistory,
   replayToStep,
@@ -41,12 +46,13 @@ import {
   fmtPayoff,
   payoffTexRhs,
 } from './utils/gameEngine';
+import { FeedbackBox } from './components/FeedbackBox';
 import { PlotlyView } from './components/PlotlyView';
 import { indifferenceLines, neValues } from './components/equilibriumPanel';
 import { cleanText, clampGraphemeSafe, wouldExceedGraphemeBudget } from './utils/textSafety';
 import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/safeStorage';
 import { resolveReportFetchTimeoutMs } from './utils/fetchTimeout';
-import { createAccountApi, describeRequestFailure, type AccountApi } from './utils/apiClient';
+import { accountVerdict, createAccountApi, describeRequestFailure, type AccountApi } from './utils/apiClient';
 import { isForgotPasswordSuccess, isLoginSuccess, isRegisterSuccess, isResetPasswordSuccess, isVerifySuccess } from './utils/authResponses';
 import { isSavedGameResponseRecord } from './utils/savedGameResponse';
 import { labelFor } from './utils/a11y';
@@ -153,6 +159,18 @@ const NUMERIC_INPUT_HINTS: Record<'comma' | 'not-one-number', string> = {
   comma: 'Use a dot for decimals, not a comma.',
   'not-one-number': 'One number per field.',
 };
+/**
+ * RED-APP-21/001: the third cause. A parseable but out-of-range number used to
+ * be the one problem class with no hint — the clamped value went straight into
+ * the live game while the box kept the typed text, so the surface and the cell
+ * showed different numbers until blur. The range is read from the shared
+ * constant so the message cannot drift from what the field actually clamps to.
+ */
+const rangeHint = (range: { label: string }) => `Range: ${range.label}.`;
+const numericFieldHint = (
+  problem: 'comma' | 'not-one-number' | 'out-of-range',
+  range: { label: string },
+) => (problem === 'out-of-range' ? rangeHint(range) : NUMERIC_INPUT_HINTS[problem]);
 
 /**
  * RED-APP-8/002 + RED-APP-8/003: the `onChange`-based clamp above (#101's
@@ -1398,6 +1416,8 @@ export default function App() {
   // value in force is put back to what it was when the box was focused — the comma-free
   // prefix ("5" of "5,5") has already committed (clamped to 0.999) before the comma exists.
   const [stepInputHint, setStepInputHint] = useState<string | null>(null);
+  /** RED-APP-21/001: same hint contract as the matrix cells, per axis. */
+  const [startInputHint, setStartInputHint] = useState<{ axis: 'x' | 'y'; message: string } | null>(null);
   const stepFieldSnapshotRef = useRef<number | null>(null);
 
   /**
@@ -1515,7 +1535,20 @@ export default function App() {
       // committed value; the readout beside it formats through fmtProbFixed.
       (axis === 'x' ? setX0 : setY0)(committed.toFixed(3));
     }
+    // RED-APP-21/001: blur has made the box agree with what the run will use,
+    // so this axis's range hint has nothing left to warn about.
+    setStartInputHint((prev) => (prev?.axis === axis ? null : prev));
   };
+
+  /**
+   * RED-APP-21/001: what a typed start coordinate means for the SIM.
+   * Out of range, the run must not quietly adopt the clamped number while the
+   * box shows the typed one (typing "2" moved the markers to 1.000 and opened
+   * the log "Start (1.000, …)" beside a box reading 2). The freeze below holds
+   * until blur canonicalises the text, and the hint says why.
+   */
+  const startFieldProblem = (raw: string) =>
+    commitNumericField(raw, START_RANGE, { fallback: 0.217 }).problem;
 
   // Initialize simulation running flag
   const [initialized, setInitialized] = useState<boolean>(false);
@@ -3768,12 +3801,18 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isLoginSuccess(data)) {
-          // A parsed body still has to describe the server's login shape. Do
-          // not close the dialog or claim an identity for partial JSON.
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        // RED-APP-21/003: ONE verdict, ok-before-body. A 500 with an empty body
+        // used to read 'Connection error.' — the offline copy, status dropped.
+        // The needVerification redirect is checked first: it is a SUCCESS path
+        // for the user (go verify), not a failure to word.
+        const verdict = accountVerdict(res, { failure: 'Invalid credentials.', badSuccessShape: !isLoginSuccess(data) });
+        if (verdict.outcome === 'error' && res.kind === 'response' && !res.ok && data?.needVerification) {
+          changeAuthMode('verify');
+          setAuthSuccess('Please complete email verification first.');
+        } else if (verdict.outcome === 'error') {
+          // A parsed 2xx body still has to describe the server's login shape:
+          // do not close the dialog or claim an identity for partial JSON.
+          setAuthError(verdict.message);
         } else if (res.ok) {
           updateAuthToken(data.token);
           closeAuthModalAfterSuccess();
@@ -3788,11 +3827,6 @@ export default function App() {
             setLocalGamesError('');
             setLocalGamesOffer({ count: localGames, token: data.token });
           }
-        } else if (data?.needVerification) {
-          changeAuthMode('verify');
-          setAuthSuccess('Please complete email verification first.');
-        } else {
-          setAuthError(data?.error || 'Invalid credentials.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3829,10 +3863,9 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isRegisterSuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Registration failed.', badSuccessShape: !isRegisterSuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           if (data.autoVerified) {
             changeAuthMode('login');
@@ -3844,8 +3877,6 @@ export default function App() {
               setAuthCode(data.verificationCode);
             }
           }
-        } else {
-          setAuthError(data?.error || 'Registration failed.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3867,16 +3898,13 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isVerifySuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Incorrect confirmation code.', badSuccessShape: !isVerifySuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           changeAuthMode('login');
           setAuthSuccess('Account verified successfully! You can now log in.');
           setAuthCode('');
-        } else {
-          setAuthError(data?.error || 'Incorrect confirmation code.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3898,16 +3926,13 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isForgotPasswordSuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Failed to send recovery code.', badSuccessShape: !isForgotPasswordSuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           changeAuthMode('reset-password');
           setAuthSuccess(data.message || 'Recovery code sent! Check your email.');
           if (data.recoveryCode) setAuthCode(data.recoveryCode);
-        } else {
-          setAuthError(data?.error || 'Failed to send recovery code.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -3940,18 +3965,15 @@ export default function App() {
         const data = res.data;
 
         if (res.stale) return;
-        if (res.kind !== 'response' || !res.dataParsed) {
-          setAuthError('Connection error.');
-        } else if (res.ok && !isResetPasswordSuccess(data)) {
-          setAuthError(`Server returned invalid response (Status ${res.status}).`);
+        const verdict = accountVerdict(res, { failure: 'Failed to reset password.', badSuccessShape: !isResetPasswordSuccess(data) });
+        if (verdict.outcome === 'error') {
+          setAuthError(verdict.message);
         } else if (res.ok) {
           changeAuthMode('login');
           setAuthSuccess(data.message || 'Password reset successfully! You can now log in.');
           setAuthCode('');
           setAuthPassword('');
           setAuthConfirmPassword('');
-        } else {
-          setAuthError(data?.error || 'Failed to reset password.');
         }
       } catch {
         setAuthError('Connection error.');
@@ -4280,6 +4302,12 @@ export default function App() {
    * otherwise reset to the value being replaced.
    */
   useEffect(() => {
+    // RED-APP-21/001: a field whose text the run cannot use as typed must not
+    // move the markers. Typing "2" re-froze the sim at the clamped 1.000 and
+    // opened the log "Start (1.000, …)" beside a box still reading 2. The last
+    // usable start point stays in force until blur canonicalises the text —
+    // which changes x0/y0 and runs this effect again, with the box agreeing.
+    if (startFieldProblem(x0) || startFieldProblem(y0)) return;
     handleReset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [x0, y0]);
@@ -4945,10 +4973,15 @@ export default function App() {
     // commits: no payoff change, no preset flip to "custom", no run reset.
     // The field is left exactly where it was, same as any other unparseable
     // text, and a hint says why.
-    const problem = numericInputProblem(valStr);
+    // RED-APP-21/001: out-of-range joins them. Typing "150" used to commit the
+    // CLAMPED 100 into the live game on that keystroke while the box still read
+    // "150" — surface, solver and cell disagreeing on screen for as long as the
+    // field stayed focused. Same treatment now, and a hint says why. Blur is
+    // unchanged: it still commits the clamped value and rewrites the box to it.
+    const { problem } = commitNumericField(valStr, PAYOFF_RANGE, { fallback: 0, quantise: true });
     if (problem) {
       setRawPayoffs((prev) => ({ ...prev, [field]: valStr }));
-      setPayoffInputHint({ field, message: NUMERIC_INPUT_HINTS[problem] });
+      setPayoffInputHint({ field, message: numericFieldHint(problem, PAYOFF_RANGE) });
       // The comma-free prefix typed before this comma has already committed;
       // undo that now, not at blur — the plot and the solver must not spend the
       // rest of the edit on a value the user never finished typing.
@@ -5052,6 +5085,11 @@ export default function App() {
       updatePayoffField(field, canonical);
     } else if (rawPayoffs[field] !== canonical) {
       setRawPayoffs((prev) => ({ ...prev, [field]: canonical }));
+      // RED-APP-21/001: this branch corrects the BOX without going through
+      // updatePayoffField, so it must clear this field's own hint itself —
+      // otherwise typing "150" into a cell already holding 100 left the range
+      // hint up beside a box and a game that now agree.
+      setPayoffInputHint((prev) => (prev?.field === field ? null : prev));
     }
   };
 
@@ -5118,7 +5156,7 @@ export default function App() {
       className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 rounded-2xl flex flex-col gap-3 text-slate-700 dark:text-slate-200 shadow-sm"
       style={useFlexLog ? { height: inlineLogHeight! } : undefined}
     >
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
           <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
           Simulation Log
@@ -5241,7 +5279,10 @@ export default function App() {
           style={isElectron ? { WebkitAppRegion: 'no-drag' } as React.CSSProperties : undefined}
         >
           <div>
-            <div className="flex items-center gap-2.5">
+            {/* RED-APP-21/004: flex-wrap lets the title drop under the icon when the
+                row is narrower than a word (390px under zoom 2); break-words is the
+                last resort for a single word wider than the whole row. */}
+            <div className="flex flex-wrap items-center gap-2.5">
               <span
                 className="p-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-xl cursor-pointer select-none"
                 onClick={e => { if (e.detail === 3) setIsAdminOpen(true); }}
@@ -5249,7 +5290,7 @@ export default function App() {
               >
                 <Compass className="w-5.5 h-5.5" />
               </span>
-              <h1 data-focus-home tabIndex={-1} className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+              <h1 data-focus-home tabIndex={-1} className="min-w-0 break-words text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight">
                 Nash Equilibrium Simulator
               </h1>
             </div>
@@ -5623,18 +5664,30 @@ export default function App() {
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
               Expected-Payoff Functions
             </span>
+            {/* RED-APP-21/004 family: a KaTeX expression is one nowrap unit. Let the label
+                wrap onto its own line, and let the polynomial scroll INSIDE its row (min-w-0 +
+                overflow-x-auto) so a long expression at a phone width under zoom never widens
+                the document — the WCAG 1.4.10 failure is page-level horizontal scroll. */}
             <div className="flex flex-col gap-2 text-sm">
-              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[A]" className="text-player-a-600 dark:text-player-a-400" />
-                <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
+                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
+                  <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
+                </span>
               </div>
-              <div className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[B]" className="text-player-b-600 dark:text-player-b-400" />
-                <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
+                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
+                  <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
+                </span>
               </div>
             </div>
-            <span className="text-xs text-slate-500 dark:text-slate-400">
-              <MathTex tex="x = P(\text{A plays Row 1}), \quad y = P(\text{B plays Col 1})" />
+            {/* RED-APP-21/004: two clauses as two inline nodes in a wrapping row, not one
+                KaTeX string — .katex is white-space:nowrap, so a single call cannot reflow
+                at a phone width under zoom (WCAG 1.4.10). Same shape as the E[A]/E[B] rows. */}
+            <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
+              <MathTex tex="x = P(\text{A plays Row 1}),\," />
+              <MathTex tex="y = P(\text{B plays Col 1})" />
             </span>
           </div>
 
@@ -5664,6 +5717,10 @@ export default function App() {
                     onChange={(e) => {
                       setX0(e.target.value);
                       setInitialized(false);
+                      const problem = startFieldProblem(e.target.value);
+                      setStartInputHint(problem
+                        ? { axis: 'x', message: numericFieldHint(problem, START_RANGE) }
+                        : (prev) => (prev?.axis === 'x' ? null : prev));
                     }}
                     onBlur={() => commitStartField('x')}
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-rose-200 focus:outline-none"
@@ -5703,6 +5760,10 @@ export default function App() {
                     onChange={(e) => {
                       setY0(e.target.value);
                       setInitialized(false);
+                      const problem = startFieldProblem(e.target.value);
+                      setStartInputHint(problem
+                        ? { axis: 'y', message: numericFieldHint(problem, START_RANGE) }
+                        : (prev) => (prev?.axis === 'y' ? null : prev));
                     }}
                     onBlur={() => commitStartField('y')}
                     className="no-native-spinner w-full font-mono text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 p-2 pr-8 rounded-xl focus:ring-accent-100 focus:outline-none"
@@ -5730,6 +5791,15 @@ export default function App() {
                 </div>
               </div>
             </div>
+            {startInputHint && (
+              <div
+                data-testid="start-input-hint"
+                role="status"
+                className="text-xs text-amber-700 dark:text-amber-400 -mt-2"
+              >
+                {startInputHint.message}
+              </div>
+            )}
 
             {/* Who moves first choice */}
             <div>
@@ -5819,7 +5889,7 @@ export default function App() {
 
             {/* Step size / regret weight */}
             <div>
-              <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 font-medium mb-1">
+              <div className="flex flex-wrap items-center justify-between gap-x-2 text-xs text-slate-600 dark:text-slate-300 font-medium mb-1">
                 <span>{stepMode === 'regret' ? 'Regret Step Weight (λ)' : 'Initial Domain Shrink Step Size'}</span>
                 <input
                   type="text"
@@ -5829,9 +5899,13 @@ export default function App() {
                   onChange={(e) => {
                     const v = e.target.value;
                     setShrinkStepRaw(v);
-                    const stepProblem = numericInputProblem(v);
+                    // RED-APP-21/001: out-of-range is a problem here too — typing
+                    // "5" used to set the step to the clamped 0.999 live while the
+                    // box read 5, and "0" kept the old step with nothing on screen
+                    // saying the field had been ignored.
+                    const { problem: stepProblem } = commitStepSizeField(v, shrinkStep);
                     if (stepProblem) {
-                      setStepInputHint(NUMERIC_INPUT_HINTS[stepProblem]);
+                      setStepInputHint(numericFieldHint(stepProblem, STEP_SIZE_RANGE));
                       const snap = stepFieldSnapshotRef.current;
                       if (snap !== null && snap !== shrinkStep) setShrinkStep(snap);
                       return;
@@ -5848,10 +5922,14 @@ export default function App() {
                       setShrinkStepRaw(snap.toFixed(3));
                       return; // the hint stays until the next edit
                     }
+                    // Unchanged: blur COMMITS the clamped value and rewrites the
+                    // box to it, so the two agree and the hint has nothing left
+                    // to warn about (RED-APP-21/001).
                     const clamped = commitStepSize(shrinkStepRaw, shrinkStep);
                     setShrinkStep(clamped);
                     // not-a-rendering: the step-size FIELD's own text (setting).
                     setShrinkStepRaw(clamped.toFixed(3));
+                    setStepInputHint(null);
                   }}
                   aria-label={stepMode === 'regret' ? 'Regret Step Weight (lambda)' : 'Initial Domain Shrink Step Size'}
                   className="w-20 font-mono font-semibold text-accent-600 dark:text-accent-400 text-right bg-transparent border-b border-accent-300 dark:border-accent-700 focus:outline-none focus:border-accent-500"
@@ -5952,9 +6030,9 @@ export default function App() {
           <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800">
             {/* Bar row — only shown after first step */}
             {thinHistory.length > 1 && (
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">{/* RED-APP-21/004: wraps at 390px zoom 2 */}
                 <span className="text-xs font-medium shrink-0 text-slate-500 dark:text-slate-400">Progress</span>
-                <div className="flex-1 h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-700">
+                <div className="flex-1 min-w-16 h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-700">
                   <div
                     className="h-full rounded-full bg-accent-500 transition-all duration-150"
                     style={{ width: `${Math.min(100, (simState.stepCount / (thinHistory.length - 1)) * 100)}%` }}
@@ -6067,8 +6145,8 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Speed slider */}
-              <div className="flex items-center gap-2">
+              {/* Speed slider — wraps for RED-APP-21/004 (phone width under zoom) */}
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Loop Speed</span>
                 <input
                   type="range"
@@ -6084,7 +6162,13 @@ export default function App() {
             </div>
 
             {/* Realtime coordinates outputs */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {/* RED-APP-21/004 + self-attack: at 390px × zoom 2 two fixed columns are
+                44px wide, so the cards used to widen the DOCUMENT. `break-words` stopped
+                that by shredding every label to one character per line, and clamping the
+                cards clipped "0.217" to "0". Let the COLUMN COUNT respond instead:
+                auto-fit drops to one column when two no longer fit, so nothing overflows,
+                nothing is clipped, and labels still wrap at word boundaries. */}
+            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(7rem,1fr))] md:grid-cols-4">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
@@ -6142,7 +6226,7 @@ export default function App() {
                 ? 'bg-ne-mixed-50 dark:bg-ne-mixed-950/20 border-ne-mixed-200 dark:border-ne-mixed-800/60'
                 : 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60'
               }`}>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">{/* RED-APP-21/004: wraps at 390px zoom 2 */}
                 <span className={`p-1.5 rounded-lg ${bannerIsMixedStyle ? 'bg-ne-mixed-100 dark:bg-ne-mixed-900/60 text-ne-mixed-700 dark:text-ne-mixed-300' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
                   }`}>
                   <Award className="w-5 h-5" />
@@ -6211,17 +6295,19 @@ export default function App() {
               <div className="bg-white/50 dark:bg-slate-900/30 p-3.5 rounded-xl border border-slate-100 dark:border-slate-800 text-xs font-mono text-slate-600 dark:text-slate-300 space-y-1">
                 {realisedConcept === 'mixed' ? (
                   <>
-                    <div>
-                      <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400 mr-2">
+                    {/* RED-APP-21/004: a KaTeX line is one nowrap unit — same
+                        min-w-0/overflow-x-auto treatment as the E[A]/E[B] rows. */}
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400">
                         {lines.a.indifferent ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      <MathTex tex={lines.a.tex} />
+                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.a.tex} /></span>
                     </div>
-                    <div>
-                      <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400 mr-2">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400">
                         {lines.b.indifferent ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      <MathTex tex={lines.b.tex} />
+                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.b.tex} /></span>
                     </div>
                     <div className="text-xs text-muted dark:text-muted-dark mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
@@ -6377,12 +6463,15 @@ export default function App() {
                   narrates, and its claims are checked against the solver before
                   a single word of it is shown. */}
               <div className="border-t border-slate-100 dark:border-slate-800 pt-3 space-y-2">
-                <div className="flex items-center justify-between gap-2">
+                {/* RED-APP-21/004: the heading row and the button row inside it both wrap, so at a
+                    phone width under zoom the buttons drop below the heading instead of pushing the
+                    document wider (WCAG 1.4.10). */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <strong className="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 shrink-0" />
                     Plain-English Explanation
                   </strong>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {/*
                       Opt-in path to a NEW invented story for a game that already
                       has one: the request omits the scenario, so the model
@@ -6610,17 +6699,11 @@ export default function App() {
             </div>
 
             {authError && (
-              <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                <span>{authError}</span>
-              </div>
+              <FeedbackBox tone="error" testId="auth-error">{authError}</FeedbackBox>
             )}
 
             {authSuccess && (
-              <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-3 font-medium">
-                <Check className="w-4 h-4 shrink-0 text-emerald-500" />
-                <span>{authSuccess}</span>
-              </div>
+              <FeedbackBox tone="success" testId="auth-success">{authSuccess}</FeedbackBox>
             )}
 
             <form onSubmit={handleAuthSubmit} className="flex flex-col gap-3.5">
@@ -7147,7 +7230,7 @@ export default function App() {
                 // across a close+reopen, even before `editError` is set
                 // again by a fresh attempt in the new session.
                 (deadSession === 'edit' || editErrorNeedsAuth) ? (
-                  <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                  <div role="alert" className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                     <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                     <div className="flex flex-col items-start gap-2">
                       <span>{editError || 'Invalid or expired session.'} Your changes will stay right here.</span>
@@ -7161,7 +7244,7 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-danger-500 font-semibold">{editError}</p>
+                  <p role="alert" className="text-xs text-danger-500 font-semibold">{editError}</p>
                 )
               )}
 
@@ -7225,7 +7308,7 @@ export default function App() {
               // across a close+reopen, even before `saveError` is set again
               // by a fresh attempt in the new session.
               (deadSession === 'save' || saveErrorNeedsAuth) ? (
-                <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
+                <div role="alert" className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 text-indigo-800 dark:text-indigo-200 text-xs rounded-xl p-3 flex gap-2 font-medium">
                   <LogIn className="w-4 h-4 shrink-0 text-indigo-500 dark:text-indigo-400 mt-0.5" />
                   <div className="flex flex-col items-start gap-2">
                     <span>{saveError || 'Invalid or expired session.'} Your matrix, name and description will stay right here.</span>
@@ -7262,10 +7345,7 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                  <span>{saveError}</span>
-                </div>
+                <FeedbackBox tone="error" testId="save-error">{saveError}</FeedbackBox>
               )
             )}
 
@@ -7602,7 +7682,7 @@ export default function App() {
             </div>
 
             {feedbackSuccess ? (
-              <div className="flex flex-col items-center gap-3 py-6 text-center">
+              <div role="status" className="flex flex-col items-center gap-3 py-6 text-center">
                 <span className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 rounded-full">
                   <CheckCircle2 className="w-7 h-7" />
                 </span>
@@ -7617,10 +7697,7 @@ export default function App() {
             ) : (
               <>
                 {feedbackError && (
-                  <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                    <span>{feedbackError}</span>
-                  </div>
+                  <FeedbackBox tone="error" testId="feedback-error">{feedbackError}</FeedbackBox>
                 )}
 
                 <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">

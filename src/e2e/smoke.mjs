@@ -10189,6 +10189,243 @@ const suggestedScenario = {
     await p.close();
   });
 
+  // ══ 93. RED-APP-21/001 — a parseable but OUT-OF-RANGE number typed into a
+  //      clamping field must not move the game behind the user's back. Typing
+  //      "150" into a payoff cell committed the clamped 100 into the live game
+  //      on that keystroke while the box still read "150": the rendered 3D
+  //      surface and the cell showed different numbers, on screen, with no
+  //      hint, for as long as the field stayed focused. Out-of-range was the
+  //      one numeric-input problem class with no message.
+  //
+  //      WHY THIS CANNOT PASS BY COINCIDENCE. The game is read from the LIVE
+  //      Plotly trace, never from the input box: EA(x,y,g) = x*y*a11 +
+  //      x*(1-y)*a12 + (1-x)*y*a21 + (1-x)*(1-y)*a22 (gameEngine.ts), so the
+  //      E[A] surface's (x=1,y=1) corner IS a11, exactly — the red's own probe
+  //      read. buildSurfaces uses N=28, so z[28][28] is that corner. The
+  //      fixture starts from Prisoners Dilemma (A(1,1) = 3) and asserts, before
+  //      typing, that the corner reads 3 and NOT the clamp target 100 — so a
+  //      corner of 100 during the edit can only have come from the defect, and
+  //      the pre-edit corner cannot coincide with the post-blur one either.
+  section('93', 'an out-of-range payoff commits nothing mid-edit, shows the range hint, and only blur applies the clamp', async () => {
+    const N = 28;
+    const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(p, 'setup: clear the first-run tour before typing into the matrix', { timeout: 20000 });
+    const tourGone = await p.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
+      null, { timeout: 10000 }).then(() => true).catch(() => false);
+    record('§93 precondition: the guided tour is dismissed before the matrix checks', tourGone);
+
+    const matrixSelector = 'input[inputmode="decimal"][class*="text-center"]';
+    const matrix = p.locator(matrixSelector);
+    const hint = p.locator('[data-testid="payoff-input-hint"]');
+    const RANGE_HINT = 'Range: -100 to 100.';
+    const COMMA_HINT = 'Use a dot for decimals, not a comma.';
+    await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
+    await p.getByRole('button', { name: 'Prisoners Dilemma', exact: true }).click();
+    // A(1,1) = 3 in Prisoners Dilemma. Cell 0 is the Player-A payoff of (C,C).
+    await waitForInputValue(p, matrixSelector, 0, '3', 5000);
+    const cell = matrix.nth(0);
+
+    // The live game, straight off the rendered Plotly surface.
+    const corner = () => p.evaluate((N) => {
+      const gd = document.querySelector('.js-plotly-plot');
+      const t = gd?.data?.find((tr) => tr.name === 'E[A]' && Array.isArray(tr.z) && Array.isArray(tr.z[0]));
+      return t ? t.z[N][N] : null;
+    }, N);
+    const settleCorner = async (want) => {
+      for (let i = 0; i < 30; i++) { if ((await corner()) === want) return true; await p.waitForTimeout(100); }
+      return (await corner()) === want;
+    };
+
+    const cornerBefore = await corner();
+    record('§93 fixture guard: the live E[A] corner reads the preset a11 = 3 before any edit — NOT the clamp target, so a clamped commit cannot be mistaken for the starting state',
+      cornerBefore === 3, `corner=${cornerBefore}`);
+
+    // (a) + (b): type an over-range number, do NOT blur.
+    async function checkOutOfRange(label, typed, clampTarget) {
+      const before = await cell.inputValue();
+      const gameBefore = await corner();
+      record(`${label}: fixture guard — the pre-edit game (${gameBefore}) differs from this input's clamp target (${clampTarget}), so a silent clamp is distinguishable from no change`,
+        gameBefore !== clampTarget && Number(before) !== clampTarget);
+      await cell.click();
+      await cell.fill('');
+      await p.keyboard.type(typed, { delay: 20 });
+      // (a) the hint is up, with role=status, while the field is still focused.
+      const hintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintText = hintVisible ? await hint.textContent().catch(() => null) : null;
+      const hintRole = hintVisible ? await hint.getAttribute('role').catch(() => null) : null;
+      record(`${label}: (a) the range hint is visible with the exact text while the field is still focused`,
+        hintVisible && hintText === RANGE_HINT, `visible=${hintVisible} text=${JSON.stringify(hintText)}`);
+      record(`${label}: (a) the hint is announced — role="status"`, hintRole === 'status', `role=${hintRole}`);
+      record(`${label}: still focused (the divergence the red measured happens BEFORE blur)`,
+        await cell.evaluate((el) => el === document.activeElement));
+      // (b) the box shows what was typed and the GAME has not moved.
+      const boxDuring = await cell.inputValue();
+      record(`${label}: (b) the cell shows exactly what was typed`, boxDuring === typed, `got "${boxDuring}"`);
+      const gameHeld = await settleCorner(gameBefore);
+      record(`${label}: (b) THE DEFECT — the live E[A] surface corner still reads the pre-edit payoff ${gameBefore}, not the clamped ${clampTarget}`,
+        gameHeld, `corner=${await corner()}`);
+      // (c) blur commits the clamp and the box agrees with it.
+      await cell.blur();
+      await waitForInputValue(p, matrixSelector, 0, String(clampTarget), 3000);
+      const boxAfter = await cell.inputValue();
+      record(`${label}: (c) blur rewrites the box to the clamped value "${clampTarget}"`,
+        boxAfter === String(clampTarget), `got "${boxAfter}"`);
+      const cornerAfter = await settleCorner(clampTarget);
+      record(`${label}: (c) blur commits that same value to the game — box and surface agree at ${clampTarget}`,
+        cornerAfter, `corner=${await corner()}`);
+      const hintAfterBlur = await hint.isVisible().catch(() => false);
+      record(`${label}: (c) the hint clears once blur has made the box and the game agree`, !hintAfterBlur);
+    }
+
+    await checkOutOfRange('§93 over the upper bound', '150', 100);
+    // (d) symmetric, at the other bound, starting from the committed 100 (so
+    // the pre-edit game differs from -100 by construction).
+    await checkOutOfRange('§93 under the lower bound', '-250', -100);
+
+    // Positive control: an in-range value still commits LIVE, mid-edit, with no
+    // hint — the fix must not have made every edit inert, only clamped ones.
+    const gameBeforeOk = await corner();
+    await cell.click();
+    await cell.fill('');
+    await p.keyboard.type('42', { delay: 20 });
+    const okCommitted = await settleCorner(42);
+    record('§93 control: an IN-RANGE value still reaches the game live, before blur (the fix did not freeze ordinary editing)',
+      okCommitted && gameBeforeOk !== 42, `corner=${await corner()}`);
+    record('§93 control: no hint for an in-range value', !(await hint.isVisible().catch(() => false)));
+    // A prefix that is not yet a number must not raise the range hint either.
+    await cell.fill('');
+    await p.keyboard.type('-', { delay: 20 });
+    record('§93 control: a bare "-" mid-typing raises no range hint (a prefix is not an out-of-range number)',
+      !(await hint.isVisible().catch(() => false)));
+    await p.keyboard.type('7', { delay: 20 });
+    const minusSeven = await settleCorner(-7);
+    record('§93 control: finishing that prefix as "-7" commits normally', minusSeven, `corner=${await corner()}`);
+    await cell.blur();
+
+    // (e) the comma path (RED-DESKTOP-9/002) still behaves exactly as before —
+    // its own message, not the new one, and the game held at the pre-edit value.
+    const gameBeforeComma = await corner();
+    await cell.click();
+    await cell.fill('');
+    await p.keyboard.type('4,5', { delay: 20 });
+    const commaHintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+    const commaHintText = commaHintVisible ? await hint.textContent().catch(() => null) : null;
+    record('§93 (e) regression: the comma path still shows ITS OWN message, not the range one',
+      commaHintVisible && commaHintText === COMMA_HINT, `text=${JSON.stringify(commaHintText)}`);
+    record('§93 (e) regression: the comma path still holds the game at its pre-edit payoff',
+      await settleCorner(gameBeforeComma), `corner=${await corner()}`);
+    await cell.blur();
+    await p.close();
+  });
+
+  // ══ 94. RED-APP-21/004 — at a phone viewport under browser zoom the page
+  //      scrolled SIDEWAYS: the two-part probability legend, "New AI scenario /
+  //      Explain this game", the E[A]/E[B] polynomial rows, the Simulation Log
+  //      header, the step-size row, the title and the stat-card labels were all
+  //      non-wrapping flex rows or unbreakable words wider than the viewport.
+  //      Zoom is emulated the way the red did it (documentElement.style.zoom),
+  //      and the oracle is the document's own scroll extent, not a class list:
+  //      any future non-wrapping row that pokes past the viewport fails here.
+  //
+  //      WHY THIS CANNOT PASS BY COINCIDENCE. The unfixed tree measured
+  //      docScrollWidth 471 at zoom 1.5 and 631 at zoom 2.0 against a 390px
+  //      viewport (director, 2026-09-14); the fixed tree measures 390 at both.
+  //      The section first asserts the page is genuinely laid out (Plotly card
+  //      and the log header present) so an empty or crashed render — which has
+  //      no overflow either — cannot pass.
+  section('94', 'a 390px viewport under browser zoom never scrolls sideways (every header row wraps)', async () => {
+    const p = await newTrackedPage({ viewport: { width: 390, height: 844 } });
+    await p.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(p, 'setup: clear the first-run tour before measuring the zoomed layout', { timeout: 20000 });
+    await p.locator('.js-plotly-plot').first().waitFor({ state: 'attached', timeout: 20000 });
+    const measure = async (zoom) => {
+      await p.evaluate((z) => { document.documentElement.style.zoom = z; }, zoom);
+      // settle: Plotly re-fits its WebGL canvas asynchronously after the zoom
+      // re-layout, so the document is briefly wider than its steady state on
+      // BOTH trees. Wait on the value itself: the scroll extent must hold for
+      // 30 consecutive animation frames (~0.5 s) before it is read. The unfixed
+      // tree settles at 471/631 and still fails; a wait cannot mask it.
+      await p.waitForFunction(() => new Promise((resolve) => {
+        let last = document.documentElement.scrollWidth, stable = 0;
+        const tick = () => {
+          const w = document.documentElement.scrollWidth;
+          stable = w === last ? stable + 1 : 0; last = w;
+          if (stable >= 30) resolve(true); else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }), null, { timeout: 15000 });
+      return p.evaluate(() => {
+        const de = document.documentElement;
+        window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
+        const vw = de.clientWidth;
+        // the hidden KaTeX MathML annotation (position:absolute, 1px) is not layout
+        const wide = Array.from(document.querySelectorAll('body *')).filter((el) => {
+          if (el.closest('.katex-mathml') || el.closest('.js-plotly-plot')) return false;
+          const r = el.getBoundingClientRect(); return r.width > 0 && r.right > vw + 2;
+        }).map((el) => `${el.tagName}.${(el.className || '').toString().slice(0, 40)}`).slice(0, 6);
+        // Self-attack on THIS branch's own 004 fix: `break-words` is inherited,
+        // so it also applied to the realtime-stats VALUES and stacked "0.217"
+        // one digit per line (23x289). A label may break, a number may not.
+        // Measured per rendered line box, not by height guesswork: a numeric
+        // readout that occupies more than one line top is stacked.
+        const stackedNumbers = Array.from(document.querySelectorAll('span'))
+          .filter((el) => !el.children.length && /^-?\d+(\.\d+)?$/.test((el.textContent || '').trim()))
+          .map((el) => {
+            const r = new Range(); r.selectNodeContents(el);
+            const tops = new Set(Array.from(r.getClientRects()).map((x) => Math.round(x.top)));
+            return { text: el.textContent.trim(), lines: tops.size,
+              w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height) };
+          })
+          .filter((n) => n.lines > 1);
+        // Second half of the same self-attack: `break-words` also stopped the
+        // page scrolling by rendering every stats LABEL one character per line
+        // (17 lines for "x: P(A playing Row 1)"; base wraps it in 5). Words wrap
+        // at word boundaries — assert the rendered density, not the class.
+        const shreddedLabels = Array.from(document.querySelectorAll('span'))
+          .filter((el) => !el.children.length && /^(x: P\(A|y: P\(B|Expected Payoff)/.test((el.textContent || '').trim()))
+          .map((el) => {
+            const t = el.textContent.trim();
+            const r = new Range(); r.selectNodeContents(el);
+            const lines = new Set(Array.from(r.getClientRects()).map((x) => Math.round(x.top))).size;
+            return { text: t.slice(0, 24), lines, charsPerLine: +(t.replace(/\s/g, '').length / Math.max(lines, 1)).toFixed(1) };
+          })
+          .filter((l) => l.charsPerLine < 2);
+        return { vw, docScrollWidth: de.scrollWidth, maxScrollX, wide, stackedNumbers, shreddedLabels,
+          rendered: !!document.querySelector('.js-plotly-plot') && !!document.querySelector('[aria-label="Expand simulation log"]') };
+      });
+    };
+    const sweep = async (phase) => {
+      for (const zoom of ['1.5', '2']) {
+        const m = await measure(zoom);
+        record(`§94 ${phase} fixture guard: the page is fully rendered at zoom ${zoom} (plot + log header present)`, m.rendered);
+        record(`§94 ${phase} zoom ${zoom}: the document is no wider than the 390px viewport (no sideways scroll)`,
+          m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
+        record(`§94 ${phase} zoom ${zoom}: no visible element extends past the viewport`, m.wide.length === 0, JSON.stringify(m.wide));
+        record(`§94 ${phase} zoom ${zoom}: no numeric readout is stacked one digit per line`,
+          m.stackedNumbers.length === 0, JSON.stringify(m.stackedNumbers));
+        record(`§94 ${phase} zoom ${zoom}: stats labels wrap at word boundaries, not one character per line`,
+          m.shreddedLabels.length === 0, JSON.stringify(m.shreddedLabels));
+      }
+    };
+    await sweep('pre-run');
+    // The converged page renders rows the fresh page does not: the progress
+    // bar + step counter, the "Mixed Strategy Nash Equilibrium Reached" banner
+    // heading and the two indifference KaTeX lines. The review on #202 found
+    // the banner heading and the counter still forced sideways scroll at zoom
+    // 2 (457px) after the pre-run sweep was clean — so the same oracle runs again
+    // after a mixed-equilibrium run.
+    await p.evaluate(() => { document.documentElement.style.zoom = '1'; });
+    await p.getByRole('button', { name: 'Search Game' }).first().click();
+    await p.getByRole('button', { name: /^Run$/ }).click();
+    await p.waitForSelector('text=Converged', { timeout: 240000 });
+    record('§94 fixture guard: the Search Game run reached a mixed equilibrium (indifference lines rendered)',
+      await p.getByText(/A indifferent:|A strictly prefers:/).first().isVisible().catch(() => false));
+    await sweep('post-run');
+    await p.close();
+  });
+
+
 await executeSections();
 
 } catch (e) {

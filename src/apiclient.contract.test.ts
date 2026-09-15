@@ -689,22 +689,47 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
       .reduce((nearest, candidate) => Math.min(nearest, candidate), source.length);
     return source.slice(start, end);
   };
+  // RED-APP-21/003: the shape moved — these five branches used to hand-roll
+  // `if (res.kind !== 'response' || !res.dataParsed)`, which is exactly the
+  // ordering defect (a 500 with an empty body read as a connection failure).
+  // The invariant is unchanged and still enforced: an unreadable body never
+  // reaches the success state. It is now `accountVerdict`'s job, so the check
+  // is that each branch ASKS it and acts on the answer — and the fixtures below
+  // prove that dropping either half still fails.
+  const VERDICT_CALL = /const verdict = accountVerdict\(res, \{[\s\S]*?\}\);/;
+  const VERDICT_ACTED = /if \(verdict\.outcome === 'error'[\s\S]{0,400}?setAuthError\(verdict\.message\);/;
   const authGuardFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) => {
     const slice = authCallSlice(source, route);
     if (!slice) return true;
-    return !/if \(res\.kind !== 'response' \|\| !res\.dataParsed\)/.test(slice);
+    return !(VERDICT_CALL.test(slice) && VERDICT_ACTED.test(slice));
   });
   check('each auth mutation rejects a response whose body was not parsed before reading success fields',
     authGuardFailures(appSrc).length === 0, authGuardFailures(appSrc).join(', '));
+  // Known-positives, through the SAME predicate: a branch that computes the
+  // verdict and ignores it, and one that never asks, must both be flagged.
+  {
+    const live = authCallSlice(appSrc, '/api/auth/login');
+    const ignored = live.replace('setAuthError(verdict.message);', 'setAuthError(\'Connection error.\');');
+    check('fixture: an auth branch that computes the verdict and then ignores it is flagged',
+      ignored !== live && !(VERDICT_CALL.test(ignored) && VERDICT_ACTED.test(ignored)));
+    const unasked = live.replace(VERDICT_CALL, '');
+    check('fixture: an auth branch that never asks accountVerdict is flagged',
+      unasked !== live && !(VERDICT_CALL.test(unasked) && VERDICT_ACTED.test(unasked)));
+    check('fixture: the PRE-FIX ordering (dataParsed tested before ok) does not satisfy this check',
+      !(VERDICT_CALL.test("if (res.kind !== 'response' || !res.dataParsed) { setAuthError('Connection error.'); }")));
+  }
 
   const authStaleFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) =>
     !/isStale: authRequest\.isStale/.test(authCallSlice(source, route)));
   check('each auth mutation passes its keyed dialog-session predicate to the client',
     authStaleFailures(appSrc).length === 0, authStaleFailures(appSrc).join(', '));
 
+  // The route-semantic predicate is now what the branch HANDS the verdict, via
+  // `badSuccessShape`: a parsed 2xx that is not this route's success shape is
+  // still refused before any state change.
   const authSemanticGuardFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) => {
     const predicate = AUTH_SUCCESS_GUARDS[route];
-    return !authCallSlice(source, route).includes(`else if (res.ok && !${predicate})`);
+    return !authCallSlice(source, route).includes(`badSuccessShape: !${predicate}`);
   });
   check('each auth mutation requires its route-semantic success object before advancing',
     authSemanticGuardFailures(appSrc).length === 0, authSemanticGuardFailures(appSrc).join(', '));
@@ -712,11 +737,13 @@ const OTHER_CREDENTIAL = /x-admin-secret/;
   const authVerdictOrderingFailures = (source: string): string[] => AUTH_ROUTES_THROUGH_CLIENT.filter((route) => {
     const slice = authCallSlice(source, route);
     const stale = slice.indexOf('if (res.stale) return;');
-    const parsed = slice.indexOf("if (res.kind !== 'response' || !res.dataParsed)");
-    const semantic = slice.indexOf(`else if (res.ok && !${AUTH_SUCCESS_GUARDS[route]})`);
-    const success = slice.indexOf('else if (res.ok)', semantic + 1);
-    return stale < 0 || parsed < 0 || semantic < 0 || success < 0
-      || !(stale < parsed && parsed < semantic && semantic < success);
+    const verdict = slice.search(VERDICT_CALL);
+    const semantic = slice.indexOf(`badSuccessShape: !${AUTH_SUCCESS_GUARDS[route]}`);
+    const success = slice.indexOf('} else if (res.ok) {', verdict + 1);
+    // stale first, then the verdict (which carries the semantic predicate with
+    // it), and only then any success state change.
+    return stale < 0 || verdict < 0 || semantic < 0 || success < 0
+      || !(stale < verdict && verdict < semantic && semantic < success);
   });
   check('each auth response rejects stale work before transport, semantic, or success state changes',
     authVerdictOrderingFailures(appSrc).length === 0, authVerdictOrderingFailures(appSrc).join(', '));
@@ -760,7 +787,9 @@ authFetchAlias(getApiUrl(authEndpointAlias), { method: 'POST' });`;
       authStaleFailures(routeMutant).includes(route), authStaleFailures(routeMutant).join(', '));
 
     const predicate = AUTH_SUCCESS_GUARDS[route];
-    const semanticMutant = appSrc.replace(`else if (res.ok && !${predicate})`, 'else if (res.ok)');
+    // RED-APP-21/003: the semantic predicate now travels INTO accountVerdict as
+    // `badSuccessShape`; dropping it is the same regression, spelled differently.
+    const semanticMutant = appSrc.replace(`, badSuccessShape: !${predicate}`, '');
     check(`mutation: removing the ${route} semantic success guard fails the auth-family guard`,
       authSemanticGuardFailures(semanticMutant).includes(route), authSemanticGuardFailures(semanticMutant).join(', '));
 
@@ -770,17 +799,23 @@ authFetchAlias(getApiUrl(authEndpointAlias), { method: 'POST' });`;
     check(`mutation: removing ${route} token:null fails the pre-session auth contract`,
       authTokenFailures(tokenMutant).includes(route), authTokenFailures(tokenMutant).join(', '));
   }
-  const firstAuthGuard = "if (res.kind !== 'response' || !res.dataParsed)";
-  const guardMutant = appSrc.replace(firstAuthGuard, "if (res.kind !== 'response')");
+  // The body-trust guard is `accountVerdict` itself now. Two ways to lose it:
+  // never ask, or ask and ignore the answer — both must fail the family guard.
+  const firstAuthGuard = 'const verdict = accountVerdict(res, {';
+  const guardMutant = appSrc.replace(firstAuthGuard, 'const verdict = ({ outcome: \'success\' } as any); void ({');
   check('mutation: dropping one auth route\'s dataParsed guard fails the family guard',
     authGuardFailures(guardMutant).length > 0, authGuardFailures(guardMutant).join(', '));
+  const ignoredVerdictMutant = appSrc.replace('setAuthError(verdict.message);', "setAuthError('Connection error.');");
+  check('mutation: an auth route that ignores the verdict it computed fails the family guard',
+    ignoredVerdictMutant !== appSrc && authGuardFailures(ignoredVerdictMutant).length > 0,
+    authGuardFailures(ignoredVerdictMutant).join(', '));
   const resetRoute = '/api/auth/reset-password';
   const resetSlice = authCallSlice(appSrc, resetRoute);
   const resetStart = appSrc.indexOf(`api.request('${resetRoute}'`);
   const tailMaskMutant = appSrc.slice(0, resetStart)
-    + resetSlice.replace(firstAuthGuard, "if (res.kind !== 'response')")
+    + resetSlice.replace(firstAuthGuard, 'const verdict = ({ outcome: \'success\' } as any); void ({')
     + appSrc.slice(resetStart + resetSlice.length)
-    + `\n${firstAuthGuard} { /* unrelated tail text must not satisfy reset */ }`;
+    + `\n${firstAuthGuard} failure: 'x' }); setAuthError(verdict.message); /* unrelated tail text must not satisfy reset */`;
   const oldUnboundedResetSlice = tailMaskMutant.slice(tailMaskMutant.indexOf(`api.request('${resetRoute}'`));
   check('mutation: unrelated text after handleAuthSubmit cannot mask the final route\'s missing guard',
     authGuardFailures(tailMaskMutant).includes(resetRoute)

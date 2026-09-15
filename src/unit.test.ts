@@ -62,6 +62,10 @@ import { ColorCoded } from './components/ColorCoded';
 import {
   EA, EB, regretA, regretB, r3,
   parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepSize, commitStepIndex,
+  commitNumericField, commitStepSizeField, PAYOFF_RANGE, START_RANGE, STEP_SIZE_RANGE,
+} from './utils/gameEngine';
+import { accountVerdict } from './utils/apiClient';
+import {
   containsAmbiguousComma,
   normalizeProseMinus,
   computeMixedNE, computeAllNE, fmtProb, texProb,
@@ -355,6 +359,223 @@ function testCommitStepTables() {
   assert(commitStepIndex('0') === 0, 'step index: zero is a valid step');
   assert(commitStepIndex('3.9') === 3, 'step index: truncates');
   assert(commitStepIndex('x') === null, 'step index: garbage rejected');
+}
+
+/**
+ * RED-APP-21/001 — the SHAPE that let a typed "150" commit 100 into the live
+ * game behind a box still reading "150": the commit helpers returned a bare
+ * number, so no call site could tell a clamped value from an accepted one.
+ * `commitNumericField` returns the reason with the value. These assertions are
+ * about `problem`; the `value` half is already pinned by the three tables above,
+ * which is what proves the refactor changed no committed number.
+ *
+ * MUTATION-TESTED, by name, on src/utils/gameEngine.ts (each reverted after):
+ *   - `const clamped = false`                        => R1 fails first (then R2/R6/R7)
+ *   - `clamped = rounded !== parsed` (no bounds test) => R1 fails first (then R2/R6/R7)
+ *   - `clamped = value !== parsed` (fires on r3)      => R4 fails first (then R5)
+ *   - commitStepSizeField's `v <= 0` returns
+ *     `problem: null`                                 => R8 fails
+ */
+function testCommitNumericFieldProblem() {
+  const payoff = (raw: string) => commitNumericField(raw, PAYOFF_RANGE, { fallback: 0, quantise: true });
+  const start = (raw: string) => commitNumericField(raw, START_RANGE, { fallback: 0.217 });
+
+  // R1/R2: the defect itself, both bounds. The value is the clamp the field has
+  // always committed; what is new is that the caller is TOLD it was clamped.
+  assert(payoff('150').problem === 'out-of-range' && payoff('150').value === 100,
+    'R1: "150" in a payoff cell reports out-of-range and still commits 100');
+  assert(payoff('-250').problem === 'out-of-range' && payoff('-250').value === -100,
+    'R2: "-250" reports out-of-range and still commits -100');
+
+  // R3: in-range text is NOT a problem — the hint must not fire on ordinary
+  // typing, which is the failure mode a range check invents.
+  for (const ok of ['0', '3', '-4', '100', '-100', '12.5', '99.999', '1e2', '−4']) {
+    assert(payoff(ok).problem === null, `R3: "${ok}" is in range and must report no problem`);
+  }
+  // The exact bounds are IN range, not out of it.
+  assert(payoff('100').value === 100 && payoff('-100').value === -100,
+    'R3b: the bounds themselves commit unchanged');
+
+  // R4: in-progress typing parses to null and must NOT raise the range hint —
+  // a prefix is not an out-of-range number ("-" before "-5", "1e" before "1e1").
+  for (const partial of ['', '-', '+', '.', '-.', '1e', '1e-']) {
+    const r = payoff(partial);
+    assert(r.problem !== 'out-of-range',
+      `R4: in-progress "${partial}" must not report out-of-range (got ${r.problem})`);
+  }
+  // Syntax problems keep their own names, unchanged (RED-DESKTOP-9/002, RED-APP-10/002).
+  assert(payoff('3,5').problem === 'comma', 'R4b: a comma still reports comma');
+  assert(payoff('3 5').problem === 'not-one-number', 'R4c: two numbers still report not-one-number');
+
+  // R5: 3-dp quantising is canonicalising, not clamping. "99.9994" commits
+  // 99.999 and is NOT out of range; comparing the rounded value would say it was.
+  assert(payoff('99.9994').problem === null && payoff('99.9994').value === 99.999,
+    'R5: a value rounded by r3 but inside the bounds is not out-of-range');
+  assert(start('0.0004').problem === null,
+    'R5b: an interior start coordinate below the display resolution is not out-of-range');
+
+  // R6/R7: the same helper, the same reason, for the start-coordinate range.
+  assert(start('2').problem === 'out-of-range' && start('2').value === 1,
+    'R6: x0 = "2" reports out-of-range and commits 1');
+  assert(start('-1').problem === 'out-of-range' && start('-1').value === 0,
+    'R7: x0 = "-1" reports out-of-range and commits 0');
+  assert(start('0').problem === null && start('0').value === 0,
+    'R7b: x0 = 0 is a legal start point, not a clamp (round-14 defect)');
+  assert(start('').problem === null && start('').value === 0.217,
+    'R7c: an empty start field falls back silently, exactly as before');
+
+  // R8: the step-size field keeps its own rule — non-positive is unusable, so
+  // the value in force stays — but now says so instead of ignoring the field.
+  assert(commitStepSizeField('0', 0.1).problem === 'out-of-range' && commitStepSizeField('0', 0.1).value === 0.1,
+    'R8: step size "0" reports out-of-range and keeps the current step');
+  assert(commitStepSizeField('5', 0.1).problem === 'out-of-range' && commitStepSizeField('5', 0.1).value === 0.999,
+    'R8b: step size "5" reports out-of-range and commits the 0.999 maximum');
+  assert(commitStepSizeField('0.1', 0.5).problem === null && commitStepSizeField('0.1', 0.5).value === 0.1,
+    'R8c: an in-range step size reports no problem');
+  assert(commitStepSizeField('abc', 0.1).problem === 'not-one-number',
+    'R8d: garbage in the step field keeps its syntax reason');
+
+  // R9: the hint TEXT is built from the same constants the fields clamp to, so
+  // a range change cannot leave the message describing the old bounds.
+  assert(PAYOFF_RANGE.label === `${PAYOFF_RANGE.lo} to ${PAYOFF_RANGE.hi}`,
+    'R9: the payoff range label must name the bounds it clamps to');
+  assert(START_RANGE.label === `${START_RANGE.lo} to ${START_RANGE.hi}`,
+    'R9b: the start range label must name the bounds it clamps to');
+  assert(STEP_SIZE_RANGE.label === `${STEP_SIZE_RANGE.lo} to ${STEP_SIZE_RANGE.hi}`,
+    'R9c: the step-size range label must name the bounds it clamps to');
+
+  console.log('✓ commitNumericField reports WHY, not just WHAT (RED-APP-21/001)');
+}
+
+/**
+ * RED-APP-21/003 — the auth modal reported a real HTTP 500 with an empty body
+ * as `'Connection error.'`, the same words a genuine offline failure gets,
+ * status dropped. Cause: all five `handleAuthSubmit` branches tested
+ * `!res.dataParsed` BEFORE `res.ok`, so the status-coded message — written
+ * five times — was structurally unreachable for any non-2xx. MenuDrawer's
+ * Danger Zone, reading the identical AccountResponse from the same client, had
+ * the order right. One helper now answers for both.
+ *
+ * THE INVARIANT: a response the SERVER sent is never described as a connection
+ * failure, whatever its body.
+ *
+ * MUTATION-TESTED, by name, on src/utils/apiClient.ts (each reverted after):
+ *   - move the `res.ok` test after the `dataParsed` test (the original defect)
+ *       => V4 fails ("Connection error." for a 500 with no body)
+ *   - `if (res.ok && (!res.dataParsed || copy.badSuccessShape))` -> `if (res.ok && !res.dataParsed)`
+ *       => V3 fails (a 2xx of the wrong shape is accepted as success)
+ *   - drop the `res.dataParsed` conjunct from `serverSaid`
+ *       => V4c fails (`data.error` read off a body that was never parsed).
+ *         V4c exists BECAUSE this mutant first survived: every other row pairs
+ *         dataParsed:false with data:{}, exactly as the client does, so none of
+ *         them could tell the two conjuncts apart.
+ *   - `serverSaid` without the `typeof … === 'string'` test
+ *       => V5d fails (a non-string `error` object shown raw)
+ *   - `said` without `.trim()` (i.e. test `res.data.error` for truthiness)
+ *       => V5e/V5f fail (an all-whitespace error renders an EMPTY role="alert")
+ *   - return `copy.failure` instead of the status-coded string when !dataParsed
+ *       => V4 fails (the status code disappears again)
+ */
+function testAccountVerdictMatrix() {
+  const base = {
+    stale: false, unauthorized: false, sessionDied: false, sessionCleared: false,
+    requestToken: null, error: null,
+  };
+  const v = (over: any, copy: any = { failure: 'Invalid credentials.' }) =>
+    accountVerdict({ ...base, ...over } as any, copy);
+
+  // V1: no response at all — the ONE case that is genuinely a connection story.
+  assert(v({ kind: 'network', status: 0, ok: false, data: {}, dataParsed: false }).outcome === 'error'
+    && (v({ kind: 'network', status: 0, ok: false, data: {}, dataParsed: false }) as any).message === 'Connection error.',
+    'V1: a network failure is the only thing that reads "Connection error."');
+  assert((v({ kind: 'timeout', status: 0, ok: false, data: {}, dataParsed: false }) as any).message
+    === 'The server did not answer in time.',
+    'V1b: a timeout says so, and is not confused with an offline failure');
+  assert((v({ kind: 'network', status: 0, ok: false, data: {}, dataParsed: false },
+    { failure: 'x', subject: 'start the deletion' }) as any).message
+    === 'Connection error. Could not start the deletion.',
+    'V1c: with a subject, the sentence says what could not be done (STRUCT-DESKTOP-19/002)');
+
+  // V2: a 2xx we could not read. A captive portal's 200 HTML is not a login.
+  assert((v({ kind: 'response', status: 200, ok: true, data: {}, dataParsed: false }) as any).message
+    === 'Server returned invalid response (Status 200).',
+    'V2: an unreadable 2xx is reported with its status, not as a connection error');
+
+  // V3: a 2xx that parsed but is not this route's success shape.
+  assert((v({ kind: 'response', status: 200, ok: true, data: { hello: 1 }, dataParsed: true },
+    { failure: 'x', badSuccessShape: true }) as any).message
+    === 'Server returned invalid response (Status 200).',
+    'V3: a parsed 2xx of the wrong shape never counts as success');
+  assert(v({ kind: 'response', status: 200, ok: true, data: { token: 't' }, dataParsed: true },
+    { failure: 'x', badSuccessShape: false }).outcome === 'success',
+    'V3b: a parsed 2xx of the RIGHT shape is a success');
+
+  // V4: THE DEFECT. A real non-2xx whose body did not parse.
+  const five = v({ kind: 'response', status: 500, ok: false, data: {}, dataParsed: false }) as any;
+  assert(five.outcome === 'error' && five.message === 'Server returned invalid response (Status 500).',
+    `V4: a 500 with an empty body is reported WITH its status, never as "Connection error." (got ${JSON.stringify(five.message)})`);
+  for (const status of [401, 403, 409, 429, 502]) {
+    const r = v({ kind: 'response', status, ok: false, data: {}, dataParsed: false }) as any;
+    assert(r.message === `Server returned invalid response (Status ${status}).`,
+      `V4b: ${status} with an unparseable body keeps its status code, got ${JSON.stringify(r.message)}`);
+  }
+
+  // V4c: `dataParsed` is what makes `data` believable, and it is checked
+  // INDEPENDENTLY of whether `data` happens to be populated. The shipping
+  // client always pairs dataParsed:false with data:{} (apiClient.ts: the
+  // `.catch` returns {}), so nothing above can tell the two conjuncts apart —
+  // this row constructs the combination the TYPE allows and the client does
+  // not, which is the only way the `res.dataParsed &&` guard is mutation-
+  // killable rather than decorative.
+  const liar = v({ kind: 'response', status: 500, ok: false, data: { error: 'Leaked from an unparsed body.' }, dataParsed: false }) as any;
+  assert(liar.message === 'Server returned invalid response (Status 500).',
+    `V4c: a body that did NOT parse cannot supply the message, even if the field is present (got ${JSON.stringify(liar.message)})`);
+
+  // V5: a non-2xx the server explained — its own words win, unchanged. These
+  // are the control statuses the red injected with a JSON body.
+  for (const [status, msg] of [[401, 'Unauthorized (injected).'], [403, 'Forbidden (injected).'],
+    [409, 'Already registered.'], [429, 'Too many attempts.'], [500, 'Server exploded.']] as const) {
+    const r = v({ kind: 'response', status, ok: false, data: { error: msg }, dataParsed: true }) as any;
+    assert(r.message === msg, `V5: the server's own message for ${status} is shown verbatim, got ${JSON.stringify(r.message)}`);
+  }
+  // V5b: parsed, refused, but the server said nothing useful -> the caller's copy.
+  assert((v({ kind: 'response', status: 400, ok: false, data: { note: 'x' }, dataParsed: true }) as any).message
+    === 'Invalid credentials.',
+    "V5b: a parsed refusal with no `error` string falls back to the caller's own wording");
+  assert((v({ kind: 'response', status: 400, ok: false, data: { error: '' }, dataParsed: true }) as any).message
+    === 'Invalid credentials.',
+    'V5c: an EMPTY error string is not a message — the caller\'s wording stands');
+  assert((v({ kind: 'response', status: 400, ok: false, data: { error: { code: 7 } }, dataParsed: true }) as any).message
+    === 'Invalid credentials.',
+    'V5d: a non-string `error` (server JSON is untyped) is not shown raw');
+  // V5e: BLUE self-attack on this helper. `''` was already handled (V5c), but
+  // `'   '` is truthy, so it passed straight through and rendered an EMPTY
+  // role="alert" — a box a sighted user sees blank and a screen reader
+  // announces as nothing at all. Whitespace is not a message.
+  for (const blank of ['   ', '\t', '\n', '   ']) {
+    const r = v({ kind: 'response', status: 400, ok: false, data: { error: blank }, dataParsed: true }) as any;
+    assert(r.message === 'Invalid credentials.',
+      `V5e: an all-whitespace error (${JSON.stringify(blank)}) is not a message, got ${JSON.stringify(r.message)}`);
+  }
+  // V5f: the property behind V5c/V5e, over every refusal status — a verdict the
+  // user is shown always has readable text.
+  for (const status of [400, 401, 403, 409, 429, 500, 503]) {
+    for (const body of [{}, { error: '' }, { error: '   ' }, { error: null }, { error: 7 }]) {
+      const r = v({ kind: 'response', status, ok: false, data: body, dataParsed: true }) as any;
+      assert(typeof r.message === 'string' && r.message.trim().length > 0,
+        `V5f: status ${status} with body ${JSON.stringify(body)} must still say something, got ${JSON.stringify(r.message)}`);
+    }
+  }
+
+  // V6: the ordering itself, stated as the property the defect violated.
+  for (const status of [400, 401, 500, 503]) {
+    for (const dataParsed of [true, false]) {
+      const r = v({ kind: 'response', status, ok: false, data: dataParsed ? {} : {}, dataParsed }) as any;
+      assert(!/Connection error/.test(r.message),
+        `V6: a response the SERVER sent (status ${status}, dataParsed=${dataParsed}) must never be worded as a connection failure`);
+    }
+  }
+  console.log('✓ accountVerdict: ok before body, status never swallowed (RED-APP-21/003)');
 }
 
 function testNormalizeProseMinus() {
@@ -2352,6 +2573,8 @@ function runUnitTests() {
   testCommitPayoffInputTable();
   testCommitStartCoordinateTable();
   testCommitStepTables();
+  testCommitNumericFieldProblem();
+  testAccountVerdictMatrix();
   testNormalizeProseMinus();
   testPayoffArithmetic();
   testProfilesAndContinua();

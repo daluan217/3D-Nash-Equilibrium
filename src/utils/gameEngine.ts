@@ -72,7 +72,10 @@ export const PRESETS: Record<string, PresetGame> = {
     row1Label: 'Cooperate', row2Label: 'Defect',
     col1Label: 'Cooperate', col2Label: 'Defect',
     desc: '<strong>Prisoner\'s Dilemma:</strong> Two suspects are arrested and held in separate cells. '
-        + `Each can ${spanA('Cooperate')}/${spanB('Cooperate')} with their partner by remaining silent, or ${spanA('Defect')}/${spanB('Defect')} by confessing. `
+        // RED-APP-21/004: "/" between two inline spans is not a line-break opportunity, so
+        // "Cooperate/Cooperate" was one unbreakable token wider than a phone viewport under
+        // zoom. U+200B after the slash lets it wrap; nothing visible changes.
+        + `Each can ${spanA('Cooperate')}/\u200B${spanB('Cooperate')} with their partner by remaining silent, or ${spanA('Defect')}/\u200B${spanB('Defect')} by confessing. `
         + 'Defecting is a strictly dominant strategy for both players, leading them inexorably to the unique dominant strategy Nash Equilibrium of '
         + `mutual defection (${spanA('1')},${spanB('1')}), `
         + `even though mutual cooperation would have yielded a much higher payoff (${spanA('3')},${spanB('3')}) for both.`
@@ -315,10 +318,47 @@ export function parseNumericInput(raw: string | null | undefined): number | null
   return Number.isFinite(v) ? v : null;
 }
 
+/**
+ * RED-APP-21/001: the range each typed numeric field clamps to, named once so
+ * the field, its hint text and its tests cannot drift apart. `lo`/`hi` are the
+ * bounds; `label` is what the hint says.
+ */
+export const PAYOFF_RANGE = { lo: -100, hi: 100, label: '-100 to 100' } as const;
+export const START_RANGE = { lo: 0, hi: 1, label: '0 to 1' } as const;
+export const STEP_SIZE_RANGE = { lo: 0.001, hi: 0.999, label: '0.001 to 0.999' } as const;
+
+export type NumericFieldProblem = 'comma' | 'not-one-number' | 'out-of-range';
+
+/**
+ * RED-APP-21/001: ONE commit for every clamping numeric field, returning WHY as
+ * well as WHAT. The old commit helpers returned a bare number, so a typed "150"
+ * committed 100 into the live game while the box still read "150" — the one
+ * numeric-input problem class with no hint. `problem` is 'out-of-range' only
+ * when the CLAMP actually moved the parsed value; 3-dp quantising is not a
+ * problem, and neither is in-progress text ("", "-", "1e"), which parses to
+ * null and commits the fallback exactly as before.
+ */
+export function commitNumericField(
+  raw: string | null | undefined,
+  range: { lo: number; hi: number },
+  opts: { fallback: number; quantise?: boolean },
+): { value: number; problem: NumericFieldProblem | null } {
+  const syntax = numericInputProblem(raw);
+  if (syntax) return { value: opts.fallback, problem: syntax };
+  const parsed = parseNumericInput(raw);
+  const base = parsed === null ? opts.fallback : parsed;
+  const rounded = opts.quantise ? r3(base) : base;
+  const value = Math.max(range.lo, Math.min(range.hi, rounded));
+  // Compare against the PARSED number, not the rounded one: r3 is canonicalising,
+  // not clamping, so "0.0004" is not out of range for a [0,1] field even though
+  // quantising would round it to 0 (unit.test.ts R5b).
+  const clamped = parsed !== null && (parsed < range.lo || parsed > range.hi);
+  return { value, problem: clamped ? 'out-of-range' : null };
+}
+
 /** What a matrix cell commits, given exactly the string the input holds. */
 export function commitPayoffInput(raw: string | null | undefined): number {
-  const v = parseNumericInput(raw);
-  return Math.max(-100, Math.min(100, r3(v === null ? 0 : v)));
+  return commitNumericField(raw, PAYOFF_RANGE, { fallback: 0, quantise: true }).value;
 }
 
 /**
@@ -326,18 +366,29 @@ export function commitPayoffInput(raw: string | null | undefined): number {
  * back — 0 is a legal start point, not a missing one.
  */
 export function commitStartCoordinate(raw: string | null | undefined, fallback = 0.217): number {
-  const v = parseNumericInput(raw);
-  return Math.max(0, Math.min(1, v === null ? fallback : v));
+  return commitNumericField(raw, START_RANGE, { fallback }).value;
 }
 
 /**
  * What the shrink step / regret weight commits. Non-positive is not a legal
  * setting for either mode, so an unusable field keeps the value in force.
  */
-export function commitStepSize(raw: string | null | undefined, current: number): number {
+export function commitStepSizeField(
+  raw: string | null | undefined,
+  current: number,
+): { value: number; problem: NumericFieldProblem | null } {
+  const syntax = numericInputProblem(raw);
+  if (syntax) return { value: current, problem: syntax };
   const v = parseNumericInput(raw);
-  if (v === null || v <= 0) return current;
-  return Math.min(0.999, Math.max(0.001, r3(v)));
+  // Non-positive keeps the value in force AND says so: it is out of the
+  // advertised range, not in-progress typing.
+  if (v === null) return { value: current, problem: null };
+  if (v <= 0) return { value: current, problem: 'out-of-range' };
+  return commitNumericField(raw, STEP_SIZE_RANGE, { fallback: current, quantise: true });
+}
+
+export function commitStepSize(raw: string | null | undefined, current: number): number {
+  return commitStepSizeField(raw, current).value;
 }
 
 /** What the "Go to step" box commits: a step index, or null if unusable. */
