@@ -10425,6 +10425,98 @@ const suggestedScenario = {
     await p.close();
   });
 
+  // §95/§96 pin the two REGEN-21 fixes a user can actually see. Both mock only
+  // the SERVER's answer (the real UI does the rest), and both assert the exact
+  // sentence, because a paraphrase is what let a defect ship once before.
+  section('95', 'a rate-limit answer never pastes raw server text into the note, and never strands the user mid-sentence', async () => {
+    // The 429 body is NOT always ours: apiBaseUrl is user-settable in desktop
+    // cloud mode, so a proxy's blank/huge/non-string "error" reaches this code.
+    const bodies = [
+      { label: 'blank string', body: { error: '   ' } },
+      { label: 'non-string object', body: { error: { nested: 'oops' } } },
+      { label: '2000-char flood', body: { error: 'x'.repeat(2000) } },
+      { label: 'honest short text', body: { error: 'Slow down there.' } },
+    ];
+    for (const { label, body } of bodies) {
+      const p95 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+      await mockRegenOn(p95, async (route) => {
+        await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify(body) });
+      });
+      await registerAndLogin(p95, `e2e95${label.replace(/[^a-z]/gi, '').slice(0, 8)}`);
+      await p95.getByRole('button', { name: /save preset/i }).click();
+      await p95.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+      const dlg = p95.getByRole('dialog', { name: 'Save custom game' });
+      const btn = p95.getByRole('button', { name: 'Regenerate scenario' });
+      await btn.waitFor({ state: 'visible', timeout: 5000 });
+      await btn.click();
+      await p95.waitForFunction(() => /AI limit reached/i.test(document.querySelector('[role="dialog"][aria-label="Save custom game"]')?.textContent || ''), null, { timeout: 8000 });
+      const note = await dlg.locator('p[role="status"], p[role="alert"]').allInnerTexts().catch(() => []);
+      const text = note.join(' ');
+      record(`§95 ${label}: the note is a complete sentence, never a dangling "reached — "`,
+        /AI limit reached — \S/.test(text) && !/—\s*$/.test(text.trim()), JSON.stringify(text.slice(0, 160)));
+      record(`§95 ${label}: no "[object Object]" ever reaches the user`,
+        !text.includes('[object Object]'), JSON.stringify(text.slice(0, 160)));
+      record(`§95 ${label}: the note stays bounded (a flood cannot take over the dialog)`,
+        text.length <= 400, `len=${text.length}`);
+      await p95.close();
+    }
+  });
+
+  section('96', 'a game deleted elsewhere says so, and never blames the network', async () => {
+    const p96 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await mockRegenOn(p96, null);
+    await registerAndLogin(p96, 'e2e96gone');
+    // Save a real game, open Edit on it, then delete it out from under the
+    // dialog the way another device would: a direct DELETE, not a UI click.
+    await p96.getByRole('button', { name: /save preset/i }).click();
+    await p96.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const name96 = `Gone ${Date.now()}`;
+    await p96.locator('[role="dialog"][aria-label="Save custom game"] input[type="text"]').first().fill(name96);
+    await p96.getByRole('button', { name: /save game profile/i }).click();
+    await p96.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { state: 'hidden', timeout: 8000 });
+    const gone = await p96.evaluate(async (nm) => {
+      const tok = localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud');
+      const list = await (await fetch('/api/games', { headers: { Authorization: `Bearer ${tok}` } })).json();
+      const row = (list.games || list).find((g) => g.name === nm);
+      return { id: row?.id, tok };
+    }, name96);
+    record('§96 fixture guard: the game really was saved (an id came back), so the delete below is real',
+      !!gone.id, `id=${gone.id}`);
+    await p96.getByRole('button', { name: new RegExp(`Edit ${name96}`, 'i') }).first().click().catch(() => {});
+    await p96.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 8000 }).catch(() => {});
+    const editDlg = p96.getByRole('dialog', { name: 'Edit saved game' });
+    const opened = await editDlg.isVisible().catch(() => false);
+    record('§96 fixture guard: the Edit dialog is open on that game', opened);
+    if (opened) {
+      const typed96 = 'MY EDITS: the dock crew wants the bow loaded first.';
+      await editDlg.locator('textarea').first().fill(typed96);
+      await p96.evaluate(async ({ id, tok }) => {
+        await fetch(`/api/games/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } });
+      }, gone);
+      // The client keeps its own cached list, so deleting server-side is not
+      // enough to reach this branch. The reachable route (App.tsx) is a Save
+      // Changes submit: the server's authoritative 404 prunes the phantom row
+      // and deliberately leaves the dialog OPEN so the message can be read.
+      await editDlg.getByRole('button', { name: /save changes/i }).click();
+      await p96.waitForFunction(() => /deleted elsewhere/i.test(document.querySelector('[role="dialog"][aria-label="Edit saved game"]')?.textContent || ''), null, { timeout: 10000 }).catch(() => {});
+      record('§96 fixture guard: the Save-Changes 404 left the dialog open to be read',
+        await editDlg.isVisible().catch(() => false));
+      const rbtn = p96.getByRole('button', { name: 'Regenerate scenario' });
+      await rbtn.click();
+      await p96.waitForFunction(() => /deleted elsewhere|Couldn't reach/i.test(document.querySelector('[role="dialog"][aria-label="Edit saved game"]')?.textContent || ''), null, { timeout: 8000 });
+      const t = (await editDlg.innerText()).replace(/\s+/g, ' ');
+      record('§96 FIX: the message says the game was deleted elsewhere', /deleted elsewhere/i.test(t), JSON.stringify(t.slice(-200)));
+      record('§96 FIX: it does NOT blame the network for a deletion', !/Couldn't reach the scenario service/i.test(t), JSON.stringify(t.slice(-200)));
+      record('§96 FIX: it tells the user their text is still there rather than offering a dead action',
+        /unchanged/i.test(t) && !/save as new/i.test(t), JSON.stringify(t.slice(-200)));
+      // The promise the copy makes must be true: the edits really are still there.
+      const descNow96 = await editDlg.locator('textarea').first().inputValue().catch(() => '');
+      record('§96 FIX: the text the message promises is unchanged really is unchanged',
+        descNow96 === typed96, JSON.stringify(descNow96.slice(0, 60)));
+    }
+    await p96.close();
+  });
+
 
 await executeSections();
 
@@ -10496,6 +10588,15 @@ const EXPECTED_STATUS_NOISE = {
   // dialog's PATCH, one each — the exact behavior the section's own
   // focus-stays-inside assertions verify.
   '66b': [401, 401],
+  // §95 mocks a 429 on the regenerate route FOUR times — once per server-text
+  // shape (blank / non-string / 2000-char flood / honest text) — to prove the
+  // note quotes none of them raw. One budgeted entry per deliberate mock; a
+  // fifth 429, or any other status, still fails.
+  '95': [429, 429, 429, 429],
+  // §96 issues a REAL DELETE and then regenerates against the vanished game,
+  // so the real server answers 404 once — the exact response whose
+  // "deleted elsewhere" message the section asserts. Same class as §38.
+  '96': [404, 404],
   // §76 extension (RED-APP-16/005): deliberately mocks a 429 on the admin
   // panel's Refresh — the exact behavior "a visible error banner + Retry,
   // stale numbers stay on screen" verifies.
