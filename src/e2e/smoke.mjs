@@ -10364,7 +10364,34 @@ const suggestedScenario = {
           if (el.closest('.katex-mathml') || el.closest('.js-plotly-plot')) return false;
           const r = el.getBoundingClientRect(); return r.width > 0 && r.right > vw + 2;
         }).map((el) => `${el.tagName}.${(el.className || '').toString().slice(0, 40)}`).slice(0, 6);
-        return { vw, docScrollWidth: de.scrollWidth, maxScrollX, wide,
+        // Self-attack on THIS branch's own 004 fix: `break-words` is inherited,
+        // so it also applied to the realtime-stats VALUES and stacked "0.217"
+        // one digit per line (23x289). A label may break, a number may not.
+        // Measured per rendered line box, not by height guesswork: a numeric
+        // readout that occupies more than one line top is stacked.
+        const stackedNumbers = Array.from(document.querySelectorAll('span'))
+          .filter((el) => !el.children.length && /^-?\d+(\.\d+)?$/.test((el.textContent || '').trim()))
+          .map((el) => {
+            const r = new Range(); r.selectNodeContents(el);
+            const tops = new Set(Array.from(r.getClientRects()).map((x) => Math.round(x.top)));
+            return { text: el.textContent.trim(), lines: tops.size,
+              w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height) };
+          })
+          .filter((n) => n.lines > 1);
+        // Second half of the same self-attack: `break-words` also stopped the
+        // page scrolling by rendering every stats LABEL one character per line
+        // (17 lines for "x: P(A playing Row 1)"; base wraps it in 5). Words wrap
+        // at word boundaries — assert the rendered density, not the class.
+        const shreddedLabels = Array.from(document.querySelectorAll('span'))
+          .filter((el) => !el.children.length && /^(x: P\(A|y: P\(B|Expected Payoff)/.test((el.textContent || '').trim()))
+          .map((el) => {
+            const t = el.textContent.trim();
+            const r = new Range(); r.selectNodeContents(el);
+            const lines = new Set(Array.from(r.getClientRects()).map((x) => Math.round(x.top))).size;
+            return { text: t.slice(0, 24), lines, charsPerLine: +(t.replace(/\s/g, '').length / Math.max(lines, 1)).toFixed(1) };
+          })
+          .filter((l) => l.charsPerLine < 2);
+        return { vw, docScrollWidth: de.scrollWidth, maxScrollX, wide, stackedNumbers, shreddedLabels,
           rendered: !!document.querySelector('.js-plotly-plot') && !!document.querySelector('[aria-label="Expand simulation log"]') };
       });
     };
@@ -10375,6 +10402,10 @@ const suggestedScenario = {
         record(`§94 ${phase} zoom ${zoom}: the document is no wider than the 390px viewport (no sideways scroll)`,
           m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
         record(`§94 ${phase} zoom ${zoom}: no visible element extends past the viewport`, m.wide.length === 0, JSON.stringify(m.wide));
+        record(`§94 ${phase} zoom ${zoom}: no numeric readout is stacked one digit per line`,
+          m.stackedNumbers.length === 0, JSON.stringify(m.stackedNumbers));
+        record(`§94 ${phase} zoom ${zoom}: stats labels wrap at word boundaries, not one character per line`,
+          m.shreddedLabels.length === 0, JSON.stringify(m.shreddedLabels));
       }
     };
     await sweep('pre-run');

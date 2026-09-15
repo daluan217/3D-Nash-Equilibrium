@@ -6162,9 +6162,13 @@ export default function App() {
             </div>
 
             {/* Realtime coordinates outputs */}
-            {/* RED-APP-21/004: break-words (inherited) — at 390px × zoom 2 a
-                two-column card is narrower than the word "Expected". */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 break-words">
+            {/* RED-APP-21/004 + self-attack: at 390px × zoom 2 two fixed columns are
+                44px wide, so the cards used to widen the DOCUMENT. `break-words` stopped
+                that by shredding every label to one character per line, and clamping the
+                cards clipped "0.217" to "0". Let the COLUMN COUNT respond instead:
+                auto-fit drops to one column when two no longer fit, so nothing overflows,
+                nothing is clipped, and labels still wrap at word boundaries. */}
+            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(7rem,1fr))] md:grid-cols-4">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
