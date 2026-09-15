@@ -438,6 +438,52 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     regenBody.includes('failure'), regenBody.trim());
 }
 
+/* ──────── H-BLUE-LOOP-REGEN-21: a game DELETED under an open dialog is not a
+ *          "couldn't reach the scenario service"
+ *
+ * The brief's angle 4 named "delete of the original while the regen dialog is
+ * open"; no probe reached it and no guard pinned the branch. App.tsx's
+ * vanished-game path reused the 'network' kind, whose copy blames the scenario
+ * service — but nothing is unreachable, the ROW is gone. Reproduced at the UI on
+ * the documented reachable route (App.tsx's Save-Changes 404 prunes the row and
+ * deliberately leaves the dialog OPEN, so the next Regenerate click lands here).
+ *
+ * WHY THIS CANNOT PASS BY COINCIDENCE. 'network' keeps its own wording, asserted
+ * unchanged below, so routing everything to one kind fails. The copy assertions
+ * are pinned in both directions: it must NOT claim unreachability or invite a
+ * retry, and it must NOT promise an affordance this dialog does not have — a
+ * first draft said "use Save as new", and the Edit dialog's live DOM has only
+ * Cancel, Save Changes and Regenerate. A message that lies helpfully is still a lie.
+ */
+{
+  const gone = REGEN_ERROR_MESSAGES['game-gone']();
+  const net = REGEN_ERROR_MESSAGES['network']();
+  check('the deleted-game message is DIFFERENT from the network one', gone !== net);
+  check('the network message is UNCHANGED by this split (honesty not lowered)',
+    net === "Couldn't reach the scenario service. Your text below is unchanged.", net);
+  check('the deleted-game message does not blame reachability',
+    !/reach|unreachable|offline|connection/i.test(gone), gone);
+  check('the deleted-game message does not invite a retry (there is no game to rewrite)',
+    !/try again/i.test(gone), gone);
+  check('the deleted-game message says the game was deleted', /deleted/i.test(gone), gone);
+  check('the deleted-game message promises the user their text is intact',
+    /unchanged/i.test(gone), gone);
+  check('the deleted-game message promises NO affordance this dialog lacks',
+    !/save as new|duplicate|restore|undo/i.test(gone), gone);
+  check('every kind still has non-empty wording, including the new one',
+    (['rate-limit', 'timeout', 'unavailable', 'no-key', 'no-story', 'network', 'game-gone'] as const)
+      .every((k) => REGEN_ERROR_MESSAGES[k]().trim().length > 0));
+
+  // Structural: App.tsx must route the vanished-game branch to THIS kind, or
+  // the message above is unreachable. Mutation-tested by reverting the route.
+  const appVanish = readFileSync('src/App.tsx', 'utf8');
+  const branch = appVanish.match(/if \(!requestPayoffs\) \{[\s\S]{0,700}?\n    \}/)?.[0] ?? '';
+  check('App.tsx routes the vanished-game branch to the game-gone kind, not network',
+    /error: 'game-gone'/.test(branch) && !/error: 'network'/.test(branch), branch.slice(0, 200));
+  check('the vanished-game branch still clears the in-flight ref (the button must not die)',
+    /regenInFlightRef\.current = false/.test(branch), branch.slice(0, 200));
+}
+
 /* ──────── H-BLUE-LOOP-REGEN-21: a DRAW's own actor noun cut out by the 800-char
  *          clamp is named in the Keep note, not just on the chip
  *

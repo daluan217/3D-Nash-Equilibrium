@@ -317,7 +317,7 @@ export function orphanedNote(
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────
-export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key' | 'no-story' | 'network';
+export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key' | 'no-story' | 'network' | 'game-gone';
 
 /**
  * Map a response (or a thrown/aborted fetch) to one of six honest outcomes.
@@ -389,6 +389,14 @@ export const REGEN_ERROR_MESSAGES: Record<RegenErrorKind, (serverText?: unknown)
   'no-key': () => "Regenerating isn't set up on this server — this isn't something you can retry.",
   'no-story': () => "Couldn't write a verified scenario just now — try again.",
   'network': () => "Couldn't reach the scenario service. Your text below is unchanged.",
+  // BLUE-LOOP-REGEN-21: the game was deleted elsewhere while this dialog stayed
+  // open (App.tsx prunes the row on a Save-Changes 404 and deliberately leaves
+  // the dialog up). Nothing is unreachable, so 'network' misnamed the cause;
+  // there is no matrix to rewrite a story FOR, so "try again" would lie too.
+  // Names only what this dialog actually offers — read off the live DOM, which
+  // has Cancel and Save Changes and no "save as new" (a first draft of this
+  // string promised one, which would have been a fresh dishonesty).
+  'game-gone': () => "This game was deleted elsewhere, so there's nothing to rewrite. Your text below is unchanged — copy anything you want to keep before you close this.",
 };
 
 /** aria-live announcements, one string per moment — kept as constants so the

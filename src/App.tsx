@@ -3516,11 +3516,13 @@ export default function App() {
       : key.payoffs;
     if (!requestPayoffs) {
       // The game vanished (deleted from another tab, say) between opening
-      // the dialog and clicking Regenerate — an honest network-style error
-      // rather than a silent no-op or a thrown exception.
+      // the dialog and clicking Regenerate. BLUE-LOOP-REGEN-21: this used to
+      // reuse 'network', which blamed the scenario service for a row that was
+      // deleted — reproduced at the UI on the documented Save-Changes-404
+      // path, which prunes the row and leaves this dialog open.
       if (myGen === regenGenerationRef.current) {
         regenInFlightRef.current = false;
-        setRegen({ status: 'error', preview: null, error: 'network', note: REGEN_ERROR_MESSAGES.network(), key });
+        setRegen({ status: 'error', preview: null, error: 'game-gone', note: REGEN_ERROR_MESSAGES['game-gone'](), key });
       }
       return;
     }
