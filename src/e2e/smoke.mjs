@@ -10503,8 +10503,19 @@ const suggestedScenario = {
         await editDlg.isVisible().catch(() => false));
       const rbtn = p96.getByRole('button', { name: 'Regenerate scenario' });
       await rbtn.click();
-      await p96.waitForFunction(() => /deleted elsewhere|Couldn't reach/i.test(document.querySelector('[role="dialog"][aria-label="Edit saved game"]')?.textContent || ''), null, { timeout: 8000 });
-      const t = (await editDlg.innerText()).replace(/\s+/g, ' ');
+      // Reviewer finding (ds-rev, 2026-09-15), REPRODUCED: reading the whole
+      // dialog let these rows match the Save-Changes `editError` ("This game was
+      // deleted elsewhere; the list has been refreshed.", App.tsx) instead of the
+      // regen note. Rewording the game-gone copy kept the row GREEN. So both the
+      // wait and the assertion now read ONLY the regen note element, and the wait
+      // keys on text the editError does not contain.
+      await p96.waitForFunction(() => {
+        const note = document.querySelector('[role="dialog"][aria-label="Edit saved game"] p[role="status"]');
+        return !!note && /nothing to rewrite|Couldn't reach the scenario service/i.test(note.textContent || '');
+      }, null, { timeout: 10000 });
+      const t = (await editDlg.locator('p[role="status"]').first().evaluate((el) => el.textContent || '')).replace(/\s+/g, ' ');
+      record('§96 EVIDENCE GUARD: the asserted text is the regen NOTE, not the whole dialog (no editError bleed)',
+        t.length > 0 && !/the list has been refreshed/i.test(t), JSON.stringify(t.slice(0, 120)));
       record('§96 FIX: the message says the game was deleted elsewhere', /deleted elsewhere/i.test(t), JSON.stringify(t.slice(-200)));
       record('§96 FIX: it does NOT blame the network for a deletion', !/Couldn't reach the scenario service/i.test(t), JSON.stringify(t.slice(-200)));
       record('§96 FIX: it tells the user their text is still there rather than offering a dead action',

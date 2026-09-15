@@ -485,8 +485,19 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   // otherwise the rows above could pass by never matching anything.
   check('control: the retry-invitation predicate fires on a permanent message that says "try again"',
     invitesRetry("Regenerating isn't set up on this server — try again."));
-  check('control: the predicate does NOT fire on the negated phrasing actually shipped',
-    !invitesRetry("Regenerating isn't set up on this server — this isn't something you can retry."));
+  // Reviewer finding (ds-rev, 2026-09-15), REPRODUCED: the old second control
+  // used the SHIPPED no-key text, which contains no "try again" at all — so it
+  // passed on the first conjunct and the negation exemption never decided
+  // anything (deleting the exemption left this file green). These two controls
+  // contain "try again" AND the negation, so they exercise the exemption
+  // itself: it exists so a message may explain that retrying will not help
+  // without being read as an invitation to retry.
+  check('control: the exemption spares a message that says "try again" only to negate it (no-key shape)',
+    !invitesRetry("Regenerating isn't set up on this server — this isn't something you can retry, so try again later won't help."));
+  check('control: the exemption spares the game-gone shape for the same reason',
+    !invitesRetry("There's nothing to rewrite, so try again would not help here."));
+  check('control: a message with BOTH phrasings still counts as an invitation when nothing negates it',
+    invitesRetry("Couldn't write a verified scenario just now — try again."));
 
   // Structural: the client must actually READ `failure` off the response body,
   // or the branch above is unreachable in the real app (the type widening in

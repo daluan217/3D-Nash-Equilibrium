@@ -476,15 +476,22 @@ try {
     // process can never invent, whatever the payload), but it must never be a
     // 500 and must never echo the caller's own input back.
     await boot({ NASH_SCENARIO_REGEN: '1' });
-    let junkBad = 0; const junkShapes = [];
+    let junkBad = 0; let notNoKey = 0; const junkShapes = [];
     for (const body of [{}, { payoffs: null }, { payoffs: 'x'.repeat(5000) }, { payoffs: { a11: NaN } }, { payoffs: [] }]) {
       const r = await call('POST', '/api/scenario/regenerate', { body });
       junkShapes.push(`${r.status}:${r.json?.failure ?? r.json?.error ?? '?'}`);
       if (r.status >= 500) junkBad++;
       if (JSON.stringify(r.json ?? '').includes('xxxxx')) junkBad++;
+      // Reviewer finding (ds-rev, 2026-09-15), REPRODUCED: counting only 500s
+      // and echoes pinned NOTHING — reverting the ordering left this block
+      // green with five 400s. The consequence being pinned is the STATUS and
+      // KIND, so assert those.
+      if (!(r.status === 200 && r.json?.failure === 'no-key')) notNoKey++;
     }
     record('no-key: malformed bodies get a typed answer, never a 500, never an echo of the input',
       junkBad === 0, junkShapes.join(' | '));
+    record('no-key: the permanent answer comes BEFORE payload validation (every malformed body is 200 no-key, not 400)',
+      notNoKey === 0, junkShapes.join(' | '));
     await stop();
   }
 
