@@ -223,6 +223,29 @@ function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
   }
 }
 
+/**
+ * True while an element's content is wider than its box.
+ *
+ * Drives the ONE rule both scroll boxes below need: a region that scrolls has
+ * to be keyboard-operable (WCAG 2.1.1), and a region that fits must not become
+ * a tab stop that does nothing. Measured, not guessed from a media query, so it
+ * stays correct at any zoom.
+ */
+function useOverflowsX(deps: unknown) {
+  const ref = useRef<HTMLElement | null>(null);
+  const [scrollable, setScrollable] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const sync = () => setScrollable(el.scrollWidth > el.clientWidth + 1);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [deps]);
+  return { ref, scrollable };
+}
+
 // Typeset LaTeX inline via KaTeX (self-hosted, works offline).
 // KaTeX sets `white-space: nowrap`, so an expression is one unbreakable box: at
 // narrow widths / high zoom it pushed the DOCUMENT wider than the viewport,
@@ -232,9 +255,20 @@ function MathTex({ tex, className }: { tex: string; className?: string }) {
     () => katex.renderToString(tex, { throwOnError: false }),
     [tex]
   );
+  // A box that scrolls must be operable from the keyboard (WCAG 2.1.1) — but a
+  // box that fits must NOT become a tab stop, or the desktop tab order grows 12
+  // stops that do nothing. So the stop tracks the measured overflow.
+  //
+  // Deliberately NO aria-label: KaTeX already renders a MathML copy that is the
+  // real accessible path, and labelling the wrapper REPLACED it — the measured
+  // accessible name became the literal string "\mathbb{E}[A]".
+  const { ref, scrollable } = useOverflowsX(html);
   return (
     <span
-      className={`inline-block min-w-0 max-w-full overflow-x-auto align-bottom${className ? ` ${className}` : ''}`}
+      ref={ref as React.RefObject<HTMLSpanElement>}
+      tabIndex={scrollable ? 0 : undefined}
+      role={scrollable ? 'region' : undefined}
+      className={`inline-block min-w-0 max-w-full overflow-x-auto align-bottom focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded${className ? ` ${className}` : ''}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -4080,6 +4114,10 @@ export default function App() {
     col2: scenarioForReport?.col2 || 'Col 2',
   }), [scenarioForReport]);
 
+  // The matrix keeps a usable width and scrolls in its own box at narrow
+  // widths; the tab stop exists only while it actually scrolls.
+  const matrixScroll = useOverflowsX(activeLabels);
+
   /**
    * Terms ColorCoded highlights in AI/user text, per player. Inherits
    * scenarioForReport's matches-the-matrix gate the same way activeLabels
@@ -5567,7 +5605,14 @@ export default function App() {
                 inputs. WCAG 1.4.10 exempts content that needs a
                 two-dimensional layout, so the matrix keeps a usable width and
                 scrolls INSIDE this box; the document still does not. */}
-            <div data-matrix-scroll className="overflow-x-auto">
+            <div
+              ref={matrixScroll.ref as React.RefObject<HTMLDivElement>}
+              data-matrix-scroll
+              tabIndex={matrixScroll.scrollable ? 0 : undefined}
+              role={matrixScroll.scrollable ? 'region' : undefined}
+              aria-label={matrixScroll.scrollable ? 'Payoff matrix, scrollable' : undefined}
+              className="overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded-xl"
+            >
             <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_minmax(0,1fr)_minmax(0,1fr)] gap-3 text-center items-center">
               <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>

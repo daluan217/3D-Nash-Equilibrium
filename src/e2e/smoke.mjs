@@ -10598,6 +10598,22 @@ const suggestedScenario = {
           // 2.5px-wide inputs while every scroll check stayed green. The floor
           // is one character of the field's OWN font — the smallest width at
           // which a typed digit can still be seen.
+          // WCAG 2.1.1: a region that scrolls must be operable from the
+          // keyboard. The reflow fix works by giving boxes their own scroll,
+          // so every one of them it creates has to be reachable — otherwise
+          // the fix trades a reflow failure for a keyboard trap.
+          unreachableScrollers: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main *')) {
+              if (el.scrollWidth <= el.clientWidth + 1) continue;
+              const cs = getComputedStyle(el);
+              if (!/(auto|scroll)/.test(cs.overflowX)) continue;
+              const focusable = el.tabIndex >= 0
+                || el.querySelector('a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])');
+              if (!focusable) bad.push(`${el.tagName}.${(el.className || '').toString().slice(0, 30)}`);
+            }
+            return bad.slice(0, 5);
+          })(),
           tinyInputs: (() => {
             const bad = [];
             for (const el of document.querySelectorAll('main input')) {
@@ -10636,6 +10652,8 @@ const suggestedScenario = {
           m.readable.length === 0, JSON.stringify(m.readable));
         record(`§97 ${at}: every input is still wide enough to read one character of its own value`,
           m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
+        record(`§97 ${at}: every box the fix made scrollable is reachable from the keyboard`,
+          m.unreachableScrollers.length === 0, JSON.stringify(m.unreachableScrollers));
       }
     };
     await sweep('pre-run');
