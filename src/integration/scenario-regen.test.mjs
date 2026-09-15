@@ -469,6 +469,23 @@ try {
     const stillBad = await call('POST', '/api/scenario/regenerate', { body: { payoffs: { a11: 'nope' } } });
     record('CONTROL: invalid payoffs still 400 when the server CAN invent', stillBad.status === 400, `status=${stillBad.status}`);
     await stop();
+
+    // DELIBERATE CONSEQUENCE, pinned so it cannot drift silently: on a no-key
+    // server the answer now comes BEFORE payload validation, so a malformed
+    // body gets `no-key` rather than 400. That is the honest answer (this
+    // process can never invent, whatever the payload), but it must never be a
+    // 500 and must never echo the caller's own input back.
+    await boot({ NASH_SCENARIO_REGEN: '1' });
+    let junkBad = 0; const junkShapes = [];
+    for (const body of [{}, { payoffs: null }, { payoffs: 'x'.repeat(5000) }, { payoffs: { a11: NaN } }, { payoffs: [] }]) {
+      const r = await call('POST', '/api/scenario/regenerate', { body });
+      junkShapes.push(`${r.status}:${r.json?.failure ?? r.json?.error ?? '?'}`);
+      if (r.status >= 500) junkBad++;
+      if (JSON.stringify(r.json ?? '').includes('xxxxx')) junkBad++;
+    }
+    record('no-key: malformed bodies get a typed answer, never a 500, never an echo of the input',
+      junkBad === 0, junkShapes.join(' | '));
+    await stop();
   }
 
   // ═══════════════════════════════════════════════════════════════════════
