@@ -348,9 +348,24 @@ input.no-native-spinner {
   :is(main, [role="dialog"]) :is([class^="p-"], [class*=" p-"],
                                   [class^="px-"], [class*=" px-"],
                                   [class^="pl-"], [class*=" pl-"],
-                                  [class^="pr-"], [class*=" pr-"]) {
+                                  [class^="pr-"], [class*=" pr-"]):not([data-keeps-clear]) {
     padding-left: 0.25rem;
     padding-right: 0.25rem;
+  }
+
+  /* Some padding is not decoration: it is the gap an absolutely-positioned
+   * control sits in. Reclaiming it does not save space, it drops the control on
+   * top of the text (the tour's close button painted over "1 / 19" once this
+   * rule cut the reserve from 40px to 4px). `data-keeps-clear` marks those, and
+   * only those — everything else still gives its padding back.
+   *
+   * A horizontal reserve still cannot work once the card is 61px wide (280px at
+   * 300% zoom): the counter is 29px and the button 29px, and 58px do not fit a
+   * 51px content box. There the reserve turns VERTICAL — the row clears the
+   * button's height instead of its width, which the card does have room for. */
+  :is(main, [role="dialog"], .fixed.inset-0) [data-keeps-clear] {
+    padding-right: 0;
+    padding-top: 1.75rem;
   }
 
   /* The modal OVERLAY is the dialog's parent, outside `[role="dialog"]`, and it

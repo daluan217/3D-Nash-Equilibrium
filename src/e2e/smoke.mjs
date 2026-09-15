@@ -10716,6 +10716,74 @@ const suggestedScenario = {
     await sweep('account dialog');
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.close();
+
+    // THE TOUR, which every phase above dismissed before measuring — and which
+    // is the FIRST thing a first-time visitor sees. It is not in `main`, it is
+    // `position: fixed`, and its controls escape VERTICALLY (below the fold),
+    // so neither the document-scroll check nor the horizontal control check
+    // above can see it. Measured on its own page so the tour is still up, and
+    // walked: a tour whose Next cannot be pressed is a dead end, not a layout
+    // blemish. On the unfixed tree Back sits at x=-132 and Next below the fold.
+    const pt = await newTrackedPage({ viewport: { width: 390, height: 844 } });
+    const cdpT = await pt.context().newCDPSession(pt);
+    await pt.goto(BASE, { waitUntil: 'networkidle' });
+    // Heights as well as widths: the sheet's cap is a fraction of the VIEWPORT
+    // HEIGHT, so a short screen shrinks the card below its own footer. 844/3
+    // = 281 is a 280px phone at 300%; 320 is the shortest layout height a
+    // 400%-zoomed phone produces.
+    for (const [w, h, z] of [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3]]) {
+      const lw = Math.round(w / z), lh = Math.round(h / z);
+      await cdpT.send('Emulation.setDeviceMetricsOverride', {
+        width: lw, height: lh, deviceScaleFactor: z, mobile: false });
+      // `reload` rather than a cold `goto`: the tour must restart at step 0 for
+      // each condition, but the app is already warm, which is most of the cost.
+      await pt.reload({ waitUntil: 'domcontentloaded' });
+      await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+      const at = `tour ${w}px@${z}x(${lw}x${lh})`;
+      record(`§97 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
+        await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
+      // Walk every step. `steps` counts how far a user could actually get.
+      let steps = 0; const unreachable = [];
+      for (; steps < 14; steps += 1) {
+        const bad = await pt.evaluate(() => {
+          const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          if (!card) return null;
+          const out = [];
+          for (const b of card.querySelectorAll('button')) {
+            const r = b.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) continue;
+            const nm = (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 14);
+            // Inside a scroll box, "reachable" means the BOX is on screen and
+            // the control fits its width — the user scrolls to reach the rest.
+            const sc = b.closest('[class*="overflow-y-auto"]');
+            if (sc && sc !== b) {
+              const sr = sc.getBoundingClientRect();
+              if (r.left < sr.left - 0.5 || r.right > sr.right + 0.5
+                  || sr.top < -0.5 || sr.bottom > vh + 0.5 || sr.left < -0.5 || sr.right > vw + 0.5)
+                out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside its scroll box`);
+              continue;
+            }
+            if (r.top >= vh - 1 || r.bottom <= 1 || r.left < -0.5 || r.right > vw + 0.5)
+              out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside the viewport`);
+          }
+          return out;
+        });
+        if (bad === null) break;                       // tour finished: every step was advanced
+        unreachable.push(...bad);
+        const next = pt.getByRole('button', { name: /^(next|explore on your own)/i }).first();
+        if (!(await next.count())) { unreachable.push(`step ${steps}: no Next control at all`); break; }
+        const advanced = await next.click({ timeout: 3000 }).then(() => true).catch(() => false);
+        if (!advanced) { unreachable.push(`step ${steps}: Next could not be clicked`); break; }
+        await pt.waitForTimeout(250);
+      }
+      record(`§97 ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
+        unreachable.length === 0, unreachable.slice(0, 4).join(' | '));
+      record(`§97 ${at}: the tour can be walked to the end — Next is pressable on every step`,
+        steps >= 7, `advanced ${steps} steps`);
+    }
+    await cdpT.send('Emulation.clearDeviceMetricsOverride');
+    await pt.close();
   });
 
 

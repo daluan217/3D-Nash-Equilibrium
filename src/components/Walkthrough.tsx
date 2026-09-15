@@ -48,6 +48,18 @@ const SHEET_MAX_VH = 0.38;
 const SHEET_MAX_VH_SHORT = 0.32;
 const SHORT_VH = 720;
 const sheetMaxVh = (vh: number) => (vh < SHORT_VH ? SHEET_MAX_VH_SHORT : SHEET_MAX_VH);
+/**
+ * The sheet's cap in PIXELS, floored. A percentage alone shrinks without limit:
+ * at 320px tall the 32% cap is 102px, so the card was shorter than its own
+ * wrapped footer and Back/Next painted past the fold. 168px is the counter, one
+ * line of title and that footer at the narrowest width this app lays out (a
+ * 61px card at a 93px layout viewport — 280px at 300% zoom). The floor binds
+ * only below 525px of viewport height, so no real phone changes (measured:
+ * 667/800/844/896 identical). Never more than the viewport minus the gaps the
+ * placement already reserves.
+ */
+export const tourSheetMaxPx = (vh: number) =>
+  Math.min(Math.max(Math.round(vh * sheetMaxVh(vh)), 168), Math.max(vh - GAP * 2, 0));
 
 /** A pointer click may act on the tour only when its pointerdown reached it visibly. */
 export const tourControlClickAllowed = (pointerDownWasVisible: boolean) => pointerDownWasVisible;
@@ -352,7 +364,7 @@ export function Walkthrough({
       const top = headerOffset();
       // In landscape the card sits BESIDE the target, so the whole below-header
       // strip is available; only the portrait sheet eats vertical room.
-      const sheetH = isLand ? 0 : (cardH || Math.round(window.innerHeight * sheetMaxVh(window.innerHeight)));
+      const sheetH = isLand ? 0 : (cardH || tourSheetMaxPx(window.innerHeight));
       const room = Math.max(120, window.innerHeight - sheetH - GAP - top);
       // Centre it when it fits; when the target is TALLER than the strip -- the
       // 3D plot on a phone is -- centring pushes its bottom under the sheet and
@@ -548,7 +560,7 @@ export function Walkthrough({
       ? vw - GAP * 2
       : tourFloatingCardWidth(vw);
   const h = cardH
-    || (sheet ? Math.round(vh * sheetMaxVh(vh))
+    || (sheet ? tourSheetMaxPx(vh)
       : landscape ? Math.min(300, vh - GAP * 2)
       : 280);
 
@@ -572,10 +584,21 @@ export function Walkthrough({
     }`;
   const cardContents = (denseVariant: boolean, scrolls: boolean, probe = false) => (
     <>
+      {/* Card contents scroll as one inside `maxHeight`. Capping with no scroll
+          box spilled Back and Next past the fold, where no pointer reaches them;
+          pinning the footer instead starved the caption to 0 visible pixels at
+          93-150px wide. `min-h-0` is what lets this shrink inside the flex
+          column. The close button stays clear of it -- see its own note. */}
+      <div className={`flex flex-col min-h-0 ${denseVariant ? 'gap-2' : 'gap-3.5'}${scrolls ? ' overflow-y-auto' : ''}`}>
       {/* `pr-8` keeps the step counter clear of the close button, which is
-          positioned over this corner from the end of the card (see below). */}
-      <div className="flex items-start gap-3 pr-8">
-        <span className={`font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${denseVariant ? 'text-[11px]' : 'text-[13px]'}`}>
+          positioned over this corner from the end of the card (see below).
+          `data-keeps-clear` is what stops the narrow-width rule in index.css
+          from reclaiming that reserve: it is not decorative padding, it is the
+          gap the button sits in, and cutting it to 4px dropped the X on top of
+          "1 / 19". `whitespace-nowrap` keeps the label on one line — at a 61px
+          card (280px at 300% zoom) it had wrapped to three 2-character lines. */}
+      <div className="flex items-start gap-3 pr-8" data-keeps-clear>
+        <span className={`whitespace-nowrap font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 ${denseVariant ? 'text-[11px]' : 'text-[13px]'}`}>
           {i + 1} / {steps.length}
         </span>
       </div>
@@ -585,7 +608,7 @@ export function Walkthrough({
           rendered card carries the live region (aria-hidden already keeps the
           probe out of the tree; this makes it true twice). */}
       <p
-        className={`leading-relaxed text-slate-600 dark:text-slate-300 ${denseVariant ? 'text-[14px]' : 'text-[17px]'}${scrolls ? ' overflow-y-auto min-h-0' : ''}`}
+        className={`leading-relaxed text-slate-600 dark:text-slate-300 ${denseVariant ? 'text-[14px]' : 'text-[17px]'}`}
         aria-live={probe ? undefined : 'polite'}
       >
         {step.body}
@@ -595,7 +618,7 @@ export function Walkthrough({
           hold the left edge, and leaving `justify-between` with one child would
           push Back/Next across to it. */}
       <div className={`flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800 ${denseVariant ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             onClick={() => setI((n) => Math.max(n - 1, 0))}
@@ -612,6 +635,7 @@ export function Walkthrough({
             {last ? 'Explore on your own' : <>Next <ArrowRight className="w-4 h-4" /></>}
           </button>
         </div>
+      </div>
       </div>
 
       {/* STRUCT-APP-19/003: the tour's ONE exit (Daniel, 2026-09-08 — Skip and
@@ -768,7 +792,7 @@ export function Walkthrough({
           width: CARD_W,
           // Capped rather than fixed: a long caption scrolls inside the sheet
           // instead of growing over the diagram it is describing.
-          maxHeight: sheet ? `${Math.round(sheetMaxVh(vh) * 100)}vh` : landscape ? `${vh - GAP * 2}px` : undefined,
+          maxHeight: sheet ? `${tourSheetMaxPx(vh)}px` : landscape ? `${vh - GAP * 2}px` : undefined,
         }}
         onClick={(e) => e.stopPropagation()}
       >
