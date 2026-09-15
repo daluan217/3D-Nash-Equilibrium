@@ -443,6 +443,51 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     `declared=${JSON.stringify(declared)} mapped=${JSON.stringify([...allKinds].sort())}`);
   check('the kind list this file checks is not empty (the derivation itself works)', allKinds.length >= 7, String(allKinds.length));
 
+  // Every kind, every hostile input: only `rate-limit` takes server text, but
+  // the signature accepts `unknown` for all of them, so all of them are driven
+  // with the shapes a non-ours gateway can produce (desktop cloud mode lets the
+  // user point apiBaseUrl anywhere). A message must stay a complete, bounded,
+  // control-free sentence rather than dangling, leaking [object Object], or
+  // pasting a flood into the dialog.
+  const NUL = String.fromCharCode(0);
+  const hostile: unknown[] = [undefined, null, '', '   ', 0, false, NaN, [], {},
+    { toString() { throw new Error('boom'); } }, 'x'.repeat(5000), NUL + NUL,
+    String.fromCharCode(0x202E) + 'evil', '</script>'];
+  for (const k of allKinds) {
+    const bad: string[] = [];
+    for (const w of hostile) {
+      let out: string;
+      try { out = REGEN_ERROR_MESSAGES[k](w as never); } catch (e) { bad.push(`THREW: ${String(e).slice(0, 40)}`); continue; }
+      if (typeof out !== 'string' || out.trim().length === 0) bad.push('empty');
+      else if (/[—:]\s*$/.test(out.trim())) bad.push(`dangles: ${out.slice(-30)}`);
+      else if (out.includes('[object Object]')) bad.push('object leak');
+      else if (out.length > 400) bad.push(`unbounded (${out.length})`);
+      else if (out.includes(NUL)) bad.push('NUL leak');
+    }
+    check(`'${k}': a complete, bounded, control-free sentence for every hostile input shape`,
+      bad.length === 0, bad.slice(0, 2).join(' ; '));
+  }
+
+  // A condition that retrying CANNOT change must never invite a retry — that is
+  // exactly the defect RED-REGEN-21/002 found in 'no-key' and the one 'game-gone'
+  // was created to avoid. One-directional on purpose: a transient kind MAY
+  // prompt, but is not required to ('network' reports without nagging), because
+  // requiring the phrase would turn an honesty rule into a copy-style rule.
+  const PERMANENT_KINDS = ['no-key', 'unavailable', 'game-gone'];
+  const invitesRetry = (text: string) =>
+    /\btry again\b/i.test(text) && !/isn't something you can retry|nothing to rewrite/i.test(text);
+  for (const k of allKinds) {
+    if (!PERMANENT_KINDS.includes(k)) continue;
+    check(`'${k}' is permanent, so its message never invites a retry`,
+      !invitesRetry(REGEN_ERROR_MESSAGES[k]()), JSON.stringify(REGEN_ERROR_MESSAGES[k]().slice(0, 80)));
+  }
+  // Control: the predicate must FIRE on a message that does invite a retry,
+  // otherwise the rows above could pass by never matching anything.
+  check('control: the retry-invitation predicate fires on a permanent message that says "try again"',
+    invitesRetry("Regenerating isn't set up on this server — try again."));
+  check('control: the predicate does NOT fire on the negated phrasing actually shipped',
+    !invitesRetry("Regenerating isn't set up on this server — this isn't something you can retry."));
+
   // Structural: the client must actually READ `failure` off the response body,
   // or the branch above is unreachable in the real app (the type widening in
   // App.tsx is what makes it reachable). Mutation-tested by reverting it.
