@@ -223,13 +223,21 @@ function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
   }
 }
 
-// Typeset LaTeX inline via KaTeX (self-hosted, works offline)
+// Typeset LaTeX inline via KaTeX (self-hosted, works offline).
+// KaTeX sets `white-space: nowrap`, so an expression is one unbreakable box: at
+// narrow widths / high zoom it pushed the DOCUMENT wider than the viewport,
+// which fails WCAG 1.4.10 reflow. Scrolling inside its own box does not.
 function MathTex({ tex, className }: { tex: string; className?: string }) {
   const html = useMemo(
     () => katex.renderToString(tex, { throwOnError: false }),
     [tex]
   );
-  return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  return (
+    <span
+      className={`inline-block min-w-0 max-w-full overflow-x-auto align-bottom${className ? ` ${className}` : ''}`}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 /**
@@ -5225,7 +5233,7 @@ export default function App() {
       overlayClassName="fixed inset-0 z-[65] flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md select-none"
       panelClassName="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
     >
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-y-1 gap-2">
           <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
             <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
             Simulation Log
@@ -5430,7 +5438,7 @@ export default function App() {
             </div>
 
             {/* User Custom Saved Games Segment */}
-            <div className="flex items-center justify-between text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
               <div className="flex items-center gap-2">
                 <Award className="w-4 h-4 text-accent-500" />
                 Custom Game Presets
@@ -5513,7 +5521,7 @@ export default function App() {
 
           {/* Payoff Matrix Editor Block */}
           <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col gap-4">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-sm">
                 <Sliders className="w-4 h-4 text-player-b-500" />
                 <span>
@@ -6174,7 +6182,7 @@ export default function App() {
                 cards clipped "0.217" to "0". Let the COLUMN COUNT respond instead:
                 auto-fit drops to one column when two no longer fit, so nothing overflows,
                 nothing is clipped, and labels still wrap at word boundaries. */}
-            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(7rem,1fr))] md:grid-cols-4">
+            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(7rem,100%),1fr))] md:grid-cols-4">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
@@ -6307,13 +6315,13 @@ export default function App() {
                       <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400">
                         {lines.a.indifferent ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.a.tex} /></span>
+                      <MathTex tex={lines.a.tex} />
                     </div>
                     <div className="flex flex-wrap items-baseline gap-x-2">
                       <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400">
                         {lines.b.indifferent ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.b.tex} /></span>
+                      <MathTex tex={lines.b.tex} />
                     </div>
                     <div className="text-xs text-muted dark:text-muted-dark mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
@@ -6687,7 +6695,7 @@ export default function App() {
         ariaLabel="Account"
         fallbackSelector='[data-focus-fallback="account"] button, [data-focus-fallback="account"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <User className="w-4 h-4" />
@@ -7035,7 +7043,7 @@ export default function App() {
         ariaLabel="Edit saved game"
         fallbackSelector='[data-focus-fallback="saved-games"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-accent-500" />
                 <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Edit Game</h3>
@@ -7285,7 +7293,7 @@ export default function App() {
         ariaLabel="Save custom game"
         fallbackSelector='[data-focus-fallback="save-preset"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <Award className="w-4 h-4" />
@@ -7670,7 +7678,7 @@ export default function App() {
         ariaLabel="Send feedback"
         fallbackSelector='[data-focus-fallback="feedback"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <MessageSquare className="w-4 h-4" />
