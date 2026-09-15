@@ -5739,15 +5739,11 @@ export default function App() {
             <div className="flex flex-col gap-2 text-sm">
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[A]" className="text-player-a-600 dark:text-player-a-400" />
-                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
-                  <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
-                </span>
+                <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[B]" className="text-player-b-600 dark:text-player-b-400" />
-                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
-                  <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
-                </span>
+                <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
             </div>
             {/* RED-APP-21/004: two clauses as two inline nodes in a wrapping row, not one

@@ -312,8 +312,15 @@ input.no-native-spinner {
  * width x zoom x theme combos). Each rule below is one measured cause; they
  * were found by bisecting the narrowest clean viewport, fixing whatever leaf
  * bled, and re-bisecting until the floor stopped moving (191px -> 91px).
- * Scoped to 220px, which no unzoomed device reaches, so the desktop and phone
- * layouts are byte-identical. */
+ * Scoped to 220px so ordinary phone and desktop layouts are byte-identical.
+ * A narrow DESKTOP window or an Electron window dragged small can reach it
+ * unzoomed (electron-main.cjs sets no minWidth) — that is the same condition
+ * and the same correct answer, not an escape.
+ *
+ * Scope is `main` AND `[role="dialog"]`: the modals and the workspace drawer
+ * render as SIBLINGS after </main>, so a `main`-only scope left the Account
+ * dialog with two unreadable inputs and the drawer bleeding at 93px
+ * (ds-rev finding 6, reproduced). */
 @media (max-width: 220px) {
   body, body * { overflow-wrap: anywhere; }
 
@@ -321,8 +328,14 @@ input.no-native-spinner {
    * layout viewport. Below 220px every one of them is larger than the column
    * it sits in, so they yield: the classes are the whole family, not a list of
    * the leaves that happened to measure widest. */
-  .w-16, .w-20, .w-28 { width: 100%; min-width: 0; }
-  main .shrink-0 { flex-shrink: 1; min-width: 0; }
+  :is(main, [role="dialog"]) .w-20, :is(main, [role="dialog"]) .w-28 { width: 100%; min-width: 0; }
+
+  /* `shrink-0` is on two different kinds of thing: text that can reflow, and
+   * icons/swatches that are the content. Releasing both squeezed an 11px icon
+   * to 4.8px (ds-rev finding 5, reproduced). An SVG has nothing to wrap, so it
+   * keeps its size; only the text-bearing ones yield. */
+  :is(main, [role="dialog"]) .shrink-0:not(svg):not(:has(> svg)) { flex-shrink: 1; min-width: 0; }
+  :is(main, [role="dialog"]) svg.shrink-0, :is(main, [role="dialog"]) svg { flex-shrink: 0; }
 
   /* Padding is the largest single consumer here: the stats cards spend 24px of
    * a 56px box on it, leaving 32px for a 40px number — "0.217" wrapped onto
@@ -331,36 +344,48 @@ input.no-native-spinner {
    * The `^=`/`*=" "` pair anchors on a class BOUNDARY: a bare [class*="p-"]
    * also matches gap-*, top-1/2 and tap-24 (the touch-target floor), which
    * squeezed boxes that were never padded and shredded 25 labels. */
-  main { padding-left: 0.375rem; padding-right: 0.375rem; }
-  main [class^="p-"], main [class*=" p-"],
-  main [class^="px-"], main [class*=" px-"] {
+  main, [role="dialog"] { padding-left: 0.375rem; padding-right: 0.375rem; }
+  :is(main, [role="dialog"]) :is([class^="p-"], [class*=" p-"],
+                                  [class^="px-"], [class*=" px-"],
+                                  [class^="pl-"], [class*=" pl-"],
+                                  [class^="pr-"], [class*=" pr-"]) {
     padding-left: 0.25rem;
     padding-right: 0.25rem;
   }
 
+  /* The modal OVERLAY is the dialog's parent, outside `[role="dialog"]`, and it
+   * keeps 1.25rem of padding on each side — 40px of a 93px viewport, which
+   * shredded the dialog heading to 6 lines. */
+  .fixed.inset-0 { padding-left: 0.25rem; padding-right: 0.25rem; }
+
+  /* An icon absolutely positioned in a field's padding gutter has nowhere to go
+   * once the gutter closes; hide it rather than keep 45px of padding in a 36px
+   * box, which left the Account inputs unreadable (ds-rev finding 6). */
+  [role="dialog"] .relative > .absolute:has(svg) { display: none; }
+
   /* The payoff matrix keeps a width its four inputs can actually be typed
    * into and scrolls inside its own box (see data-matrix-scroll in App.tsx);
    * squeezing it to fit produced 7.5px-wide number fields. */
-  main [data-tour="matrix"] { min-width: 15rem; grid-template-columns: minmax(0, 3.5rem) minmax(0, 1fr) minmax(0, 1fr); }
+  :is(main, [role="dialog"]) [data-tour="matrix"] { min-width: 15rem; grid-template-columns: minmax(0, 3.5rem) minmax(0, 1fr) minmax(0, 1fr); }
 
   /* Fixed-size chrome inside a collapsed column: the payoff pair's comma
    * separator and the start-point field's 2rem stepper gutter each demanded
    * more than the whole track. Columns stack instead — a rigid `grid-cols-3`
    * split 90px three ways and rendered "Both Plots" down 7 lines. */
-  main .grid-cols-2, main .grid-cols-3, main .grid-cols-4 { grid-template-columns: minmax(0, 1fr); }
-  main .pr-8 { padding-right: 0.5rem; }
-  main .px-1 { padding-left: 0; padding-right: 0; }
+  :is(main, [role="dialog"]) .grid-cols-2, :is(main, [role="dialog"]) .grid-cols-3, :is(main, [role="dialog"]) .grid-cols-4 { grid-template-columns: minmax(0, 1fr); }
+  :is(main, [role="dialog"]) .pr-8 { padding-right: 0.5rem; }
+  :is(main, [role="dialog"]) .px-1 { padding-left: 0; padding-right: 0; }
 
   /* The post-run progress bar asks for 4rem it does not have; it is a pure
    * indicator, so a shorter track still reads correctly. */
-  main .min-w-16 { min-width: 0; }
+  :is(main, [role="dialog"]) .min-w-16 { min-width: 0; }
 
   /* An absolutely-positioned overlay is outside flow, so none of the shrinking
    * above reaches it: the plot's "Resume spinning" button kept its intrinsic
    * width and pushed past its container. Bounding it by its LEFT inset keeps
    * it inside without squeezing the toolbar opposite it, which wraps its
    * buttons onto new rows if capped and ends up wider still. */
-  main .absolute.bottom-3.left-3 { max-width: calc(100% - 1.5rem); }
+  :is(main, [role="dialog"]) .absolute.bottom-3.left-3 { max-width: calc(100% - 1.5rem); }
 }
 
 /* ── print stylesheet ────────────────────────────────────────────────────

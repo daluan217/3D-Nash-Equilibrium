@@ -3,7 +3,6 @@
   "Close Dialog": "Same. NOTE: this and 'Close dialog' both exist — the app spells the same aria-label two ways, which is worth unifying. The lowercase spelling (the Account dialog's own close button) is now exercised by RED-APP-8/005's e2e fixture (its geometry reliably discriminates the max-h fix, unlike the Login submit button); this capital-D spelling is elsewhere and still untested.",
   "Done": "Dialog chrome: dismisses without side effects, and failure is visible immediately.",
   "Log out": "Token invalidation is covered end to end by src/integration/api.test.mjs against the real server, which is a stronger test than clicking the control that triggers it.",
-  "Sign In to Your Account": "See 'Log out'.",
   "Increase x₀": "The x0/y0 steppers. The VALUE path they drive is covered — smoke types into x0 and asserts the log opens at 'Start (0.000, …)', and the mobile suite asserts these meet the 24px WCAG 2.2 AA floor after they were found at 25x20. What is untested is the increment arithmetic itself.",
   "Decrease x₀": "See 'Increase x₀'.",
   "Increase y₀": "See 'Increase x₀'.",

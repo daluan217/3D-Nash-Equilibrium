@@ -10584,7 +10584,9 @@ const suggestedScenario = {
           // one character per line underneath a green row.
           readable: (() => {
             const bad = [];
-            for (const el of document.querySelectorAll('main *')) {
+            // `main *` alone missed the modals, which render as SIBLINGS after
+            // </main> (ds-rev finding 6), so the dialog surface was unmeasured.
+            for (const el of document.querySelectorAll('main *, [role="dialog"] *')) {
               if (el.children.length || !(el.textContent || '').trim()) continue;
               const t = el.textContent.trim();
               const rg = new Range(); rg.selectNodeContents(el);
@@ -10604,19 +10606,24 @@ const suggestedScenario = {
           // the fix trades a reflow failure for a keyboard trap.
           unreachableScrollers: (() => {
             const bad = [];
-            for (const el of document.querySelectorAll('main *')) {
+            for (const el of document.querySelectorAll('main *, [role="dialog"] *')) {
               if (el.scrollWidth <= el.clientWidth + 1) continue;
               const cs = getComputedStyle(el);
               if (!/(auto|scroll)/.test(cs.overflowX)) continue;
-              const focusable = el.tabIndex >= 0
-                || el.querySelector('a[href],button,input,select,textarea,[tabindex]:not([tabindex="-1"])');
-              if (!focusable) bad.push(`${el.tagName}.${(el.className || '').toString().slice(0, 30)}`);
+              // A focusable DESCENDANT is not the same affordance: tabbing to
+              // an input inside the box scrolls to THAT input, which leaves the
+              // rest of the box unreachable, and it made this check
+              // unfalsifiable for the very element it polices — the matrix box
+              // wraps four <input>s, so deleting its tabIndex kept §97 green
+              // (reviewer ds-rev, 2026-09-15, reproduced by mutation). The box
+              // ITSELF must take focus.
+              if (el.tabIndex < 0) bad.push(`${el.tagName}.${(el.className || '').toString().slice(0, 30)}`);
             }
             return bad.slice(0, 5);
           })(),
           tinyInputs: (() => {
             const bad = [];
-            for (const el of document.querySelectorAll('main input')) {
+            for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
               const r = el.getBoundingClientRect();
               if (!(r.width > 0)) continue;
               const cs = getComputedStyle(el);
@@ -10644,6 +10651,11 @@ const suggestedScenario = {
       for (const [w, z] of COMBOS) {
         const m = await measure(p97, cdp, w, z);
         const at = `${phase} ${w}px at ${z * 100}%`;
+        // Per-condition, not once up front: if setDeviceMetricsOverride ever
+        // no-opped, every row below would silently measure an unzoomed page
+        // and pass (ds-rev finding 3).
+        record(`§97 ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
+          Math.abs(m.vw - Math.round(w / z)) <= 2, `measured=${m.vw} expected=${Math.round(w / z)}`);
         record(`§97 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
         record(`§97 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
           m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
@@ -10675,6 +10687,15 @@ const suggestedScenario = {
     record('§97 fixture guard: dark mode is actually on for the rows below',
       await p97.evaluate(() => document.documentElement.classList.contains('dark')));
     await sweep('dark post-run');
+    // The modals are the surface a `main`-scoped fix and a `main`-scoped oracle
+    // both miss: they render as siblings after </main>. Sweep one with real
+    // inputs open (ds-rev finding 6 — it had two unreadable fields at 93px).
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.getByRole('button', { name: /sign in.*sign up/i }).first().click().catch(() => {});
+    await p97.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 8000 }).catch(() => {});
+    record('§97 fixture guard: the Account dialog is open, so the rows below measure a real modal',
+      await p97.getByRole('dialog', { name: 'Account' }).isVisible().catch(() => false));
+    await sweep('account dialog');
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.close();
   });
