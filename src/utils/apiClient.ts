@@ -206,9 +206,13 @@ export function accountVerdict(res: AccountResponse, copy: AccountVerdictCopy): 
   // 3. The server refused, and says why when it can. `dataParsed` decides
   //    whether `copy.failure` describes anything real: without a body there is
   //    no server verdict to paraphrase, only a status.
-  const serverSaid = res.dataParsed && typeof res.data?.error === 'string' && res.data.error
-    ? res.data.error
-    : null;
+  //    Self-attack on this helper: `"   "` is falsy-adjacent but truthy, so an
+  //    all-whitespace `error` rendered an EMPTY role="alert" — a box a sighted
+  //    user sees blank and a screen reader announces as nothing. Trim decides
+  //    whether the server actually said something, the same test adopt-local
+  //    already applies (App.tsx, `said`).
+  const said = typeof res.data?.error === 'string' ? res.data.error.trim() : '';
+  const serverSaid = res.dataParsed && said ? said : null;
   return {
     outcome: 'error',
     message: serverSaid

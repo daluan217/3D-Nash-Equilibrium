@@ -471,6 +471,8 @@ function testCommitNumericFieldProblem() {
  *         them could tell the two conjuncts apart.
  *   - `serverSaid` without the `typeof … === 'string'` test
  *       => V5d fails (a non-string `error` object shown raw)
+ *   - `said` without `.trim()` (i.e. test `res.data.error` for truthiness)
+ *       => V5e/V5f fail (an all-whitespace error renders an EMPTY role="alert")
  *   - return `copy.failure` instead of the status-coded string when !dataParsed
  *       => V4 fails (the status code disappears again)
  */
@@ -546,6 +548,24 @@ function testAccountVerdictMatrix() {
   assert((v({ kind: 'response', status: 400, ok: false, data: { error: { code: 7 } }, dataParsed: true }) as any).message
     === 'Invalid credentials.',
     'V5d: a non-string `error` (server JSON is untyped) is not shown raw');
+  // V5e: BLUE self-attack on this helper. `''` was already handled (V5c), but
+  // `'   '` is truthy, so it passed straight through and rendered an EMPTY
+  // role="alert" — a box a sighted user sees blank and a screen reader
+  // announces as nothing at all. Whitespace is not a message.
+  for (const blank of ['   ', '\t', '\n', '   ']) {
+    const r = v({ kind: 'response', status: 400, ok: false, data: { error: blank }, dataParsed: true }) as any;
+    assert(r.message === 'Invalid credentials.',
+      `V5e: an all-whitespace error (${JSON.stringify(blank)}) is not a message, got ${JSON.stringify(r.message)}`);
+  }
+  // V5f: the property behind V5c/V5e, over every refusal status — a verdict the
+  // user is shown always has readable text.
+  for (const status of [400, 401, 403, 409, 429, 500, 503]) {
+    for (const body of [{}, { error: '' }, { error: '   ' }, { error: null }, { error: 7 }]) {
+      const r = v({ kind: 'response', status, ok: false, data: body, dataParsed: true }) as any;
+      assert(typeof r.message === 'string' && r.message.trim().length > 0,
+        `V5f: status ${status} with body ${JSON.stringify(body)} must still say something, got ${JSON.stringify(r.message)}`);
+    }
+  }
 
   // V6: the ordering itself, stated as the property the defect violated.
   for (const status of [400, 401, 500, 503]) {
