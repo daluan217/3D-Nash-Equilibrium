@@ -61,5 +61,23 @@ check('the raw ratio is used in exactly one place: the floored helper itself',
   src.split('sheetMaxVh(').length - 1 === 1,
   `${src.split('sheetMaxVh(').length - 1} call sites`);
 
+// The start-point grid's breakpoint. §100 measures that the VALUE fits below it
+// (in a browser, where the gutter and font are real); what it cannot show
+// cheaply is that the two columns survive ABOVE it. A pair that quietly became
+// one column on every desktop would pass every reflow check ever written.
+const app = readFileSync('src/App.tsx', 'utf8');
+const gridCls = app.match(/<div className="grid grid-cols-2 ([^"]*)gap-4">/);
+check('the start-point fields are still a 2-column grid by default', gridCls !== null);
+check('they collapse only below the MEASURED 324px, not a rounded device width',
+  !!gridCls && /max-\[324px\]:grid-cols-1/.test(gridCls[1]), gridCls ? gridCls[1] : 'no match');
+// 106px is the floor the breakpoint encodes: 10px left padding + a 40px stepper
+// gutter + 56px of rendered "0.217". Interpolating the real cell widths
+// (260->74, 320->104, 390->139) puts a 106px cell at a ~324px viewport.
+check('the breakpoint really is where a cell reaches the 106px floor',
+  Math.round(320 + (106 - 104) * (390 - 320) / (139 - 104)) === 324,
+  String(Math.round(320 + (106 - 104) * (390 - 320) / (139 - 104))));
+check('auto-fit was not reintroduced (it invented empty 0px tracks at 390 and 1024)',
+  !/repeat\(auto-fit[^)]*\)\)\] gap-4">/.test(app));
+
 if (failures) { console.error(`\ntoursheetfloor.test.ts: ${failures} failed`); process.exit(1); }
-console.log('✓ tour sheet floor: 5 short heights floored, 9 real devices unchanged, the 525px crossover, viewport clamp, and the three source invariants');
+console.log('✓ layout floors: 5 short heights floored, 9 real devices unchanged, the 525px crossover, viewport clamp, three tour source invariants, and the start-point grid breakpoint');

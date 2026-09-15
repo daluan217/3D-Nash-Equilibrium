@@ -10528,14 +10528,14 @@ const suggestedScenario = {
     await p96.close();
   });
 
-  // §97 widens §94 from its single 390px/zoom-2 point to the whole condition
+  // §100 widens §94 from its single 390px/zoom-2 point to the whole condition
   // space a user can reach, and measures REAL browser zoom. §94 sets the CSS
   // `zoom` property, which scales painting but leaves the layout viewport (and
   // every media query) at the full width — no browser behaves that way, and a
   // reflow fix that keys on width is invisible to it. Real zoom divides the
   // layout viewport, which is exactly how WCAG 1.4.10 is stated: 1280px at
   // 400% IS a 320px layout viewport. CDP device metrics reproduce that.
-  section('97', 'no width and zoom a user can reach makes the page scroll sideways', async () => {
+  section('100', 'no width and zoom a user can reach makes the page scroll sideways', async () => {
     // 280px is the narrowest phone still sold; 300% is mid-range for the 400%
     // the SC requires. 280/3 = a 93px layout viewport — the hardest point.
     const COMBOS = [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5]];
@@ -10614,7 +10614,7 @@ const suggestedScenario = {
               // an input inside the box scrolls to THAT input, which leaves the
               // rest of the box unreachable, and it made this check
               // unfalsifiable for the very element it polices — the matrix box
-              // wraps four <input>s, so deleting its tabIndex kept §97 green
+              // wraps four <input>s, so deleting its tabIndex kept §100 green
               // (reviewer ds-rev, 2026-09-15, reproduced by mutation). The box
               // ITSELF must take focus.
               if (el.tabIndex < 0) bad.push(`${el.tagName}.${(el.className || '').toString().slice(0, 30)}`);
@@ -10733,7 +10733,7 @@ const suggestedScenario = {
     // layout viewport, every row below would pass by measuring zoom 1.
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 93, height: 281, deviceScaleFactor: 3, mobile: false });
     const lv = await p97.evaluate(() => document.documentElement.clientWidth);
-    record('§97 fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)',
+    record('§100 fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)',
       lv <= 95, `clientWidth=${lv}`);
     const sweep = async (phase) => {
       for (const [w, z] of COMBOS) {
@@ -10742,21 +10742,21 @@ const suggestedScenario = {
         // Per-condition, not once up front: if setDeviceMetricsOverride ever
         // no-opped, every row below would silently measure an unzoomed page
         // and pass (ds-rev finding 3).
-        record(`§97 ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
+        record(`§100 ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
           Math.abs(m.vw - Math.round(w / z)) <= 2, `measured=${m.vw} expected=${Math.round(w / z)}`);
-        record(`§97 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
-        record(`§97 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
+        record(`§100 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
+        record(`§100 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
           m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
-        record(`§97 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
-        record(`§97 ${at}: no text was shredded to one character per line to buy the width`,
+        record(`§100 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
+        record(`§100 ${at}: no text was shredded to one character per line to buy the width`,
           m.readable.length === 0, JSON.stringify(m.readable));
-        record(`§97 ${at}: an input's whole VALUE is visible, not just one character of it`,
+        record(`§100 ${at}: an input's whole VALUE is visible, not just one character of it`,
           m.clippedValues.length === 0, JSON.stringify(m.clippedValues));
-        record(`§97 ${at}: every input is still wide enough to read one character of its own value`,
+        record(`§100 ${at}: every input is still wide enough to read one character of its own value`,
           m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
-        record(`§97 ${at}: every box the fix made scrollable is reachable from the keyboard`,
+        record(`§100 ${at}: every box the fix made scrollable is reachable from the keyboard`,
           m.unreachableScrollers.length === 0, JSON.stringify(m.unreachableScrollers));
-        record(`§97 ${at}: no control is painted entirely outside the viewport`,
+        record(`§100 ${at}: no control is painted entirely outside the viewport`,
           m.unreachableControls.length === 0, JSON.stringify(m.unreachableControls));
         // Inside the viewport but under something: a `fixed`/`sticky` overlay
         // holds its corner no matter what reflows beneath it. The feedback pill
@@ -10764,7 +10764,7 @@ const suggestedScenario = {
         // a 93px layout viewport -- both on screen, neither clickable, and every
         // scroll-based check green. Nine sample points per control; a control is
         // only a failure when NONE of them reach it.
-        record(`§97 ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
+        record(`§100 ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
           m.coveredControls.length === 0, JSON.stringify(m.coveredControls));
       }
     };
@@ -10776,7 +10776,7 @@ const suggestedScenario = {
     await p97.getByRole('button', { name: 'Search Game' }).first().click();
     await p97.getByRole('button', { name: /^Run$/ }).click();
     await p97.waitForSelector('text=Converged', { timeout: 240000 });
-    record('§97 fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page',
+    record('§100 fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page',
       await p97.getByText(/A indifferent:|A strictly prefers:/).first().isVisible().catch(() => false));
     await sweep('post-run');
     // Dark mode renders the same boxes, but Plotly re-fits later in dark — the
@@ -10784,7 +10784,7 @@ const suggestedScenario = {
     await p97.evaluate(() => { const b = [...document.querySelectorAll('button')]
       .find((x) => /theme|dark|light/i.test(x.getAttribute('aria-label') || '')); b && b.click(); });
     await p97.waitForTimeout(700);
-    record('§97 fixture guard: dark mode is actually on for the rows below',
+    record('§100 fixture guard: dark mode is actually on for the rows below',
       await p97.evaluate(() => document.documentElement.classList.contains('dark')));
     await sweep('dark post-run');
     // The modals are the surface a `main`-scoped fix and a `main`-scoped oracle
@@ -10793,7 +10793,7 @@ const suggestedScenario = {
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.getByRole('button', { name: /sign in.*sign up/i }).first().click().catch(() => {});
     await p97.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 8000 }).catch(() => {});
-    record('§97 fixture guard: the Account dialog is open, so the rows below measure a real modal',
+    record('§100 fixture guard: the Account dialog is open, so the rows below measure a real modal',
       await p97.getByRole('dialog', { name: 'Account' }).isVisible().catch(() => false));
     await sweep('account dialog');
     // The workspace drawer is a second modal shape with its own header row:
@@ -10809,10 +10809,10 @@ const suggestedScenario = {
       width: 93, height: 700, deviceScaleFactor: 3, mobile: false });
     await p97.getByRole('button', { name: /open workspace menu/i }).first().click({ timeout: 8000 }).catch(() => {});
     await p97.waitForTimeout(900);
-    record('§97 drawer fixture guard: the workspace drawer is open at a 93px layout viewport',
+    record('§100 drawer fixture guard: the workspace drawer is open at a 93px layout viewport',
       await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
         .some((d) => d.getBoundingClientRect().width > 0)));
-    record('§97 drawer at 93px: its close control is fully inside the viewport',
+    record('§100 drawer at 93px: its close control is fully inside the viewport',
       await p97.evaluate(() => {
         const b = [...document.querySelectorAll('button')]
           .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
@@ -10832,7 +10832,7 @@ const suggestedScenario = {
       .then(() => p97.evaluate(() => ![...document.querySelectorAll('[role="dialog"]')]
         .some((d) => d.getBoundingClientRect().width > 0)))
       .catch(() => false);
-    record('§97 drawer at 93px: it can actually be closed again (not a trap)', drawerClosed);
+    record('§100 drawer at 93px: it can actually be closed again (not a trap)', drawerClosed);
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.close();
 
@@ -10846,10 +10846,10 @@ const suggestedScenario = {
     const ps = await newTrackedPage({ viewport: { width: 93, height: 700 } });
     await ps.goto(BASE, { waitUntil: 'networkidle' });
     await dismissTourForSetup(ps, 'setup: clear the tour before the scrolled overlay sweep', { timeout: 20000 });
-    record('§97 scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner',
+    record('§100 scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner',
       await ps.evaluate(() => document.documentElement.scrollHeight > innerHeight * 3),
       await ps.evaluate(() => `docH=${document.documentElement.scrollHeight} vh=${innerHeight}`));
-    record('§97 scrolled-overlay fixture guard: no element covers the viewport from a stuck position',
+    record('§100 scrolled-overlay fixture guard: no element covers the viewport from a stuck position',
       await ps.evaluate(() => {
         for (const el of document.querySelectorAll('body *')) {
           const cs = getComputedStyle(el);
@@ -10891,25 +10891,25 @@ const suggestedScenario = {
       window.scrollTo(0, 0);
       return [...out];
     });
-    record('§97 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset',
+    record('§100 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset',
       dead.length === 0, dead.slice(0, 5).join(' | '));
     // And the ground truth a geometric check cannot give: press them.
     for (const nm of [/search game/i, /open workspace menu/i, /^sign in/i]) {
       const l = ps.getByRole('button', { name: nm }).first();
       const pressed = await l.count()
         ? await l.click({ timeout: 5000 }).then(() => true).catch(() => false) : false;
-      record(`§97 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
+      record(`§100 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
       await ps.keyboard.press('Escape').catch(() => {});
       await ps.waitForTimeout(300);
     }
     await ps.close();
   });
 
-  // §98 is §97's tour phase, moved out: §97 had grown to five phases in one
+  // §101 is §100's tour phase, moved out: §100 had grown to five phases in one
   // shard unit and sat under 1 s of the packer's headroom line. The tour is a
   // different surface anyway -- a modal walked step by step, not a page
   // measured at rest -- so it splits cleanly rather than being trimmed.
-  section('98', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
+  section('101', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
     // THE TOUR — the FIRST thing a first-time visitor sees, and the one surface
     // every other section DISMISSES before measuring (`dismissTourForSetup`), so
     // until now nothing measured it at all. It is not in `main`, it is
@@ -10934,7 +10934,7 @@ const suggestedScenario = {
       await pt.reload({ waitUntil: 'domcontentloaded' });
       await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
       const at = `tour ${w}px@${z}x(${lw}x${lh})`;
-      record(`§98 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
+      record(`§101 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
         await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
       // Walk every step. `steps` counts how far a user could actually get.
       let steps = 0; const unreachable = [];
@@ -10989,9 +10989,9 @@ const suggestedScenario = {
           return !e || e.textContent.trim() !== prev;
         }, before, { timeout: 5000 }).catch(() => {});
       }
-      record(`§98 ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
+      record(`§101 ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
         unreachable.length === 0, unreachable.slice(0, 4).join(' | '));
-      record(`§98 ${at}: the tour can be walked to the end — Next is pressable on every step`,
+      record(`§101 ${at}: the tour can be walked to the end — Next is pressable on every step`,
         steps >= 7, `advanced ${steps} steps`);
     }
     await cdpT.send('Emulation.clearDeviceMetricsOverride');
