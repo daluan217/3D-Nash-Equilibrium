@@ -10528,6 +10528,117 @@ const suggestedScenario = {
     await p96.close();
   });
 
+  // §97 widens §94 from its single 390px/zoom-2 point to the whole condition
+  // space a user can reach, and measures REAL browser zoom. §94 sets the CSS
+  // `zoom` property, which scales painting but leaves the layout viewport (and
+  // every media query) at the full width — no browser behaves that way, and a
+  // reflow fix that keys on width is invisible to it. Real zoom divides the
+  // layout viewport, which is exactly how WCAG 1.4.10 is stated: 1280px at
+  // 400% IS a 320px layout viewport. CDP device metrics reproduce that.
+  section('97', 'no width and zoom a user can reach makes the page scroll sideways', async () => {
+    // 280px is the narrowest phone still sold; 300% is mid-range for the 400%
+    // the SC requires. 280/3 = a 93px layout viewport — the hardest point.
+    const COMBOS = [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5]];
+    const measure = async (p, cdp, w, z) => {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: Math.round(w / z), height: Math.round(844 / z), deviceScaleFactor: z, mobile: false });
+      // Plotly re-fits its WebGL canvas asynchronously after a re-layout, so the
+      // document is briefly wider than its steady state on BOTH trees. Wait on
+      // the value: it must hold for 30 frames (~0.5s) before it is read. The
+      // unfixed tree settles at 191px and still fails, so this cannot mask it.
+      await p.waitForFunction(() => new Promise((resolve) => {
+        let last = document.documentElement.scrollWidth, stable = 0;
+        const tick = () => { const v = document.documentElement.scrollWidth;
+          stable = v === last ? stable + 1 : 0; last = v;
+          if (stable >= 30) resolve(true); else requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      }), null, { timeout: 20000 }).catch(() => {});
+      return p.evaluate(() => {
+        const de = document.documentElement, vw = de.clientWidth;
+        window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
+        // An element inside a box that actually scrolls is COMPLIANT (1.4.10
+        // forbids scrolling the DOCUMENT, not an inner region) — so each
+        // offender is only counted after walking its ancestors for a real
+        // scroll container. This is what lets the KaTeX fix be a scroll box
+        // rather than a truncation.
+        const bleed = [];
+        for (const el of document.querySelectorAll('body *')) {
+          if (el.closest('.katex-mathml')) continue;
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.right > vw + 0.5)) continue;
+          let contained = false;
+          for (let a = el.parentElement; a; a = a.parentElement) {
+            const cs = getComputedStyle(a);
+            if (/(auto|scroll|hidden|clip)/.test(cs.overflowX) && a.getBoundingClientRect().right <= vw + 0.5) { contained = true; break; }
+          }
+          if (!contained) bleed.push(`${el.tagName}.${(el.className || '').toString().slice(0, 36)}`);
+        }
+        return { vw, docScrollWidth: de.scrollWidth, maxScrollX, bleed: bleed.slice(0, 6),
+          // A fix that empties the page would pass every check above.
+          rendered: !!document.querySelector('.js-plotly-plot')
+            && !!document.querySelector('[aria-label="Expand simulation log"]'),
+          // Nothing may be shrunk into unreadability to buy the width back.
+          readable: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main span, main label, main p, main strong')) {
+              if (el.children.length || !(el.textContent || '').trim()) continue;
+              const t = el.textContent.trim();
+              if (t.length < 4) continue;
+              const rg = new Range(); rg.selectNodeContents(el);
+              const lines = new Set(Array.from(rg.getClientRects()).map((x) => Math.round(x.top))).size;
+              if (lines > 1 && t.replace(/\s/g, '').length / lines < 2) bad.push(`${t.slice(0, 18)}@${lines}`);
+            }
+            return bad.slice(0, 5);
+          })(),
+        };
+      });
+    };
+    const p97 = await newTrackedPage({ viewport: { width: 390, height: 844 } });
+    const cdp = await p97.context().newCDPSession(p97);
+    await p97.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(p97, 'setup: clear the first-run tour before measuring the zoomed layout', { timeout: 20000 });
+    await p97.locator('.js-plotly-plot').first().waitFor({ state: 'attached', timeout: 20000 });
+    // The zoom model itself is a fixture: if CDP ever stopped dividing the
+    // layout viewport, every row below would pass by measuring zoom 1.
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 93, height: 281, deviceScaleFactor: 3, mobile: false });
+    const lv = await p97.evaluate(() => document.documentElement.clientWidth);
+    record('§97 fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)',
+      lv <= 95, `clientWidth=${lv}`);
+    const sweep = async (phase) => {
+      for (const [w, z] of COMBOS) {
+        const m = await measure(p97, cdp, w, z);
+        const at = `${phase} ${w}px at ${z * 100}%`;
+        record(`§97 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
+        record(`§97 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
+          m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
+        record(`§97 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
+        record(`§97 ${at}: no text was shredded to one character per line to buy the width`,
+          m.readable.length === 0, JSON.stringify(m.readable));
+      }
+    };
+    await sweep('pre-run');
+    // The converged page renders rows the fresh page does not: the progress
+    // bar, the step-jump row, the equilibrium banner and the KaTeX result
+    // lines. Each was an independent cause; all of them are measured again.
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.getByRole('button', { name: 'Search Game' }).first().click();
+    await p97.getByRole('button', { name: /^Run$/ }).click();
+    await p97.waitForSelector('text=Converged', { timeout: 240000 });
+    record('§97 fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page',
+      await p97.getByText(/A indifferent:|A strictly prefers:/).first().isVisible().catch(() => false));
+    await sweep('post-run');
+    // Dark mode renders the same boxes, but Plotly re-fits later in dark — the
+    // one condition that produced a transient wide scrollWidth last round.
+    await p97.evaluate(() => { const b = [...document.querySelectorAll('button')]
+      .find((x) => /theme|dark|light/i.test(x.getAttribute('aria-label') || '')); b && b.click(); });
+    await p97.waitForTimeout(700);
+    record('§97 fixture guard: dark mode is actually on for the rows below',
+      await p97.evaluate(() => document.documentElement.classList.contains('dark')));
+    await sweep('dark post-run');
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.close();
+  });
+
 
 await executeSections();
 

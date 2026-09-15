@@ -324,8 +324,13 @@ input.no-native-spinner {
   .w-16, .w-20, .w-28 { width: 100%; min-width: 0; }
   main .shrink-0 { flex-shrink: 1; min-width: 0; }
 
+  /* Padding is the largest single consumer here: the stats cards spend 24px of
+   * a 56px box on it, leaving 32px for a 40px number — "0.217" wrapped onto
+   * three lines. Matching the CLASS FAMILY rather than a list of tiers: naming
+   * tiers is what let p-3 through (shredding the stats) and then p-3.5 (the
+   * indifference labels). Nothing named `p-<n>`/`px-<n>` can be missed now. */
   main { padding-left: 0.375rem; padding-right: 0.375rem; }
-  main .p-5, main .p-4 { padding-left: 0.5rem; padding-right: 0.5rem; }
+  main [class*="p-"] { padding-left: 0.25rem; padding-right: 0.25rem; }
 
   /* Fixed-size chrome inside a collapsed column: the payoff pair's comma
    * separator and the start-point field's 2rem stepper gutter each demanded
