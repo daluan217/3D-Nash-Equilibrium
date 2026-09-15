@@ -345,7 +345,7 @@ export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key'
  */
 export function regenErrorFromResponse(
   status: number | null,
-  body: { scenario?: unknown; error?: string; failure?: unknown } | null,
+  body: { scenario?: unknown; error?: unknown; failure?: unknown } | null,
   err: unknown,
 ): RegenErrorKind {
   if (err instanceof DOMException && err.name === 'AbortError') return 'timeout';
@@ -357,11 +357,30 @@ export function regenErrorFromResponse(
   return 'network';
 }
 
+/** Longest server-supplied 429 text the dialog will quote. Calibrated on the
+ *  shipping condition: this server's own longest `error` string is 121 chars
+ *  and `rateLimit`'s own 429 is 54, so nothing we send is ever truncated. */
+export const REGEN_SERVER_TEXT_MAX = 200;
+
+/**
+ * Did the server actually SAY something quotable? Same test `apiClient`'s
+ * `said` applies to the same `error` field (apiClient.ts, main 81e4a21): a
+ * non-string is not a message, and neither is whitespace. Clamped and
+ * control-stripped too, because in desktop cloud mode `apiBaseUrl` is a
+ * free-form field (MenuDrawer.tsx), so this string is not always ours.
+ */
+function serverSaid(t: unknown): string {
+  if (typeof t !== 'string') return '';
+  return clampGraphemeSafe(cleanText(t), REGEN_SERVER_TEXT_MAX);
+}
+
 /** One template per kind; `rate-limit` folds in the server's own 429 body
  *  text (the standard "Too many attempts…" wording `rateLimit` sends) so the
- *  dialog states the real reason rather than a generic one. */
-export const REGEN_ERROR_MESSAGES: Record<RegenErrorKind, (serverText?: string) => string> = {
-  'rate-limit': (t) => `AI limit reached — ${t || 'Too many attempts. Please wait a minute and try again.'}`,
+ *  dialog states the real reason rather than a generic one — but only when
+ *  the server really sent text; otherwise the em-dash would dangle over an
+ *  empty tail, or render a raw `[object Object]` (BLUE-LOOP-REGEN-21). */
+export const REGEN_ERROR_MESSAGES: Record<RegenErrorKind, (serverText?: unknown) => string> = {
+  'rate-limit': (t) => `AI limit reached — ${serverSaid(t) || 'Too many attempts. Please wait a minute and try again.'}`,
   'timeout': () => 'This is taking longer than expected — try again?',
   'unavailable': () => "Regenerating isn't available on this server.",
   // RED-REGEN-21/002: distinct from 'unavailable' (the route is enabled, so

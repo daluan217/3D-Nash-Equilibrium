@@ -3543,7 +3543,11 @@ export default function App() {
     // `failure` is read by `regenErrorFromResponse`: a 200 with `scenario:null`
     // is a retriable draw failure or a persistent no-credentials server, and
     // only this field tells them apart (RED-REGEN-21/002).
-    let body: { scenario?: RegenPreview | null; error?: string; failure?: unknown } | null = null;
+    // `error`/`failure` are `unknown`, not `string`: this object comes from
+    // `res.json()`, so nothing has checked its shape. Declaring `error: string`
+    // told the type system a lie and hid the missing guard on the one template
+    // that interpolates it (BLUE-LOOP-REGEN-21) — `serverSaid` now checks it.
+    let body: { scenario?: RegenPreview | null; error?: unknown; failure?: unknown } | null = null;
     let caught: unknown = null;
     try {
       const res = await promise;

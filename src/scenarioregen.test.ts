@@ -23,6 +23,7 @@ import {
   regenDroppedNote,
   orphanedNote,
   REGEN_ERROR_MESSAGES,
+  REGEN_SERVER_TEXT_MAX,
   REGEN_NAME_MAX,
   REGEN_LABEL_MAX,
   REGEN_DESCRIPTION_MAX,
@@ -435,6 +436,93 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const regenBody = appSrc.match(/let body: \{ scenario\?: RegenPreview[^\n]*\n/)?.[0] ?? '';
   check('App.tsx types the regen response body with `failure`, so the no-key branch is reachable',
     regenBody.includes('failure'), regenBody.trim());
+}
+
+/* ──────── H-BLUE-LOOP-REGEN-21: the ONE template that quotes the SERVER quotes
+ *          only what the server actually SAID
+ *
+ * `REGEN_ERROR_MESSAGES['rate-limit']` interpolates the 429 body's `error`
+ * straight into user-facing copy. That string is not always ours: in desktop
+ * cloud mode `apiBaseUrl` is a free-form field (MenuDrawer.tsx), so a proxy,
+ * gateway or a different host supplies it. Same class main fixed one layer
+ * down in `apiClient`'s `said` (81e4a21, V5e/V5f).
+ *
+ * WHY THIS CANNOT PASS BY COINCIDENCE. Each row is an ISOLATING fixture — one
+ * row, one defect signal — so deleting any single rule fails exactly its own
+ * row and leaves the others green. The CONTROL row (the server's real string)
+ * asserts the text is still quoted VERBATIM, so a "fix" that simply stopped
+ * quoting the server would fail it: this is not the trivially-passing shape
+ * where suppressing everything scores as a pass. Assertions read the real
+ * exported `REGEN_ERROR_MESSAGES`, not a copy.
+ *
+ * Mutations, each confirmed to fail:
+ *   drop `.trim()` from `serverSaid` (via cleanText)  => the whitespace rows
+ *   drop the `typeof t !== 'string'` test             => the non-string rows
+ *   drop `clampGraphemeSafe(..., REGEN_SERVER_TEXT_MAX)` => the overlong row
+ *   return `t` unchanged (revert the whole fix)       => every row but control
+ */
+{
+  const PREFIX = 'AI limit reached — ';
+  const DEFAULT = 'Too many attempts. Please wait a minute and try again.';
+  const tailOf = (t: unknown): string => {
+    const m = REGEN_ERROR_MESSAGES['rate-limit'](t);
+    check(`rate-limit message keeps its prefix for ${JSON.stringify(String(t)).slice(0, 30)}`,
+      m.startsWith(PREFIX), m.slice(0, 40));
+    return m.slice(PREFIX.length);
+  };
+
+  // CONTROL: a real server string is still quoted verbatim. This row is what
+  // stops "suppress everything" from counting as a fix.
+  check('CONTROL: the server\'s own 429 wording is still quoted verbatim',
+    tailOf(DEFAULT) === DEFAULT, tailOf(DEFAULT));
+  check('CONTROL: a different real upstream sentence is quoted verbatim too',
+    tailOf('Rate limit exceeded for this project.') === 'Rate limit exceeded for this project.');
+
+  // Isolating row per shape. Each falls back to OUR copy, never a blank tail.
+  const blankShapes: [string, unknown][] = [
+    ['spaces', '   '], ['tab+newline', '\t\n'], ['NBSP', '\u00a0'],
+    ['empty string', ''], ['undefined', undefined], ['null', null],
+  ];
+  for (const [label, t] of blankShapes) {
+    check(`a ${label} \`error\` is not a message — the dialog falls back to our copy, never a dangling em-dash`,
+      tailOf(t) === DEFAULT, JSON.stringify(tailOf(t)));
+  }
+  const nonStringShapes: [string, unknown][] = [
+    ['object', { code: 7 }], ['array', []], ['array of strings', ['a', 'b']],
+    ['number', 42], ['boolean true', true],
+  ];
+  for (const [label, t] of nonStringShapes) {
+    const tail = tailOf(t);
+    check(`a non-string \`error\` (${label}) is never rendered raw`,
+      tail === DEFAULT, JSON.stringify(tail));
+    check(`a non-string \`error\` (${label}) never reaches the user as "[object Object]"`,
+      !tail.includes('[object'), tail);
+  }
+
+  // Overlong: a hostile or broken upstream cannot flood a text-[10px] note.
+  const long = 'x'.repeat(2000);
+  check('an overlong server string is clamped, not pasted whole into the dialog note',
+    tailOf(long).length <= REGEN_SERVER_TEXT_MAX, String(tailOf(long).length));
+  check('the clamp keeps the beginning of what the server said (it truncates, it does not replace)',
+    tailOf(long).startsWith('xxxx'));
+  check('REGEN_SERVER_TEXT_MAX is calibrated ABOVE this server\'s own longest error string',
+    REGEN_SERVER_TEXT_MAX > 121 && DEFAULT.length < REGEN_SERVER_TEXT_MAX, String(REGEN_SERVER_TEXT_MAX));
+  // Grapheme safety at the clamp, same rule every other clamp on this surface uses.
+  const flag = '\u{1F1FA}\u{1F1F8}';
+  const straddle = 'y'.repeat(REGEN_SERVER_TEXT_MAX - 2) + flag;
+  check('the server-text clamp never splits a grapheme cluster (no lone regional indicator)',
+    !/[\u{1F1E6}-\u{1F1FF}]/u.test(tailOf(straddle)) || tailOf(straddle).includes(flag),
+    JSON.stringify(tailOf(straddle).slice(-6)));
+  // Control characters are stripped before display, as everywhere else here.
+  check('a bidi override inside the server string is stripped before it is shown',
+    !/[\u202a-\u202e\u2066-\u2069]/.test(tailOf('limit\u202ereached')));
+
+  // Structural: App.tsx must not re-narrow the body type back to `error?: string`,
+  // which is what hid this missing guard. Mutation-tested by reverting it.
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const regenBodyType = appSource.match(/let body: \{ scenario\?: RegenPreview[^\n]*\n/)?.[0] ?? '';
+  check('App.tsx types the regen body `error` as unknown (it comes from res.json(), unchecked)',
+    /error\?: unknown/.test(regenBodyType), regenBodyType.trim());
 }
 
 /* ───────────────────────────────────────────────── server pure: domain/bank avoidance */
