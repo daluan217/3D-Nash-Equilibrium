@@ -484,9 +484,8 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     /unchanged/i.test(gone), gone);
   check('the deleted-game message promises NO affordance this dialog lacks',
     !/save as new|duplicate|restore|undo/i.test(gone), gone);
-  check('every kind still has non-empty wording, including the new one',
-    (['rate-limit', 'timeout', 'unavailable', 'no-key', 'no-story', 'network', 'game-gone'] as const)
-      .every((k) => REGEN_ERROR_MESSAGES[k]().trim().length > 0));
+  // (The "every kind has non-empty wording" sweep lives in the block above and
+  //  DERIVES its list from the map, so a hardcoded copy here would only drift.)
 
   // Structural: App.tsx must route the vanished-game branch to THIS kind, or
   // the message above is unreachable. Mutation-tested by reverting the route.

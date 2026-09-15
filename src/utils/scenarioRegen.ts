@@ -320,7 +320,11 @@ export function orphanedNote(
 export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key' | 'no-story' | 'network' | 'game-gone';
 
 /**
- * Map a response (or a thrown/aborted fetch) to one of six honest outcomes.
+ * Map a response (or a thrown/aborted fetch) to one of the six outcomes a
+ * RESPONSE can produce. `RegenErrorKind` has a seventh, 'game-gone', which
+ * this function never returns: it is decided client-side before any request
+ * is sent (App.tsx, the game vanished from the list), so there is no status
+ * or body to map.
  * `status` is `null` when the request never produced a response at all
  * (network failure, or an abort — distinguished by `err`).
  *
