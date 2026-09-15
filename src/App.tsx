@@ -223,13 +223,55 @@ function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
   }
 }
 
-// Typeset LaTeX inline via KaTeX (self-hosted, works offline)
+/**
+ * True while an element's content is wider than its box.
+ *
+ * Drives the ONE rule both scroll boxes below need: a region that scrolls has
+ * to be keyboard-operable (WCAG 2.1.1), and a region that fits must not become
+ * a tab stop that does nothing. Measured, not guessed from a media query, so it
+ * stays correct at any zoom.
+ */
+function useOverflowsX(deps: unknown) {
+  const ref = useRef<HTMLElement | null>(null);
+  const [scrollable, setScrollable] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const sync = () => setScrollable(el.scrollWidth > el.clientWidth + 1);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [deps]);
+  return { ref, scrollable };
+}
+
+// Typeset LaTeX inline via KaTeX (self-hosted, works offline).
+// KaTeX sets `white-space: nowrap`, so an expression is one unbreakable box: at
+// narrow widths / high zoom it pushed the DOCUMENT wider than the viewport,
+// which fails WCAG 1.4.10 reflow. Scrolling inside its own box does not.
 function MathTex({ tex, className }: { tex: string; className?: string }) {
   const html = useMemo(
     () => katex.renderToString(tex, { throwOnError: false }),
     [tex]
   );
-  return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  // A box that scrolls must be operable from the keyboard (WCAG 2.1.1) — but a
+  // box that fits must NOT become a tab stop, or the desktop tab order grows 12
+  // stops that do nothing. So the stop tracks the measured overflow.
+  //
+  // Deliberately NO aria-label: KaTeX already renders a MathML copy that is the
+  // real accessible path, and labelling the wrapper REPLACED it — the measured
+  // accessible name became the literal string "\mathbb{E}[A]".
+  const { ref, scrollable } = useOverflowsX(html);
+  return (
+    <span
+      ref={ref as React.RefObject<HTMLSpanElement>}
+      tabIndex={scrollable ? 0 : undefined}
+      role={scrollable ? 'region' : undefined}
+      className={`inline-block min-w-0 max-w-full overflow-x-auto align-bottom focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded${className ? ` ${className}` : ''}`}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 /**
@@ -4072,6 +4114,10 @@ export default function App() {
     col2: scenarioForReport?.col2 || 'Col 2',
   }), [scenarioForReport]);
 
+  // The matrix keeps a usable width and scrolls in its own box at narrow
+  // widths; the tab stop exists only while it actually scrolls.
+  const matrixScroll = useOverflowsX(activeLabels);
+
   /**
    * Terms ColorCoded highlights in AI/user text, per player. Inherits
    * scenarioForReport's matches-the-matrix gate the same way activeLabels
@@ -5225,7 +5271,7 @@ export default function App() {
       overlayClassName="fixed inset-0 z-[65] flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md select-none"
       panelClassName="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
     >
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-y-1 gap-2">
           <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
             <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
             Simulation Log
@@ -5430,7 +5476,7 @@ export default function App() {
             </div>
 
             {/* User Custom Saved Games Segment */}
-            <div className="flex items-center justify-between text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
               <div className="flex items-center gap-2">
                 <Award className="w-4 h-4 text-accent-500" />
                 Custom Game Presets
@@ -5513,7 +5559,7 @@ export default function App() {
 
           {/* Payoff Matrix Editor Block */}
           <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col gap-4">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-sm">
                 <Sliders className="w-4 h-4 text-player-b-500" />
                 <span>
@@ -5552,6 +5598,21 @@ export default function App() {
                 whole grid — and the page — 235px past a 320px viewport
                 (WCAG 1.4.10). `minmax(0, 1fr)` matches what the per-cell
                 payoff-pair grid below already does correctly. */}
+            {/* A 2x2 payoff matrix has an irreducible width: four editable
+                numbers plus row and column labels. Below ~200px of layout
+                viewport (a 390px phone at 200% browser zoom) there is no
+                honest side-by-side rendering — squeezing it gave 7.5px-wide
+                inputs. WCAG 1.4.10 exempts content that needs a
+                two-dimensional layout, so the matrix keeps a usable width and
+                scrolls INSIDE this box; the document still does not. */}
+            <div
+              ref={matrixScroll.ref as React.RefObject<HTMLDivElement>}
+              data-matrix-scroll
+              tabIndex={matrixScroll.scrollable ? 0 : undefined}
+              role={matrixScroll.scrollable ? 'region' : undefined}
+              aria-label={matrixScroll.scrollable ? 'Payoff matrix, scrollable' : undefined}
+              className="overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded-xl"
+            >
             <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_minmax(0,1fr)_minmax(0,1fr)] gap-3 text-center items-center">
               <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
@@ -5664,6 +5725,7 @@ export default function App() {
               </div>
             </div>
           </div>
+          </div>
 
           {/* Expected math formulations */}
           <div data-tour="ep" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col gap-3">
@@ -5677,15 +5739,11 @@ export default function App() {
             <div className="flex flex-col gap-2 text-sm">
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[A]" className="text-player-a-600 dark:text-player-a-400" />
-                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
-                  <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
-                </span>
+                <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[B]" className="text-player-b-600 dark:text-player-b-400" />
-                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
-                  <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
-                </span>
+                <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
             </div>
             {/* RED-APP-21/004: two clauses as two inline nodes in a wrapping row, not one
@@ -6174,7 +6232,7 @@ export default function App() {
                 cards clipped "0.217" to "0". Let the COLUMN COUNT respond instead:
                 auto-fit drops to one column when two no longer fit, so nothing overflows,
                 nothing is clipped, and labels still wrap at word boundaries. */}
-            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(7rem,1fr))] md:grid-cols-4">
+            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(7rem,100%),1fr))] md:grid-cols-4">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
@@ -6307,13 +6365,13 @@ export default function App() {
                       <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400">
                         {lines.a.indifferent ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.a.tex} /></span>
+                      <MathTex tex={lines.a.tex} />
                     </div>
                     <div className="flex flex-wrap items-baseline gap-x-2">
                       <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400">
                         {lines.b.indifferent ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.b.tex} /></span>
+                      <MathTex tex={lines.b.tex} />
                     </div>
                     <div className="text-xs text-muted dark:text-muted-dark mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
@@ -6687,7 +6745,7 @@ export default function App() {
         ariaLabel="Account"
         fallbackSelector='[data-focus-fallback="account"] button, [data-focus-fallback="account"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <User className="w-4 h-4" />
@@ -7035,7 +7093,7 @@ export default function App() {
         ariaLabel="Edit saved game"
         fallbackSelector='[data-focus-fallback="saved-games"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-accent-500" />
                 <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Edit Game</h3>
@@ -7285,7 +7343,7 @@ export default function App() {
         ariaLabel="Save custom game"
         fallbackSelector='[data-focus-fallback="save-preset"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <Award className="w-4 h-4" />
@@ -7670,7 +7728,7 @@ export default function App() {
         ariaLabel="Send feedback"
         fallbackSelector='[data-focus-fallback="feedback"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <MessageSquare className="w-4 h-4" />
