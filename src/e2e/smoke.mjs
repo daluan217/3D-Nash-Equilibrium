@@ -10947,7 +10947,12 @@ const suggestedScenario = {
           const e = c && c.querySelector('.text-indigo-600');
           return e ? e.textContent.trim() : null;
         });
-        const advanced = await next.click({ timeout: 3000 }).then(() => true).catch(() => false);
+        // 10s, not 3s: a real click on this control takes 1.2s alone but 2.5s
+        // with four browsers running, and a CI shard is busier than that. The
+        // check is "can it be pressed", not "how fast" — too tight a budget
+        // reports a dead control that is merely a loaded machine, and a guard
+        // that cries wolf gets ignored.
+        const advanced = await next.click({ timeout: 10000 }).then(() => true).catch(() => false);
         if (!advanced) { unreachable.push(`step ${steps}: Next could not be clicked`); break; }
         // Wait on the counter actually changing, not on a fixed sleep: it is
         // both the correct signal (the step really advanced) and cheaper than
