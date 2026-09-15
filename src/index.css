@@ -368,6 +368,16 @@ input.no-native-spinner {
     padding-top: 1.75rem;
   }
 
+  /* A `flex-nowrap` row whose children default to `min-width: auto` cannot
+   * shrink below their content, so the last child is pushed past the edge
+   * instead: the drawer's header kept its title at full width and shoved the
+   * close button to x=76..106 in a 93px viewport — 17px of a 30px target, and
+   * on main off-screen entirely (x=181, drawer uncloseable). Letting the row
+   * wrap and its items shrink puts every child back inside the box. Scoped to
+   * flex rows inside a dialog, which is where this shape occurs. */
+  [role="dialog"] .flex:not(.flex-col) > * { min-width: 0; }
+  [role="dialog"] .flex.items-center.justify-between:not(.flex-col) { flex-wrap: wrap; }
+
   /* RED-APP-12/003 again, from the other side. A sticky header that is TALLER
    * than the viewport covers every pixel at every scroll position, so nothing
    * under it can be clicked. The existing guard keys on viewport height

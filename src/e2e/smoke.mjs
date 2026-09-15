@@ -10771,76 +10771,45 @@ const suggestedScenario = {
     record('§97 fixture guard: the Account dialog is open, so the rows below measure a real modal',
       await p97.getByRole('dialog', { name: 'Account' }).isVisible().catch(() => false));
     await sweep('account dialog');
+    // The workspace drawer is a second modal shape with its own header row:
+    // `flex-nowrap` + `justify-between`, whose children default to
+    // `min-width:auto` and so refuse to shrink -- the close button was pushed to
+    // x=181 in a 93px viewport on main, entirely off-screen, and the drawer
+    // could not be closed at all. Opening it is not enough; the exit has to be
+    // pressed, because "visible" and "reachable" disagreed here.
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.keyboard.press('Escape').catch(() => {});
+    await p97.waitForTimeout(400);
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 93, height: 700, deviceScaleFactor: 3, mobile: false });
+    await p97.getByRole('button', { name: /open workspace menu/i }).first().click({ timeout: 8000 }).catch(() => {});
+    await p97.waitForTimeout(900);
+    record('§97 drawer fixture guard: the workspace drawer is open at a 93px layout viewport',
+      await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
+        .some((d) => d.getBoundingClientRect().width > 0)));
+    record('§97 drawer at 93px: its close control is fully inside the viewport',
+      await p97.evaluate(() => {
+        const b = [...document.querySelectorAll('button')]
+          .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
+        if (!b) return false;
+        const r = b.getBoundingClientRect();
+        return r.left >= -0.5 && r.right <= document.documentElement.clientWidth + 0.5;
+      }),
+      await p97.evaluate(() => {
+        const b = [...document.querySelectorAll('button')]
+          .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
+        const r = b && b.getBoundingClientRect();
+        return r ? `x=${Math.round(r.left)}..${Math.round(r.right)} vw=${document.documentElement.clientWidth}` : 'absent';
+      }));
+    const drawerClosed = await p97.getByRole('button', { name: /close menu/i }).first()
+      .click({ timeout: 6000 })
+      .then(() => p97.waitForTimeout(600))
+      .then(() => p97.evaluate(() => ![...document.querySelectorAll('[role="dialog"]')]
+        .some((d) => d.getBoundingClientRect().width > 0)))
+      .catch(() => false);
+    record('§97 drawer at 93px: it can actually be closed again (not a trap)', drawerClosed);
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.close();
-
-    // THE TOUR, which every phase above dismissed before measuring — and which
-    // is the FIRST thing a first-time visitor sees. It is not in `main`, it is
-    // `position: fixed`, and its controls escape VERTICALLY (below the fold),
-    // so neither the document-scroll check nor the horizontal control check
-    // above can see it. Measured on its own page so the tour is still up, and
-    // walked: a tour whose Next cannot be pressed is a dead end, not a layout
-    // blemish. On the unfixed tree Back sits at x=-132 and Next below the fold.
-    const pt = await newTrackedPage({ viewport: { width: 390, height: 844 } });
-    const cdpT = await pt.context().newCDPSession(pt);
-    await pt.goto(BASE, { waitUntil: 'networkidle' });
-    // Heights as well as widths: the sheet's cap is a fraction of the VIEWPORT
-    // HEIGHT, so a short screen shrinks the card below its own footer. 844/3
-    // = 281 is a 280px phone at 300%; 320 is the shortest layout height a
-    // 400%-zoomed phone produces.
-    for (const [w, h, z] of [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3]]) {
-      const lw = Math.round(w / z), lh = Math.round(h / z);
-      await cdpT.send('Emulation.setDeviceMetricsOverride', {
-        width: lw, height: lh, deviceScaleFactor: z, mobile: false });
-      // `reload` rather than a cold `goto`: the tour must restart at step 0 for
-      // each condition, but the app is already warm, which is most of the cost.
-      await pt.reload({ waitUntil: 'domcontentloaded' });
-      await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
-      const at = `tour ${w}px@${z}x(${lw}x${lh})`;
-      record(`§97 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
-        await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
-      // Walk every step. `steps` counts how far a user could actually get.
-      let steps = 0; const unreachable = [];
-      for (; steps < 14; steps += 1) {
-        const bad = await pt.evaluate(() => {
-          const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
-          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
-          if (!card) return null;
-          const out = [];
-          for (const b of card.querySelectorAll('button')) {
-            const r = b.getBoundingClientRect();
-            if (!(r.width > 0 && r.height > 0)) continue;
-            const nm = (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 14);
-            // Inside a scroll box, "reachable" means the BOX is on screen and
-            // the control fits its width — the user scrolls to reach the rest.
-            const sc = b.closest('[class*="overflow-y-auto"]');
-            if (sc && sc !== b) {
-              const sr = sc.getBoundingClientRect();
-              if (r.left < sr.left - 0.5 || r.right > sr.right + 0.5
-                  || sr.top < -0.5 || sr.bottom > vh + 0.5 || sr.left < -0.5 || sr.right > vw + 0.5)
-                out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside its scroll box`);
-              continue;
-            }
-            if (r.top >= vh - 1 || r.bottom <= 1 || r.left < -0.5 || r.right > vw + 0.5)
-              out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside the viewport`);
-          }
-          return out;
-        });
-        if (bad === null) break;                       // tour finished: every step was advanced
-        unreachable.push(...bad);
-        const next = pt.getByRole('button', { name: /^(next|explore on your own)/i }).first();
-        if (!(await next.count())) { unreachable.push(`step ${steps}: no Next control at all`); break; }
-        const advanced = await next.click({ timeout: 3000 }).then(() => true).catch(() => false);
-        if (!advanced) { unreachable.push(`step ${steps}: Next could not be clicked`); break; }
-        await pt.waitForTimeout(250);
-      }
-      record(`§97 ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
-        unreachable.length === 0, unreachable.slice(0, 4).join(' | '));
-      record(`§97 ${at}: the tour can be walked to the end — Next is pressable on every step`,
-        steps >= 7, `advanced ${steps} steps`);
-    }
-    await cdpT.send('Emulation.clearDeviceMetricsOverride');
-    await pt.close();
 
     // A TALL narrow viewport, SCROLLED. Every condition above is short (844/z),
     // where the header is already static and the page barely scrolls -- so none
@@ -10909,6 +10878,95 @@ const suggestedScenario = {
       await ps.waitForTimeout(300);
     }
     await ps.close();
+  });
+
+  // §98 is §97's tour phase, moved out: §97 had grown to five phases in one
+  // shard unit and sat under 1 s of the packer's headroom line. The tour is a
+  // different surface anyway -- a modal walked step by step, not a page
+  // measured at rest -- so it splits cleanly rather than being trimmed.
+  section('98', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
+    // THE TOUR — the FIRST thing a first-time visitor sees, and the one surface
+    // every other section DISMISSES before measuring (`dismissTourForSetup`), so
+    // until now nothing measured it at all. It is not in `main`, it is
+    // `position: fixed`, and its controls escape VERTICALLY (below the fold), so
+    // neither a document-scroll check nor a horizontal bleed check can see it.
+    // Walked, not just rendered: a tour whose Next cannot be pressed is a dead
+    // end, not a layout blemish. On main Back sits at x=-132 with Next below the
+    // fold, and only 4 of 10 width/height pairs can be walked to the end.
+    const pt = await newTrackedPage({ viewport: { width: 390, height: 844 } });
+    const cdpT = await pt.context().newCDPSession(pt);
+    await pt.goto(BASE, { waitUntil: 'networkidle' });
+    // Heights as well as widths: the sheet's cap is a fraction of the VIEWPORT
+    // HEIGHT, so a short screen shrinks the card below its own footer. 844/3
+    // = 281 is a 280px phone at 300%; 320 is the shortest layout height a
+    // 400%-zoomed phone produces.
+    for (const [w, h, z] of [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3]]) {
+      const lw = Math.round(w / z), lh = Math.round(h / z);
+      await cdpT.send('Emulation.setDeviceMetricsOverride', {
+        width: lw, height: lh, deviceScaleFactor: z, mobile: false });
+      // `reload` rather than a cold `goto`: the tour must restart at step 0 for
+      // each condition, but the app is already warm, which is most of the cost.
+      await pt.reload({ waitUntil: 'domcontentloaded' });
+      await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+      const at = `tour ${w}px@${z}x(${lw}x${lh})`;
+      record(`§98 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
+        await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
+      // Walk every step. `steps` counts how far a user could actually get.
+      let steps = 0; const unreachable = [];
+      for (; steps < 14; steps += 1) {
+        const bad = await pt.evaluate(() => {
+          const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          if (!card) return null;
+          const out = [];
+          for (const b of card.querySelectorAll('button')) {
+            const r = b.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) continue;
+            const nm = (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 14);
+            // Inside a scroll box, "reachable" means the BOX is on screen and
+            // the control fits its width — the user scrolls to reach the rest.
+            const sc = b.closest('[class*="overflow-y-auto"]');
+            if (sc && sc !== b) {
+              const sr = sc.getBoundingClientRect();
+              if (r.left < sr.left - 0.5 || r.right > sr.right + 0.5
+                  || sr.top < -0.5 || sr.bottom > vh + 0.5 || sr.left < -0.5 || sr.right > vw + 0.5)
+                out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside its scroll box`);
+              continue;
+            }
+            if (r.top >= vh - 1 || r.bottom <= 1 || r.left < -0.5 || r.right > vw + 0.5)
+              out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside the viewport`);
+          }
+          return out;
+        });
+        if (bad === null) break;                       // tour finished: every step was advanced
+        unreachable.push(...bad);
+        const next = pt.getByRole('button', { name: /^(next|explore on your own)/i }).first();
+        if (!(await next.count())) { unreachable.push(`step ${steps}: no Next control at all`); break; }
+        const before = await pt.evaluate(() => {
+          const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          const e = c && c.querySelector('.text-indigo-600');
+          return e ? e.textContent.trim() : null;
+        });
+        const advanced = await next.click({ timeout: 3000 }).then(() => true).catch(() => false);
+        if (!advanced) { unreachable.push(`step ${steps}: Next could not be clicked`); break; }
+        // Wait on the counter actually changing, not on a fixed sleep: it is
+        // both the correct signal (the step really advanced) and cheaper than
+        // the fixed delay it replaces.
+        await pt.waitForFunction((prev) => {
+          const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          if (!c) return true;                                   // tour finished
+          const e = c.querySelector('.text-indigo-600');
+          return !e || e.textContent.trim() !== prev;
+        }, before, { timeout: 5000 }).catch(() => {});
+      }
+      record(`§98 ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
+        unreachable.length === 0, unreachable.slice(0, 4).join(' | '));
+      record(`§98 ${at}: the tour can be walked to the end — Next is pressable on every step`,
+        steps >= 7, `advanced ${steps} steps`);
+    }
+    await cdpT.send('Emulation.clearDeviceMetricsOverride');
+    await pt.close();
+
   });
 
 
