@@ -146,7 +146,13 @@ export function cleanPreview(sc: RegenPreview | null | undefined): RegenPreview 
  * honest transient kind ('no-story') rather than rendering an empty card.
  */
 export function previewIsUsable(sc: RegenPreview | null): boolean {
-  return !!sc && typeof sc.description === 'string' && sc.description.trim().length > 0;
+  // Every field the preview card RENDERS, not just the description: a draw that
+  // kept its story but lost its option labels at the boundary would otherwise
+  // render "A:  / " and, on Keep, blank all four labels of the user's game.
+  // Same six fields the integration suite calls a valid scenario shape.
+  const str = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  return !!sc && str(sc.description) && str(sc.name)
+    && str(sc.row1) && str(sc.row2) && str(sc.col1) && str(sc.col2);
 }
 
 // ── Keep ───────────────────────────────────────────────────────────────────

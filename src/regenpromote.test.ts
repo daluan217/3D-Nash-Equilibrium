@@ -10,7 +10,7 @@
 import {
   REGEN_ERROR_MESSAGES, REGEN_SERVER_TEXT_MAX, regenErrorFromResponse,
   REGEN_NAME_MAX, REGEN_LABEL_MAX, REGEN_DESCRIPTION_MAX,
-  keepFill, cleanPreview, regenKeyEquals, regenResponseIsCurrent,
+  keepFill, cleanPreview, previewIsUsable, regenKeyEquals, regenResponseIsCurrent,
   type RegenErrorKind, type RegenPreview,
 } from './utils/scenarioRegen';
 import { termOccursIn, cleanUserColorTerms, USER_TERMS_MAX } from './utils/colorTerms';
@@ -177,6 +177,23 @@ for (const junk of [null, undefined, {}, { name: 1 }, { description: {} }, { row
   if (out.actorA !== undefined && !Array.isArray(out.actorA)) previewBad++;
 }
 check('cleanPreview is total: no shape throws and every rendered field is a string or absent', previewBad === 0, `bad=${previewBad}`);
+
+// E2. A draw that survived the boundary only PARTLY is not usable. Dropping a
+//     bad field keeps the rest, so a draw could otherwise keep its story, lose
+//     its labels, render "A:  / " and blank all four labels on Keep.
+//     MUTANT: weaken previewIsUsable to test the description alone -> row fails.
+{
+  const partial = cleanPreview({ description: 'A real story about the orchard.', name: 'Ok',
+    row1: 123, row2: {}, col1: [], col2: null } as never);
+  check('a draw that lost its option labels at the boundary is NOT usable (Keep would blank all four)',
+    partial !== null && !previewIsUsable(partial), JSON.stringify(partial));
+  // CONTROL: a complete draw must still be usable, or the rule above would just
+  // reject everything and the check would pass for the wrong reason.
+  const whole = cleanPreview({ description: 'A real story.', name: 'Ok',
+    row1: 'a', row2: 'b', col1: 'c', col2: 'd' } as never);
+  check('control: a COMPLETE draw is still usable (the rule rejects the partial one, not everything)',
+    whole !== null && previewIsUsable(whole));
+}
 
 // F. cleanUserColorTerms never returns something the cap/key rules reject.
 let termBad = 0;
