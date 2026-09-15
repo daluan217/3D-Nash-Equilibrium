@@ -31,13 +31,16 @@ const seg = (s: string) => [...new Intl.Segmenter(undefined, { granularity: 'gra
 //    (pre-clamp) and the orphan-honesty property fails.
 // ─────────────────────────────────────────────────────────────────────────
 let s = 20260915;
-const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+// Math.imul, not `*`: s * 1103515245 exceeds MAX_SAFE_INTEGER and JS drops
+// the low bits before the mask (reviewer finding, verified).
+const rnd = () => ((s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff) / 0x7fffffff);
 const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length) % xs.length];
 const CLUSTERS = ['\u{1F1FA}\u{1F1F8}', '\u{1F468}‍\u{1F469}‍\u{1F467}', '\u{1F44D}\u{1F3FD}', 'é', '❤️'];
 const NOUNS = ['the dock crew', 'the baker', 'the tug company', 'the night shift', 'a courier'];
 const FILLER = 'The two neighboring workshops negotiate a routine scheduling matter. ';
 
 let violations: string[] = [];
+const seen = { labelClamped: 0, orphaned: 0, dropped: 0, shadowed: 0 };
 for (let i = 0; i < 600; i++) {
   const padTo = pick([0, 100, REGEN_DESCRIPTION_MAX - 3, REGEN_DESCRIPTION_MAX + 50, REGEN_DESCRIPTION_MAX * 2]);
   let desc = '';
@@ -48,13 +51,26 @@ for (let i = 0; i < 600; i++) {
   if (rnd() < 0.4) desc += pick(CLUSTERS) + 'TAIL';
   const preview: RegenPreview = {
     name: 'Draw ' + i, description: desc,
-    row1: pick(['Load Now', 'Row One ' + pick(CLUSTERS)]), row2: 'Load Later',
-    col1: 'Send Tug', col2: pick(['Hold Tug', 'Col Two ' + pick(CLUSTERS)]),
+    // Labels must STRADDLE their own 40-unit budget, or the clamp is never
+    // exercised on them (reviewer finding: the old values were <= 16 chars, so
+    // only `desc` was ever clamped).
+    row1: pick(['Load Now', 'Load the barge early '.repeat(3) + pick(CLUSTERS)]),
+    row2: pick(['Load Later', 'Hold the berth until the tide turns ' + pick(CLUSTERS)]),
+    col1: pick(['Send Tug', 'Send the harbour tug out at once ' + pick(CLUSTERS)]),
+    col2: pick(['Hold Tug', 'Keep the tug alongside the quay ' + pick(CLUSTERS)]),
     actorA: rnd() < 0.7 ? [nounA] : [], actorB: rnd() < 0.7 ? [nounB] : [],
   } as RegenPreview;
+  // One arm makes an existing chip a SUBSTRING of the OTHER side's option label,
+  // which is what `shadowed` actually requires: the longer span claims those
+  // words, so the short chip paints nothing of its own. (Reviewer finding:
+  // shadowed was 0 across all 600 cases; colliding with the other side's NOUN
+  // is not enough — that reads as 'painted'.)
+  const shadowArm = rnd() < 0.3;
+  if (shadowArm) { preview.row1 = 'the harbour tug crew'; preview.description = 'The harbour tug crew waits while the barge loads early. ' + desc; }
   const existing = {
     a: rnd() < 0.5 ? ['the old crew'] : [],
-    b: rnd() < 0.3 ? Array.from({ length: USER_TERMS_MAX }, (_, k) => 'chip ' + k) : [],
+    b: shadowArm ? ['tug crew']
+      : rnd() < 0.3 ? Array.from({ length: USER_TERMS_MAX }, (_, k) => 'chip ' + k) : [],
   };
   const k = keepFill(preview, rnd() < 0.5, existing);
 
@@ -71,7 +87,13 @@ for (let i = 0; i < 600; i++) {
     // A clamp that split a cluster leaves a tail that is NOT a whole cluster
     // of the source: re-segmenting the value must reproduce a prefix of the
     // source's own cluster sequence.
-    const src = fname === 'desc' ? desc : '';
+    // Each field is checked against ITS OWN source, not just `desc`.
+    const src = fname === 'desc' ? String(preview.description ?? '')
+      : fname === 'row1' ? String(preview.row1 ?? '')
+      : fname === 'row2' ? String(preview.row2 ?? '')
+      : fname === 'col1' ? String(preview.col1 ?? '')
+      : fname === 'col2' ? String(preview.col2 ?? '')
+      : fname === 'name' ? String(preview.name ?? '') : '';
     if (src) {
       const srcClusters = seg(src), outClusters = seg(v);
       for (let c = 0; c < outClusters.length; c++) {
@@ -79,6 +101,12 @@ for (let i = 0; i < 600; i++) {
       }
     }
   }
+  for (const v of [k.labels.row1, k.labels.row2, k.labels.col1, k.labels.col2]) {
+    if (v.length >= REGEN_LABEL_MAX - 2) seen.labelClamped++;
+  }
+  seen.orphaned += k.orphaned.a.length + k.orphaned.b.length;
+  seen.dropped += k.dropped.a.length + k.dropped.b.length;
+  seen.shadowed += k.shadowed.a.length + k.shadowed.b.length;
   // P2. ORPHAN HONESTY: a chip reported orphaned must really not occur in the
   // FINAL description, and a kept chip that does occur must not be reported.
   for (const side of ['a', 'b'] as const) {
@@ -101,6 +129,12 @@ for (let i = 0; i < 600; i++) {
 }
 check('keepFill property sweep (seed 20260915, 600 cases): clamps are grapheme-safe, orphans are honest, caps hold',
   violations.length === 0, violations.slice(0, 3).join(' | '));
+// COVERAGE, not just correctness: "0 violations" is only meaningful if the sweep
+// actually reached each announced state. Each of these was silently 0 at some
+// point while the sweep still reported success.
+check('the sweep really exercised the label clamp, orphaned, dropped AND shadowed states',
+  seen.labelClamped > 0 && seen.orphaned > 0 && seen.dropped > 0 && seen.shadowed > 0,
+  JSON.stringify(seen));
 // CONTROL: the property predicate must FIRE on a deliberately inconsistent
 // shape, or "0 violations" could mean it never looks at anything.
 {
@@ -137,6 +171,44 @@ check("an AbortError maps to 'timeout'",
   regenErrorFromResponse(null, null, new DOMException('aborted', 'AbortError')) === 'timeout');
 check("an ordinary Error does NOT map to 'timeout'",
   regenErrorFromResponse(null, null, new Error('boom')) !== 'timeout');
+
+// B2. A 200 that carried no usable story is a DRAW failure, not a network one.
+//     Telling the user "Couldn't reach the scenario service" about a request
+//     that plainly succeeded is a lie they cannot act on (reviewer finding).
+//     MUTANT: restore `body.scenario === null` as the test -> these rows fail.
+for (const [label, body] of [
+  ['non-string description', { scenario: { description: 123 } }],
+  ['empty object', { scenario: {} }],
+  ['labels lost at the boundary', { scenario: { name: 'N', description: 'A story.', row1: 7 } }],
+] as [string, unknown][]) {
+  check(`a 200 carrying an unusable scenario (${label}) is 'no-story', never 'network'`,
+    regenErrorFromResponse(200, body as never, null) === 'no-story',
+    regenErrorFromResponse(200, body as never, null));
+}
+check("a 200 with scenario:null and failure:'no-key' is still 'no-key' (the permanent kind is not swallowed)",
+  regenErrorFromResponse(200, { scenario: null, failure: 'no-key' } as never, null) === 'no-key');
+// CONTROLS: a real network failure must STILL be 'network', or the rule above
+// could just rename every error and pass for the wrong reason.
+check("control: a transport failure is still 'network'",
+  regenErrorFromResponse(null, null, new TypeError('fetch failed')) === 'network');
+check("control: a 500 is still 'network'", regenErrorFromResponse(500, {} as never, null) === 'network');
+
+// B3. keepFill must LEAVE THE NAME ALONE when the draw has no usable name —
+//     its own KeptFill contract. saveFormModel does `action.name ?? state.name`,
+//     so an empty string would wipe the user's game name instead of falling back.
+//     MUTANT: `out.name = clampGraphemeSafe(cleanText(preview.name ?? ''), ...)`
+//     unconditionally -> the absent-name row fails.
+{
+  const base = { description: 'A real story.', row1: 'a', row2: 'b', col1: 'c', col2: 'd' };
+  check('a draw with NO name leaves the name field alone (never blanks it)',
+    keepFill({ ...base } as never, true, { a: [], b: [] }).name === undefined);
+  check('a draw with a non-string name leaves the name field alone',
+    keepFill({ ...base, name: 42 } as never, true, { a: [], b: [] }).name === undefined);
+  check('control: a draw WITH a real name still replaces it',
+    keepFill({ ...base, name: 'Fresh Story' } as never, true, { a: [], b: [] }).name === 'Fresh Story');
+  check('control: replaceName=false never sets a name at all',
+    keepFill({ ...base, name: 'Fresh Story' } as never, false, { a: [], b: [] }).name === undefined);
+}
 
 // C. Purity: the message functions hold no state (was s11 angle M).
 //    MUTANT: memoise serverSaid across calls and the interleaved rounds diverge.
@@ -175,6 +247,7 @@ for (const junk of [null, undefined, {}, { name: 1 }, { description: {} }, { row
     if (v !== undefined && typeof v !== 'string') previewBad++;
   }
   if (out.actorA !== undefined && !Array.isArray(out.actorA)) previewBad++;
+    if (out.actorB !== undefined && !Array.isArray(out.actorB)) previewBad++;
 }
 check('cleanPreview is total: no shape throws and every rendered field is a string or absent', previewBad === 0, `bad=${previewBad}`);
 
@@ -211,6 +284,10 @@ check('cleanUserColorTerms always returns a capped, non-blank, de-duplicated str
 {
   const flooded = REGEN_ERROR_MESSAGES['rate-limit']('y'.repeat(5000));
   const quoted = flooded.replace(/^AI limit reached — /, '');
+  // Both halves, or the row passes on a mutant that ignores server text entirely
+  // and falls back to the 44-grapheme default (reviewer finding).
+  check('the rate-limit note actually QUOTES the server text (not the default) when the server sent some',
+    quoted.startsWith('yyy'), JSON.stringify(quoted.slice(0, 20)));
   check('the rate-limit note quotes at most REGEN_SERVER_TEXT_MAX graphemes of server text',
     seg(quoted).length <= REGEN_SERVER_TEXT_MAX, `graphemes=${seg(quoted).length}`);
   check('the quoted tail is not cut mid-cluster',

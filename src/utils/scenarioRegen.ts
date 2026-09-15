@@ -271,7 +271,13 @@ export function keepFill(
     return found;
   };
   out.shadowed = { a: shadowedOn('a', kept.a), b: shadowedOn('b', kept.b) };
-  if (replaceName) out.name = clampGraphemeSafe(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
+  // A draw with no usable name must LEAVE THE NAME ALONE (this interface's own
+  // contract), not blank it: saveFormModel does `action.name ?? state.name`, so
+  // an empty string would wipe the user's game name instead of falling back.
+  if (replaceName) {
+    const drawn = clampGraphemeSafe(cleanText(typeof preview.name === 'string' ? preview.name : ''), REGEN_NAME_MAX);
+    if (drawn) out.name = drawn;
+  }
   return out;
 }
 
@@ -376,7 +382,11 @@ export function regenErrorFromResponse(
   if (err instanceof DOMException && err.name === 'AbortError') return 'timeout';
   if (status === 429) return 'rate-limit';
   if (status === 404) return 'unavailable';
-  if (status === 200 && body && body.scenario === null) {
+  // A 200 that carried no usable story is a DRAW failure, not a network one —
+  // whether the server said `scenario: null` or a non-ours upstream sent a
+  // malformed object. Reporting "Couldn't reach the scenario service" for a
+  // request that plainly succeeded is a lie the user cannot act on.
+  if (status === 200 && body && !previewIsUsable(cleanPreview(body.scenario as RegenPreview))) {
     return body.failure === 'no-key' ? 'no-key' : 'no-story';
   }
   return 'network';

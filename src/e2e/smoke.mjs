@@ -10541,9 +10541,14 @@ const suggestedScenario = {
     // An ORDERED script, so the interleaving is deterministic rather than timing luck:
     // the first (slow) answer is abandoned, the second (fast) one is the live request.
     let seq = 0;
+    // A DISTINCT third draw: the plan used to clamp to REGEN_STORY_A, so part C's
+    // Discard row compared the textarea against text Keep had already put there
+    // and would have passed even if Discard applied the preview (reviewer
+    // finding). REGEN_STORY_B shares no wording with A.
     const plan = [
       { delay: 2500, status: 429, body: { error: 'FIRST (slow, abandoned)' } },
       { delay: 40, status: 200, body: { scenario: REGEN_STORY_A } },
+      { delay: 40, status: 200, body: { scenario: REGEN_STORY_B } },
     ];
     await mockRegenOn(p97, async (route) => {
       const step = plan[Math.min(seq++, plan.length - 1)];
@@ -10565,9 +10570,14 @@ const suggestedScenario = {
     await p97.waitForTimeout(250);
     await dlg.getByRole('button', { name: /^cancel$/i }).click();
     await p97.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { state: 'hidden', timeout: 5000 });
-    await p97.waitForTimeout(2700); // the abandoned 429 lands in here
+    // REOPEN WHILE THE ANSWER IS STILL IN FLIGHT (reviewer finding: waiting the
+    // full delay out first only tested reopening after it had settled, which is
+    // the weaker case). The 429 is 2500ms out and ~400ms has passed, so it
+    // arrives with the SECOND dialog already on screen — the response must find
+    // a dialog it no longer belongs to and land nowhere.
     await p97.getByRole('button', { name: /save preset/i }).click();
     await p97.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await p97.waitForTimeout(2600); // the abandoned 429 lands HERE, dialog open
     const reopened = (await dlg.evaluate((el) => el.textContent || '')).replace(/\s+/g, ' ');
     record('§97 an abandoned in-flight answer does not paint a stale error into the REOPENED dialog',
       !/AI limit reached/i.test(reopened), JSON.stringify(reopened.slice(-120)));
@@ -10608,7 +10618,12 @@ const suggestedScenario = {
     await p97.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 10000 });
     const beforeDiscard = await dlg.locator('textarea').first().inputValue();
     const discard = dlg.getByRole('button', { name: /discard/i });
-    if (await discard.count()) {
+    // Asserted, not silently skipped: a Discard button that stopped rendering
+    // would otherwise take both rows below with it (reviewer finding).
+    record('§97 fixture guard: the preview offers a Discard control', await discard.count() > 0);
+    record('§97 fixture guard: the third draw is a DIFFERENT story, so "unchanged" is a real comparison',
+      (await dlg.evaluate((el) => el.textContent || '')).includes(REGEN_STORY_B.name));
+    {
       await discard.first().click();
       await p97.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
       record('§97 Discard removes the preview card entirely', await p97.getByText('New scenario (preview)', { exact: false }).count() === 0);
@@ -10697,6 +10712,10 @@ const EXPECTED_STATUS_NOISE = {
   // so the real server answers 404 once — the exact response whose
   // "deleted elsewhere" message the section asserts. Same class as §38.
   '96': [404, 404],
+  // §97 deliberately mocks ONE 429 as the slow answer it then abandons; now
+  // that the dialog is reopened mid-flight, that response lands on an open page
+  // and Chromium logs its status. One budgeted entry, consumed once.
+  '97': [429],
   // §76 extension (RED-APP-16/005): deliberately mocks a 429 on the admin
   // panel's Refresh — the exact behavior "a visible error banner + Retry,
   // stale numbers stay on screen" verifies.

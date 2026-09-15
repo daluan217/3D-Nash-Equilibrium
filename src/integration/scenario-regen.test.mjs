@@ -864,7 +864,10 @@ try {
     // 12c. was _gen/blregen-s6-roundtrip.mjs (server half) — what the route
     // RETURNS is screened: every field a string, actor nouns a string array,
     // and no field of the caller's own request echoed back.
-    calls = 0; mode = 'story';
+    // mode 'actors', not 'story': with 'story' the draw carries no actorA at all,
+    // so the actor-noun row below passed vacuously (reviewer finding, verified —
+    // the detail line read `actorA=undefined`).
+    calls = 0; mode = 'actors';
     await boot(HOSTED_ON_ENV);
     const r = await call('POST', '/api/scenario/regenerate', {
       body: { payoffs: PAYOFFS, current: { name: 'ECHOME', description: 'ECHOME description', row1: 'ECHOME' } },
@@ -874,9 +877,12 @@ try {
     record('the route returns a fully-typed scenario (every rendered field is a non-empty string)',
       !!sc && ['name', 'description', 'row1', 'row2', 'col1', 'col2'].every((k) => strField(sc[k])),
       `shape=${JSON.stringify(sc && Object.fromEntries(Object.entries(sc).map(([k, v]) => [k, typeof v])))}`);
-    record('actor nouns, when present, are an array of strings only',
-      !sc?.actorA || (Array.isArray(sc.actorA) && sc.actorA.every((x) => typeof x === 'string')),
-      `actorA=${JSON.stringify(sc?.actorA)}`);
+    record('fixture guard: this draw really carries actor nouns (so the row below is a real test)',
+      Array.isArray(sc?.actorA) && sc.actorA.length > 0, `actorA=${JSON.stringify(sc?.actorA)}`);
+    record('actor nouns are an array of strings only',
+      Array.isArray(sc?.actorA) && sc.actorA.every((x) => typeof x === 'string')
+        && (sc.actorB === undefined || (Array.isArray(sc.actorB) && sc.actorB.every((x) => typeof x === 'string'))),
+      `actorA=${JSON.stringify(sc?.actorA)} actorB=${JSON.stringify(sc?.actorB)}`);
     record('the route never echoes the caller\'s own `current` text back as the new story',
       !!sc && !JSON.stringify(sc).includes('ECHOME'), `echoed=${JSON.stringify(sc).includes('ECHOME')}`);
     await stop();
