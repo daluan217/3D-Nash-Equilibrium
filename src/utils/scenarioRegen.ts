@@ -317,10 +317,14 @@ export function orphanedNote(
 }
 
 // ── errors ───────────────────────────────────────────────────────────────────
-export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key' | 'no-story' | 'network';
+export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key' | 'no-story' | 'network' | 'game-gone';
 
 /**
- * Map a response (or a thrown/aborted fetch) to one of six honest outcomes.
+ * Map a response (or a thrown/aborted fetch) to one of the six outcomes a
+ * RESPONSE can produce. `RegenErrorKind` has a seventh, 'game-gone', which
+ * this function never returns: it is decided client-side before any request
+ * is sent (App.tsx, the game vanished from the list), so there is no status
+ * or body to map.
  * `status` is `null` when the request never produced a response at all
  * (network failure, or an abort — distinguished by `err`).
  *
@@ -345,7 +349,7 @@ export type RegenErrorKind = 'rate-limit' | 'timeout' | 'unavailable' | 'no-key'
  */
 export function regenErrorFromResponse(
   status: number | null,
-  body: { scenario?: unknown; error?: string; failure?: unknown } | null,
+  body: { scenario?: unknown; error?: unknown; failure?: unknown } | null,
   err: unknown,
 ): RegenErrorKind {
   if (err instanceof DOMException && err.name === 'AbortError') return 'timeout';
@@ -357,11 +361,30 @@ export function regenErrorFromResponse(
   return 'network';
 }
 
+/** Longest server-supplied 429 text the dialog will quote. Calibrated on the
+ *  shipping condition: this server's own longest `error` string is 121 chars
+ *  and `rateLimit`'s own 429 is 54, so nothing we send is ever truncated. */
+export const REGEN_SERVER_TEXT_MAX = 200;
+
+/**
+ * Did the server actually SAY something quotable? Same test `apiClient`'s
+ * `said` applies to the same `error` field (apiClient.ts, main 81e4a21): a
+ * non-string is not a message, and neither is whitespace. Clamped and
+ * control-stripped too, because in desktop cloud mode `apiBaseUrl` is a
+ * free-form field (MenuDrawer.tsx), so this string is not always ours.
+ */
+function serverSaid(t: unknown): string {
+  if (typeof t !== 'string') return '';
+  return clampGraphemeSafe(cleanText(t), REGEN_SERVER_TEXT_MAX);
+}
+
 /** One template per kind; `rate-limit` folds in the server's own 429 body
  *  text (the standard "Too many attempts…" wording `rateLimit` sends) so the
- *  dialog states the real reason rather than a generic one. */
-export const REGEN_ERROR_MESSAGES: Record<RegenErrorKind, (serverText?: string) => string> = {
-  'rate-limit': (t) => `AI limit reached — ${t || 'Too many attempts. Please wait a minute and try again.'}`,
+ *  dialog states the real reason rather than a generic one — but only when
+ *  the server really sent text; otherwise the em-dash would dangle over an
+ *  empty tail, or render a raw `[object Object]` (BLUE-LOOP-REGEN-21). */
+export const REGEN_ERROR_MESSAGES: Record<RegenErrorKind, (serverText?: unknown) => string> = {
+  'rate-limit': (t) => `AI limit reached — ${serverSaid(t) || 'Too many attempts. Please wait a minute and try again.'}`,
   'timeout': () => 'This is taking longer than expected — try again?',
   'unavailable': () => "Regenerating isn't available on this server.",
   // RED-REGEN-21/002: distinct from 'unavailable' (the route is enabled, so
@@ -370,6 +393,14 @@ export const REGEN_ERROR_MESSAGES: Record<RegenErrorKind, (serverText?: string) 
   'no-key': () => "Regenerating isn't set up on this server — this isn't something you can retry.",
   'no-story': () => "Couldn't write a verified scenario just now — try again.",
   'network': () => "Couldn't reach the scenario service. Your text below is unchanged.",
+  // BLUE-LOOP-REGEN-21: the game was deleted elsewhere while this dialog stayed
+  // open (App.tsx prunes the row on a Save-Changes 404 and deliberately leaves
+  // the dialog up). Nothing is unreachable, so 'network' misnamed the cause;
+  // there is no matrix to rewrite a story FOR, so "try again" would lie too.
+  // Names only what this dialog actually offers — read off the live DOM, which
+  // has Cancel and Save Changes and no "save as new" (a first draft of this
+  // string promised one, which would have been a fresh dishonesty).
+  'game-gone': () => "This game was deleted elsewhere, so there's nothing to rewrite. Your text below is unchanged — copy anything you want to keep before you close this.",
 };
 
 /** aria-live announcements, one string per moment — kept as constants so the

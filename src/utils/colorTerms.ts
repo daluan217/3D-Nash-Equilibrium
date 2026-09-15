@@ -599,9 +599,6 @@ export function regenKeptColorTerms(
   description?: string,
 ): { a: string[]; b: string[]; dropped: { a: string[]; b: string[] }; orphaned: { a: string[]; b: string[] } } {
   const existing = cleanUserColorTermPair(existingA, existingB);
-  const orphaned = description === undefined
-    ? { a: [] as string[], b: [] as string[] }
-    : { a: existing.a.filter((t) => !termOccursIn(description, t)), b: existing.b.filter((t) => !termOccursIn(description, t)) };
   const ownedA = new Set(existing.a.map(colorTermKey));
   const ownedB = new Set(existing.b.map(colorTermKey));
   // A generated actor noun may add a NEW highlight, but may never claim a
@@ -609,6 +606,17 @@ export function regenKeptColorTerms(
   const newA = cleanUserColorTerms(actorA).filter((t) => !ownedB.has(colorTermKey(t)));
   const newB = cleanUserColorTerms(actorB).filter((t) => !ownedA.has(colorTermKey(t)));
   const result = cleanUserColorTermPair([...existing.a, ...newA], [...existing.b, ...newB]);
+  // BLUE-LOOP-REGEN-21: judged on the FINAL kept lists, not on `existing`
+  // alone. A DRAW-supplied actor noun can be absent from the kept description
+  // too — `actorNounsOk` validates it against the server's 1200-char text
+  // while `keepFill` clamps to 800, so a noun occurring past 800 is legitimately
+  // "verbatim" to the server and gone from the text the dialog holds. The chip
+  // rendered "(not highlighted)" correctly, but the Keep announcement said
+  // nothing, so the one channel a non-sighted user gets at that moment was
+  // silent for a draw's noun while naming the identical case for a user's chip.
+  const orphaned = description === undefined
+    ? { a: [] as string[], b: [] as string[] }
+    : { a: result.a.filter((t) => !termOccursIn(description, t)), b: result.b.filter((t) => !termOccursIn(description, t)) };
   const resultAKeys = new Set(result.a.map(colorTermKey));
   const resultBKeys = new Set(result.b.map(colorTermKey));
   // CodeRabbit (this PR) + director-reproduced Opus review F1: a newly-

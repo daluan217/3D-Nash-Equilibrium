@@ -421,6 +421,81 @@ try {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // 7b. A PERMANENT "no" IS NOT RATE-LIMITED. Sharing the "report" bucket is
+  //     deliberate for real model calls, but a request that can NEVER reach a
+  //     provider must not spend that budget — and must never be told to "wait
+  //     a minute and try again", advice that cannot come true when no key
+  //     exists. The flag-off half of this was a CodeRabbit finding; `no-key`
+  //     is exactly as permanent and used to sit AFTER the limiter, so the
+  //     21st click in a minute flipped the honest copy to the 429 text.
+  //     Both controls below must keep passing: the limiter is still ARMED for
+  //     calls that can really invent (moving the check must not disable it).
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    calls = 0; mode = 'story';
+    await boot({ NASH_SCENARIO_REGEN: '1' }); // flag ON, no credentials: canInvent() false forever
+    let flipped = null;
+    for (let i = 1; i <= 25 && !flipped; i++) {
+      const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+      const honest = r.status === 200 && r.json?.scenario === null && r.json?.failure === 'no-key';
+      if (!honest) flipped = { i, status: r.status, body: JSON.stringify(r.json) };
+    }
+    record('no-key: 25 rapid calls all get the SAME honest permanent answer (never a 429 "wait a minute")',
+      flipped === null, flipped ? `call #${flipped.i} became ${flipped.status} ${flipped.body}` : 'all 25 identical');
+    record('no-key: the provider was never called across all 25', calls === 0, `calls=${calls}`);
+    // The no-key burst must not have EATEN the shared budget either: /api/report
+    // on the same client is still served after 25 regenerate calls.
+    const reportAfter = await call('POST', '/api/report', { body: { payoffs: PAYOFFS } });
+    record('no-key: 25 regenerate calls did not starve the shared /api/report budget',
+      reportAfter.status !== 429, `status=${reportAfter.status}`);
+    await stop();
+
+    // CONTROL 1: the limiter is NOT disabled — a server that CAN invent is
+    // still capped at 20/min on this very route.
+    calls = 0; mode = 'story';
+    await boot(HOSTED_ON_ENV);
+    let capped = false;
+    for (let i = 0; i < 21; i++) {
+      const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+      if (r.status === 429) capped = true;
+    }
+    record('CONTROL: with credentials, regenerate is STILL rate-limited (the fix moved the check, not the limiter)',
+      capped, `saw 429 within 21 calls=${capped}`);
+    await stop();
+
+    // CONTROL 2: a 400 is still a 400 — the early no-key return must not
+    // swallow payload validation on a server that can invent.
+    await boot(HOSTED_ON_ENV);
+    const stillBad = await call('POST', '/api/scenario/regenerate', { body: { payoffs: { a11: 'nope' } } });
+    record('CONTROL: invalid payoffs still 400 when the server CAN invent', stillBad.status === 400, `status=${stillBad.status}`);
+    await stop();
+
+    // DELIBERATE CONSEQUENCE, pinned so it cannot drift silently: on a no-key
+    // server the answer now comes BEFORE payload validation, so a malformed
+    // body gets `no-key` rather than 400. That is the honest answer (this
+    // process can never invent, whatever the payload), but it must never be a
+    // 500 and must never echo the caller's own input back.
+    await boot({ NASH_SCENARIO_REGEN: '1' });
+    let junkBad = 0; let notNoKey = 0; const junkShapes = [];
+    for (const body of [{}, { payoffs: null }, { payoffs: 'x'.repeat(5000) }, { payoffs: { a11: NaN } }, { payoffs: [] }]) {
+      const r = await call('POST', '/api/scenario/regenerate', { body });
+      junkShapes.push(`${r.status}:${r.json?.failure ?? r.json?.error ?? '?'}`);
+      if (r.status >= 500) junkBad++;
+      if (JSON.stringify(r.json ?? '').includes('xxxxx')) junkBad++;
+      // Reviewer finding (ds-rev, 2026-09-15), REPRODUCED: counting only 500s
+      // and echoes pinned NOTHING — reverting the ordering left this block
+      // green with five 400s. The consequence being pinned is the STATUS and
+      // KIND, so assert those.
+      if (!(r.status === 200 && r.json?.failure === 'no-key')) notNoKey++;
+    }
+    record('no-key: malformed bodies get a typed answer, never a 500, never an echo of the input',
+      junkBad === 0, junkShapes.join(' | '));
+    record('no-key: the permanent answer comes BEFORE payload validation (every malformed body is 200 no-key, not 400)',
+      notNoKey === 0, junkShapes.join(' | '));
+    await stop();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // 8. DESKTOP — bank first (0 provider calls even with credentials
   //    configured), reachable with NO credentials at all, never rate-limited.
   //    Actor nouns reach BOTH routes: a bank row's role noun is often the only

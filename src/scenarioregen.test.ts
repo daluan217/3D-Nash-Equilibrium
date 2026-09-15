@@ -23,10 +23,12 @@ import {
   regenDroppedNote,
   orphanedNote,
   REGEN_ERROR_MESSAGES,
+  REGEN_SERVER_TEXT_MAX,
   REGEN_NAME_MAX,
   REGEN_LABEL_MAX,
   REGEN_DESCRIPTION_MAX,
   type RegenKey,
+  type RegenErrorKind,
 } from './utils/scenarioRegen';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { pickScenarioDomainExcluding, SCENARIO_DOMAINS } from './utils/scenarioDomains';
@@ -424,9 +426,78 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
 
   // Every kind must have a message: `Record<RegenErrorKind, …>` makes this a
   // compile error, but the runtime check also catches a message left empty.
-  for (const k of ['rate-limit', 'timeout', 'unavailable', 'no-key', 'no-story', 'network'] as const) {
+  // BLUE-LOOP-REGEN-21: this list used to be hardcoded, so adding 'game-gone'
+  // left the new kind silently unchecked here. Derived from the map's OWN keys
+  // now, so it cannot drift again — plus a row asserting the map covers exactly
+  // the kinds the union declares, read from the source (a Record<> type error is
+  // a compile-time signal, and this file also runs under plain tsx).
+  const allKinds = Object.keys(REGEN_ERROR_MESSAGES) as RegenErrorKind[];
+  for (const k of allKinds) {
     check(`REGEN_ERROR_MESSAGES has non-empty wording for '${k}'`, REGEN_ERROR_MESSAGES[k]().trim().length > 0);
   }
+  const unionSrc = readFileSync('src/utils/scenarioRegen.ts', 'utf8')
+    .match(/export type RegenErrorKind =([^;]+);/)?.[1] ?? '';
+  const declared = [...unionSrc.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]).sort();
+  check('REGEN_ERROR_MESSAGES covers exactly the kinds RegenErrorKind declares (no kind without copy, no orphan entry)',
+    JSON.stringify(declared) === JSON.stringify([...allKinds].sort()),
+    `declared=${JSON.stringify(declared)} mapped=${JSON.stringify([...allKinds].sort())}`);
+  check('the kind list this file checks is not empty (the derivation itself works)', allKinds.length >= 7, String(allKinds.length));
+
+  // Every kind, every hostile input: only `rate-limit` takes server text, but
+  // the signature accepts `unknown` for all of them, so all of them are driven
+  // with the shapes a non-ours gateway can produce (desktop cloud mode lets the
+  // user point apiBaseUrl anywhere). A message must stay a complete, bounded,
+  // control-free sentence rather than dangling, leaking [object Object], or
+  // pasting a flood into the dialog.
+  const NUL = String.fromCharCode(0);
+  const hostile: unknown[] = [undefined, null, '', '   ', 0, false, NaN, [], {},
+    { toString() { throw new Error('boom'); } }, 'x'.repeat(5000), NUL + NUL,
+    String.fromCharCode(0x202E) + 'evil', '</script>'];
+  for (const k of allKinds) {
+    const bad: string[] = [];
+    for (const w of hostile) {
+      let out: string;
+      try { out = REGEN_ERROR_MESSAGES[k](w as never); } catch (e) { bad.push(`THREW: ${String(e).slice(0, 40)}`); continue; }
+      if (typeof out !== 'string' || out.trim().length === 0) bad.push('empty');
+      else if (/[—:]\s*$/.test(out.trim())) bad.push(`dangles: ${out.slice(-30)}`);
+      else if (out.includes('[object Object]')) bad.push('object leak');
+      else if (out.length > 400) bad.push(`unbounded (${out.length})`);
+      else if (out.includes(NUL)) bad.push('NUL leak');
+    }
+    check(`'${k}': a complete, bounded, control-free sentence for every hostile input shape`,
+      bad.length === 0, bad.slice(0, 2).join(' ; '));
+  }
+
+  // A condition that retrying CANNOT change must never invite a retry — that is
+  // exactly the defect RED-REGEN-21/002 found in 'no-key' and the one 'game-gone'
+  // was created to avoid. One-directional on purpose: a transient kind MAY
+  // prompt, but is not required to ('network' reports without nagging), because
+  // requiring the phrase would turn an honesty rule into a copy-style rule.
+  const PERMANENT_KINDS = ['no-key', 'unavailable', 'game-gone'];
+  const invitesRetry = (text: string) =>
+    /\btry again\b/i.test(text) && !/isn't something you can retry|nothing to rewrite/i.test(text);
+  for (const k of allKinds) {
+    if (!PERMANENT_KINDS.includes(k)) continue;
+    check(`'${k}' is permanent, so its message never invites a retry`,
+      !invitesRetry(REGEN_ERROR_MESSAGES[k]()), JSON.stringify(REGEN_ERROR_MESSAGES[k]().slice(0, 80)));
+  }
+  // Control: the predicate must FIRE on a message that does invite a retry,
+  // otherwise the rows above could pass by never matching anything.
+  check('control: the retry-invitation predicate fires on a permanent message that says "try again"',
+    invitesRetry("Regenerating isn't set up on this server — try again."));
+  // Reviewer finding (ds-rev, 2026-09-15), REPRODUCED: the old second control
+  // used the SHIPPED no-key text, which contains no "try again" at all — so it
+  // passed on the first conjunct and the negation exemption never decided
+  // anything (deleting the exemption left this file green). These two controls
+  // contain "try again" AND the negation, so they exercise the exemption
+  // itself: it exists so a message may explain that retrying will not help
+  // without being read as an invitation to retry.
+  check('control: the exemption spares a message that says "try again" only to negate it (no-key shape)',
+    !invitesRetry("Regenerating isn't set up on this server — this isn't something you can retry, so try again later won't help."));
+  check('control: the exemption spares the game-gone shape for the same reason',
+    !invitesRetry("There's nothing to rewrite, so try again would not help here."));
+  check('control: a message with BOTH phrasings still counts as an invitation when nothing negates it',
+    invitesRetry("Couldn't write a verified scenario just now — try again."));
 
   // Structural: the client must actually READ `failure` off the response body,
   // or the branch above is unreachable in the real app (the type widening in
@@ -435,6 +506,187 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
   const regenBody = appSrc.match(/let body: \{ scenario\?: RegenPreview[^\n]*\n/)?.[0] ?? '';
   check('App.tsx types the regen response body with `failure`, so the no-key branch is reachable',
     regenBody.includes('failure'), regenBody.trim());
+}
+
+/* ──────── H-BLUE-LOOP-REGEN-21: a game DELETED under an open dialog is not a
+ *          "couldn't reach the scenario service"
+ *
+ * The brief's angle 4 named "delete of the original while the regen dialog is
+ * open"; no probe reached it and no guard pinned the branch. App.tsx's
+ * vanished-game path reused the 'network' kind, whose copy blames the scenario
+ * service — but nothing is unreachable, the ROW is gone. Reproduced at the UI on
+ * the documented reachable route (App.tsx's Save-Changes 404 prunes the row and
+ * deliberately leaves the dialog OPEN, so the next Regenerate click lands here).
+ *
+ * WHY THIS CANNOT PASS BY COINCIDENCE. 'network' keeps its own wording, asserted
+ * unchanged below, so routing everything to one kind fails. The copy assertions
+ * are pinned in both directions: it must NOT claim unreachability or invite a
+ * retry, and it must NOT promise an affordance this dialog does not have — a
+ * first draft said "use Save as new", and the Edit dialog's live DOM has only
+ * Cancel, Save Changes and Regenerate. A message that lies helpfully is still a lie.
+ */
+{
+  const gone = REGEN_ERROR_MESSAGES['game-gone']();
+  const net = REGEN_ERROR_MESSAGES['network']();
+  check('the deleted-game message is DIFFERENT from the network one', gone !== net);
+  check('the network message is UNCHANGED by this split (honesty not lowered)',
+    net === "Couldn't reach the scenario service. Your text below is unchanged.", net);
+  check('the deleted-game message does not blame reachability',
+    !/reach|unreachable|offline|connection/i.test(gone), gone);
+  check('the deleted-game message does not invite a retry (there is no game to rewrite)',
+    !/try again/i.test(gone), gone);
+  check('the deleted-game message says the game was deleted', /deleted/i.test(gone), gone);
+  check('the deleted-game message promises the user their text is intact',
+    /unchanged/i.test(gone), gone);
+  check('the deleted-game message promises NO affordance this dialog lacks',
+    !/save as new|duplicate|restore|undo/i.test(gone), gone);
+  // (The "every kind has non-empty wording" sweep lives in the block above and
+  //  DERIVES its list from the map, so a hardcoded copy here would only drift.)
+
+  // Structural: App.tsx must route the vanished-game branch to THIS kind, or
+  // the message above is unreachable. Mutation-tested by reverting the route.
+  const appVanish = readFileSync('src/App.tsx', 'utf8');
+  const branch = appVanish.match(/if \(!requestPayoffs\) \{[\s\S]{0,700}?\n    \}/)?.[0] ?? '';
+  check('App.tsx routes the vanished-game branch to the game-gone kind, not network',
+    /error: 'game-gone'/.test(branch) && !/error: 'network'/.test(branch), branch.slice(0, 200));
+  check('the vanished-game branch still clears the in-flight ref (the button must not die)',
+    /regenInFlightRef\.current = false/.test(branch), branch.slice(0, 200));
+}
+
+/* ──────── H-BLUE-LOOP-REGEN-21: a DRAW's own actor noun cut out by the 800-char
+ *          clamp is named in the Keep note, not just on the chip
+ *
+ * `actorNounsOk` validates an actor noun against the SERVER's 1200-char
+ * description; `keepFill` clamps to `REGEN_DESCRIPTION_MAX` (800). A noun whose
+ * only occurrence sits between the two is legitimately "verbatim" to the server
+ * and absent from the text the dialog holds. The chip always rendered
+ * "(not highlighted)" correctly — but `orphaned` was computed from the EXISTING
+ * chips only, so `regenDroppedNote` returned null and the Keep aria-live
+ * announcement (the one channel a non-sighted user gets at that moment) said
+ * nothing, while the identical case for a USER's chip was announced.
+ *
+ * WHY THIS CANNOT PASS BY COINCIDENCE. The absent-noun row and the PRESENT-noun
+ * control differ in exactly one thing: whether the noun's occurrence lands
+ * before or after the clamp. Reverting the fix fails the absent rows; orphaning
+ * everything fails the control rows. The note assertion reads the real
+ * `regenDroppedNote` output, so wording edited in one place only cannot pass.
+ */
+{
+  const FILLER = 'Two neighboring workshops are quietly negotiating a long routine scheduling matter. ';
+  const fill = (n: number) => { let s = ''; while (s.length < n) s += FILLER; return s.slice(0, n); };
+  const NOUN = 'the caravan chief';
+
+  // PAST the clamp: server says verbatim, the kept description does not contain it.
+  const past = keepFill({ description: fill(820) + `In the end ${NOUN} decides the order.`,
+    row1: 'Early', row2: 'Late', col1: 'Bow', col2: 'Stern', actorA: [NOUN] }, false, { a: [], b: [] });
+  check('a draw noun past the 800-clamp is still KEPT as a chip (Keep never destroys a highlight)',
+    past.terms.a.includes(NOUN), JSON.stringify(past.terms.a));
+  check('a draw noun past the 800-clamp is reported orphaned, so the Keep note can name it',
+    past.orphaned.a.includes(NOUN), JSON.stringify(past.orphaned));
+  const pastNote = regenDroppedNote(past.dropped, past.orphaned, past.shadowed);
+  check('the Keep NOTE names the draw noun that paints nothing',
+    pastNote !== null && pastNote.includes(`"${NOUN}"`), JSON.stringify(pastNote));
+  check('that note says it is shown as not highlighted and what to do',
+    pastNote !== null && /not highlighted/.test(pastNote) && /remove the chip/i.test(pastNote), JSON.stringify(pastNote));
+
+  // CONTROL: the SAME noun, INSIDE the clamp. Must NOT be orphaned, and the
+  // note must stay null — this is what an "orphan everything" fix fails.
+  const inside = keepFill({ description: `In the end ${NOUN} decides the order. ` + fill(400),
+    row1: 'Early', row2: 'Late', col1: 'Bow', col2: 'Stern', actorA: [NOUN] }, false, { a: [], b: [] });
+  check('CONTROL: the same noun INSIDE the clamp is not orphaned', !inside.orphaned.a.includes(NOUN), JSON.stringify(inside.orphaned));
+  check('CONTROL: with nothing orphaned the Keep note stays null (no note on an ordinary Keep)',
+    regenDroppedNote(inside.dropped, inside.orphaned, inside.shadowed) === null);
+  // CONTROL: the option labels the dialog always carries are never orphaned by this.
+  check('CONTROL: an ordinary draw with no actor nouns produces no orphan and no note',
+    (() => { const k = keepFill({ description: fill(300), row1: 'Early', row2: 'Late', col1: 'Bow', col2: 'Stern' }, false, { a: [], b: [] });
+      return k.orphaned.a.length === 0 && k.orphaned.b.length === 0 && regenDroppedNote(k.dropped, k.orphaned, k.shadowed) === null; })());
+}
+
+/* ──────── H-BLUE-LOOP-REGEN-21: the ONE template that quotes the SERVER quotes
+ *          only what the server actually SAID
+ *
+ * `REGEN_ERROR_MESSAGES['rate-limit']` interpolates the 429 body's `error`
+ * straight into user-facing copy. That string is not always ours: in desktop
+ * cloud mode `apiBaseUrl` is a free-form field (MenuDrawer.tsx), so a proxy,
+ * gateway or a different host supplies it. Same class main fixed one layer
+ * down in `apiClient`'s `said` (81e4a21, V5e/V5f).
+ *
+ * WHY THIS CANNOT PASS BY COINCIDENCE. Each row is an ISOLATING fixture — one
+ * row, one defect signal — so deleting any single rule fails exactly its own
+ * row and leaves the others green. The CONTROL row (the server's real string)
+ * asserts the text is still quoted VERBATIM, so a "fix" that simply stopped
+ * quoting the server would fail it: this is not the trivially-passing shape
+ * where suppressing everything scores as a pass. Assertions read the real
+ * exported `REGEN_ERROR_MESSAGES`, not a copy.
+ *
+ * Mutations, each confirmed to fail:
+ *   drop `.trim()` from `serverSaid` (via cleanText)  => the whitespace rows
+ *   drop the `typeof t !== 'string'` test             => the non-string rows
+ *   drop `clampGraphemeSafe(..., REGEN_SERVER_TEXT_MAX)` => the overlong row
+ *   return `t` unchanged (revert the whole fix)       => every row but control
+ */
+{
+  const PREFIX = 'AI limit reached — ';
+  const DEFAULT = 'Too many attempts. Please wait a minute and try again.';
+  const tailOf = (t: unknown): string => {
+    const m = REGEN_ERROR_MESSAGES['rate-limit'](t);
+    check(`rate-limit message keeps its prefix for ${JSON.stringify(String(t)).slice(0, 30)}`,
+      m.startsWith(PREFIX), m.slice(0, 40));
+    return m.slice(PREFIX.length);
+  };
+
+  // CONTROL: a real server string is still quoted verbatim. This row is what
+  // stops "suppress everything" from counting as a fix.
+  check('CONTROL: the server\'s own 429 wording is still quoted verbatim',
+    tailOf(DEFAULT) === DEFAULT, tailOf(DEFAULT));
+  check('CONTROL: a different real upstream sentence is quoted verbatim too',
+    tailOf('Rate limit exceeded for this project.') === 'Rate limit exceeded for this project.');
+
+  // Isolating row per shape. Each falls back to OUR copy, never a blank tail.
+  const blankShapes: [string, unknown][] = [
+    ['spaces', '   '], ['tab+newline', '\t\n'], ['NBSP', '\u00a0'],
+    ['empty string', ''], ['undefined', undefined], ['null', null],
+  ];
+  for (const [label, t] of blankShapes) {
+    check(`a ${label} \`error\` is not a message — the dialog falls back to our copy, never a dangling em-dash`,
+      tailOf(t) === DEFAULT, JSON.stringify(tailOf(t)));
+  }
+  const nonStringShapes: [string, unknown][] = [
+    ['object', { code: 7 }], ['array', []], ['array of strings', ['a', 'b']],
+    ['number', 42], ['boolean true', true],
+  ];
+  for (const [label, t] of nonStringShapes) {
+    const tail = tailOf(t);
+    check(`a non-string \`error\` (${label}) is never rendered raw`,
+      tail === DEFAULT, JSON.stringify(tail));
+    check(`a non-string \`error\` (${label}) never reaches the user as "[object Object]"`,
+      !tail.includes('[object'), tail);
+  }
+
+  // Overlong: a hostile or broken upstream cannot flood a text-[10px] note.
+  const long = 'x'.repeat(2000);
+  check('an overlong server string is clamped, not pasted whole into the dialog note',
+    tailOf(long).length <= REGEN_SERVER_TEXT_MAX, String(tailOf(long).length));
+  check('the clamp keeps the beginning of what the server said (it truncates, it does not replace)',
+    tailOf(long).startsWith('xxxx'));
+  check('REGEN_SERVER_TEXT_MAX is calibrated ABOVE this server\'s own longest error string',
+    REGEN_SERVER_TEXT_MAX > 121 && DEFAULT.length < REGEN_SERVER_TEXT_MAX, String(REGEN_SERVER_TEXT_MAX));
+  // Grapheme safety at the clamp, same rule every other clamp on this surface uses.
+  const flag = '\u{1F1FA}\u{1F1F8}';
+  const straddle = 'y'.repeat(REGEN_SERVER_TEXT_MAX - 2) + flag;
+  check('the server-text clamp never splits a grapheme cluster (no lone regional indicator)',
+    !/[\u{1F1E6}-\u{1F1FF}]/u.test(tailOf(straddle)) || tailOf(straddle).includes(flag),
+    JSON.stringify(tailOf(straddle).slice(-6)));
+  // Control characters are stripped before display, as everywhere else here.
+  check('a bidi override inside the server string is stripped before it is shown',
+    !/[\u202a-\u202e\u2066-\u2069]/.test(tailOf('limit\u202ereached')));
+
+  // Structural: App.tsx must not re-narrow the body type back to `error?: string`,
+  // which is what hid this missing guard. Mutation-tested by reverting it.
+  const appSource = readFileSync('src/App.tsx', 'utf8');
+  const regenBodyType = appSource.match(/let body: \{ scenario\?: RegenPreview[^\n]*\n/)?.[0] ?? '';
+  check('App.tsx types the regen body `error` as unknown (it comes from res.json(), unchecked)',
+    /error\?: unknown/.test(regenBodyType), regenBodyType.trim());
 }
 
 /* ───────────────────────────────────────────────── server pure: domain/bank avoidance */

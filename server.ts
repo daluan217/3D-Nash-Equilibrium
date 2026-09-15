@@ -3621,20 +3621,21 @@ async function startServer() {
   // that does not even exist yet. This tiny middleware runs BEFORE
   // rateLimit, so a disabled route always answers 404 and never touches the
   // shared bucket at all.
+  // Same reasoning extended to the OTHER permanent condition. `canInvent()`
+  // false is not transient: no burst of retries makes a key appear. Gated
+  // after `rateLimit` it cost the shared budget and, on the 21st call in a
+  // minute, replaced the honest permanent answer with "wait a minute and try
+  // again" — advice that can never come true. Both permanent answers now come
+  // before the limiter, so neither touches the provider's bucket.
   const requireScenarioRegen: express.RequestHandler = (req, res, next) => {
     if (!scenarioRegenEnabled()) return res.status(404).json({ error: "Not enabled." });
+    if (!canInvent()) return res.json({ scenario: null, failure: "no-key" });
     next();
   };
   app.post("/api/scenario/regenerate", requireScenarioRegen, rateLimit("report", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const payoffs = cleanPayoffs(req.body?.payoffs);
     if (!payoffs) {
       return res.status(400).json({ error: "Invalid payoff matrix." });
-    }
-    if (!canInvent()) {
-      // Honest, not an error: the client's capability probe should already
-      // have hidden the button in this state, but a stale probe or a direct
-      // API call must still get a real, typed answer rather than a 500.
-      return res.json({ scenario: null, failure: "no-key" });
     }
     // `current`: the dialog's OWN live fields, clamped/stripped exactly like
     // every other scenario input — used ONLY to avoid repeating this story

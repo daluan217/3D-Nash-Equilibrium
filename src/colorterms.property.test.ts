@@ -843,8 +843,30 @@ if (failures > 0) {
     kept.a.includes('orchard keeper') && kept.b.includes('harbour master'), JSON.stringify({ a: kept.a, b: kept.b }));
   const noDesc = regenKeptColorTerms([], [], ['orchard keeper'], [], undefined);
   check('without a description nothing is reported as orphaned (the preview-card composition)', noDesc.orphaned.a.length === 0 && noDesc.orphaned.b.length === 0);
-  check('a draw\'s NEW actor noun is never "orphaned" (only existing chips are judged)',
-    regenKeptColorTerms(['ghost'], [], [], [], story).orphaned.a.length === 0);
+  // BLUE-LOOP-REGEN-21 — WIDENED, not narrowed. This used to assert that a
+  // draw's own actor noun is NEVER orphaned ("only existing chips are judged").
+  // That encoded the defect: `actorNounsOk` validates a noun against the
+  // server's 1200-char description while `keepFill` clamps to 800, so a noun
+  // occurring past 800 is kept as a chip, paints nothing, and the Keep
+  // aria-live announcement said nothing — while the identical case for a
+  // USER's chip was announced. The chip itself was always honest
+  // ("(not highlighted)"); the spoken channel was not. Now every kept chip is
+  // judged, whatever its origin, and both directions are pinned:
+  check('a draw\'s NEW actor noun that IS in the story is not orphaned (no false orphan)',
+    regenKeptColorTerms(['the miller'], [], [], [], story).orphaned.a.length === 0,
+    JSON.stringify(regenKeptColorTerms(['the miller'], [], [], [], story).orphaned));
+  check('a draw\'s NEW actor noun ABSENT from the story IS orphaned, so the Keep note names it',
+    regenKeptColorTerms(['ghost'], [], [], [], story).orphaned.a.join() === 'ghost',
+    JSON.stringify(regenKeptColorTerms(['ghost'], [], [], [], story).orphaned));
+  check('an absent draw noun is STILL KEPT as a chip (Keep never destroys a highlight)',
+    regenKeptColorTerms(['ghost'], [], [], [], story).a.includes('ghost'));
+  check('the B side behaves identically for a draw noun absent from the story',
+    regenKeptColorTerms([], ['ghost'], [], [], story).orphaned.b.join() === 'ghost');
+  check('a draw noun absent from the story produces a Keep note that NAMES it',
+    (regenDroppedNote({ a: [], b: [] }, regenKeptColorTerms(['ghost'], [], [], [], story).orphaned) ?? '')
+      .includes('"ghost"'));
+  check('with NO description nothing is orphaned even for a draw noun (preview-card composition)',
+    regenKeptColorTerms(['ghost'], [], [], [], undefined).orphaned.a.length === 0);
   check('orphaned is judged case-insensitively, whole phrase (no false orphan on a case change)',
     regenKeptColorTerms([], [], ['THE MILLER'], [], story).orphaned.a.length === 0);
 
