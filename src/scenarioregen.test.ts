@@ -28,6 +28,7 @@ import {
   REGEN_LABEL_MAX,
   REGEN_DESCRIPTION_MAX,
   type RegenKey,
+  type RegenErrorKind,
 } from './utils/scenarioRegen';
 import { generatedFillIsSafe, type GeneratedFill } from './utils/generateFill';
 import { pickScenarioDomainExcluding, SCENARIO_DOMAINS } from './utils/scenarioDomains';
@@ -425,9 +426,22 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
 
   // Every kind must have a message: `Record<RegenErrorKind, …>` makes this a
   // compile error, but the runtime check also catches a message left empty.
-  for (const k of ['rate-limit', 'timeout', 'unavailable', 'no-key', 'no-story', 'network'] as const) {
+  // BLUE-LOOP-REGEN-21: this list used to be hardcoded, so adding 'game-gone'
+  // left the new kind silently unchecked here. Derived from the map's OWN keys
+  // now, so it cannot drift again — plus a row asserting the map covers exactly
+  // the kinds the union declares, read from the source (a Record<> type error is
+  // a compile-time signal, and this file also runs under plain tsx).
+  const allKinds = Object.keys(REGEN_ERROR_MESSAGES) as RegenErrorKind[];
+  for (const k of allKinds) {
     check(`REGEN_ERROR_MESSAGES has non-empty wording for '${k}'`, REGEN_ERROR_MESSAGES[k]().trim().length > 0);
   }
+  const unionSrc = readFileSync('src/utils/scenarioRegen.ts', 'utf8')
+    .match(/export type RegenErrorKind =([^;]+);/)?.[1] ?? '';
+  const declared = [...unionSrc.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]).sort();
+  check('REGEN_ERROR_MESSAGES covers exactly the kinds RegenErrorKind declares (no kind without copy, no orphan entry)',
+    JSON.stringify(declared) === JSON.stringify([...allKinds].sort()),
+    `declared=${JSON.stringify(declared)} mapped=${JSON.stringify([...allKinds].sort())}`);
+  check('the kind list this file checks is not empty (the derivation itself works)', allKinds.length >= 7, String(allKinds.length));
 
   // Structural: the client must actually READ `failure` off the response body,
   // or the branch above is unreachable in the real app (the type widening in
