@@ -918,10 +918,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
                     {deleteStep === 'inputCode' && (
                       <form onSubmit={handleDeleteConfirm} className="space-y-4">
-                        <div role="status" className="bg-emerald-50 dark:bg-emerald-950/15 border border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300 text-xs rounded-xl p-3 flex gap-2 font-medium">
-                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
-                          <span>{deleteSuccess || 'Check your email inbox for a confirmation security code.'}</span>
-                        </div>
+                        <FeedbackBox tone="success" testId="delete-success">
+                          {deleteSuccess || 'Check your email inbox for a confirmation security code.'}
+                        </FeedbackBox>
 
                         <div>
                           <label htmlFor={labelFor('drawer-delete', 'code')} className="block text-xs text-slate-500 dark:text-slate-400 font-bold mb-1">
@@ -972,7 +971,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                     )}
 
                     {deleteStep === 'success' && (
-                      <div className="bg-emerald-50 dark:bg-emerald-950/10 border border-emerald-200 dark:border-emerald-900 rounded-xl p-5 text-center text-emerald-800 dark:text-emerald-300 space-y-2">
+                      /* Reviewer (round 21): the most consequential message in the app
+                         was the one nobody announced. It is a STEP, not a {value}, so
+                         the FeedbackBox guard could not see it — role added in place. */
+                      <div role="status" className="bg-emerald-50 dark:bg-emerald-950/10 border border-emerald-200 dark:border-emerald-900 rounded-xl p-5 text-center text-emerald-800 dark:text-emerald-300 space-y-2">
                         <CheckCircle2 className="w-8 h-8 mx-auto text-emerald-500" />
                         <h5 className="font-bold text-sm">Account Wiped Successfully</h5>
                         <p className="text-xs">

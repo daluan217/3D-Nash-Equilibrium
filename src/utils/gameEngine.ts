@@ -350,7 +350,8 @@ export function commitNumericField(
   const rounded = opts.quantise ? r3(base) : base;
   const value = Math.max(range.lo, Math.min(range.hi, rounded));
   // Compare against the PARSED number, not the rounded one: r3 is canonicalising,
-  // not clamping, so "1.0004" is not out of range for a [0,1] field.
+  // not clamping, so "0.0004" is not out of range for a [0,1] field even though
+  // quantising would round it to 0 (unit.test.ts R5b).
   const clamped = parsed !== null && (parsed < range.lo || parsed > range.hi);
   return { value, problem: clamped ? 'out-of-range' : null };
 }

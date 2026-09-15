@@ -1406,10 +1406,21 @@ function extractModalSurfaceBlock(src: string, id: string): string {
     [app, 'App.tsx', 'authError'], [app, 'App.tsx', 'authSuccess'],
     [app, 'App.tsx', 'saveError'], [app, 'App.tsx', 'feedbackError'],
     [drawer, 'MenuDrawer.tsx', 'deleteError'],
+    // Reviewer (round 21): deleteSuccess was the sixth site the comment above
+    // already claimed. It kept a hand-rolled div with role="status" pasted on —
+    // announced, but outside the one component that makes that impossible to
+    // forget. `[^}]*` covers the `{x || 'fallback'}` form this site uses.
+    [drawer, 'MenuDrawer.tsx', 'deleteSuccess'],
   ] as const) {
-    ok(new RegExp(`<FeedbackBox tone="(error|success)"[^>]*>\\{${value}\\}</FeedbackBox>`).test(src),
+    ok(new RegExp(`<FeedbackBox tone="(error|success)"[^>]*>\\s*\\{${value}[^}]*\\}\\s*</FeedbackBox>`).test(src),
       `F3: ${name}'s ${value} must render through FeedbackBox, so its live role cannot be omitted`);
   }
+  // Reviewer (round 21): the account-deletion SUCCESS STEP is a static branch,
+  // not a `{value}` interpolation, so every guard here was blind to it — an AT
+  // heard silence at the one moment the app destroys everything. Anchored on
+  // the words the user is shown.
+  ok(/role="status"[^>]*>[\s\S]{0,400}?Account Wiped Successfully/.test(drawer),
+    'F3b: the account-deletion success step must sit in a live region (it announces an irreversible action)');
 
   // F4: the class guard. Anchored on where the value is RENDERED, not on the
   // shape of the condition that guards it: the first draft keyed on

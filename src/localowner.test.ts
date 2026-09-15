@@ -1289,13 +1289,27 @@ function authTokenRenderViolations(files: string[], allowListed: RegExp[]): stri
   // check is that it passes the `subject:` that completes the sentence and
   // still shows nothing the browser wrote. The helper's own copy is pinned by
   // the accountVerdict matrix in unit.test.ts.
+  // Reviewer (round 21): `.test(drawer)` over the WHOLE file passes while only
+  // ONE of the two deletion routes still carries `subject:` — a guard that
+  // cannot fail for the reason it claims. Count instead: EVERY accountVerdict
+  // call in the drawer must carry its own subject, so dropping either one fails.
+  const drawerVerdicts = drawer.match(/accountVerdict\(res, \{[\s\S]*?\}\)/g) ?? [];
+  const verdictsWithSubject = drawerVerdicts.filter((v) => /subject: '/.test(v));
   check('the menu drawer never shows the browser\'s own network wording (it describes the failure itself)',
-    /accountVerdict\(res, \{[\s\S]*?subject: '/.test(drawer)
+    drawerVerdicts.length === 2
+    && verdictsWithSubject.length === drawerVerdicts.length
     && !/setDeleteError\(err\.message\)/.test(codeOnly(drawer))
-    && !/setDeleteError\([^)]*res\.error/.test(codeOnly(drawer)));
-  check('fixture: a drawer that dropped the `subject:` (so the sentence no longer says what failed) is caught',
-    !/accountVerdict\(res, \{[\s\S]*?subject: '/.test(
-      drawer.replace(/subject: '[^']*',\n\s*/g, '')));
+    && !/setDeleteError\([^)]*res\.error/.test(codeOnly(drawer)),
+    `${verdictsWithSubject.length}/${drawerVerdicts.length} drawer verdicts carry a subject`);
+  // The fixture drops the subject from ONE route only — the case the old
+  // whole-file regex could not see.
+  {
+    const first = drawerVerdicts[0] ?? '';
+    const oneRouteStripped = drawer.replace(first, first.replace(/subject: '[^']*',\n\s*/, ''));
+    const mutantVerdicts = oneRouteStripped.match(/accountVerdict\(res, \{[\s\S]*?\}\)/g) ?? [];
+    check('fixture: a drawer where only ONE route dropped its `subject:` is caught',
+      mutantVerdicts.filter((v) => /subject: '/.test(v)).length < mutantVerdicts.length);
+  }
   check('fixture: a drawer that showed the raw transport error is caught',
     /setDeleteError\([^)]*res\.error/.test(codeOnly('setDeleteError(String(res.error));')));
 
