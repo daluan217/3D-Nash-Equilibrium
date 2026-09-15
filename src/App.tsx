@@ -5767,7 +5767,18 @@ export default function App() {
                 fix — a WCAG 2.5.3 label-in-name mismatch. Removed; the real
                 <label> now supplies the accessible name, matching what is
                 on screen exactly. */}
-            <div className="grid grid-cols-2 gap-4">
+            {/* Still exactly two columns — but each may STACK rather than clip.
+                The field spends 10px of left padding and 40px on the stepper's
+                gutter, so a 5-character value (56px rendered) needs a 106px
+                cell; two 74px cells at a 260px layout viewport (390px at 150%
+                zoom) showed 2 of its 5 characters. `auto-fit` was the wrong
+                primitive here: it invented empty 0px tracks and dropped the
+                pair to one column at widths where it had always fitted. This
+                keeps the 2-column track list and only collapses when a 7rem
+                cell genuinely does not fit — below a 324px viewport, measured
+                by interpolating the real cell widths (260px->74, 320px->104,
+                390px->139), not guessed from a device size. */}
+            <div className="grid grid-cols-2 max-[324px]:grid-cols-1 gap-4">
               <div>
                 <label htmlFor={labelFor('coords', 'x0')} className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
                 <div className="relative">

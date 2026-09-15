@@ -10686,6 +10686,29 @@ const suggestedScenario = {
             }
             return bad.slice(0, 5);
           })(),
+          clippedValues: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main input')) {
+              if (el.type === 'range' || el.type === 'checkbox' || el.type === 'radio') continue;
+              const v = String(el.value ?? '');
+              if (!v) continue;
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0)) continue;
+              const cs = getComputedStyle(el);
+              const probe = document.createElement('span');
+              probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+              probe.textContent = v;
+              document.body.appendChild(probe);
+              const textW = probe.getBoundingClientRect().width;
+              probe.remove();
+              const content = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+              // "One character fits" is not "the value is readable": a 74px
+              // field with a 40px stepper gutter passed the one-char bar while
+              // showing 2 of the 5 characters of "0.217".
+              if (textW > content + 0.5) bad.push(`${v}: ${textW.toFixed(0)}px of text in ${content.toFixed(0)}px`);
+            }
+            return bad.slice(0, 5);
+          })(),
           tinyInputs: (() => {
             const bad = [];
             for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
@@ -10727,6 +10750,8 @@ const suggestedScenario = {
         record(`§97 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
         record(`§97 ${at}: no text was shredded to one character per line to buy the width`,
           m.readable.length === 0, JSON.stringify(m.readable));
+        record(`§97 ${at}: an input's whole VALUE is visible, not just one character of it`,
+          m.clippedValues.length === 0, JSON.stringify(m.clippedValues));
         record(`§97 ${at}: every input is still wide enough to read one character of its own value`,
           m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
         record(`§97 ${at}: every box the fix made scrollable is reachable from the keyboard`,
