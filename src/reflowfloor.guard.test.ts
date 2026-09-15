@@ -66,6 +66,23 @@ const decls = block.replace(/\/\*[\s\S]*?\*\//g, '');
 check('padding is matched on a class BOUNDARY, never a bare substring',
   !/\[class\*="p-"\]/.test(decls) && decls.includes('[class^="p-"]'));
 
+// The range hint the numeric fields show is DERIVED from the shared range
+// constant, but the e2e that asserts it hard-codes the rendered string. Editing
+// PAYOFF_RANGE.label would move the app and leave the e2e asserting the old
+// text — red for the wrong reason, or quietly agreeing if both were edited to
+// differ from what the field actually clamps to. This pins the two together.
+const app = readFileSync('src/App.tsx', 'utf8');
+const engine = readFileSync('src/utils/gameEngine.ts', 'utf8');
+const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
+check('the hint is built from the range constant, not a literal',
+  /const rangeHint = \(range: \{ label: string \}\) => `Range: \$\{range\.label\}\.`/.test(app));
+const label = engine.match(/PAYOFF_RANGE = \{[^}]*label: '([^']+)'/)?.[1];
+check('PAYOFF_RANGE still declares a label', !!label, String(label));
+check("the e2e's hard-coded hint matches what the constant renders",
+  smoke.includes(`const RANGE_HINT = 'Range: ${label}.'`),
+  `constant says "${label}"`);
+
 if (failures) { console.error(`\nreflowfloor.guard.test.ts: ${failures} failed`); process.exit(1); }
 console.log('✓ reflow floor: 5 overrides contained to the 220px block and absent outside it, '
-  + 'reserve exemption, SVG carve-out, boundary-anchored padding selector');
+  + 'reserve exemption, SVG carve-out, boundary-anchored padding selector, '
+  + 'and the range hint the e2e asserts is the one the range constant renders');
