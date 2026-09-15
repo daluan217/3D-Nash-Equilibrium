@@ -380,6 +380,12 @@ input.no-native-spinner {
    * indicator, so a shorter track still reads correctly. */
   :is(main, [role="dialog"]) .min-w-16 { min-width: 0; }
 
+  /* The plot's control cluster is pinned to the card's top-right and is wider
+   * than the card itself down here, so it hung off the left edge with only 1 of
+   * its 3 buttons reachable (and, under dir="rtl", extended the scrollable
+   * width). Wrapping it inside the card makes all 3 reachable. */
+  .absolute.top-3.right-3 { flex-wrap: wrap; max-width: calc(100% - 1.5rem); }
+
   /* An absolutely-positioned overlay is outside flow, so none of the shrinking
    * above reaches it: the plot's "Resume spinning" button kept its intrinsic
    * width and pushed past its container. Bounding it by its LEFT inset keeps

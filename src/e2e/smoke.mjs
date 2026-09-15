@@ -10621,6 +10621,22 @@ const suggestedScenario = {
             }
             return bad.slice(0, 5);
           })(),
+          // A control painted outside the viewport is not operable, however
+          // little the page scrolls. The plot's control cluster is pinned to
+          // its card's corner and is wider than the card down here: it hung off
+          // the left edge with 1 of 3 buttons reachable while every scroll
+          // check was green.
+          unreachableControls: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main button, main a[href], [role="dialog"] button')) {
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0 && r.height > 0)) continue;
+              if (getComputedStyle(el).visibility === 'hidden') continue;
+              if (r.right < 1 || r.left > vw - 1)
+                bad.push(`${(el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 18)}@[${Math.round(r.left)},${Math.round(r.right)}]`);
+            }
+            return bad.slice(0, 5);
+          })(),
           tinyInputs: (() => {
             const bad = [];
             for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
@@ -10666,6 +10682,8 @@ const suggestedScenario = {
           m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
         record(`§97 ${at}: every box the fix made scrollable is reachable from the keyboard`,
           m.unreachableScrollers.length === 0, JSON.stringify(m.unreachableScrollers));
+        record(`§97 ${at}: no control is painted entirely outside the viewport`,
+          m.unreachableControls.length === 0, JSON.stringify(m.unreachableControls));
       }
     };
     await sweep('pre-run');
