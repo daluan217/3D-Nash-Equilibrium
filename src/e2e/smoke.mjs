@@ -10554,7 +10554,7 @@ const suggestedScenario = {
         requestAnimationFrame(tick);
       }), null, { timeout: 20000 }).catch(() => {});
       return p.evaluate(() => {
-        const de = document.documentElement, vw = de.clientWidth;
+        const de = document.documentElement, vw = de.clientWidth, vh = de.clientHeight;
         window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
         // An element inside a box that actually scrolls is COMPLIANT (1.4.10
         // forbids scrolling the DOCUMENT, not an inner region) — so each
@@ -10637,6 +10637,55 @@ const suggestedScenario = {
             }
             return bad.slice(0, 5);
           })(),
+          coveredControls: (() => {
+            const bad = [];
+            // A modal covering the page behind it is the POINT of a modal, so
+            // when one is open only its own controls are in scope.
+            const modal = [...document.querySelectorAll('[role="dialog"]')]
+              .find((d) => d.getBoundingClientRect().width > 0);
+            const scope = modal
+              ? modal.querySelectorAll('button, a[href], input')
+              : document.querySelectorAll('main button, main a[href], main input');
+            for (const el of scope) {
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0 && r.height > 0)) continue;
+              if (getComputedStyle(el).visibility === 'hidden') continue;
+              if (el.closest('[inert], [aria-hidden="true"]')) continue;   // measuring probes are not controls
+              // Content below its own scroll container's fold is reachable --
+              // the user scrolls to it, which 1.4.10 explicitly allows. Only a
+              // control that stays unhittable AFTER its container is scrolled to
+              // it is a real dead control, so scroll it into view first.
+              const scroller = (() => {
+                for (let a = el.parentElement; a; a = a.parentElement) {
+                  const cs = getComputedStyle(a);
+                  if (/(auto|scroll)/.test(cs.overflowY) && a.scrollHeight > a.clientHeight + 1) return a;
+                }
+                return null;
+              })();
+              const restore = scroller ? scroller.scrollTop : null;
+              if (scroller) {
+                const sr = scroller.getBoundingClientRect();
+                scroller.scrollTop += (el.getBoundingClientRect().top - sr.top) - sr.height / 2 + r.height / 2;
+              }
+              const q = el.getBoundingClientRect();
+              let hits = 0, pts = 0;
+              for (const fx of [0.15, 0.5, 0.85]) for (const fy of [0.15, 0.5, 0.85]) {
+                const x = q.left + q.width * fx, y = q.top + q.height * fy;
+                if (x < 0 || x > vw || y < 0 || y > vh) continue;
+                pts += 1;
+                const t = document.elementFromPoint(x, y);
+                if (t && (t === el || el.contains(t))) hits += 1;
+              }
+              if (scroller) scroller.scrollTop = restore;
+              if (pts > 0 && hits === 0) {
+                const t = document.elementFromPoint(
+                  Math.min(Math.max(r.left + r.width / 2, 0.5), vw - 0.5),
+                  Math.min(Math.max(r.top + r.height / 2, 0.5), vh - 0.5));
+                bad.push(`${(el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 16)} covered by ${t ? `${t.tagName}.${String(t.className).slice(0, 22)}` : '?'}`);
+              }
+            }
+            return bad.slice(0, 5);
+          })(),
           tinyInputs: (() => {
             const bad = [];
             for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
@@ -10684,6 +10733,14 @@ const suggestedScenario = {
           m.unreachableScrollers.length === 0, JSON.stringify(m.unreachableScrollers));
         record(`§97 ${at}: no control is painted entirely outside the viewport`,
           m.unreachableControls.length === 0, JSON.stringify(m.unreachableControls));
+        // Inside the viewport but under something: a `fixed`/`sticky` overlay
+        // holds its corner no matter what reflows beneath it. The feedback pill
+        // (`fixed bottom-4 left-4`) swallowed the workspace menu and Sign In at
+        // a 93px layout viewport -- both on screen, neither clickable, and every
+        // scroll-based check green. Nine sample points per control; a control is
+        // only a failure when NONE of them reach it.
+        record(`§97 ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
+          m.coveredControls.length === 0, JSON.stringify(m.coveredControls));
       }
     };
     await sweep('pre-run');
@@ -10784,6 +10841,74 @@ const suggestedScenario = {
     }
     await cdpT.send('Emulation.clearDeviceMetricsOverride');
     await pt.close();
+
+    // A TALL narrow viewport, SCROLLED. Every condition above is short (844/z),
+    // where the header is already static and the page barely scrolls -- so none
+    // of them can see an overlay that holds its corner while content moves
+    // under it. Both defects this found need exactly this shape: the feedback
+    // pill (`fixed bottom-4 left-4`) swallowed the workspace menu and Sign In,
+    // and the sticky header grows to 846px at a 93px width -- taller than a
+    // 700px viewport, covering every pixel of the page at every scroll offset.
+    const ps = await newTrackedPage({ viewport: { width: 93, height: 700 } });
+    await ps.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(ps, 'setup: clear the tour before the scrolled overlay sweep', { timeout: 20000 });
+    record('§97 scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner',
+      await ps.evaluate(() => document.documentElement.scrollHeight > innerHeight * 3),
+      await ps.evaluate(() => `docH=${document.documentElement.scrollHeight} vh=${innerHeight}`));
+    record('§97 scrolled-overlay fixture guard: no element covers the viewport from a stuck position',
+      await ps.evaluate(() => {
+        for (const el of document.querySelectorAll('body *')) {
+          const cs = getComputedStyle(el);
+          if (cs.position !== 'sticky' && cs.position !== 'fixed') continue;
+          const r = el.getBoundingClientRect();
+          if (r.width >= innerWidth - 1 && r.height >= innerHeight - 1 && cs.pointerEvents !== 'none') return false;
+        }
+        return true;
+      }));
+    const dead = await ps.evaluate(async () => {
+      const settle = () => new Promise((res) => { let last = -1, same = 0;
+        const t = () => { const y = window.scrollY; same = y === last ? same + 1 : 0; last = y;
+          if (same >= 5) res(); else requestAnimationFrame(t); }; requestAnimationFrame(t); });
+      const vw = innerWidth, vh = innerHeight, out = new Set();
+      const H = document.documentElement.scrollHeight;
+      for (let y = 0; y < H; y += Math.max(240, vh - 60)) {
+        window.scrollTo({ top: y, behavior: 'instant' });
+        await settle();
+        for (const b of document.querySelectorAll('main button, main a[href], main input')) {
+          const q = b.getBoundingClientRect();
+          if (!(q.width > 0 && q.height > 0) || q.bottom < 0 || q.top > vh) continue;
+          if (getComputedStyle(b).visibility === 'hidden') continue;
+          let hits = 0, pts = 0;
+          for (const fx of [0.15, 0.5, 0.85]) for (const fy of [0.15, 0.5, 0.85]) {
+            const x = q.left + q.width * fx, yy = q.top + q.height * fy;
+            if (x < 0 || x > vw || yy < 0 || yy > vh) continue;
+            pts += 1;
+            const t = document.elementFromPoint(x, yy);
+            if (t && (t === b || b.contains(t) || t.contains(b))) hits += 1;
+          }
+          if (pts > 0 && hits === 0) {
+            const t = document.elementFromPoint(
+              Math.min(Math.max(q.left + q.width / 2, 0.5), vw - 0.5),
+              Math.min(Math.max(q.top + q.height / 2, 0.5), vh - 0.5));
+            out.add(`${(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 16)} <- ${t ? `${t.tagName}.${String(t.className).slice(0, 20)}` : '?'}`);
+          }
+        }
+      }
+      window.scrollTo(0, 0);
+      return [...out];
+    });
+    record('§97 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset',
+      dead.length === 0, dead.slice(0, 5).join(' | '));
+    // And the ground truth a geometric check cannot give: press them.
+    for (const nm of [/search game/i, /open workspace menu/i, /^sign in/i]) {
+      const l = ps.getByRole('button', { name: nm }).first();
+      const pressed = await l.count()
+        ? await l.click({ timeout: 5000 }).then(() => true).catch(() => false) : false;
+      record(`§97 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
+      await ps.keyboard.press('Escape').catch(() => {});
+      await ps.waitForTimeout(300);
+    }
+    await ps.close();
   });
 
 

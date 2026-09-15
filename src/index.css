@@ -368,6 +368,29 @@ input.no-native-spinner {
     padding-top: 1.75rem;
   }
 
+  /* RED-APP-12/003 again, from the other side. A sticky header that is TALLER
+   * than the viewport covers every pixel at every scroll position, so nothing
+   * under it can be clicked. The existing guard keys on viewport height
+   * (`max-height:500px`), but the header's height depends on WIDTH: it reflows
+   * from 186px at 480px wide to 846px at 93px, so a 700px-tall window at 93px
+   * wide is fully covered while passing that test. Below 220px the header is
+   * never shorter than half the viewport, so it goes static and ordinary
+   * scrolling moves it out of the way — which is what the height rule does too. */
+  header.sticky { position: static; }
+
+  /* The feedback pill is `fixed bottom-4 left-4`: it holds that corner no
+   * matter what scrolls under it. At a full width nothing else is ever there;
+   * at 93px the page has reflowed into one narrow column and real controls pass
+   * beneath it — the workspace menu lost 6 of its 9 sample points and "Sign In"
+   * all of them. It is a secondary action, so at this width it goes back into
+   * normal flow at the end of the page, where it can cover nothing. */
+  button.fixed.bottom-4.left-4 {
+    position: static;
+    margin: 0.5rem auto;
+    display: flex;
+    width: fit-content;
+  }
+
   /* The modal OVERLAY is the dialog's parent, outside `[role="dialog"]`, and it
    * keeps 1.25rem of padding on each side — 40px of a 93px viewport, which
    * shredded the dialog heading to 6 lines. */
