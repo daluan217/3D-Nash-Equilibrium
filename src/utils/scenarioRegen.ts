@@ -120,8 +120,14 @@ export interface RegenPreview {
  * be judged; clamping is `keepFill`'s job, applied only on Keep.
  */
 export function cleanPreview(sc: RegenPreview | null | undefined): RegenPreview | null {
-  if (!sc) return null;
-  const strip = (v: string | undefined) => (v === undefined ? v : cleanText(v));
+  if (!sc || typeof sc !== 'object') return null;
+  // TRUST BOUNDARY. `body.scenario` is not always ours: in desktop cloud mode
+  // `apiBaseUrl` is a free-form field (App.tsx getApiUrl), so a proxy or a
+  // broken upstream can send any JSON. A non-string field used to reach
+  // `cleanText` and throw ("s is not iterable") OUTSIDE App.tsx's try/catch,
+  // leaving the dialog silent. Drop what is not a string instead.
+  const strip = (v: unknown) => (typeof v === 'string' ? cleanText(v) : undefined);
+  const nouns = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
   return {
     name: strip(sc.name),
     description: strip(sc.description),
@@ -129,9 +135,18 @@ export function cleanPreview(sc: RegenPreview | null | undefined): RegenPreview 
     row2: strip(sc.row2),
     col1: strip(sc.col1),
     col2: strip(sc.col2),
-    actorA: sc.actorA,
-    actorB: sc.actorB,
+    actorA: nouns(sc.actorA),
+    actorB: nouns(sc.actorB),
   };
+}
+
+/**
+ * Is this preview usable as a STORY? A draw whose description did not survive
+ * the trust boundary has nothing to show, so the caller routes it to the
+ * honest transient kind ('no-story') rather than rendering an empty card.
+ */
+export function previewIsUsable(sc: RegenPreview | null): boolean {
+  return !!sc && typeof sc.description === 'string' && sc.description.trim().length > 0;
 }
 
 // ── Keep ───────────────────────────────────────────────────────────────────
