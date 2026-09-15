@@ -5560,6 +5560,14 @@ export default function App() {
                 whole grid — and the page — 235px past a 320px viewport
                 (WCAG 1.4.10). `minmax(0, 1fr)` matches what the per-cell
                 payoff-pair grid below already does correctly. */}
+            {/* A 2x2 payoff matrix has an irreducible width: four editable
+                numbers plus row and column labels. Below ~200px of layout
+                viewport (a 390px phone at 200% browser zoom) there is no
+                honest side-by-side rendering — squeezing it gave 7.5px-wide
+                inputs. WCAG 1.4.10 exempts content that needs a
+                two-dimensional layout, so the matrix keeps a usable width and
+                scrolls INSIDE this box; the document still does not. */}
+            <div data-matrix-scroll className="overflow-x-auto">
             <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_minmax(0,1fr)_minmax(0,1fr)] gap-3 text-center items-center">
               <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
@@ -5671,6 +5679,7 @@ export default function App() {
                 />
               </div>
             </div>
+          </div>
           </div>
 
           {/* Expected math formulations */}

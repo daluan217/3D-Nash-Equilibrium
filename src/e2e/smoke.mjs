@@ -10578,15 +10578,35 @@ const suggestedScenario = {
           rendered: !!document.querySelector('.js-plotly-plot')
             && !!document.querySelector('[aria-label="Expand simulation log"]'),
           // Nothing may be shrunk into unreadability to buy the width back.
+          // No length floor and no element allow-list: the first version of
+          // this guard skipped short strings and only looked at a few tags,
+          // and a hand-read of the actual pixels found the matrix shredded to
+          // one character per line underneath a green row.
           readable: (() => {
             const bad = [];
-            for (const el of document.querySelectorAll('main span, main label, main p, main strong')) {
+            for (const el of document.querySelectorAll('main *')) {
               if (el.children.length || !(el.textContent || '').trim()) continue;
               const t = el.textContent.trim();
-              if (t.length < 4) continue;
               const rg = new Range(); rg.selectNodeContents(el);
               const lines = new Set(Array.from(rg.getClientRects()).map((x) => Math.round(x.top))).size;
               if (lines > 1 && t.replace(/\s/g, '').length / lines < 2) bad.push(`${t.slice(0, 18)}@${lines}`);
+            }
+            return bad.slice(0, 5);
+          })(),
+          // A field too narrow to read its own value is not usable, however
+          // little the page scrolls: squeezing the payoff matrix to fit gave
+          // 2.5px-wide inputs while every scroll check stayed green. The floor
+          // is one character of the field's OWN font — the smallest width at
+          // which a typed digit can still be seen.
+          tinyInputs: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main input')) {
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0)) continue;
+              const cs = getComputedStyle(el);
+              const content = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+              if (el.type !== 'range' && content < parseFloat(cs.fontSize))
+                bad.push(`${el.type}:${content.toFixed(1)}px<${cs.fontSize}`);
             }
             return bad.slice(0, 5);
           })(),
@@ -10614,6 +10634,8 @@ const suggestedScenario = {
         record(`§97 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
         record(`§97 ${at}: no text was shredded to one character per line to buy the width`,
           m.readable.length === 0, JSON.stringify(m.readable));
+        record(`§97 ${at}: every input is still wide enough to read one character of its own value`,
+          m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
       }
     };
     await sweep('pre-run');
