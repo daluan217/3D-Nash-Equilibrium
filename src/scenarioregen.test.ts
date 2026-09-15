@@ -438,6 +438,55 @@ const BATTLE_OF_SEXES: GamePayoffs = payoffs({ a11: 2, b11: 1, a12: 0, b12: 0, a
     regenBody.includes('failure'), regenBody.trim());
 }
 
+/* ──────── H-BLUE-LOOP-REGEN-21: a DRAW's own actor noun cut out by the 800-char
+ *          clamp is named in the Keep note, not just on the chip
+ *
+ * `actorNounsOk` validates an actor noun against the SERVER's 1200-char
+ * description; `keepFill` clamps to `REGEN_DESCRIPTION_MAX` (800). A noun whose
+ * only occurrence sits between the two is legitimately "verbatim" to the server
+ * and absent from the text the dialog holds. The chip always rendered
+ * "(not highlighted)" correctly — but `orphaned` was computed from the EXISTING
+ * chips only, so `regenDroppedNote` returned null and the Keep aria-live
+ * announcement (the one channel a non-sighted user gets at that moment) said
+ * nothing, while the identical case for a USER's chip was announced.
+ *
+ * WHY THIS CANNOT PASS BY COINCIDENCE. The absent-noun row and the PRESENT-noun
+ * control differ in exactly one thing: whether the noun's occurrence lands
+ * before or after the clamp. Reverting the fix fails the absent rows; orphaning
+ * everything fails the control rows. The note assertion reads the real
+ * `regenDroppedNote` output, so wording edited in one place only cannot pass.
+ */
+{
+  const FILLER = 'Two neighboring workshops are quietly negotiating a long routine scheduling matter. ';
+  const fill = (n: number) => { let s = ''; while (s.length < n) s += FILLER; return s.slice(0, n); };
+  const NOUN = 'the caravan chief';
+
+  // PAST the clamp: server says verbatim, the kept description does not contain it.
+  const past = keepFill({ description: fill(820) + `In the end ${NOUN} decides the order.`,
+    row1: 'Early', row2: 'Late', col1: 'Bow', col2: 'Stern', actorA: [NOUN] }, false, { a: [], b: [] });
+  check('a draw noun past the 800-clamp is still KEPT as a chip (Keep never destroys a highlight)',
+    past.terms.a.includes(NOUN), JSON.stringify(past.terms.a));
+  check('a draw noun past the 800-clamp is reported orphaned, so the Keep note can name it',
+    past.orphaned.a.includes(NOUN), JSON.stringify(past.orphaned));
+  const pastNote = regenDroppedNote(past.dropped, past.orphaned, past.shadowed);
+  check('the Keep NOTE names the draw noun that paints nothing',
+    pastNote !== null && pastNote.includes(`"${NOUN}"`), JSON.stringify(pastNote));
+  check('that note says it is shown as not highlighted and what to do',
+    pastNote !== null && /not highlighted/.test(pastNote) && /remove the chip/i.test(pastNote), JSON.stringify(pastNote));
+
+  // CONTROL: the SAME noun, INSIDE the clamp. Must NOT be orphaned, and the
+  // note must stay null — this is what an "orphan everything" fix fails.
+  const inside = keepFill({ description: `In the end ${NOUN} decides the order. ` + fill(400),
+    row1: 'Early', row2: 'Late', col1: 'Bow', col2: 'Stern', actorA: [NOUN] }, false, { a: [], b: [] });
+  check('CONTROL: the same noun INSIDE the clamp is not orphaned', !inside.orphaned.a.includes(NOUN), JSON.stringify(inside.orphaned));
+  check('CONTROL: with nothing orphaned the Keep note stays null (no note on an ordinary Keep)',
+    regenDroppedNote(inside.dropped, inside.orphaned, inside.shadowed) === null);
+  // CONTROL: the option labels the dialog always carries are never orphaned by this.
+  check('CONTROL: an ordinary draw with no actor nouns produces no orphan and no note',
+    (() => { const k = keepFill({ description: fill(300), row1: 'Early', row2: 'Late', col1: 'Bow', col2: 'Stern' }, false, { a: [], b: [] });
+      return k.orphaned.a.length === 0 && k.orphaned.b.length === 0 && regenDroppedNote(k.dropped, k.orphaned, k.shadowed) === null; })());
+}
+
 /* ──────── H-BLUE-LOOP-REGEN-21: the ONE template that quotes the SERVER quotes
  *          only what the server actually SAID
  *
