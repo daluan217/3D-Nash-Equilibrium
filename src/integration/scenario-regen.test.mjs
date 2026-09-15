@@ -796,6 +796,92 @@ try {
     await stop();
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 12. PROMOTED EMPTY-SWEEP ANGLES (BLUE-LOOP-REGEN-21, Amendment 2).
+  //     These ran green as _gen/ probes for sweeps 8-11 and protected nothing
+  //     once that worktree was removed. Each block names its probe.
+  //     MUTANTS (verified): moving canInvent() back below rateLimit fails 12a;
+  //     deleting the flag gate fails 12b; returning the raw body from the
+  //     regenerate route fails 12c.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    // 12a. was _gen/blregen-s10-nokey-selfattack.mts — the self-attack on the
+    // no-key ordering: the flag-off 404 must still WIN over no-key (a disabled
+    // route must not announce itself), and desktop must not be swallowed.
+    calls = 0; mode = 'story';
+    await boot({ NASH_SCENARIO_REGEN: '0' }); // flag off AND no credentials
+    const off = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+    record('flag OFF + no key: 404 "Not enabled" wins over no-key (a disabled route never announces itself)',
+      off.status === 404 && off.json?.error === 'Not enabled.', `status=${off.status} body=${JSON.stringify(off.json)}`);
+    await stop();
+
+    // Desktop: the bank satisfies canInvent(), so the middleware must NOT
+    // short-circuit it — the condition most at risk from that change.
+    calls = 0;
+    await boot({ NASH_SCENARIO_REGEN: '1', IS_ELECTRON: 'true' });
+    let served = 0;
+    for (let i = 0; i < 12; i++) {
+      const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+      if (r.status === 200 && r.json?.scenario) served++;
+    }
+    record('desktop, no credentials: 12 consecutive regenerates all served from the bank (middleware did not swallow desktop)',
+      served === 12, `served=${served}/12`);
+    record('desktop: the provider was never called (bank first)', calls === 0, `calls=${calls}`);
+    await stop();
+  }
+
+  {
+    // 12b. was _gen/blregen-s8-flagoff-journey.mjs (server half) — the SHIPPING
+    // condition: the flag ships '0'. The route must 404 with typed JSON, the
+    // capability must be false, and no burst may spend the shared budget.
+    calls = 0; mode = 'story';
+    // Credentials present so canInvent() is TRUE: this isolates the FLAG as the
+    // only reason for the 404. (Spread order matters — HOSTED_ON_ENV carries
+    // NASH_SCENARIO_REGEN:'1', so the override must come last. My first draft
+    // had it first and silently measured the flag ON.)
+    await boot({ ...HOSTED_ON_ENV, NASH_SCENARIO_REGEN: '0' });
+    const health = await call('GET', '/api/health');
+    record('flag OFF (the shipping default): capabilities.scenarioRegen is false',
+      health.json?.capabilities?.scenarioRegen === false, JSON.stringify(health.json?.capabilities));
+    let all404 = true; let typed = true;
+    for (let i = 0; i < 25; i++) {
+      const r = await call('POST', '/api/scenario/regenerate', { body: { payoffs: PAYOFFS } });
+      if (r.status !== 404) all404 = false;
+      if (r.json?.error !== 'Not enabled.') typed = false;
+    }
+    record('flag OFF: 25 calls are ALL a typed 404 — never a 429, so a disabled route cannot starve the shared budget',
+      all404 && typed, `all404=${all404} typed=${typed}`);
+    // Snapshot BEFORE the /api/report probe below: that call is a legitimate
+    // provider call and would otherwise be counted against the disabled route.
+    const callsFromDisabledRoute = calls;
+    record('flag OFF: the disabled route never reached the provider', callsFromDisabledRoute === 0, `calls=${callsFromDisabledRoute}`);
+    const reportAfter = await call('POST', '/api/report', { body: { payoffs: PAYOFFS } });
+    record('flag OFF: the shared /api/report budget is untouched by that burst', reportAfter.status !== 429, `status=${reportAfter.status}`);
+    await stop();
+  }
+
+  {
+    // 12c. was _gen/blregen-s6-roundtrip.mjs (server half) — what the route
+    // RETURNS is screened: every field a string, actor nouns a string array,
+    // and no field of the caller's own request echoed back.
+    calls = 0; mode = 'story';
+    await boot(HOSTED_ON_ENV);
+    const r = await call('POST', '/api/scenario/regenerate', {
+      body: { payoffs: PAYOFFS, current: { name: 'ECHOME', description: 'ECHOME description', row1: 'ECHOME' } },
+    });
+    const sc = r.json?.scenario;
+    const strField = (v) => typeof v === 'string' && v.length > 0;
+    record('the route returns a fully-typed scenario (every rendered field is a non-empty string)',
+      !!sc && ['name', 'description', 'row1', 'row2', 'col1', 'col2'].every((k) => strField(sc[k])),
+      `shape=${JSON.stringify(sc && Object.fromEntries(Object.entries(sc).map(([k, v]) => [k, typeof v])))}`);
+    record('actor nouns, when present, are an array of strings only',
+      !sc?.actorA || (Array.isArray(sc.actorA) && sc.actorA.every((x) => typeof x === 'string')),
+      `actorA=${JSON.stringify(sc?.actorA)}`);
+    record('the route never echoes the caller\'s own `current` text back as the new story',
+      !!sc && !JSON.stringify(sc).includes('ECHOME'), `echoed=${JSON.stringify(sc).includes('ECHOME')}`);
+    await stop();
+  }
+
 } finally {
   await stop();
   rmSync(userData, { recursive: true, force: true });
