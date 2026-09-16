@@ -5634,7 +5634,7 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a11')}
                   onBlur={() => handlePayoffBlur('a11')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
@@ -5646,7 +5646,7 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b11')}
                   onBlur={() => handlePayoffBlur('b11')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
@@ -5659,7 +5659,7 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a12')}
                   onBlur={() => handlePayoffBlur('a12')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
@@ -5671,7 +5671,7 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b12')}
                   onBlur={() => handlePayoffBlur('b12')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
 
@@ -5687,7 +5687,7 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a21')}
                   onBlur={() => handlePayoffBlur('a21')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
@@ -5699,7 +5699,7 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b21')}
                   onBlur={() => handlePayoffBlur('b21')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
               <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
@@ -5712,7 +5712,7 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a22')}
                   onBlur={() => handlePayoffBlur('a22')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
                 <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
@@ -5724,7 +5724,7 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b22')}
                   onBlur={() => handlePayoffBlur('b22')}
-                  className="w-full min-w-0 min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
             </div>

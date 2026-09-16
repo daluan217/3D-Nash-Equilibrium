@@ -11067,38 +11067,50 @@ const suggestedScenario = {
       clipRows.slice(0, 6).join(' | ') || 'no clipped, zero-width or doc-scrolling case',
     );
 
-    // A browser MINIMUM FONT SIZE (an accessibility preference) overrides the
-    // CSS step-down, so a fix that only shrinks text is defeated by the very
-    // users it is meant to serve. The room has to come from layout instead.
+    // A browser MINIMUM FONT SIZE (an accessibility preference) raises the
+    // payoff text no matter what the CSS asks, so a px-sized box always loses;
+    // the `ch` floor scales with the font instead. `Page.setFontSizes` sets the
+    // DEFAULT size and leaves an explicitly-sized input alone -- it CANNOT fail
+    // for this reason -- so this drives Blink's real `minimumFontSize`, which
+    // needs its own browser instance.
     let minFontRows = [];
-    for (const minFs of [18, 20, 24]) {
-      const pf = await newTrackedPage({ viewport: { width: 320, height: 900 } });
-      const cdpf = await pf.context().newCDPSession(pf);
-      await cdpf.send('Page.setFontSizes', { fontSizes: { standard: minFs, fixed: minFs } });
-      await pf.goto(BASE, { waitUntil: 'networkidle' });
-      await dismissTourForSetup(pf, 'setup: clear the tour before the minimum-font-size payoff check', { timeout: 20000 });
-      const r = await pf.evaluate(() => {
-        const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-        const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
-        ins.forEach((el) => {
-          d.set.call(el, '-99.999');
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          el.blur();
-        });
-        return {
-          clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
-          n: ins.length,
-          doc: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
-        };
+    for (const minFs of [15, 18, 24]) {
+      const fontBrowser = await chromium.launch({
+        args: ['--disable-dev-shm-usage', `--blink-settings=minimumFontSize=${minFs}`],
       });
-      if (r.clipped > 0 || r.doc) minFontRows.push(`min-font ${minFs}px: ${r.clipped}/${r.n} clipped${r.doc ? ', DOC SCROLLS' : ''}`);
-      await pf.close();
+      try {
+        const fctx = await fontBrowser.newContext({ viewport: { width: 320, height: 900 } });
+        const pf = await fctx.newPage();
+        await pf.goto(BASE, { waitUntil: 'networkidle' });
+        await dismissTourForSetup(pf, 'setup: clear the tour before the minimum-font-size payoff check', { timeout: 20000 });
+        const r = await pf.evaluate(() => {
+          const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+          const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+          ins.forEach((el) => {
+            d.set.call(el, '-99.999');
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          return {
+            n: ins.length,
+            font: parseFloat(getComputedStyle(ins[0]).fontSize),
+            clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
+          };
+        });
+        // The control: if the preference did not actually raise the payoff font,
+        // this check proves nothing and must say so rather than pass.
+        if (r.n !== 8) minFontRows.push(`min-font ${minFs}px: found ${r.n} payoff fields, expected 8`);
+        else if (!(r.font >= minFs - 0.5)) minFontRows.push(`min-font ${minFs}px: payoff font is ${r.font}px -- the preference did not apply, so this check would be vacuous`);
+        else if (r.clipped > 0) minFontRows.push(`min-font ${minFs}px: ${r.clipped}/${r.n} clipped at ${r.font}px`);
+        await fctx.close();
+      } finally {
+        await fontBrowser.close();
+      }
     }
     record(
-      '§102 payoff legibility: a browser minimum font size does not clip a payoff (18/20/24px)',
+      '§102 payoff legibility: a real minimum-font-size preference does not clip a payoff (15/18/24px)',
       minFontRows.length === 0,
-      minFontRows.join(' | ') || 'no clipping at any enforced minimum font size',
+      minFontRows.join(' | ') || 'the preference raised the payoff font at every size and nothing clipped',
     );
 
     // SC 2.5.8: the payoff field IS its own pointer target -- clicking the cell
@@ -11110,16 +11122,23 @@ const suggestedScenario = {
       await dismissTourForSetup(pt, 'setup: clear the tour before the payoff target-size check', { timeout: 20000 });
       const r = await pt.evaluate(() => {
         const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
-        const heights = ins.map((e) => e.getBoundingClientRect().height);
-        return { min: Math.min(...heights), n: ins.length };
+        const boxes = ins.map((e) => e.getBoundingClientRect());
+        return {
+          n: ins.length,
+          minH: boxes.length ? Math.min(...boxes.map((b) => b.height)) : 0,
+          minW: boxes.length ? Math.min(...boxes.map((b) => b.width)) : 0,
+        };
       });
-      if (!(r.min >= 24)) targetRows.push(`${vw}px: smallest payoff target ${r.min.toFixed(1)}px of ${r.n}`);
+      // `Math.min()` of an empty array is Infinity, which would pass silently --
+      // so the field COUNT is asserted first and 0 fields is a failure.
+      if (r.n !== 8) targetRows.push(`${vw}px: found ${r.n} payoff fields, expected 8`);
+      else if (!(r.minH >= 24) || !(r.minW >= 24)) targetRows.push(`${vw}px: smallest payoff target ${r.minW.toFixed(1)}x${r.minH.toFixed(1)}px`);
       await pt.close();
     }
     record(
-      '§102 payoff fields meet the 24x24 target minimum (SC 2.5.8) at every width',
+      '§102 payoff fields meet the 24x24 target minimum (SC 2.5.8) in BOTH axes at every width',
       targetRows.length === 0,
-      targetRows.join(' | ') || 'every payoff field clears 24px at all six widths',
+      targetRows.join(' | ') || 'every payoff field clears 24x24 at all six widths',
     );
   });
 
