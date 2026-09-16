@@ -34,20 +34,31 @@ const definitions: { id: string; name: string; shard?: number }[] = [...smoke.ma
 assert(!/section\('[^']+',\s*'[^']*',\s*\d+,\s*async/.test(smoke),
   'sections no longer name a shard by hand — selection.js packs them from shard-timings.json');
 
+// The parse above is the ONLY census of the suite, so a section written in a
+// shape it cannot see registers nowhere and never runs in CI -- green, and
+// protecting nothing. Count `section(` CALLS independently of the pattern that
+// reads them: the two numbers must agree. (§101/§103 were briefly passed a
+// pre-built callback, `section('103', '...', walkTourAt(...))`, which parsed to
+// zero sections and would have shipped the landscape guard switched off.)
+const sectionCalls = (smoke.match(/^\s*section\('/gm) || []).length;
+assert.strictEqual(definitions.length, sectionCalls,
+  `${sectionCalls} section() calls but only ${definitions.length} parsed — a section is written in a shape `
+  + 'the enumerator cannot see (it must be `section(\'id\', \'name\', async () => ...)`), so it would never run in CI');
+
 const expectedIds = [
   '1', '2', '3', '4', '5', '6', '6b', '7', '8', '9', '10', '11', '12',
   '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23',
   '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
   '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '50',
   '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
-  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96', '100', '102', '101', '97',
+  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96', '100', '102', '101', '103', '97',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 34, 'the smoke suite is split into 34 CI shards (test.yml matrix must match) '
+assert.strictEqual(SHARD_COUNT, 35, 'the smoke suite is split into 35 CI shards (test.yml matrix must match) '
   + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
   + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
   + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
@@ -63,7 +74,7 @@ assert.strictEqual(SHARD_COUNT, 34, 'the smoke suite is split into 34 CI shards 
   + 'multi-section shards back over the line, worst shard 8 = \u00a742+\u00a794 at 201s, including the '
   + 'long-standing \u00a77+\u00a742 = 200,097ms pair that sits 97ms over on its own; 33 clears every one '
   + '(simulated over the merged table before landing). Re-measuring \u00a793/\u00a794/\u00a7100/\u00a7101 on the final tree (\u00a7100 110839 -> 165141) put shard 9 = \u00a77+\u00a742 back on the line at 200,097ms; 34 clears it. '
-  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; both are ~111s now and the table carries 125,000/120,000. 34 still clears every multi-section shard.');
+  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; the table carries 125,000/180,000. Adding three LANDSCAPE conditions to \u00a7101 (the orientation that hid the tour footer) took it to a MEASURED 259,112ms -- over the same per-section budget -- so the trio split out as \u00a7103 behind one shared walker; re-measured alone, \u00a7101 is 104,486ms and \u00a7103 72,095ms (tabled at 120,000/90,000). 34 then packs shard 8 = \u00a77+\u00a770 at 203 s, over the 200 s multi-section line, and 36 leaves a shard empty; 35 is the only count that clears both.');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
