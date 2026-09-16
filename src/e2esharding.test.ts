@@ -62,7 +62,8 @@ assert.strictEqual(SHARD_COUNT, 34, 'the smoke suite is split into 34 CI shards 
   + 'again -- merging main\'s \u00a797 (regen) with this branch\'s \u00a7100/\u00a7101 (reflow) put 5 '
   + 'multi-section shards back over the line, worst shard 8 = \u00a742+\u00a794 at 201s, including the '
   + 'long-standing \u00a77+\u00a742 = 200,097ms pair that sits 97ms over on its own; 33 clears every one '
-  + '(simulated over the merged table before landing). Re-measuring \u00a793/\u00a794/\u00a7100/\u00a7101 on the final tree (\u00a7100 110839 -> 165141) put shard 9 = \u00a77+\u00a742 back on the line at 200,097ms; 34 clears it.');
+  + '(simulated over the merged table before landing). Re-measuring \u00a793/\u00a794/\u00a7100/\u00a7101 on the final tree (\u00a7100 110839 -> 165141) put shard 9 = \u00a77+\u00a742 back on the line at 200,097ms; 34 clears it. '
+  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; both are ~111s now and the table carries 125,000/120,000. 34 still clears every multi-section shard.');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
