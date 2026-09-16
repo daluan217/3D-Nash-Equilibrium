@@ -139,7 +139,7 @@ if (extra.length > 0) {
 const EXPECTED_SECRET_REFS = new Map([
   ['SMTP_USER', ['nash-equilibrium-smtp-user', '3']],
   ['SMTP_PASS', ['nash-equilibrium-smtp-pass', '3']],
-  ['ADMIN_SECRET', ['nash-equilibrium-admin-secret', '2']],
+  ['ADMIN_SECRET', ['nash-equilibrium-admin-secret', '3']],
   ['AUTH_SECRET', ['nash-equilibrium-auth-secret', '2']],
   ['AZURE_FOUNDRY_API_KEY', ['nash-equilibrium-azure-foundry-api-key', '3']],
 ]);
