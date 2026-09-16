@@ -16,6 +16,7 @@
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -493,6 +494,35 @@ try {
       body: JSON.stringify({ name: 'big', description: big, payoffs: MP }),
     });
     record('a 200kb request body → 413 (payload ceiling enforced)', r.status === 413, `status=${r.status}`);
+  }
+
+  // ══ 12b. `www` is not a canonical host: it must 301 to the apex, path and
+  //      query preserved, case-insensitively. GSC flagged www as "Not found"
+  //      because the domain had DNS pointed at Google's frontend with no
+  //      route behind it (2026-09-16); this is what a real client sees once
+  //      the domain mapping + cert exist. `fetch` pins Host to the connection
+  //      URL (undici strips a manual override), so this uses node:http, which
+  //      honors it -- the same gap a browser's real DNS-driven request has.
+  {
+    const hostRedirect = (host, path) => new Promise((resolve, reject) => {
+      const req = http.request({ hostname: '127.0.0.1', port: PORT, path, method: 'GET',
+        headers: { Host: host } }, (res) => {
+        res.resume();
+        resolve({ status: res.statusCode, location: res.headers.location });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    const r1 = await hostRedirect('www.nash-equilibrium-simulator.com', '/some/path?x=1');
+    record('www + path/query -> 301 to the apex, path and query preserved',
+      r1.status === 301 && r1.location === 'https://nash-equilibrium-simulator.com/some/path?x=1',
+      `status=${r1.status} location=${r1.location}`);
+    const r2 = await hostRedirect('WWW.Nash-Equilibrium-Simulator.COM', '/');
+    record('www host match is case-insensitive', r2.status === 301, `status=${r2.status}`);
+    const r3 = await hostRedirect('nash-equilibrium-simulator.com', '/');
+    record('the apex itself is unaffected by the www redirect', r3.status !== 301, `status=${r3.status}`);
+    const r4 = await hostRedirect('www.nash-equilibrium-simulator.com.evil.com', '/');
+    record('a suffix-attack host is not caught by a loose www match', r4.status !== 301, `status=${r4.status}`);
   }
 
   // ══ 13. SECURITY — rate limiting (the brute-force surface of login and

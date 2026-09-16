@@ -2980,6 +2980,18 @@ async function startServer() {
       : trustProxy);
   }
 
+  // `www` is not a canonical host (sitemap/robots/canonical all use the bare
+  // apex): 301 it straight to the apex, same shape as the existing http->https
+  // redirect at the edge. Case-insensitive host match; preserves path+query.
+  app.use((req, res, next) => {
+    const host = req.headers.host;
+    if (host && /^www\.nash-equilibrium-simulator\.com$/i.test(host)) {
+      res.redirect(301, `https://nash-equilibrium-simulator.com${req.originalUrl}`);
+      return;
+    }
+    next();
+  });
+
   // Parse JSON bodies
   app.use(express.json());
 
