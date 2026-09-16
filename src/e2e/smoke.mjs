@@ -10360,10 +10360,19 @@ const suggestedScenario = {
         window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
         const vw = de.clientWidth;
         // the hidden KaTeX MathML annotation (position:absolute, 1px) is not layout
-        const wide = Array.from(document.querySelectorAll('body *')).filter((el) => {
-          if (el.closest('.katex-mathml') || el.closest('.js-plotly-plot')) return false;
-          const r = el.getBoundingClientRect(); return r.width > 0 && r.right > vw + 2;
-        }).map((el) => `${el.tagName}.${(el.className || '').toString().slice(0, 40)}`).slice(0, 6);
+        const wide = [];
+        for (const el of document.querySelectorAll('body *')) {
+          if (el.closest('.katex-mathml') || el.closest('.js-plotly-plot')) continue;
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.right > vw + 2)) continue;
+          let contained = false;
+          for (let a = el.parentElement; a; a = a.parentElement) {
+            const cs = getComputedStyle(a);
+            if (/(auto|scroll|hidden|clip)/.test(cs.overflowX) && a.getBoundingClientRect().right <= vw + 2) { contained = true; break; }
+          }
+          if (!contained) wide.push(`${el.tagName}.${(el.className || '').toString().slice(0, 40)}`);
+        }
+        wide.splice(6);
         // Self-attack on THIS branch's own 004 fix: `break-words` is inherited,
         // so it also applied to the realtime-stats VALUES and stacked "0.217"
         // one digit per line (23x289). A label may break, a number may not.

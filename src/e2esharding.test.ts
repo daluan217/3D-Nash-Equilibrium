@@ -47,7 +47,7 @@ assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 33, 'the smoke suite is split into 33 CI shards (test.yml matrix must match) '
+assert.strictEqual(SHARD_COUNT, 34, 'the smoke suite is split into 34 CI shards (test.yml matrix must match) '
   + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
   + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
   + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
@@ -62,7 +62,7 @@ assert.strictEqual(SHARD_COUNT, 33, 'the smoke suite is split into 33 CI shards 
   + 'again -- merging main\'s \u00a797 (regen) with this branch\'s \u00a7100/\u00a7101 (reflow) put 5 '
   + 'multi-section shards back over the line, worst shard 8 = \u00a742+\u00a794 at 201s, including the '
   + 'long-standing \u00a77+\u00a742 = 200,097ms pair that sits 97ms over on its own; 33 clears every one '
-  + '(simulated over the merged table before landing).');
+  + '(simulated over the merged table before landing). Re-measuring \u00a793/\u00a794/\u00a7100/\u00a7101 on the final tree (\u00a7100 110839 -> 165141) put shard 9 = \u00a77+\u00a742 back on the line at 200,097ms; 34 clears it.');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default

@@ -55,7 +55,7 @@ import { dirname, join } from 'node:path';
  * removed the over-budget section; 32 keeps every multi-section shard at or
  * under the line.
  */
-export const SHARD_COUNT = 33;
+export const SHARD_COUNT = 34;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));
