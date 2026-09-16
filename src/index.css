@@ -378,6 +378,14 @@ input.no-native-spinner {
   [role="dialog"] .flex:not(.flex-col) > * { min-width: 0; }
   [role="dialog"] .flex.items-center.justify-between:not(.flex-col) { flex-wrap: wrap; }
 
+  /* The exit must come FIRST, not after 810px of wrapped title. "Simulator
+   * Workspace Center" stacks one word per line at a 93px viewport, and the
+   * drawer panel is `fixed` with `overflow-y: visible`, so a close button
+   * pushed below it can never be scrolled back -- the drawer was uncloseable
+   * at 93x281 and 93x400 even after the wrap fix. `order` moves only the
+   * PAINT order, so the tab order the panel was built around is untouched. */
+  [role="dialog"] .flex.items-center.justify-between:not(.flex-col) > button[aria-label^="Close"] { order: -1; }
+
   /* RED-APP-12/003 again, from the other side. A sticky header that is TALLER
    * than the viewport covers every pixel at every scroll position, so nothing
    * under it can be clicked. The existing guard keys on viewport height

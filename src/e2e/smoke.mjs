@@ -10875,40 +10875,57 @@ const suggestedScenario = {
     // pressed, because "visible" and "reachable" disagreed here.
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.keyboard.press('Escape').catch(() => {});
-    await p97.waitForTimeout(400);
-    await cdp.send('Emulation.setDeviceMetricsOverride', {
-      width: 93, height: 700, deviceScaleFactor: 3, mobile: false });
-    await p97.getByRole('button', { name: /open workspace menu/i }).first().click({ timeout: 8000 }).catch(() => {});
-    await p97.waitForTimeout(900);
-    // "some visible dialog" was satisfied by an Account modal that Escape had
-    // failed to close (ds-rev finding F) -- name the drawer by its own close
-    // control instead, so a leftover modal fails here rather than downstream.
-    record('§100 drawer fixture guard: the workspace drawer is open at a 93px layout viewport',
-      await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
-        .some((d) => d.getBoundingClientRect().width > 0
-          && [...d.querySelectorAll('button')]
-            .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))));
-    record('§100 drawer at 93px: its close control is fully inside the viewport',
-      await p97.evaluate(() => {
-        const b = [...document.querySelectorAll('button')]
-          .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
-        if (!b) return false;
-        const r = b.getBoundingClientRect();
-        return r.left >= -0.5 && r.right <= document.documentElement.clientWidth + 0.5;
-      }),
-      await p97.evaluate(() => {
-        const b = [...document.querySelectorAll('button')]
-          .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
-        const r = b && b.getBoundingClientRect();
-        return r ? `x=${Math.round(r.left)}..${Math.round(r.right)} vw=${document.documentElement.clientWidth}` : 'absent';
-      }));
-    const drawerClosed = await p97.getByRole('button', { name: /close menu/i }).first()
-      .click({ timeout: 6000 })
-      .then(() => p97.waitForTimeout(600))
-      .then(() => p97.evaluate(() => ![...document.querySelectorAll('[role="dialog"]')]
-        .some((d) => d.getBoundingClientRect().width > 0)))
-      .catch(() => false);
-    record('§100 drawer at 93px: it can actually be closed again (not a trap)', drawerClosed);
+    // Poll for the tour/modal to really go: a fixed wait raced it, and a
+    // leftover dialog then answered the drawer rows below (ds-rev finding F).
+    await p97.waitForFunction(() => !document.querySelector('[role="dialog"]'),
+      null, { timeout: 5000 }).catch(() => {});
+    // Three HEIGHTS, not one. The old row tested left/right at 700px only, so a
+    // close button pushed 675px DOWN by a wrapped title -- inside a `fixed`
+    // panel with `overflow-y: visible`, which can never scroll back -- passed
+    // it while the drawer was uncloseable at 281 and 400.
+    let drawerClosed = true;
+    for (const dh of [281, 400, 700]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: 93, height: dh, deviceScaleFactor: 3, mobile: false });
+      await p97.getByRole('button', { name: /open workspace menu/i }).first()
+        .click({ timeout: 8000 }).catch(() => {});
+      await p97.waitForTimeout(900);
+      record(`§100 drawer fixture guard: the workspace drawer is open at 93x${dh}`,
+        await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
+          .some((d) => d.getBoundingClientRect().width > 0
+            && [...d.querySelectorAll('button')]
+              .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))));
+      record(`§100 drawer at 93x${dh}: its close control is fully inside the viewport`,
+        await p97.evaluate(() => {
+          const b = [...document.querySelectorAll('button')]
+            .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
+          if (!b) return false;
+          const r = b.getBoundingClientRect();
+          const de = document.documentElement;
+          return r.left >= -0.5 && r.right <= de.clientWidth + 0.5
+            && r.top >= -0.5 && r.bottom <= de.clientHeight + 0.5;
+        }),
+        await p97.evaluate(() => {
+          const b = [...document.querySelectorAll('button')]
+            .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
+          const r = b && b.getBoundingClientRect();
+          const de = document.documentElement;
+          return r ? `x=${Math.round(r.left)}..${Math.round(r.right)} y=${Math.round(r.top)}..${Math.round(r.bottom)} vw=${de.clientWidth} vh=${de.clientHeight}` : 'absent';
+        }));
+      const shut = await p97.getByRole('button', { name: /close menu/i }).first()
+        .click({ timeout: 10000 })
+        .then(() => p97.waitForTimeout(600))
+        .then(() => p97.evaluate(() => ![...document.querySelectorAll('[role="dialog"]')]
+          .some((d) => d.getBoundingClientRect().width > 0
+            && [...d.querySelectorAll('button')]
+              .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))))
+        .catch(() => false);
+      record(`§100 drawer at 93x${dh}: it can actually be closed again (not a trap)`, shut);
+      drawerClosed = drawerClosed && shut;
+      await p97.keyboard.press('Escape').catch(() => {});
+      await p97.waitForTimeout(300);
+    }
+    record('§100 drawer: closeable at EVERY height swept, not just the tallest', drawerClosed);
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.close();
 
