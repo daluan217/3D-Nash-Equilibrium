@@ -11059,6 +11059,40 @@ const suggestedScenario = {
       clipRows.length === 0,
       clipRows.slice(0, 6).join(' | ') || 'no clipped, zero-width or doc-scrolling case',
     );
+
+    // A browser MINIMUM FONT SIZE (an accessibility preference) overrides the
+    // CSS step-down, so a fix that only shrinks text is defeated by the very
+    // users it is meant to serve. The room has to come from layout instead.
+    let minFontRows = [];
+    for (const minFs of [18, 20, 24]) {
+      const pf = await newTrackedPage({ viewport: { width: 320, height: 900 } });
+      const cdpf = await pf.context().newCDPSession(pf);
+      await cdpf.send('Page.setFontSizes', { fontSizes: { standard: minFs, fixed: minFs } });
+      await pf.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(pf, 'setup: clear the tour before the minimum-font-size payoff check', { timeout: 20000 });
+      const r = await pf.evaluate(() => {
+        const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+        ins.forEach((el) => {
+          d.set.call(el, '-99.999');
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.blur();
+        });
+        return {
+          clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
+          n: ins.length,
+          doc: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        };
+      });
+      if (r.clipped > 0 || r.doc) minFontRows.push(`min-font ${minFs}px: ${r.clipped}/${r.n} clipped${r.doc ? ', DOC SCROLLS' : ''}`);
+      await pf.close();
+    }
+    record(
+      '§100 payoff legibility: a browser minimum font size does not clip a payoff (18/20/24px)',
+      minFontRows.length === 0,
+      minFontRows.join(' | ') || 'no clipping at any enforced minimum font size',
+    );
   });
 
   // §101 is §100's tour phase, moved out: §100 had grown to five phases in one

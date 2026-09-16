@@ -5624,7 +5624,7 @@ export default function App() {
 
               {/* Row 1 inputs */}
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5649,7 +5649,7 @@ export default function App() {
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5677,7 +5677,7 @@ export default function App() {
 
               {/* Row 2 inputs */}
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5702,7 +5702,7 @@ export default function App() {
                   className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
