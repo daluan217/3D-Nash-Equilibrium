@@ -10529,6 +10529,110 @@ const suggestedScenario = {
   });
 
 
+  // §97 promotes the browser-only empty-sweep angles out of _gen/ (Amendment 2):
+  // blregen-s11-interleave (staleness under an abandoned in-flight answer),
+  // blregen-s3f-a11y-keepnote (the Keep note is ANNOUNCED, not just present),
+  // and blregen-s7-discard-interleave (Discard leaves no residue).
+  // MUTANTS (verified): dropping the key comparison in regenResponseIsCurrent
+  // fails the cross-dialog rows; rendering the Keep note without role="status"
+  // fails the announcement row.
+  section('97', 'regen staleness, announcement and discard: an abandoned answer never lands, the Keep note is announced, Discard leaves nothing behind', async () => {
+    const p97 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    // An ORDERED script, so the interleaving is deterministic rather than timing luck:
+    // the first (slow) answer is abandoned, the second (fast) one is the live request.
+    let seq = 0;
+    // A DISTINCT third draw: the plan used to clamp to REGEN_STORY_A, so part C's
+    // Discard row compared the textarea against text Keep had already put there
+    // and would have passed even if Discard applied the preview (reviewer
+    // finding). REGEN_STORY_B shares no wording with A.
+    const plan = [
+      { delay: 2500, status: 429, body: { error: 'FIRST (slow, abandoned)' } },
+      { delay: 40, status: 200, body: { scenario: REGEN_STORY_A } },
+      { delay: 40, status: 200, body: { scenario: REGEN_STORY_B } },
+    ];
+    await mockRegenOn(p97, async (route) => {
+      const step = plan[Math.min(seq++, plan.length - 1)];
+      await new Promise((r) => setTimeout(r, step.delay));
+      await route.fulfill({ status: step.status, contentType: 'application/json', body: JSON.stringify(step.body) });
+    });
+    await registerAndLogin(p97, 'e2e97stale');
+    await p97.getByRole('button', { name: /save preset/i }).click();
+    await p97.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const dlg = p97.getByRole('dialog', { name: 'Save custom game' });
+    const btn = dlg.getByRole('button', { name: 'Regenerate scenario' });
+    record('§97 fixture guard: the Regenerate button is rendered (the rows below are real tests)',
+      await btn.count() === 1, `count=${await btn.count()}`);
+
+    // A. Start the slow 429, then CANCEL while it is in flight. The abandoned
+    //    answer must not paint into a dialog the user closed, nor follow them
+    //    into a freshly opened one.
+    await btn.click();
+    await p97.waitForTimeout(250);
+    await dlg.getByRole('button', { name: /^cancel$/i }).click();
+    await p97.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { state: 'hidden', timeout: 5000 });
+    // REOPEN WHILE THE ANSWER IS STILL IN FLIGHT (reviewer finding: waiting the
+    // full delay out first only tested reopening after it had settled, which is
+    // the weaker case). The 429 is 2500ms out and ~400ms has passed, so it
+    // arrives with the SECOND dialog already on screen — the response must find
+    // a dialog it no longer belongs to and land nowhere.
+    await p97.getByRole('button', { name: /save preset/i }).click();
+    await p97.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    await p97.waitForTimeout(2600); // the abandoned 429 lands HERE, dialog open
+    const reopened = (await dlg.evaluate((el) => el.textContent || '')).replace(/\s+/g, ' ');
+    record('§97 an abandoned in-flight answer does not paint a stale error into the REOPENED dialog',
+      !/AI limit reached/i.test(reopened), JSON.stringify(reopened.slice(-120)));
+    record('§97 the abandoned answer never leaks its raw server text anywhere on the page',
+      !(await p97.content()).includes('FIRST (slow, abandoned)'));
+
+    // B. The live request now gets the preview. Keep must ANNOUNCE its result:
+    //    a note that renders but is not in a live region is silent to a screen
+    //    reader, which is the whole point of this angle.
+    // The reopened dialog must be USABLE, asserted before the click so that a
+    // regression fails THIS row by name instead of timing out 30s later with a
+    // crash that names nothing (mutant E97c did exactly that).
+    const reBtn = dlg.getByRole('button', { name: 'Regenerate scenario' });
+    record('§97 the reopened dialog is usable — the abandoned answer left no loading/error state behind',
+      await reBtn.isEnabled().catch(() => false)
+        && (await reBtn.getAttribute('aria-disabled')) !== 'true'
+        && !/Regenerating/i.test(await dlg.evaluate((el) => el.textContent || '')),
+      JSON.stringify((await dlg.evaluate((el) => el.textContent || '')).replace(/\s+/g, ' ').slice(-110)));
+    await reBtn.click();
+    await p97.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 10000 });
+    record('§97 the CURRENT request is the one that lands (the preview is this draw, not the abandoned one)',
+      (await dlg.evaluate((el) => el.textContent || '')).includes(REGEN_STORY_A.name));
+    await dlg.getByRole('button', { name: 'Keep' }).click();
+    await p97.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
+    const liveRegion = await dlg.locator('p[role="status"], p[role="alert"]').evaluateAll((els) =>
+      els.map((e) => ({ text: (e.textContent || '').trim(), role: e.getAttribute('role'), live: e.getAttribute('aria-live') })));
+    const spoken = liveRegion.filter((n) => n.text.length > 0);
+    record('§97 the Keep note is inside a LIVE REGION, so it is announced rather than silently rendered',
+      spoken.length > 0 && spoken.every((n) => n.role === 'status' || n.role === 'alert' || !!n.live),
+      JSON.stringify(spoken.slice(0, 2)));
+    record('§97 Keep actually replaced the story (so the announcement is about a real change)',
+      (await dlg.locator('textarea').first().inputValue()).includes('cider press'),
+      JSON.stringify((await dlg.locator('textarea').first().inputValue()).slice(0, 60)));
+
+    // C. Discard leaves no residue: no preview card, no stale note, and the
+    //    description the user had is the one still in the box.
+    await dlg.getByRole('button', { name: 'Regenerate scenario' }).click();
+    await p97.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'visible', timeout: 10000 });
+    const beforeDiscard = await dlg.locator('textarea').first().inputValue();
+    const discard = dlg.getByRole('button', { name: /discard/i });
+    // Asserted, not silently skipped: a Discard button that stopped rendering
+    // would otherwise take both rows below with it (reviewer finding).
+    record('§97 fixture guard: the preview offers a Discard control', await discard.count() > 0);
+    record('§97 fixture guard: the third draw is a DIFFERENT story, so "unchanged" is a real comparison',
+      (await dlg.evaluate((el) => el.textContent || '')).includes(REGEN_STORY_B.name));
+    {
+      await discard.first().click();
+      await p97.getByText('New scenario (preview)', { exact: false }).waitFor({ state: 'hidden', timeout: 5000 });
+      record('§97 Discard removes the preview card entirely', await p97.getByText('New scenario (preview)', { exact: false }).count() === 0);
+      record('§97 Discard leaves the description exactly as it was (no half-applied draw)',
+        (await dlg.locator('textarea').first().inputValue()) === beforeDiscard);
+    }
+    await p97.close();
+  });
+
 await executeSections();
 
 } catch (e) {
@@ -10608,6 +10712,10 @@ const EXPECTED_STATUS_NOISE = {
   // so the real server answers 404 once — the exact response whose
   // "deleted elsewhere" message the section asserts. Same class as §38.
   '96': [404, 404],
+  // §97 deliberately mocks ONE 429 as the slow answer it then abandons; now
+  // that the dialog is reopened mid-flight, that response lands on an open page
+  // and Chromium logs its status. One budgeted entry, consumed once.
+  '97': [429],
   // §76 extension (RED-APP-16/005): deliberately mocks a 429 on the admin
   // panel's Refresh — the exact behavior "a visible error banner + Retry,
   // stale numbers stay on screen" verifies.
