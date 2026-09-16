@@ -11016,6 +11016,13 @@ const suggestedScenario = {
     }
     await ps.close();
 
+  });
+
+  // Split out of §100 (2026-09-16): §100 measured 225.0s against a 225.0s
+  // per-section budget once the payoff checks landed. These three share one
+  // subject -- the number a payoff FIELD actually shows -- so they split
+  // cleanly rather than being trimmed.
+  section('102', 'a payoff always renders as the number it holds', async () => {
     // A payoff that PRINTS as a different number is the worst defect this
     // surface can carry: "-99.999" rendered "-99." and "-100" rendered "-10".
     // The field clamps to PAYOFF_RANGE quantised to 3dp, so the widest legal
@@ -11055,7 +11062,7 @@ const suggestedScenario = {
       await pv.close();
     }
     record(
-      `§100 payoff legibility: every legal payoff renders unclipped at every width (${WIDEST_PAYOFFS.length} values x 9 widths)`,
+      `§102 payoff legibility: every legal payoff renders unclipped at every width (${WIDEST_PAYOFFS.length} values x 9 widths)`,
       clipRows.length === 0,
       clipRows.slice(0, 6).join(' | ') || 'no clipped, zero-width or doc-scrolling case',
     );
@@ -11089,9 +11096,30 @@ const suggestedScenario = {
       await pf.close();
     }
     record(
-      '§100 payoff legibility: a browser minimum font size does not clip a payoff (18/20/24px)',
+      '§102 payoff legibility: a browser minimum font size does not clip a payoff (18/20/24px)',
       minFontRows.length === 0,
       minFontRows.join(' | ') || 'no clipping at any enforced minimum font size',
+    );
+
+    // SC 2.5.8: the payoff field IS its own pointer target -- clicking the cell
+    // padding around it does not focus it -- so the input box must clear 24px.
+    let targetRows = [];
+    for (const vw of [280, 320, 390, 430, 1024, 1280]) {
+      const pt = await newTrackedPage({ viewport: { width: vw, height: 900 } });
+      await pt.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(pt, 'setup: clear the tour before the payoff target-size check', { timeout: 20000 });
+      const r = await pt.evaluate(() => {
+        const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+        const heights = ins.map((e) => e.getBoundingClientRect().height);
+        return { min: Math.min(...heights), n: ins.length };
+      });
+      if (!(r.min >= 24)) targetRows.push(`${vw}px: smallest payoff target ${r.min.toFixed(1)}px of ${r.n}`);
+      await pt.close();
+    }
+    record(
+      '§102 payoff fields meet the 24x24 target minimum (SC 2.5.8) at every width',
+      targetRows.length === 0,
+      targetRows.join(' | ') || 'every payoff field clears 24px at all six widths',
     );
   });
 
