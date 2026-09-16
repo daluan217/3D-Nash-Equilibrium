@@ -426,6 +426,16 @@ jobs:
         env:
           CANCELLATION_TEST_PORT: '4800'
 
+      # A failed verification email returned the mail provider's own text --
+      # host, 535-5.7.8 credential code, per-attempt message id -- straight into
+      # the Account modal, and told the visitor to check "your server" for an
+      # operator-side misconfiguration. SMTP_HOST points at a closed port here,
+      # so the send always fails and the 500 branch is always the one measured.
+      - name: A failed verification email leaks no SMTP diagnostics to the browser
+        run: node src/integration/register-smtp-leak.test.mjs
+        env:
+          RSL_TEST_PORT: '3187'
+
       # RED-REGEN-7/001: two INDEPENDENT PATCH /api/games/:id requests (two
       # tabs/devices), each naming only the colour-term field it changed,
       # each naming the same real-world phrase in a different spelling
