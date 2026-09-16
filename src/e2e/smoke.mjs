@@ -11026,9 +11026,54 @@ const suggestedScenario = {
       // each condition, but the app is already warm, which is most of the cost.
       await pt.reload({ waitUntil: 'domcontentloaded' });
       await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+      // `visible` is not `placed`: the card anchors itself to its step's target
+      // after layout, so the first frame can be measured mid-placement -- one
+      // run in six caught Back at [-94,370] in a 130x320 viewport and failed a
+      // condition that passes 5/5 on its own. Wait for the card's own rect to
+      // hold still, the same settle the §100 phases use.
+      await pt.waitForFunction(() => new Promise((resolve) => {
+        const sel = '.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl';
+        let last = '', stable = 0;
+        const tick = () => {
+          const c = document.querySelector(sel);
+          if (!c) { resolve(true); return; }             // no card: nothing to settle
+          const r = c.getBoundingClientRect();
+          const v = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+          stable = v === last ? stable + 1 : 0; last = v;
+          if (stable >= 10) resolve(true); else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }), null, { timeout: 15000 }).catch(() => {});
       const at = `tour ${w}px@${z}x(${lw}x${lh})`;
       record(`§101 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
         await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
+      // WCAG 2.1.1. When the card's body overflows it holds up to 958px of step
+      // text a keyboard user can reach no other way: Tab lands on Back/Next,
+      // which are already past it, and the scroll keys went to the page behind
+      // the modal. §100 declares this shape a failure but dismisses the tour
+      // before sweeping, so nothing measured it. Mutant: drop the tabIndex/role
+      // and `focusable` goes false at every condition where it scrolls.
+      record(`§101 ${at}: a tour body that scrolls is reachable from the keyboard`,
+        await pt.evaluate(() => {
+          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          if (!card) return false;
+          const box = [...card.querySelectorAll('div')].find((d) => /auto|scroll/.test(getComputedStyle(d).overflowY)
+            && d.scrollHeight > d.clientHeight + 1);
+          if (!box) return true;                       // nothing overflows here
+          if (!(box.tabIndex >= 0)) return false;
+          box.focus();
+          return document.activeElement === box && !!(box.getAttribute('aria-label') || box.getAttribute('role'));
+        }),
+        await pt.evaluate(() => {
+          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          const box = card && [...card.querySelectorAll('div')].find((d) => /auto|scroll/.test(getComputedStyle(d).overflowY)
+            && d.scrollHeight > d.clientHeight + 1);
+          return box ? `hidden=${box.scrollHeight - box.clientHeight}px tabIndex=${box.tabIndex} role=${box.getAttribute('role')}` : 'no scrolling body';
+        }));
+      // The inert measuring probe must NOT gain a tab stop from that fix.
+      record(`§101 ${at}: the off-screen measuring probe stays out of the tab order`,
+        await pt.evaluate(() => [...document.querySelectorAll('[data-tour-float-probe] [tabindex]')]
+          .every((e) => Number(e.getAttribute('tabindex')) < 0)));
       // Walk every step. `steps` counts how far a user could actually get.
       // The cap is ABOVE the tour's length (19 steps) so that reaching it means
       // the tour never ended -- a loop that stops at 14 makes "walked to the

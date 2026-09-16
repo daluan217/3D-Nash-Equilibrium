@@ -50,7 +50,14 @@ for (const vh of [0, 40, 100, 150, 200]) {
 // long caption pushes the footer out of the floored card just the same.
 const src = readFileSync('src/components/Walkthrough.tsx', 'utf8');
 check('the card contents are wrapped in one scroll box driven by `scrolls`',
-  /flex flex-col min-h-0 \$\{denseVariant \? 'gap-2' : 'gap-3\.5'\}\$\{scrolls \? ' overflow-y-auto' : ''\}/.test(src));
+  (src.match(/\$\{scrolls \? ' overflow-y-auto' : ''\}/g) || []).length === 1
+  && /flex flex-col min-h-0[^`]*\$\{scrolls \? ' overflow-y-auto' : ''\}/.test(src));
+// The box is a keyboard-reachable region exactly while it scrolls, and never on
+// the inert measuring probe (which is aria-hidden and must stay untabbable).
+check('a scrolling tour body is focusable and named, and the probe is not',
+  /tabIndex=\{scrolls && !probe \? 0 : undefined\}/.test(src)
+  && /role=\{scrolls && !probe \? 'region' : undefined\}/.test(src)
+  && /aria-label=\{scrolls && !probe \? '[^']+' : undefined\}/.test(src));
 check('the footer may wrap, so Back cannot be pushed off the left edge at 61px',
   /flex flex-wrap items-center justify-end gap-2/.test(src));
 // `sheetMaxVh` may appear exactly once outside its own declaration: inside

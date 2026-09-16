@@ -589,7 +589,12 @@ export function Walkthrough({
           pinning the footer instead starved the caption to 0 visible pixels at
           93-150px wide. `min-h-0` is what lets this shrink inside the flex
           column. The close button stays clear of it -- see its own note. */}
-      <div className={`flex flex-col min-h-0 ${denseVariant ? 'gap-2' : 'gap-3.5'}${scrolls ? ' overflow-y-auto' : ''}`}>
+      <div
+        tabIndex={scrolls && !probe ? 0 : undefined}
+        role={scrolls && !probe ? 'region' : undefined}
+        aria-label={scrolls && !probe ? 'Tour step, scrollable' : undefined}
+        className={`flex flex-col min-h-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded ${denseVariant ? 'gap-2' : 'gap-3.5'}${scrolls ? ' overflow-y-auto' : ''}`}
+      >
       {/* `pr-8` keeps the step counter clear of the close button, which is
           positioned over this corner from the end of the card (see below).
           `data-keeps-clear` is what stops the narrow-width rule in index.css
