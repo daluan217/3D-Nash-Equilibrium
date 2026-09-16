@@ -10538,7 +10538,10 @@ const suggestedScenario = {
   section('100', 'no width and zoom a user can reach makes the page scroll sideways', async () => {
     // 280px is the narrowest phone still sold; 300% is mid-range for the 400%
     // the SC requires. 280/3 = a 93px layout viewport — the hardest point.
-    const COMBOS = [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5]];
+    // 390@1.45x = 269px and 390@1.63x = 239px bracket the band where the matrix
+    // collapses to 0px inputs (221-261 measured). 1.5x lands on 260 -- inside
+    // the band -- and swept green only because the oracles skipped 0px boxes.
+    const COMBOS = [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5], [390, 1.45], [390, 1.63]];
     const measure = async (p, cdp, w, z) => {
       await cdp.send('Emulation.setDeviceMetricsOverride', {
         width: Math.round(w / z), height: Math.round(844 / z), deviceScaleFactor: z, mobile: false });
@@ -10695,7 +10698,13 @@ const suggestedScenario = {
               const v = String(el.value ?? '');
               if (!v) continue;
               const r = el.getBoundingClientRect();
-              if (!(r.width > 0)) continue;
+              // `width > 0` was a SKIP, and 0 is the worst case, not an absent
+              // one: the matrix collapses to eight 0px inputs at layout widths
+              // 221-261 and this oracle stepped over every one of them.
+              // `offsetParent === null` (plus the fixed/sticky escape) is the
+              // real "not rendered" test.
+              if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
+              if (r.width <= 0) { bad.push(`${v}: input is ${r.width}px wide — the value cannot be seen at all`); continue; }
               const cs = getComputedStyle(el);
               const probe = document.createElement('span');
               probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
@@ -10755,7 +10764,8 @@ const suggestedScenario = {
             const bad = [];
             for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
               const r = el.getBoundingClientRect();
-              if (!(r.width > 0)) continue;
+              if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
+              if (r.width <= 0) { bad.push(`${el.type}: 0px wide`); continue; }
               const cs = getComputedStyle(el);
               const content = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
               if (el.type !== 'range' && content < parseFloat(cs.fontSize))
@@ -11018,7 +11028,7 @@ const suggestedScenario = {
     // HEIGHT, so a short screen shrinks the card below its own footer. 844/3
     // = 281 is a 280px phone at 300%; 320 is the shortest layout height a
     // 400%-zoomed phone produces.
-    for (const [w, h, z] of [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3]]) {
+    for (const [w, h, z] of [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]]) {
       const lw = Math.round(w / z), lh = Math.round(h / z);
       await cdpT.send('Emulation.setDeviceMetricsOverride', {
         width: lw, height: lh, deviceScaleFactor: z, mobile: false });
@@ -11031,7 +11041,7 @@ const suggestedScenario = {
       // run in six caught Back at [-94,370] in a 130x320 viewport and failed a
       // condition that passes 5/5 on its own. Wait for the card's own rect to
       // hold still, the same settle the §100 phases use.
-      await pt.waitForFunction(() => new Promise((resolve) => {
+      const placed = await pt.waitForFunction(() => new Promise((resolve) => {
         const sel = '.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl';
         let last = '', stable = 0;
         const tick = () => {
@@ -11043,8 +11053,10 @@ const suggestedScenario = {
           if (stable >= 10) resolve(true); else requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
-      }), null, { timeout: 15000 }).catch(() => {});
+      }), null, { timeout: 15000 }).then(() => true).catch(() => false);
       const at = `tour ${w}px@${z}x(${lw}x${lh})`;
+      record(`§101 ${at} fixture guard: the card finished placing before it was measured (a slow runner is not a layout failure)`,
+        placed, 'the card rect never held still for 10 frames within 15 s');
       record(`§101 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
         await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
       // WCAG 2.1.1. When the card's body overflows it holds up to 958px of step
@@ -11059,6 +11071,9 @@ const suggestedScenario = {
           if (!card) return false;
           const box = [...card.querySelectorAll('div')].find((d) => /auto|scroll/.test(getComputedStyle(d).overflowY)
             && d.scrollHeight > d.clientHeight + 1);
+          const fitting = [...card.querySelectorAll('div')].filter((d) => d.className.includes('min-h-0')
+            && !(d.scrollHeight > d.clientHeight + 1) && d.tabIndex >= 0);
+          if (fitting.length) return false;            // a tab stop that does nothing
           if (!box) return true;                       // nothing overflows here
           if (!(box.tabIndex >= 0)) return false;
           box.focus();
@@ -11070,10 +11085,29 @@ const suggestedScenario = {
             && d.scrollHeight > d.clientHeight + 1);
           return box ? `hidden=${box.scrollHeight - box.clientHeight}px tabIndex=${box.tabIndex} role=${box.getAttribute('role')}` : 'no scrolling body';
         }));
-      // The inert measuring probe must NOT gain a tab stop from that fix.
+      // The measuring probe must not be reachable. Assert what ACTUALLY holds it
+      // out -- `inert` -- and prove it empirically, because the attribute-only
+      // version of this row matched 0 elements and passed vacuously.
       record(`§101 ${at}: the off-screen measuring probe stays out of the tab order`,
-        await pt.evaluate(() => [...document.querySelectorAll('[data-tour-float-probe] [tabindex]')]
-          .every((e) => Number(e.getAttribute('tabindex')) < 0)));
+        await pt.evaluate(() => {
+          const probe = document.querySelector('[data-tour-float-probe]');
+          if (!probe) return false;                   // the probe must exist to be checked
+          if (!(probe.hasAttribute('inert') && probe.getAttribute('aria-hidden') === 'true')) return false;
+          // Empirical: focusing anything inside an inert subtree is a no-op.
+          const target = probe.querySelector('button, [tabindex]');
+          if (!target) return true;
+          const before = document.activeElement;
+          target.focus();
+          const moved = document.activeElement === target;
+          if (moved && before instanceof HTMLElement) before.focus();
+          return !moved;
+        }),
+        await pt.evaluate(() => {
+          const probe = document.querySelector('[data-tour-float-probe]');
+          return probe
+            ? `inert=${probe.hasAttribute('inert')} aria-hidden=${probe.getAttribute('aria-hidden')} focusables=${probe.querySelectorAll('button,[tabindex]').length}`
+            : 'probe absent';
+        }));
       // Walk every step. `steps` counts how far a user could actually get.
       // The cap is ABOVE the tour's length (19 steps) so that reaching it means
       // the tour never ended -- a loop that stops at 14 makes "walked to the

@@ -54,10 +54,18 @@ check('the card contents are wrapped in one scroll box driven by `scrolls`',
   && /flex flex-col min-h-0[^`]*\$\{scrolls \? ' overflow-y-auto' : ''\}/.test(src));
 // The box is a keyboard-reachable region exactly while it scrolls, and never on
 // the inert measuring probe (which is aria-hidden and must stay untabbable).
-check('a scrolling tour body is focusable and named, and the probe is not',
-  /tabIndex=\{scrolls && !probe \? 0 : undefined\}/.test(src)
-  && /role=\{scrolls && !probe \? 'region' : undefined\}/.test(src)
-  && /aria-label=\{scrolls && !probe \? '[^']+' : undefined\}/.test(src));
+// `scrolls` means the card is CAPPED, not that the body overflows it: 14 of 19
+// steps fit on a plain 390x844 phone and were still named a focusable
+// "scrollable" region -- a tab stop that does nothing. The tab stop now follows
+// MEASURED overflow, and the probe is still excluded.
+check('a tour body is focusable and named only when it MEASURABLY overflows, and never the probe',
+  /tabIndex=\{scrolls && !probe && bodyOverflows \? 0 : undefined\}/.test(src)
+  && /role=\{scrolls && !probe && bodyOverflows \? 'region' : undefined\}/.test(src)
+  && /aria-label=\{scrolls && !probe && bodyOverflows \? '[^']+' : undefined\}/.test(src));
+check('the overflow flag is measured from the DOM, not inferred from the cap',
+  /setBodyOverflows\(el\.scrollHeight > el\.clientHeight \+ 1\)/.test(src)
+  && /new ResizeObserver\(sync\)/.test(src)
+  && /for \(const child of el\.children\) ro\.observe\(child\)/.test(src));
 check('the footer may wrap, so Back cannot be pushed off the left edge at 61px',
   /flex flex-wrap items-center justify-end gap-2/.test(src));
 // `sheetMaxVh` may appear exactly once outside its own declaration: inside

@@ -5617,7 +5617,7 @@ export default function App() {
               aria-label={matrixScroll.scrollable ? 'Payoff matrix, scrollable' : undefined}
               className="overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded-xl"
             >
-            <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_minmax(0,1fr)_minmax(0,1fr)] gap-3 text-center items-center">
+            <div data-tour="matrix" className="grid grid-cols-[minmax(72px,72px)_minmax(72px,1fr)_minmax(72px,1fr)] gap-3 text-center items-center">
               <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col2}>B: {activeLabels.col2}</div>

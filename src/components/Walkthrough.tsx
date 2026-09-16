@@ -227,7 +227,25 @@ export function Walkthrough({
   onClose: () => void;
 }) {
   const [i, setI] = useState(0);
+  // `scrolls` means the box MAY scroll (the card is capped); it does not mean it
+  // DOES. 14 of 19 steps fit on a plain 390x844 phone, and naming each of them a
+  // focusable "scrollable" region is the tab stop that does nothing -- the exact
+  // anti-pattern useOverflowsX avoids in App.tsx. Measure the real overflow.
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [bodyOverflows, setBodyOverflows] = useState(false);
   const [rect, setRect] = useState<Rect | null>(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) { setBodyOverflows(false); return; }
+    const sync = () => setBodyOverflows(el.scrollHeight > el.clientHeight + 1);
+    sync();
+    // Observe the CONTENT too: the box's own border-box is pinned by maxHeight
+    // and never resizes, so observing it alone never fires.
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    for (const child of el.children) ro.observe(child);
+    return () => ro.disconnect();
+  }, [i, rect]);
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardH, setCardH] = useState(0);
   /**
@@ -590,9 +608,10 @@ export function Walkthrough({
           93-150px wide. `min-h-0` is what lets this shrink inside the flex
           column. The close button stays clear of it -- see its own note. */}
       <div
-        tabIndex={scrolls && !probe ? 0 : undefined}
-        role={scrolls && !probe ? 'region' : undefined}
-        aria-label={scrolls && !probe ? 'Tour step, scrollable' : undefined}
+        ref={probe ? undefined : bodyRef}
+        tabIndex={scrolls && !probe && bodyOverflows ? 0 : undefined}
+        role={scrolls && !probe && bodyOverflows ? 'region' : undefined}
+        aria-label={scrolls && !probe && bodyOverflows ? 'Tour step, scrollable' : undefined}
         className={`flex flex-col min-h-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded ${denseVariant ? 'gap-2' : 'gap-3.5'}${scrolls ? ' overflow-y-auto' : ''}`}
       >
       {/* `pr-8` keeps the step counter clear of the close button, which is
