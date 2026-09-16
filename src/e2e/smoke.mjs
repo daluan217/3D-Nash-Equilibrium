@@ -11404,6 +11404,90 @@ const suggestedScenario = {
   // while every portrait size passed.
   section('103', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide', async () => {
     await walkTourAt('103', [[844, 390, 1], [667, 375, 1], [740, 360, 1]])();
+
+    // Promoted out of _gen/ (Amendment 2): the invariant the landscape fix was
+    // CHOSEN by, stated so neither half can rot silently. Whenever the footer
+    // row fits the scroll port, the walking control is fully visible at rest;
+    // when it cannot fit (93x281 wraps it to 202px against a 126px port) the
+    // box must still be a tabbable region that scrolls to it. Reading both
+    // themes matters: the app themes from localStorage, NOT prefers-color-
+    // scheme, so a `colorScheme` context would measure light twice.
+    for (const dark of [false, true]) {
+      // One size per CLASS, not per viewport: 844x390 is the landscape case the
+      // walker above already re-walks (this asserts the resting geometry it
+      // cannot), 280x844@3x is the only case where the footer CANNOT fit its
+      // port, and 390x844@2x is a fits-but-was-clipped case. More sizes here
+      // buy nothing and cost the section its budget headroom.
+      for (const [w, h, z] of [[844, 390, 1], [280, 844, 3], [390, 844, 2]]) {
+        const lw = Math.round(w / z), lh = Math.round(h / z);
+        const pf = await newTrackedPage({ viewport: { width: lw, height: lh } });
+        await pf.addInitScript((d) => {
+          try { localStorage.setItem('nash_sim_theme', d ? 'dark' : 'light'); } catch { /* ignore */ }
+        }, dark);
+        const cdpF = await pf.context().newCDPSession(pf);
+        await cdpF.send('Emulation.setDeviceMetricsOverride', {
+          width: lw, height: lh, deviceScaleFactor: z, mobile: false });
+        await pf.goto(BASE, { waitUntil: 'networkidle' });
+        await pf.waitForTimeout(1200);
+        const bad = await pf.evaluate(() => {
+          const btn = [...document.querySelectorAll('button')]
+            .find((x) => /^(Next|Explore on your own)/.test((x.textContent || '').trim()));
+          if (!btn) return ['no Next/Explore control at all'];
+          const footer = btn.closest('div.border-t');
+          if (!footer) return ['the walking control is not inside the card footer'];
+          let sc = footer.parentElement;
+          while (sc && sc !== document.body) {
+            const cs = getComputedStyle(sc);
+            if (/auto|scroll/.test(cs.overflowY) && sc.scrollHeight > sc.clientHeight + 1) break;
+            sc = sc.parentElement;
+          }
+          const out = [];
+          const br = btn.getBoundingClientRect();
+          if (!sc || sc === document.body) {
+            if (br.top < -0.5 || br.bottom > innerHeight + 0.5) out.push(`no scroll box and the control is outside the viewport [${Math.round(br.top)},${Math.round(br.bottom)}] vh ${innerHeight}`);
+            return out;
+          }
+          const sr = sc.getBoundingClientRect();
+          const fr = footer.getBoundingClientRect();
+          const fits = fr.height <= sc.clientHeight + 0.5;
+          const visible = br.top >= sr.top - 0.5 && br.bottom <= sr.bottom + 0.5
+            && br.top >= -0.5 && br.bottom <= innerHeight + 0.5;
+          if (fits && !visible) out.push(`footer ${Math.round(fr.height)}px fits port ${Math.round(sc.clientHeight)}px but the control is not fully visible`);
+          if (!fits) {
+            const before = sc.scrollTop;
+            sc.scrollTop = sc.scrollHeight;
+            const b2 = btn.getBoundingClientRect(), s2 = sc.getBoundingClientRect();
+            const reach = b2.top >= s2.top - 0.5 && b2.bottom <= s2.bottom + 0.5
+              && b2.top >= -0.5 && b2.bottom <= innerHeight + 0.5;
+            sc.scrollTop = before;
+            if (!(reach && sc.tabIndex === 0 && sc.getAttribute('role') === 'region'))
+              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and the control is not reachable via a tabbable region (reach=${reach} tabIndex=${sc.tabIndex} role=${sc.getAttribute('role')})`);
+          }
+          // The caption gets the same bar, SCANNED across the scroll range --
+          // sampling only scrollTop 0 and max called six reachable captions
+          // unreachable (at 93x281 it is below the fold at 0 and has scrolled
+          // clean PAST the port at max).
+          const cap = (btn.closest('.pointer-events-auto') || footer.parentElement).querySelector('p[aria-live="polite"]');
+          if (cap && (cap.textContent || '').trim()) {
+            const before = sc.scrollTop;
+            const max = sc.scrollHeight - sc.clientHeight;
+            let best = 0;
+            for (let i = 0; i <= 40; i++) {
+              sc.scrollTop = Math.round((max * i) / 40);
+              const c = cap.getBoundingClientRect(), s3 = sc.getBoundingClientRect();
+              best = Math.max(best, Math.min(c.bottom, s3.bottom, innerHeight) - Math.max(c.top, s3.top, 0));
+            }
+            sc.scrollTop = before;
+            if (best <= 0) out.push('the step caption has text but no scroll position reveals any of it');
+          }
+          return out;
+        });
+        record(`§103 ${dark ? 'dark' : 'light'} ${w}x${h}@${z}x: the walking control is visible whenever its row fits, and scroll-reachable when it cannot`,
+          bad.length === 0, bad.join(' | ') || 'control visible or scroll-reachable; caption reachable');
+        await cdpF.send('Emulation.clearDeviceMetricsOverride');
+        await pf.close();
+      }
+    }
   });
 
 
