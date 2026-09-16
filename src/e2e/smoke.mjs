@@ -11028,7 +11028,11 @@ const suggestedScenario = {
     // The field clamps to PAYOFF_RANGE quantised to 3dp, so the widest legal
     // strings are enumerated here, not sampled. `scrollWidth > clientWidth`
     // is the browser's OWN verdict on clipping -- no font maths to get wrong.
-    const WIDEST_PAYOFFS = ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345'];
+    // Two over-long strings are included as well, and they are the reason the
+    // write and the read are separate tasks: they canonicalise on commit
+    // ("-99.9999" and "-100.0000" both settle to "-100"), so the value the
+    // user is left reading is the SETTLED one, never the raw entry.
+    const WIDEST_PAYOFFS = ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345', '-99.9999', '-100.0000'];
     const LEGIBILITY_VIEWPORTS = [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1], [280, 3], [320, 2], [390, 3]];
     let clipRows = [];
     for (const [vw, zoom] of LEGIBILITY_VIEWPORTS) {
@@ -11039,33 +11043,76 @@ const suggestedScenario = {
       await pv.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(pv, 'setup: clear the tour before the payoff-legibility sweep', { timeout: 20000 });
       for (const val of WIDEST_PAYOFFS) {
-        const r = await pv.evaluate((v) => {
+        await pv.evaluate((v) => {
           const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-          const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
-          ins.forEach((el) => {
+          document.querySelectorAll('[data-tour="matrix"] input').forEach((el) => {
+            // FOCUS first: `blur()` on an unfocused element is a no-op, so the
+            // commit path that canonicalises an over-long entry never ran and
+            // the check read raw setter text no user is ever left looking at.
+            el.focus();
             d.set.call(el, v);
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
             el.blur();
           });
+        }, val);
+        // SETTLE, and deterministically: the commit canonicalises on React's
+        // NEXT render, so reading in the same task measures the raw text and
+        // reports a misread that no user can see ("-99.9999" paints
+        // "-99.999" -- but the field settles to "-100"). Stable across two
+        // frames, not a sleep, so it cannot pass by being slow enough.
+        await pv.waitForFunction(() => new Promise((res) => {
+          const read = () => [...document.querySelectorAll('[data-tour="matrix"] input')].map((e) => e.value).join('\u0001');
+          requestAnimationFrame(() => {
+            const a = read();
+            requestAnimationFrame(() => res(a === read() && a === window.__b21cPrev ? true : (window.__b21cPrev = a, false)));
+          });
+        }), null, { timeout: 10000 });
+        const r = await pv.evaluate(() => {
+          const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+          // The honest invariant for an UNFOCUSED field: what it PAINTS is what
+          // it HOLDS. (While focused the caret scrolls the text -- a plain
+          // <input> does the same with no app code -- so that state is not a
+          // misread.) Measure the painted substring, not just the box.
+          const painted = (el) => {
+            const cs = getComputedStyle(el);
+            const cv = document.createElement('canvas').getContext('2d');
+            cv.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+            let vis = '';
+            for (let i = 0; i < el.value.length; i++) {
+              const a = cv.measureText(el.value.slice(0, i)).width;
+              const b2 = cv.measureText(el.value.slice(0, i + 1)).width;
+              if (a >= el.scrollLeft - 0.5 && b2 <= el.scrollLeft + el.clientWidth + 0.5) vis += el.value[i];
+            }
+            return vis;
+          };
           return {
             n: ins.length,
+            held: ins.map((e) => e.value),
+            // `clipped` STAYS alongside `misread`: it is the browser's own
+            // verdict on the box, independent of the canvas font maths, so the
+            // two instruments cannot fail silently together.
             clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
             zero: ins.filter((e) => e.clientWidth === 0).length,
+            misread: ins.filter((e) => painted(e) !== e.value)
+              .map((e) => `holds ${JSON.stringify(e.value)} paints ${JSON.stringify(painted(e))}`),
             doc: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
           };
-        }, val);
-        if (r.n !== 8 || r.clipped > 0 || r.zero > 0 || r.doc) {
-          clipRows.push(`${vw}@${zoom}x "${val}": ${r.clipped}/${r.n} clipped, ${r.zero} zero-width${r.doc ? ', DOC SCROLLS' : ''}`);
+        });
+        // An empty set cannot vouch for anything: a renamed matrix, or a field
+        // the write never reached, must FAIL here rather than read as 0 misreads.
+        if (r.n !== 8 || r.held.some((h) => h === '') || r.zero > 0 || r.doc
+            || r.clipped > 0 || r.misread.length > 0) {
+          clipRows.push(`${vw}@${zoom}x "${val}": n=${r.n}, ${r.misread.length} misread (${r.misread[0] || '-'}), ${r.clipped} clipped, ${r.zero} zero-width${r.doc ? ', DOC SCROLLS' : ''}`);
         }
       }
       await cdpv.send('Emulation.clearDeviceMetricsOverride');
       await pv.close();
     }
     record(
-      `§102 payoff legibility: every legal payoff renders unclipped at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports)`,
+      `§102 payoff legibility: an unfocused field paints exactly what it holds, at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports)`,
       clipRows.length === 0,
-      clipRows.slice(0, 6).join(' | ') || 'no clipped, zero-width or doc-scrolling case',
+      clipRows.slice(0, 6).join(' | ') || 'every field painted its whole value; none zero-width; the document never scrolled sideways',
     );
 
     // A browser MINIMUM FONT SIZE (an accessibility preference) raises the
@@ -11152,7 +11199,12 @@ const suggestedScenario = {
   // shard unit and sat under 1 s of the packer's headroom line. The tour is a
   // different surface anyway -- a modal walked step by step, not a page
   // measured at rest -- so it splits cleanly rather than being trimmed.
-  section('101', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
+  // §101 and §103 are ONE walker over two viewport lists, not two copies: the
+  // oracle that decides "reachable" must not be able to drift between them.
+  // Split because adding the landscape trio took §101 to 259,112ms against the
+  // 225,000ms per-section budget -- the same split §100 -> §102 took, and the
+  // budget is never raised to fit.
+  const walkTourAt = (sid, SIZES) => async () => {
     // THE TOUR — the FIRST thing a first-time visitor sees, and the one surface
     // every other section DISMISSES before measuring (`dismissTourForSetup`), so
     // until now nothing measured it at all. It is not in `main`, it is
@@ -11168,7 +11220,7 @@ const suggestedScenario = {
     // HEIGHT, so a short screen shrinks the card below its own footer. 844/3
     // = 281 is a 280px phone at 300%; 320 is the shortest layout height a
     // 400%-zoomed phone produces.
-    for (const [w, h, z] of [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]]) {
+    for (const [w, h, z] of SIZES) {
       const lw = Math.round(w / z), lh = Math.round(h / z);
       await cdpT.send('Emulation.setDeviceMetricsOverride', {
         width: lw, height: lh, deviceScaleFactor: z, mobile: false });
@@ -11195,9 +11247,9 @@ const suggestedScenario = {
         requestAnimationFrame(tick);
       }), null, { timeout: 15000 }).then(() => true).catch(() => false);
       const at = `tour ${w}px@${z}x(${lw}x${lh})`;
-      record(`§101 ${at} fixture guard: the card finished placing before it was measured (a slow runner is not a layout failure)`,
+      record(`§${sid} ${at} fixture guard: the card finished placing before it was measured (a slow runner is not a layout failure)`,
         placed, 'the card rect never held still for 10 frames within 15 s');
-      record(`§101 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
+      record(`§${sid} ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
         await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
       // WCAG 2.1.1. When the card's body overflows it holds up to 958px of step
       // text a keyboard user can reach no other way: Tab lands on Back/Next,
@@ -11205,7 +11257,7 @@ const suggestedScenario = {
       // the modal. §100 declares this shape a failure but dismisses the tour
       // before sweeping, so nothing measured it. Mutant: drop the tabIndex/role
       // and `focusable` goes false at every condition where it scrolls.
-      record(`§101 ${at}: a tour body that scrolls is reachable from the keyboard`,
+      record(`§${sid} ${at}: a tour body that scrolls is reachable from the keyboard`,
         await pt.evaluate(() => {
           const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
           if (!card) return false;
@@ -11228,7 +11280,7 @@ const suggestedScenario = {
       // The measuring probe must not be reachable. Assert what ACTUALLY holds it
       // out -- `inert` -- and prove it empirically, because the attribute-only
       // version of this row matched 0 elements and passed vacuously.
-      record(`§101 ${at}: the off-screen measuring probe stays out of the tab order`,
+      record(`§${sid} ${at}: the off-screen measuring probe stays out of the tab order`,
         await pt.evaluate(() => {
           const probe = document.querySelector('[data-tour-float-probe]');
           if (!probe) return false;                   // the probe must exist to be checked
@@ -11272,10 +11324,27 @@ const suggestedScenario = {
               if (r.left < sr.left - 0.5 || r.right > sr.right + 0.5
                   || sr.top < -0.5 || sr.bottom > vh + 0.5 || sr.left < -0.5 || sr.right > vw + 0.5)
                 out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside its scroll box`);
+              // ...but the control that WALKS the tour may not hide below the
+              // box's clip WHEN ITS ROW COULD HAVE FITTED: a Next the user
+              // cannot see is the dead end this section exists to catch, and
+              // "it is in a scroll box" excused exactly that (60px below the
+              // clip at 844x390). Measured exception, not a softening: at
+              // 93x281 the footer WRAPS to 202px against a 126px port, so no
+              // layout shows it at rest -- there the sticky footer degrades to
+              // the flow, and wheel + 46 Tabs both still reach and fire it.
+              const row = b.closest('div.border-t') || b.parentElement;
+              const rowFits = row.getBoundingClientRect().height <= sc.clientHeight + 0.5;
+              if (/next|finish|explore/i.test(nm) && rowFits && r.bottom > sr.bottom + 0.5)
+                out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] clipped ${Math.round(r.bottom - sr.bottom)}px below its scroll box (row ${Math.round(row.getBoundingClientRect().height)}px fits port ${Math.round(sc.clientHeight)}px)`);
               continue;
             }
-            if (r.top >= vh - 1 || r.bottom <= 1 || r.left < -0.5 || r.right > vw + 0.5)
-              out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside the viewport`);
+            // With NO scroll box there is nothing to scroll, so a control
+            // hanging below the fold is simply gone. The old test only asked
+            // whether the TOP had passed `vh`, so a button whose top was on
+            // screen and whose bottom sat 49px past it read as reachable.
+            if (r.top >= vh - 1 || r.bottom <= 1 || r.left < -0.5 || r.right > vw + 0.5
+                || r.bottom > vh + 0.5 || r.top < -0.5)
+              out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.bottom)}] outside the viewport (vh ${vh})`);
           }
           return out;
         });
@@ -11309,18 +11378,32 @@ const suggestedScenario = {
         // accepts the click but never advances still ran the loop to its cap.
         if (!moved) { unreachable.push(`step ${steps}: Next was pressed but the tour did not advance from ${before}`); break; }
       }
-      record(`§101 ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
+      record(`§${sid} ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
         unreachable.length === 0, unreachable.slice(0, 4).join(' | '));
       // The EXIT REASON, not a step count: the tour is walked to the end only if
       // it CLOSED (the last Next dismissed it) after its final counter. Anything
       // else -- the cap, a dead Next, a Next that does not advance -- is a fail.
-      record(`§101 ${at}: the tour can be walked to its END (the last Next closes it), not just partway`,
+      record(`§${sid} ${at}: the tour can be walked to its END (the last Next closes it), not just partway`,
         closed && lastCounter === '19 / 19' && steps === 19,
         `closed=${closed} steps=${steps} lastCounter=${lastCounter}`);
     }
     await cdpT.send('Emulation.clearDeviceMetricsOverride');
     await pt.close();
 
+  };
+
+  // The `async () => ...` shape is load-bearing: e2esharding.test.ts PARSES it
+  // to enumerate the sections, so a section passed as a bare callback registers
+  // nowhere and silently never runs in CI.
+  section('101', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
+    await walkTourAt('101', [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]])();
+  });
+
+  // LANDSCAPE is its own orientation class, not more widths: a short, wide
+  // viewport is where the footer hid below the card's clip (60px at 844x390)
+  // while every portrait size passed.
+  section('103', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide', async () => {
+    await walkTourAt('103', [[844, 390, 1], [667, 375, 1], [740, 360, 1]])();
   });
 
 

@@ -641,7 +641,7 @@ export function Walkthrough({
       {/* STRUCT-APP-19/003: `justify-end`, not `justify-between` — Skip used to
           hold the left edge, and leaving `justify-between` with one child would
           push Back/Next across to it. */}
-      <div className={`flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800 ${denseVariant ? 'pt-2 mt-0.5' : 'pt-3 mt-1'} shrink-0`}>
+      <div className={`flex items-center justify-end gap-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 ${denseVariant ? 'pt-2 mt-0.5 pb-0.5' : 'pt-3 mt-1 pb-1'} shrink-0${scrolls ? ' sticky bottom-0' : ''}`}>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
