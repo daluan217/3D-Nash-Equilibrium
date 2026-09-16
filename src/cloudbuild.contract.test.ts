@@ -109,11 +109,11 @@ const expectedSecretNames = new Set([
   'AZURE_FOUNDRY_API_KEY',
 ]);
 const expectedSecretRefs = new Map<string, string>([
-  ['SMTP_USER', 'nash-equilibrium-smtp-user:1'],
-  ['SMTP_PASS', 'nash-equilibrium-smtp-pass:1'],
-  ['ADMIN_SECRET', 'nash-equilibrium-admin-secret:1'],
-  ['AUTH_SECRET', 'nash-equilibrium-auth-secret:1'],
-  ['AZURE_FOUNDRY_API_KEY', 'nash-equilibrium-azure-foundry-api-key:1'],
+  ['SMTP_USER', 'nash-equilibrium-smtp-user:3'],
+  ['SMTP_PASS', 'nash-equilibrium-smtp-pass:3'],
+  ['ADMIN_SECRET', 'nash-equilibrium-admin-secret:2'],
+  ['AUTH_SECRET', 'nash-equilibrium-auth-secret:2'],
+  ['AZURE_FOUNDRY_API_KEY', 'nash-equilibrium-azure-foundry-api-key:3'],
 ]);
 const actualSecretNames = new Set(secretValueOf.keys());
 const missingSecretRefs = [...expectedSecretNames].filter((n) => !actualSecretNames.has(n));
