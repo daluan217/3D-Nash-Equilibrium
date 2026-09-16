@@ -406,10 +406,13 @@ input.no-native-spinner {
    * shredded the dialog heading to 6 lines. */
   .fixed.inset-0 { padding-left: 0.25rem; padding-right: 0.25rem; }
 
-  /* An icon absolutely positioned in a field's padding gutter has nowhere to go
-   * once the gutter closes; hide it rather than keep 45px of padding in a 36px
-   * box, which left the Account inputs unreadable (ds-rev finding 6). */
-  [role="dialog"] .relative > .absolute:has(svg) { display: none; }
+  /* An icon or stepper absolutely positioned in a field's padding gutter has
+   * nowhere to go once the gutter closes; hide it rather than paint it over the
+   * value. `:has(svg)` means a DESCENDANT svg, so it never matched the leaf
+   * `<svg class="absolute">` lucide renders; `:has(> input)` anchors on the
+   * field instead and reaches both gutters. A reserve cannot substitute: the
+   * stepper is 25px and the whole content box is 41px. */
+  :is(main, [role="dialog"]) .relative:has(> input) > .absolute { display: none; }
 
   /* The payoff matrix keeps a width its four inputs can actually be typed
    * into and scrolls inside its own box (see data-matrix-scroll in App.tsx);
@@ -421,8 +424,6 @@ input.no-native-spinner {
    * more than the whole track. Columns stack instead — a rigid `grid-cols-3`
    * split 90px three ways and rendered "Both Plots" down 7 lines. */
   :is(main, [role="dialog"]) .grid-cols-2, :is(main, [role="dialog"]) .grid-cols-3, :is(main, [role="dialog"]) .grid-cols-4 { grid-template-columns: minmax(0, 1fr); }
-  :is(main, [role="dialog"]) .pr-8 { padding-right: 0.5rem; }
-  :is(main, [role="dialog"]) .px-1 { padding-left: 0; padding-right: 0; }
 
   /* The post-run progress bar asks for 4rem it does not have; it is a pure
    * indicator, so a shorter track still reads correctly. */

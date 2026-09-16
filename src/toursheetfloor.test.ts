@@ -68,14 +68,19 @@ check('the raw ratio is used in exactly one place: the floored helper itself',
 const app = readFileSync('src/App.tsx', 'utf8');
 const gridCls = app.match(/<div className="grid grid-cols-2 ([^"]*)gap-4">/);
 check('the start-point fields are still a 2-column grid by default', gridCls !== null);
-check('they collapse only below the MEASURED 324px, not a rounded device width',
-  !!gridCls && /max-\[324px\]:grid-cols-1/.test(gridCls[1]), gridCls ? gridCls[1] : 'no match');
-// 106px is the floor the breakpoint encodes: 10px left padding + a 40px stepper
-// gutter + 56px of rendered "0.217". Interpolating the real cell widths
-// (260->74, 320->104, 390->139) puts a 106px cell at a ~324px viewport.
-check('the breakpoint really is where a cell reaches the 106px floor',
-  Math.round(320 + (106 - 104) * (390 - 320) / (139 - 104)) === 324,
-  String(Math.round(320 + (106 - 104) * (390 - 320) / (139 - 104))));
+// Read the breakpoint OUT of App.tsx and check it against the measurement, so
+// a narrower literal fails here. Asserting 324 === 324 over five in-file
+// constants was a tautology no source change could break (ds-rev finding E).
+// The floor is 106px of cell: 10px left padding + a 40px stepper gutter + 56px
+// of rendered "0.217"; real cells measured 74px@260, 104px@320, 139px@390, so
+// linear interpolation puts a 106px cell at ~324px.
+const bpMatch = !!gridCls && gridCls[1].match(/max-\[(\d+)px\]:grid-cols-1/);
+const bp = bpMatch ? Number(bpMatch[1]) : 0;
+const floorWidth = Math.round(320 + (106 - 104) * (390 - 320) / (139 - 104));
+check('they collapse below a max-[Npx] breakpoint, not a media query that drifted away',
+  bp > 0, gridCls ? gridCls[1] : 'no match');
+check('the breakpoint is not BELOW the width where a cell reaches the 106px floor',
+  bp >= floorWidth, `breakpoint=${bp} floor=${floorWidth}`);
 check('auto-fit was not reintroduced (it invented empty 0px tracks at 390 and 1024)',
   !/repeat\(auto-fit[^)]*\)\)\] gap-4">/.test(app));
 

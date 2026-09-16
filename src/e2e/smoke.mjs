@@ -10546,13 +10546,15 @@ const suggestedScenario = {
       // document is briefly wider than its steady state on BOTH trees. Wait on
       // the value: it must hold for 30 frames (~0.5s) before it is read. The
       // unfixed tree settles at 191px and still fails, so this cannot mask it.
-      await p.waitForFunction(() => new Promise((resolve) => {
+      // Swallowed, this turns a slow machine into a width failure with no way to
+      // tell them apart; it is returned instead and asserted on its own row.
+      const settled = await p.waitForFunction(() => new Promise((resolve) => {
         let last = document.documentElement.scrollWidth, stable = 0;
         const tick = () => { const v = document.documentElement.scrollWidth;
           stable = v === last ? stable + 1 : 0; last = v;
           if (stable >= 30) resolve(true); else requestAnimationFrame(tick); };
         requestAnimationFrame(tick);
-      }), null, { timeout: 20000 }).catch(() => {});
+      }), null, { timeout: 20000 }).then(() => true).catch(() => false);
       return p.evaluate(() => {
         const de = document.documentElement, vw = de.clientWidth, vh = de.clientHeight;
         window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
@@ -10709,6 +10711,46 @@ const suggestedScenario = {
             }
             return bad.slice(0, 5);
           })(),
+          overlaidValues: (() => {
+            // clippedValues measures the CONTENT BOX and so cannot see a
+            // sibling painted on top of the glyphs. Both the lucide gutter icon
+            // and the stepper are absolutely positioned OUTSIDE that box's
+            // accounting, so `ga<icon>me_t` and `0.2<stepper>7` both passed it.
+            // Mutant: restore `.absolute:has(svg)` (a descendant selector that
+            // never matches a leaf svg) and this goes red on both shapes.
+            const bad = [];
+            for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
+              if (el.type === 'range' || el.type === 'checkbox' || el.type === 'radio') continue;
+              const v = String(el.value ?? '');
+              if (!v) continue;
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0 && r.height > 0)) continue;
+              const cs = getComputedStyle(el);
+              const probe = document.createElement('span');
+              probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+              probe.textContent = v;
+              document.body.appendChild(probe);
+              const textW = probe.getBoundingClientRect().width;
+              probe.remove();
+              // The band the glyphs really occupy, clamped to the content box.
+              const glyphL = r.left + parseFloat(cs.paddingLeft);
+              const glyphR = Math.min(glyphL + textW, r.right - parseFloat(cs.paddingRight));
+              if (!(glyphR > glyphL)) continue;
+              for (const sib of el.parentElement ? el.parentElement.children : []) {
+                if (sib === el) continue;
+                const scs = getComputedStyle(sib);
+                if (scs.position !== 'absolute' || scs.display === 'none'
+                  || scs.visibility === 'hidden' || parseFloat(scs.opacity) === 0) continue;
+                const q = sib.getBoundingClientRect();
+                if (!(q.width > 0 && q.height > 0)) continue;
+                const over = Math.min(q.right, glyphR) - Math.max(q.left, glyphL);
+                const vert = Math.min(q.bottom, r.bottom) - Math.max(q.top, r.top);
+                if (over > 0.5 && vert > 0.5)
+                  bad.push(`${v}: ${sib.tagName.toLowerCase()} covers ${over.toFixed(0)}px of the value`);
+              }
+            }
+            return bad.slice(0, 5);
+          })(),
           tinyInputs: (() => {
             const bad = [];
             for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
@@ -10722,7 +10764,7 @@ const suggestedScenario = {
             return bad.slice(0, 5);
           })(),
         };
-      });
+      }).then((m) => ({ ...m, settled }));
     };
     const p97 = await newTrackedPage({ viewport: { width: 390, height: 844 } });
     const cdp = await p97.context().newCDPSession(p97);
@@ -10745,6 +10787,8 @@ const suggestedScenario = {
         record(`§100 ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
           Math.abs(m.vw - Math.round(w / z)) <= 2, `measured=${m.vw} expected=${Math.round(w / z)}`);
         record(`§100 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
+        record(`§100 ${at} fixture guard: the width held still before it was read (a slow runner is not a reflow failure)`,
+          m.settled, 'scrollWidth never held for 30 frames within 20 s');
         record(`§100 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
           m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
         record(`§100 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
@@ -10752,6 +10796,8 @@ const suggestedScenario = {
           m.readable.length === 0, JSON.stringify(m.readable));
         record(`§100 ${at}: an input's whole VALUE is visible, not just one character of it`,
           m.clippedValues.length === 0, JSON.stringify(m.clippedValues));
+        record(`§100 ${at}: nothing is painted on top of an input's value`,
+          m.overlaidValues.length === 0, JSON.stringify(m.overlaidValues));
         record(`§100 ${at}: every input is still wide enough to read one character of its own value`,
           m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
         record(`§100 ${at}: every box the fix made scrollable is reachable from the keyboard`,
@@ -10793,8 +10839,33 @@ const suggestedScenario = {
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.getByRole('button', { name: /sign in.*sign up/i }).first().click().catch(() => {});
     await p97.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 8000 }).catch(() => {});
+    // `exact: true` is load-bearing, not style: the coverage audit reads this
+    // file's selector vocabulary, and a NON-exact 'Account' credits every label
+    // containing it -- it silently marked MenuDrawer's never-pressed "Sign In to
+    // Your Account" as covered and evicted its allowlist entry (ds-rev finding
+    // D). The dialog's aria-label is exactly "Account", so nothing is lost.
     record('§100 fixture guard: the Account dialog is open, so the rows below measure a real modal',
-      await p97.getByRole('dialog', { name: 'Account' }).isVisible().catch(() => false));
+      await p97.getByRole('dialog', { name: 'Account', exact: true }).isVisible().catch(() => false));
+    // TYPE into them: an empty field has no glyphs, so every value-overlap check
+    // skips it and the gutter icon painting over "ga<icon>me_t" was invisible to
+    // the sweep (ds-rev finding A). A filled field is also the state a user is
+    // actually in when the icon matters.
+    const acctFilled = await p97.evaluate(() => {
+      const d = document.querySelector('[role="dialog"][aria-label="Account"]');
+      if (!d) return 0;
+      const set = window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(set, 'value').set;
+      let n = 0;
+      for (const el of d.querySelectorAll('input')) {
+        if (el.type === 'checkbox' || el.type === 'radio') continue;
+        setter.call(el, el.type === 'password' ? 'TestPass123' : 'game_theorist@example.com');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        n += 1;
+      }
+      return n;
+    });
+    record('§100 fixture guard: the Account fields hold a value, so the overlap rows below have glyphs to measure',
+      acctFilled > 0, `filled ${acctFilled} inputs`);
     await sweep('account dialog');
     // The workspace drawer is a second modal shape with its own header row:
     // `flex-nowrap` + `justify-between`, whose children default to
@@ -10809,9 +10880,14 @@ const suggestedScenario = {
       width: 93, height: 700, deviceScaleFactor: 3, mobile: false });
     await p97.getByRole('button', { name: /open workspace menu/i }).first().click({ timeout: 8000 }).catch(() => {});
     await p97.waitForTimeout(900);
+    // "some visible dialog" was satisfied by an Account modal that Escape had
+    // failed to close (ds-rev finding F) -- name the drawer by its own close
+    // control instead, so a leftover modal fails here rather than downstream.
     record('§100 drawer fixture guard: the workspace drawer is open at a 93px layout viewport',
       await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
-        .some((d) => d.getBoundingClientRect().width > 0)));
+        .some((d) => d.getBoundingClientRect().width > 0
+          && [...d.querySelectorAll('button')]
+            .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))));
     record('§100 drawer at 93px: its close control is fully inside the viewport',
       await p97.evaluate(() => {
         const b = [...document.querySelectorAll('button')]
@@ -10897,7 +10973,7 @@ const suggestedScenario = {
     for (const nm of [/search game/i, /open workspace menu/i, /^sign in/i]) {
       const l = ps.getByRole('button', { name: nm }).first();
       const pressed = await l.count()
-        ? await l.click({ timeout: 5000 }).then(() => true).catch(() => false) : false;
+        ? await l.click({ timeout: 10000 }).then(() => true).catch(() => false) : false;
       record(`§100 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
       await ps.keyboard.press('Escape').catch(() => {});
       await ps.waitForTimeout(300);
@@ -10937,8 +11013,12 @@ const suggestedScenario = {
       record(`§101 ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
         await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
       // Walk every step. `steps` counts how far a user could actually get.
-      let steps = 0; const unreachable = [];
-      for (; steps < 14; steps += 1) {
+      // The cap is ABOVE the tour's length (19 steps) so that reaching it means
+      // the tour never ended -- a loop that stops at 14 makes "walked to the
+      // end" unfalsifiable, which is what it was (ds-rev finding C).
+      let steps = 0; let closed = false; let lastCounter = null;
+      const unreachable = [];
+      for (; steps < 25; steps += 1) {
         const bad = await pt.evaluate(() => {
           const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
           const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
@@ -10963,7 +11043,7 @@ const suggestedScenario = {
           }
           return out;
         });
-        if (bad === null) break;                       // tour finished: every step was advanced
+        if (bad === null) { closed = true; break; }    // tour finished: every step was advanced
         unreachable.push(...bad);
         const next = pt.getByRole('button', { name: /^(next|explore on your own)/i }).first();
         if (!(await next.count())) { unreachable.push(`step ${steps}: no Next control at all`); break; }
@@ -10972,6 +11052,7 @@ const suggestedScenario = {
           const e = c && c.querySelector('.text-indigo-600');
           return e ? e.textContent.trim() : null;
         });
+        lastCounter = before ?? lastCounter;
         // 10s, not 3s: a real click on this control takes 1.2s alone but 2.5s
         // with four browsers running, and a CI shard is busier than that. The
         // check is "can it be pressed", not "how fast" — too tight a budget
@@ -10982,17 +11063,24 @@ const suggestedScenario = {
         // Wait on the counter actually changing, not on a fixed sleep: it is
         // both the correct signal (the step really advanced) and cheaper than
         // the fixed delay it replaces.
-        await pt.waitForFunction((prev) => {
+        const moved = await pt.waitForFunction((prev) => {
           const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
           if (!c) return true;                                   // tour finished
           const e = c.querySelector('.text-indigo-600');
           return !e || e.textContent.trim() !== prev;
-        }, before, { timeout: 5000 }).catch(() => {});
+        }, before, { timeout: 10000 }).then(() => true).catch(() => false);
+        // Swallowing this is what made the old check unfalsifiable: a Next that
+        // accepts the click but never advances still ran the loop to its cap.
+        if (!moved) { unreachable.push(`step ${steps}: Next was pressed but the tour did not advance from ${before}`); break; }
       }
       record(`§101 ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
         unreachable.length === 0, unreachable.slice(0, 4).join(' | '));
-      record(`§101 ${at}: the tour can be walked to the end — Next is pressable on every step`,
-        steps >= 7, `advanced ${steps} steps`);
+      // The EXIT REASON, not a step count: the tour is walked to the end only if
+      // it CLOSED (the last Next dismissed it) after its final counter. Anything
+      // else -- the cap, a dead Next, a Next that does not advance -- is a fail.
+      record(`§101 ${at}: the tour can be walked to its END (the last Next closes it), not just partway`,
+        closed && lastCounter === '19 / 19' && steps === 19,
+        `closed=${closed} steps=${steps} lastCounter=${lastCounter}`);
     }
     await cdpT.send('Emulation.clearDeviceMetricsOverride');
     await pt.close();
