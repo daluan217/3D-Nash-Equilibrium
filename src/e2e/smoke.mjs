@@ -11015,6 +11015,50 @@ const suggestedScenario = {
       await ps.waitForTimeout(300);
     }
     await ps.close();
+
+    // A payoff that PRINTS as a different number is the worst defect this
+    // surface can carry: "-99.999" rendered "-99." and "-100" rendered "-10".
+    // The field clamps to PAYOFF_RANGE quantised to 3dp, so the widest legal
+    // strings are enumerated here, not sampled. `scrollWidth > clientWidth`
+    // is the browser's OWN verdict on clipping -- no font maths to get wrong.
+    const WIDEST_PAYOFFS = ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345'];
+    let clipRows = [];
+    for (const [vw, zoom] of [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1]]) {
+      const pv = await newTrackedPage({ viewport: { width: Math.round(vw / zoom), height: Math.round(900 / zoom) } });
+      const cdpv = await pv.context().newCDPSession(pv);
+      await cdpv.send('Emulation.setDeviceMetricsOverride', {
+        width: Math.round(vw / zoom), height: Math.round(900 / zoom), deviceScaleFactor: zoom, mobile: false });
+      await pv.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(pv, 'setup: clear the tour before the payoff-legibility sweep', { timeout: 20000 });
+      for (const val of WIDEST_PAYOFFS) {
+        const r = await pv.evaluate((v) => {
+          const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+          const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+          ins.forEach((el) => {
+            d.set.call(el, v);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.blur();
+          });
+          return {
+            n: ins.length,
+            clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
+            zero: ins.filter((e) => e.clientWidth === 0).length,
+            doc: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+          };
+        }, val);
+        if (r.n !== 8 || r.clipped > 0 || r.zero > 0 || r.doc) {
+          clipRows.push(`${vw}@${zoom}x "${val}": ${r.clipped}/${r.n} clipped, ${r.zero} zero-width${r.doc ? ', DOC SCROLLS' : ''}`);
+        }
+      }
+      await cdpv.send('Emulation.clearDeviceMetricsOverride');
+      await pv.close();
+    }
+    record(
+      `§100 payoff legibility: every legal payoff renders unclipped at every width (${WIDEST_PAYOFFS.length} values x 9 widths)`,
+      clipRows.length === 0,
+      clipRows.slice(0, 6).join(' | ') || 'no clipped, zero-width or doc-scrolling case',
+    );
   });
 
   // §101 is §100's tour phase, moved out: §100 had grown to five phases in one
