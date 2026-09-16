@@ -121,7 +121,7 @@ import {
   type RegenPreview,
   type ShadowedChip,
   type RegenErrorKind,
-} from './utils/scenarioRegen';
+  previewIsUsable,} from './utils/scenarioRegen';
 import { DescriptionEditor } from './components/DescriptionEditor';
 import { DownloadModal } from './components/DownloadModal';
 import { OtherAccountsNotice } from './components/OtherAccountsNotice';
@@ -3623,8 +3623,12 @@ export default function App() {
     }
     regenInFlightRef.current = false;
 
-    if (status === 200 && body?.scenario) {
-      setRegen({ status: 'ready', preview: cleanPreview(body.scenario), error: null, note: REGEN_ANNOUNCE.ready, key });
+    const cleaned = status === 200 && body?.scenario ? cleanPreview(body.scenario) : null;
+    // A draw that did not survive the trust boundary (a non-ours upstream can
+    // send any JSON) has no story to show: route it to the honest transient
+    // kind instead of rendering an empty preview card or throwing here.
+    if (cleaned && previewIsUsable(cleaned)) {
+      setRegen({ status: 'ready', preview: cleaned, error: null, note: REGEN_ANNOUNCE.ready, key });
     } else {
       const kind = regenErrorFromResponse(status, body ?? null, caught);
       setRegen({ status: 'error', preview: null, error: kind, note: REGEN_ERROR_MESSAGES[kind](body?.error), key });

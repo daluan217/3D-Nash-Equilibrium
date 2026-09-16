@@ -120,8 +120,14 @@ export interface RegenPreview {
  * be judged; clamping is `keepFill`'s job, applied only on Keep.
  */
 export function cleanPreview(sc: RegenPreview | null | undefined): RegenPreview | null {
-  if (!sc) return null;
-  const strip = (v: string | undefined) => (v === undefined ? v : cleanText(v));
+  if (!sc || typeof sc !== 'object') return null;
+  // TRUST BOUNDARY. `body.scenario` is not always ours: in desktop cloud mode
+  // `apiBaseUrl` is a free-form field (App.tsx getApiUrl), so a proxy or a
+  // broken upstream can send any JSON. A non-string field used to reach
+  // `cleanText` and throw ("s is not iterable") OUTSIDE App.tsx's try/catch,
+  // leaving the dialog silent. Drop what is not a string instead.
+  const strip = (v: unknown) => (typeof v === 'string' ? cleanText(v) : undefined);
+  const nouns = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
   return {
     name: strip(sc.name),
     description: strip(sc.description),
@@ -129,9 +135,24 @@ export function cleanPreview(sc: RegenPreview | null | undefined): RegenPreview 
     row2: strip(sc.row2),
     col1: strip(sc.col1),
     col2: strip(sc.col2),
-    actorA: sc.actorA,
-    actorB: sc.actorB,
+    actorA: nouns(sc.actorA),
+    actorB: nouns(sc.actorB),
   };
+}
+
+/**
+ * Is this preview usable as a STORY? A draw whose description did not survive
+ * the trust boundary has nothing to show, so the caller routes it to the
+ * honest transient kind ('no-story') rather than rendering an empty card.
+ */
+export function previewIsUsable(sc: RegenPreview | null): boolean {
+  // Every field the preview card RENDERS, not just the description: a draw that
+  // kept its story but lost its option labels at the boundary would otherwise
+  // render "A:  / " and, on Keep, blank all four labels of the user's game.
+  // Same six fields the integration suite calls a valid scenario shape.
+  const str = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
+  return !!sc && str(sc.description) && str(sc.name)
+    && str(sc.row1) && str(sc.row2) && str(sc.col1) && str(sc.col2);
 }
 
 // ── Keep ───────────────────────────────────────────────────────────────────
@@ -250,7 +271,13 @@ export function keepFill(
     return found;
   };
   out.shadowed = { a: shadowedOn('a', kept.a), b: shadowedOn('b', kept.b) };
-  if (replaceName) out.name = clampGraphemeSafe(cleanText(preview.name ?? ''), REGEN_NAME_MAX);
+  // A draw with no usable name must LEAVE THE NAME ALONE (this interface's own
+  // contract), not blank it: saveFormModel does `action.name ?? state.name`, so
+  // an empty string would wipe the user's game name instead of falling back.
+  if (replaceName) {
+    const drawn = clampGraphemeSafe(cleanText(typeof preview.name === 'string' ? preview.name : ''), REGEN_NAME_MAX);
+    if (drawn) out.name = drawn;
+  }
   return out;
 }
 
@@ -355,7 +382,11 @@ export function regenErrorFromResponse(
   if (err instanceof DOMException && err.name === 'AbortError') return 'timeout';
   if (status === 429) return 'rate-limit';
   if (status === 404) return 'unavailable';
-  if (status === 200 && body && body.scenario === null) {
+  // A 200 that carried no usable story is a DRAW failure, not a network one —
+  // whether the server said `scenario: null` or a non-ours upstream sent a
+  // malformed object. Reporting "Couldn't reach the scenario service" for a
+  // request that plainly succeeded is a lie the user cannot act on.
+  if (status === 200 && body && !previewIsUsable(cleanPreview(body.scenario as RegenPreview))) {
     return body.failure === 'no-key' ? 'no-key' : 'no-story';
   }
   return 'network';

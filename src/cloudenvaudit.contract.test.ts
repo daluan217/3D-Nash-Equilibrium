@@ -353,11 +353,11 @@ assert.doesNotMatch(perLineQuoteResetMutant, /# retained (?:double|single)/,
 const names = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8')
   .split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
 const refs = new Map([
-  ['SMTP_USER', ['nash-equilibrium-smtp-user', '1']],
-  ['SMTP_PASS', ['nash-equilibrium-smtp-pass', '1']],
-  ['ADMIN_SECRET', ['nash-equilibrium-admin-secret', '1']],
-  ['AUTH_SECRET', ['nash-equilibrium-auth-secret', '1']],
-  ['AZURE_FOUNDRY_API_KEY', ['nash-equilibrium-azure-foundry-api-key', '1']],
+  ['SMTP_USER', ['nash-equilibrium-smtp-user', '3']],
+  ['SMTP_PASS', ['nash-equilibrium-smtp-pass', '3']],
+  ['ADMIN_SECRET', ['nash-equilibrium-admin-secret', '3']],
+  ['AUTH_SECRET', ['nash-equilibrium-auth-secret', '2']],
+  ['AZURE_FOUNDRY_API_KEY', ['nash-equilibrium-azure-foundry-api-key', '3']],
 ]);
 const fixtureEntries = names.map((name) => {
   const ref = refs.get(name);

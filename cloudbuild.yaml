@@ -46,7 +46,7 @@ steps:
       # makes a rotation reviewable and prevents a trigger-UI override from
       # silently switching a secret to `latest`.
       - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},TRUST_PROXY=${_TRUST_PROXY},AZURE_FOUNDRY_ENDPOINT=${_AZURE_FOUNDRY_ENDPOINT},REPORT_MODEL=${_REPORT_MODEL},NASH_PAYOFF_TEMPLATE=1,NASH_LLM_TIES=template,NASH_DIRECTION_CHECKS=1,NASH_SCENARIO_REGEN=0'
-      - '--set-secrets=SMTP_USER=nash-equilibrium-smtp-user:1,SMTP_PASS=nash-equilibrium-smtp-pass:1,ADMIN_SECRET=nash-equilibrium-admin-secret:1,AUTH_SECRET=nash-equilibrium-auth-secret:1,AZURE_FOUNDRY_API_KEY=nash-equilibrium-azure-foundry-api-key:1'
+      - '--set-secrets=SMTP_USER=nash-equilibrium-smtp-user:3,SMTP_PASS=nash-equilibrium-smtp-pass:3,ADMIN_SECRET=nash-equilibrium-admin-secret:3,AUTH_SECRET=nash-equilibrium-auth-secret:2,AZURE_FOUNDRY_API_KEY=nash-equilibrium-azure-foundry-api-key:3'
       - '--memory=512Mi'
       - '--cpu=1'
       - '--timeout=3600'
