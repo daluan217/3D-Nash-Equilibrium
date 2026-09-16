@@ -11029,8 +11029,9 @@ const suggestedScenario = {
     // strings are enumerated here, not sampled. `scrollWidth > clientWidth`
     // is the browser's OWN verdict on clipping -- no font maths to get wrong.
     const WIDEST_PAYOFFS = ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345'];
+    const LEGIBILITY_VIEWPORTS = [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1], [280, 3], [320, 2], [390, 3]];
     let clipRows = [];
-    for (const [vw, zoom] of [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1]]) {
+    for (const [vw, zoom] of LEGIBILITY_VIEWPORTS) {
       const pv = await newTrackedPage({ viewport: { width: Math.round(vw / zoom), height: Math.round(900 / zoom) } });
       const cdpv = await pv.context().newCDPSession(pv);
       await cdpv.send('Emulation.setDeviceMetricsOverride', {
@@ -11062,7 +11063,7 @@ const suggestedScenario = {
       await pv.close();
     }
     record(
-      `§102 payoff legibility: every legal payoff renders unclipped at every width (${WIDEST_PAYOFFS.length} values x 9 widths)`,
+      `§102 payoff legibility: every legal payoff renders unclipped at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports)`,
       clipRows.length === 0,
       clipRows.slice(0, 6).join(' | ') || 'no clipped, zero-width or doc-scrolling case',
     );
@@ -11079,7 +11080,8 @@ const suggestedScenario = {
         args: ['--disable-dev-shm-usage', `--blink-settings=minimumFontSize=${minFs}`],
       });
       try {
-        const fctx = await fontBrowser.newContext({ viewport: { width: 320, height: 900 } });
+        for (const fw of [320, 1280]) {
+        const fctx = await fontBrowser.newContext({ viewport: { width: fw, height: 900 } });
         const pf = await fctx.newPage();
         await pf.goto(BASE, { waitUntil: 'networkidle' });
         await dismissTourForSetup(pf, 'setup: clear the tour before the minimum-font-size payoff check', { timeout: 20000 });
@@ -11093,16 +11095,20 @@ const suggestedScenario = {
           });
           return {
             n: ins.length,
-            font: parseFloat(getComputedStyle(ins[0]).fontSize),
+            // `getComputedStyle(undefined)` THROWS, so an empty set would crash
+            // the evaluate and fail as an uncaught error instead of reporting
+            // the count -- guard the read rather than the message.
+            font: ins.length ? parseFloat(getComputedStyle(ins[0]).fontSize) : 0,
             clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
           };
         });
         // The control: if the preference did not actually raise the payoff font,
         // this check proves nothing and must say so rather than pass.
-        if (r.n !== 8) minFontRows.push(`min-font ${minFs}px: found ${r.n} payoff fields, expected 8`);
-        else if (!(r.font >= minFs - 0.5)) minFontRows.push(`min-font ${minFs}px: payoff font is ${r.font}px -- the preference did not apply, so this check would be vacuous`);
-        else if (r.clipped > 0) minFontRows.push(`min-font ${minFs}px: ${r.clipped}/${r.n} clipped at ${r.font}px`);
+        if (r.n !== 8) minFontRows.push(`min-font ${minFs}px @${fw}: found ${r.n} payoff fields, expected 8`);
+        else if (!(r.font >= minFs - 0.5)) minFontRows.push(`min-font ${minFs}px @${fw}: payoff font is ${r.font}px -- the preference did not apply, so this check would be vacuous`);
+        else if (r.clipped > 0) minFontRows.push(`min-font ${minFs}px @${fw}: ${r.clipped}/${r.n} clipped at ${r.font}px`);
         await fctx.close();
+        }
       } finally {
         await fontBrowser.close();
       }
