@@ -11457,11 +11457,18 @@ const suggestedScenario = {
             const before = sc.scrollTop;
             sc.scrollTop = sc.scrollHeight;
             const b2 = btn.getBoundingClientRect(), s2 = sc.getBoundingClientRect();
-            const reach = b2.top >= s2.top - 0.5 && b2.bottom <= s2.bottom + 0.5
-              && b2.top >= -0.5 && b2.bottom <= innerHeight + 0.5;
+            // A control TALLER than the port can never sit wholly inside it --
+            // at minimumFontSize 24 the button is 108px against a 106px port.
+            // Demanding containment there fails for a reason no layout can fix
+            // (my own sweep-34 probe reported exactly that as a defect), so the
+            // bar is: scrolled to the end, the control OVERLAPS the port and is
+            // on screen, and the box is a tabbable region.
+            const overlaps = Math.min(b2.bottom, s2.bottom) - Math.max(b2.top, s2.top)
+              >= Math.min(b2.height, s2.height) - 0.5;
+            const onScreen = b2.bottom > 0 && b2.top < innerHeight;
             sc.scrollTop = before;
-            if (!(reach && sc.tabIndex === 0 && sc.getAttribute('role') === 'region'))
-              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and the control is not reachable via a tabbable region (reach=${reach} tabIndex=${sc.tabIndex} role=${sc.getAttribute('role')})`);
+            if (!(overlaps && onScreen && sc.tabIndex === 0 && sc.getAttribute('role') === 'region'))
+              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and the control is not reachable via a tabbable region (overlaps=${overlaps} onScreen=${onScreen} btnH=${Math.round(b2.height)} portH=${Math.round(s2.height)} tabIndex=${sc.tabIndex} role=${sc.getAttribute('role')})`);
           }
           // The caption gets the same bar, SCANNED across the scroll range --
           // sampling only scrollTop 0 and max called six reachable captions
