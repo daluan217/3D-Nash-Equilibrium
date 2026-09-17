@@ -11458,17 +11458,21 @@ const suggestedScenario = {
             sc.scrollTop = sc.scrollHeight;
             const b2 = btn.getBoundingClientRect(), s2 = sc.getBoundingClientRect();
             // A control TALLER than the port can never sit wholly inside it --
-            // at minimumFontSize 24 the button is 108px against a 106px port.
-            // Demanding containment there fails for a reason no layout can fix
-            // (my own sweep-34 probe reported exactly that as a defect), so the
-            // bar is: scrolled to the end, the control OVERLAPS the port and is
-            // on screen, and the box is a tabbable region.
-            const overlaps = Math.min(b2.bottom, s2.bottom) - Math.max(b2.top, s2.top)
-              >= Math.min(b2.height, s2.height) - 0.5;
-            const onScreen = b2.bottom > 0 && b2.top < innerHeight;
+            // at minimumFontSize 24 the button is 108px against a 106px port,
+            // and 102px of it shows. Neither containment nor any percentage is
+            // the real question; "can a click land on it" is, so ask the
+            // browser: hit-test the centre of the visible slice. No threshold
+            // to justify, and it is the thing the user actually needs.
+            const top = Math.max(b2.top, s2.top, 0);
+            const bottom = Math.min(b2.bottom, s2.bottom, innerHeight);
+            const hits = bottom - top > 0 && (() => {
+              const q = document.elementFromPoint(
+                Math.round(b2.left + b2.width / 2), Math.round((top + bottom) / 2));
+              return !!(q && (q === btn || btn.contains(q)));
+            })();
             sc.scrollTop = before;
-            if (!(overlaps && onScreen && sc.tabIndex === 0 && sc.getAttribute('role') === 'region'))
-              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and the control is not reachable via a tabbable region (overlaps=${overlaps} onScreen=${onScreen} btnH=${Math.round(b2.height)} portH=${Math.round(s2.height)} tabIndex=${sc.tabIndex} role=${sc.getAttribute('role')})`);
+            if (!(hits && sc.tabIndex === 0 && sc.getAttribute('role') === 'region'))
+              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and no click reaches the control (visibleSlice=${Math.round(bottom - top)}px of ${Math.round(b2.height)}px, hits=${hits}, tabIndex=${sc.tabIndex}, role=${sc.getAttribute('role')})`);
           }
           // The caption gets the same bar, SCANNED across the scroll range --
           // sampling only scrollTop 0 and max called six reachable captions
