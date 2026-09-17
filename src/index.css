@@ -305,6 +305,152 @@ input.no-native-spinner {
   }
 }
 
+/* ── reflow floor (WCAG 1.4.10) ──────────────────────────────────────────
+ * Browser zoom divides the layout viewport: 280px at 300% is 93 CSS px, well
+ * under the 320px the SC names. The page's min-content demand was 191px, so
+ * every layout viewport below that scrolled the DOCUMENT sideways (16 of 32
+ * width x zoom x theme combos). Each rule below is one measured cause; they
+ * were found by bisecting the narrowest clean viewport, fixing whatever leaf
+ * bled, and re-bisecting until the floor stopped moving (191px -> 91px).
+ * Scoped to 220px so ordinary phone and desktop layouts are byte-identical.
+ * A narrow DESKTOP window or an Electron window dragged small can reach it
+ * unzoomed (electron-main.cjs sets no minWidth) — that is the same condition
+ * and the same correct answer, not an escape.
+ *
+ * Scope is `main` AND `[role="dialog"]`: the modals and the workspace drawer
+ * render as SIBLINGS after </main>, so a `main`-only scope left the Account
+ * dialog with two unreadable inputs and the drawer bleeding at 93px
+ * (ds-rev finding 6, reproduced). */
+@media (max-width: 220px) {
+  body, body * { overflow-wrap: anywhere; }
+
+  /* Fixed widths and shrink floors are sized for a phone, not for a 93px
+   * layout viewport. Below 220px every one of them is larger than the column
+   * it sits in, so they yield: the classes are the whole family, not a list of
+   * the leaves that happened to measure widest. */
+  :is(main, [role="dialog"]) .w-20, :is(main, [role="dialog"]) .w-28 { width: 100%; min-width: 0; }
+
+  /* `shrink-0` is on two different kinds of thing: text that can reflow, and
+   * icons/swatches that are the content. Releasing both squeezed an 11px icon
+   * to 4.8px (ds-rev finding 5, reproduced). An SVG has nothing to wrap, so it
+   * keeps its size; only the text-bearing ones yield. */
+  :is(main, [role="dialog"]) .shrink-0:not(svg):not(:has(> svg)) { flex-shrink: 1; min-width: 0; }
+  :is(main, [role="dialog"]) svg.shrink-0, :is(main, [role="dialog"]) svg { flex-shrink: 0; }
+
+  /* Padding is the largest single consumer here: the stats cards spend 24px of
+   * a 56px box on it, leaving 32px for a 40px number — "0.217" wrapped onto
+   * three lines. Matched by class FAMILY, because naming tiers by hand let p-3
+   * through (shredding the stats) and then p-3.5 (the indifference labels).
+   * The `^=`/`*=" "` pair anchors on a class BOUNDARY: a bare [class*="p-"]
+   * also matches gap-*, top-1/2 and tap-24 (the touch-target floor), which
+   * squeezed boxes that were never padded and shredded 25 labels. */
+  main, [role="dialog"] { padding-left: 0.375rem; padding-right: 0.375rem; }
+  :is(main, [role="dialog"]) :is([class^="p-"], [class*=" p-"],
+                                  [class^="px-"], [class*=" px-"],
+                                  [class^="pl-"], [class*=" pl-"],
+                                  [class^="pr-"], [class*=" pr-"]):not([data-keeps-clear]) {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+  }
+
+  /* Some padding is not decoration: it is the gap an absolutely-positioned
+   * control sits in. Reclaiming it does not save space, it drops the control on
+   * top of the text (the tour's close button painted over "1 / 19" once this
+   * rule cut the reserve from 40px to 4px). `data-keeps-clear` marks those, and
+   * only those — everything else still gives its padding back.
+   *
+   * A horizontal reserve still cannot work once the card is 61px wide (280px at
+   * 300% zoom): the counter is 29px and the button 29px, and 58px do not fit a
+   * 51px content box. There the reserve turns VERTICAL — the row clears the
+   * button's height instead of its width, which the card does have room for. */
+  :is(main, [role="dialog"], .fixed.inset-0) [data-keeps-clear] {
+    padding-right: 0;
+    padding-top: 1.75rem;
+  }
+
+  /* A `flex-nowrap` row whose children default to `min-width: auto` cannot
+   * shrink below their content, so the last child is pushed past the edge
+   * instead: the drawer's header kept its title at full width and shoved the
+   * close button to x=76..106 in a 93px viewport — 17px of a 30px target, and
+   * on main off-screen entirely (x=181, drawer uncloseable). Letting the row
+   * wrap and its items shrink puts every child back inside the box. Scoped to
+   * flex rows inside a dialog, which is where this shape occurs. */
+  [role="dialog"] .flex:not(.flex-col) > * { min-width: 0; }
+  [role="dialog"] .flex.items-center.justify-between:not(.flex-col) { flex-wrap: wrap; }
+
+  /* The exit must come FIRST, not after 810px of wrapped title. "Simulator
+   * Workspace Center" stacks one word per line at a 93px viewport, and the
+   * drawer panel is `fixed` with `overflow-y: visible`, so a close button
+   * pushed below it can never be scrolled back -- the drawer was uncloseable
+   * at 93x281 and 93x400 even after the wrap fix. `order` moves only the
+   * PAINT order, so the tab order the panel was built around is untouched. */
+  [role="dialog"] .flex.items-center.justify-between:not(.flex-col) > button[aria-label^="Close"] { order: -1; }
+
+  /* RED-APP-12/003 again, from the other side. A sticky header that is TALLER
+   * than the viewport covers every pixel at every scroll position, so nothing
+   * under it can be clicked. The existing guard keys on viewport height
+   * (`max-height:500px`), but the header's height depends on WIDTH: it reflows
+   * from 186px at 480px wide to 846px at 93px, so a 700px-tall window at 93px
+   * wide is fully covered while passing that test. Below 220px the header is
+   * never shorter than half the viewport, so it goes static and ordinary
+   * scrolling moves it out of the way — which is what the height rule does too. */
+  header.sticky { position: static; }
+
+  /* The feedback pill is `fixed bottom-4 left-4`: it holds that corner no
+   * matter what scrolls under it. At a full width nothing else is ever there;
+   * at 93px the page has reflowed into one narrow column and real controls pass
+   * beneath it — the workspace menu lost 6 of its 9 sample points and "Sign In"
+   * all of them. It is a secondary action, so at this width it goes back into
+   * normal flow at the end of the page, where it can cover nothing. */
+  button.fixed.bottom-4.left-4 {
+    position: static;
+    margin: 0.5rem auto;
+    display: flex;
+    width: fit-content;
+  }
+
+  /* The modal OVERLAY is the dialog's parent, outside `[role="dialog"]`, and it
+   * keeps 1.25rem of padding on each side — 40px of a 93px viewport, which
+   * shredded the dialog heading to 6 lines. */
+  .fixed.inset-0 { padding-left: 0.25rem; padding-right: 0.25rem; }
+
+  /* An icon or stepper absolutely positioned in a field's padding gutter has
+   * nowhere to go once the gutter closes; hide it rather than paint it over the
+   * value. `:has(svg)` means a DESCENDANT svg, so it never matched the leaf
+   * `<svg class="absolute">` lucide renders; `:has(> input)` anchors on the
+   * field instead and reaches both gutters. A reserve cannot substitute: the
+   * stepper is 25px and the whole content box is 41px. */
+  :is(main, [role="dialog"]) .relative:has(> input) > .absolute { display: none; }
+
+  /* The payoff matrix keeps a width its four inputs can actually be typed
+   * into and scrolls inside its own box (see data-matrix-scroll in App.tsx);
+   * squeezing it to fit produced 7.5px-wide number fields. */
+  :is(main, [role="dialog"]) [data-tour="matrix"] { min-width: 15rem; grid-template-columns: minmax(0, 3.5rem) minmax(0, 1fr) minmax(0, 1fr); }
+
+  /* Fixed-size chrome inside a collapsed column: the payoff pair's comma
+   * separator and the start-point field's 2rem stepper gutter each demanded
+   * more than the whole track. Columns stack instead — a rigid `grid-cols-3`
+   * split 90px three ways and rendered "Both Plots" down 7 lines. */
+  :is(main, [role="dialog"]) .grid-cols-2, :is(main, [role="dialog"]) .grid-cols-3, :is(main, [role="dialog"]) .grid-cols-4 { grid-template-columns: minmax(0, 1fr); }
+
+  /* The post-run progress bar asks for 4rem it does not have; it is a pure
+   * indicator, so a shorter track still reads correctly. */
+  :is(main, [role="dialog"]) .min-w-16 { min-width: 0; }
+
+  /* The plot's control cluster is pinned to the card's top-right and is wider
+   * than the card itself down here, so it hung off the left edge with only 1 of
+   * its 3 buttons reachable (and, under dir="rtl", extended the scrollable
+   * width). Wrapping it inside the card makes all 3 reachable. */
+  .absolute.top-3.right-3 { flex-wrap: wrap; max-width: calc(100% - 1.5rem); }
+
+  /* An absolutely-positioned overlay is outside flow, so none of the shrinking
+   * above reaches it: the plot's "Resume spinning" button kept its intrinsic
+   * width and pushed past its container. Bounding it by its LEFT inset keeps
+   * it inside without squeezing the toolbar opposite it, which wraps its
+   * buttons onto new rows if capped and ends up wider still. */
+  :is(main, [role="dialog"]) .absolute.bottom-3.left-3 { max-width: calc(100% - 1.5rem); }
+}
+
 /* ── print stylesheet ────────────────────────────────────────────────────
  * RED-APP-9/004: page.pdf() (Cmd/Ctrl+P, "Save as PDF") had ZERO @media
  * print rules anywhere in the app. Chromium's print pagination captures a

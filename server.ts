@@ -2740,6 +2740,17 @@ function getTransporter() {
 }
 
 // Send real email verification
+// A failed send tells the USER only that the send failed. The provider's own
+// text names hosts, credential-failure codes and message ids ("535-5.7.8
+// Username and Password not accepted ... af79cd13be357-...sm327404985a.11 -
+// gsmtp") and it was being returned verbatim to the browser, where it reads as
+// the visitor's fault and hands an attacker the mail topology. The detail is
+// still logged server-side, where operators can act on it.
+function verificationEmailFailure(emailErrorMsg: string): string {
+  console.error('[register] verification email send failed:', emailErrorMsg);
+  return 'Could not send the verification email just now. Please try again in a few minutes.';
+}
+
 async function sendVerificationEmail(email: string, code: string, username: string): Promise<{ success: boolean; via: string; messageId?: string; previewUrl?: string | null; smtpError?: string | null; }> {
   const transporter = getTransporter();
   const from = process.env.SMTP_FROM || `"Nash Equilibrium Simulator" <noreply@example.com>`;
@@ -3901,9 +3912,7 @@ async function startServer() {
       }
 
       if (emailErrorMsg) {
-        return res.status(500).json({
-          error: `Could not send verification email: ${emailErrorMsg}. Please check your server SMTP settings.`
-        });
+        return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
       }
 
       return res.json({
@@ -3962,9 +3971,7 @@ async function startServer() {
       // so we do not block subsequent attempts when SMTP config is updated.
       db.users = db.users.filter(u => u.email.trim().toLowerCase() !== emailTrimmed);
       saveDB(db);
-      return res.status(500).json({
-        error: `Could not send verification email: ${emailErrorMsg}. Please check your server SMTP settings.`
-      });
+      return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
     }
 
     res.json({

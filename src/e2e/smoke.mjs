@@ -10360,10 +10360,19 @@ const suggestedScenario = {
         window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
         const vw = de.clientWidth;
         // the hidden KaTeX MathML annotation (position:absolute, 1px) is not layout
-        const wide = Array.from(document.querySelectorAll('body *')).filter((el) => {
-          if (el.closest('.katex-mathml') || el.closest('.js-plotly-plot')) return false;
-          const r = el.getBoundingClientRect(); return r.width > 0 && r.right > vw + 2;
-        }).map((el) => `${el.tagName}.${(el.className || '').toString().slice(0, 40)}`).slice(0, 6);
+        const wide = [];
+        for (const el of document.querySelectorAll('body *')) {
+          if (el.closest('.katex-mathml') || el.closest('.js-plotly-plot')) continue;
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.right > vw + 2)) continue;
+          let contained = false;
+          for (let a = el.parentElement; a; a = a.parentElement) {
+            const cs = getComputedStyle(a);
+            if (/(auto|scroll|hidden|clip)/.test(cs.overflowX) && a.getBoundingClientRect().right <= vw + 2) { contained = true; break; }
+          }
+          if (!contained) wide.push(`${el.tagName}.${(el.className || '').toString().slice(0, 40)}`);
+        }
+        wide.splice(6);
         // Self-attack on THIS branch's own 004 fix: `break-words` is inherited,
         // so it also applied to the realtime-stats VALUES and stacked "0.217"
         // one digit per line (23x289). A label may break, a number may not.
@@ -10526,6 +10535,990 @@ const suggestedScenario = {
         descNow96 === typed96, JSON.stringify(descNow96.slice(0, 60)));
     }
     await p96.close();
+  });
+
+  // §100 widens §94 from its single 390px/zoom-2 point to the whole condition
+  // space a user can reach, and measures REAL browser zoom. §94 sets the CSS
+  // `zoom` property, which scales painting but leaves the layout viewport (and
+  // every media query) at the full width — no browser behaves that way, and a
+  // reflow fix that keys on width is invisible to it. Real zoom divides the
+  // layout viewport, which is exactly how WCAG 1.4.10 is stated: 1280px at
+  // 400% IS a 320px layout viewport. CDP device metrics reproduce that.
+  section('100', 'no width and zoom a user can reach makes the page scroll sideways', async () => {
+    // 280px is the narrowest phone still sold; 300% is mid-range for the 400%
+    // the SC requires. 280/3 = a 93px layout viewport — the hardest point.
+    // 390@1.45x = 269px and 390@1.63x = 239px bracket the band where the matrix
+    // collapses to 0px inputs (221-261 measured). 1.5x lands on 260 -- inside
+    // the band -- and swept green only because the oracles skipped 0px boxes.
+    const COMBOS = [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5], [390, 1.45], [390, 1.63]];
+    const measure = async (p, cdp, w, z) => {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: Math.round(w / z), height: Math.round(844 / z), deviceScaleFactor: z, mobile: false });
+      // Plotly re-fits its WebGL canvas asynchronously after a re-layout, so the
+      // document is briefly wider than its steady state on BOTH trees. Wait on
+      // the value: it must hold for 30 frames (~0.5s) before it is read. The
+      // unfixed tree settles at 191px and still fails, so this cannot mask it.
+      // Swallowed, this turns a slow machine into a width failure with no way to
+      // tell them apart; it is returned instead and asserted on its own row.
+      const settled = await p.waitForFunction(() => new Promise((resolve) => {
+        let last = document.documentElement.scrollWidth, stable = 0;
+        const tick = () => { const v = document.documentElement.scrollWidth;
+          stable = v === last ? stable + 1 : 0; last = v;
+          if (stable >= 30) resolve(true); else requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      }), null, { timeout: 20000 }).then(() => true).catch(() => false);
+      return p.evaluate(() => {
+        const de = document.documentElement, vw = de.clientWidth, vh = de.clientHeight;
+        window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
+        // An element inside a box that actually scrolls is COMPLIANT (1.4.10
+        // forbids scrolling the DOCUMENT, not an inner region) — so each
+        // offender is only counted after walking its ancestors for a real
+        // scroll container. This is what lets the KaTeX fix be a scroll box
+        // rather than a truncation.
+        const bleed = [];
+        for (const el of document.querySelectorAll('body *')) {
+          if (el.closest('.katex-mathml')) continue;
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.right > vw + 0.5)) continue;
+          let contained = false;
+          for (let a = el.parentElement; a; a = a.parentElement) {
+            const cs = getComputedStyle(a);
+            if (/(auto|scroll|hidden|clip)/.test(cs.overflowX) && a.getBoundingClientRect().right <= vw + 0.5) { contained = true; break; }
+          }
+          if (!contained) bleed.push(`${el.tagName}.${(el.className || '').toString().slice(0, 36)}`);
+        }
+        return { vw, docScrollWidth: de.scrollWidth, maxScrollX, bleed: bleed.slice(0, 6),
+          // A fix that empties the page would pass every check above.
+          rendered: !!document.querySelector('.js-plotly-plot')
+            && !!document.querySelector('[aria-label="Expand simulation log"]'),
+          // Nothing may be shrunk into unreadability to buy the width back.
+          // No length floor and no element allow-list: the first version of
+          // this guard skipped short strings and only looked at a few tags,
+          // and a hand-read of the actual pixels found the matrix shredded to
+          // one character per line underneath a green row.
+          readable: (() => {
+            const bad = [];
+            // `main *` alone missed the modals, which render as SIBLINGS after
+            // </main> (ds-rev finding 6), so the dialog surface was unmeasured.
+            for (const el of document.querySelectorAll('main *, [role="dialog"] *')) {
+              if (el.children.length || !(el.textContent || '').trim()) continue;
+              const t = el.textContent.trim();
+              const rg = new Range(); rg.selectNodeContents(el);
+              const lines = new Set(Array.from(rg.getClientRects()).map((x) => Math.round(x.top))).size;
+              if (lines > 1 && t.replace(/\s/g, '').length / lines < 2) bad.push(`${t.slice(0, 18)}@${lines}`);
+            }
+            return bad.slice(0, 5);
+          })(),
+          // A field too narrow to read its own value is not usable, however
+          // little the page scrolls: squeezing the payoff matrix to fit gave
+          // 2.5px-wide inputs while every scroll check stayed green. The floor
+          // is one character of the field's OWN font — the smallest width at
+          // which a typed digit can still be seen.
+          // WCAG 2.1.1: a region that scrolls must be operable from the
+          // keyboard. The reflow fix works by giving boxes their own scroll,
+          // so every one of them it creates has to be reachable — otherwise
+          // the fix trades a reflow failure for a keyboard trap.
+          unreachableScrollers: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main *, [role="dialog"] *')) {
+              if (el.scrollWidth <= el.clientWidth + 1) continue;
+              const cs = getComputedStyle(el);
+              if (!/(auto|scroll)/.test(cs.overflowX)) continue;
+              // A focusable DESCENDANT is not the same affordance: tabbing to
+              // an input inside the box scrolls to THAT input, which leaves the
+              // rest of the box unreachable, and it made this check
+              // unfalsifiable for the very element it polices — the matrix box
+              // wraps four <input>s, so deleting its tabIndex kept §100 green
+              // (reviewer ds-rev, 2026-09-15, reproduced by mutation). The box
+              // ITSELF must take focus.
+              if (el.tabIndex < 0) bad.push(`${el.tagName}.${(el.className || '').toString().slice(0, 30)}`);
+            }
+            return bad.slice(0, 5);
+          })(),
+          // A control painted outside the viewport is not operable, however
+          // little the page scrolls. The plot's control cluster is pinned to
+          // its card's corner and is wider than the card down here: it hung off
+          // the left edge with 1 of 3 buttons reachable while every scroll
+          // check was green.
+          unreachableControls: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main button, main a[href], [role="dialog"] button')) {
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0 && r.height > 0)) continue;
+              if (getComputedStyle(el).visibility === 'hidden') continue;
+              if (r.right < 1 || r.left > vw - 1)
+                bad.push(`${(el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 18)}@[${Math.round(r.left)},${Math.round(r.right)}]`);
+            }
+            return bad.slice(0, 5);
+          })(),
+          coveredControls: (() => {
+            const bad = [];
+            // A modal covering the page behind it is the POINT of a modal, so
+            // when one is open only its own controls are in scope.
+            const modal = [...document.querySelectorAll('[role="dialog"]')]
+              .find((d) => d.getBoundingClientRect().width > 0);
+            const scope = modal
+              ? modal.querySelectorAll('button, a[href], input')
+              : document.querySelectorAll('main button, main a[href], main input');
+            for (const el of scope) {
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0 && r.height > 0)) continue;
+              if (getComputedStyle(el).visibility === 'hidden') continue;
+              if (el.closest('[inert], [aria-hidden="true"]')) continue;   // measuring probes are not controls
+              // Content below its own scroll container's fold is reachable --
+              // the user scrolls to it, which 1.4.10 explicitly allows. Only a
+              // control that stays unhittable AFTER its container is scrolled to
+              // it is a real dead control, so scroll it into view first.
+              const scroller = (() => {
+                for (let a = el.parentElement; a; a = a.parentElement) {
+                  const cs = getComputedStyle(a);
+                  if (/(auto|scroll)/.test(cs.overflowY) && a.scrollHeight > a.clientHeight + 1) return a;
+                }
+                return null;
+              })();
+              const restore = scroller ? scroller.scrollTop : null;
+              if (scroller) {
+                const sr = scroller.getBoundingClientRect();
+                scroller.scrollTop += (el.getBoundingClientRect().top - sr.top) - sr.height / 2 + r.height / 2;
+              }
+              const q = el.getBoundingClientRect();
+              let hits = 0, pts = 0;
+              for (const fx of [0.15, 0.5, 0.85]) for (const fy of [0.15, 0.5, 0.85]) {
+                const x = q.left + q.width * fx, y = q.top + q.height * fy;
+                if (x < 0 || x > vw || y < 0 || y > vh) continue;
+                pts += 1;
+                const t = document.elementFromPoint(x, y);
+                if (t && (t === el || el.contains(t))) hits += 1;
+              }
+              if (scroller) scroller.scrollTop = restore;
+              if (pts > 0 && hits === 0) {
+                const t = document.elementFromPoint(
+                  Math.min(Math.max(r.left + r.width / 2, 0.5), vw - 0.5),
+                  Math.min(Math.max(r.top + r.height / 2, 0.5), vh - 0.5));
+                bad.push(`${(el.getAttribute('aria-label') || el.textContent || el.tagName).trim().slice(0, 16)} covered by ${t ? `${t.tagName}.${String(t.className).slice(0, 22)}` : '?'}`);
+              }
+            }
+            return bad.slice(0, 5);
+          })(),
+          clippedValues: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main input')) {
+              if (el.type === 'range' || el.type === 'checkbox' || el.type === 'radio') continue;
+              const v = String(el.value ?? '');
+              if (!v) continue;
+              const r = el.getBoundingClientRect();
+              // `width > 0` was a SKIP, and 0 is the worst case, not an absent
+              // one: the matrix collapses to eight 0px inputs at layout widths
+              // 221-261 and this oracle stepped over every one of them.
+              // `offsetParent === null` (plus the fixed/sticky escape) is the
+              // real "not rendered" test.
+              if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
+              if (r.width <= 0) { bad.push(`${v}: input is ${r.width}px wide — the value cannot be seen at all`); continue; }
+              const cs = getComputedStyle(el);
+              const probe = document.createElement('span');
+              probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+              probe.textContent = v;
+              document.body.appendChild(probe);
+              const textW = probe.getBoundingClientRect().width;
+              probe.remove();
+              const content = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+              // "One character fits" is not "the value is readable": a 74px
+              // field with a 40px stepper gutter passed the one-char bar while
+              // showing 2 of the 5 characters of "0.217".
+              if (textW > content + 0.5) bad.push(`${v}: ${textW.toFixed(0)}px of text in ${content.toFixed(0)}px`);
+            }
+            return bad.slice(0, 5);
+          })(),
+          overlaidValues: (() => {
+            // clippedValues measures the CONTENT BOX and so cannot see a
+            // sibling painted on top of the glyphs. Both the lucide gutter icon
+            // and the stepper are absolutely positioned OUTSIDE that box's
+            // accounting, so `ga<icon>me_t` and `0.2<stepper>7` both passed it.
+            // Mutant: restore `.absolute:has(svg)` (a descendant selector that
+            // never matches a leaf svg) and this goes red on both shapes.
+            const bad = [];
+            for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
+              if (el.type === 'range' || el.type === 'checkbox' || el.type === 'radio') continue;
+              const v = String(el.value ?? '');
+              if (!v) continue;
+              const r = el.getBoundingClientRect();
+              if (!(r.width > 0 && r.height > 0)) continue;
+              const cs = getComputedStyle(el);
+              const probe = document.createElement('span');
+              probe.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+              probe.textContent = v;
+              document.body.appendChild(probe);
+              const textW = probe.getBoundingClientRect().width;
+              probe.remove();
+              // The band the glyphs really occupy, clamped to the content box.
+              const glyphL = r.left + parseFloat(cs.paddingLeft);
+              const glyphR = Math.min(glyphL + textW, r.right - parseFloat(cs.paddingRight));
+              if (!(glyphR > glyphL)) continue;
+              for (const sib of el.parentElement ? el.parentElement.children : []) {
+                if (sib === el) continue;
+                const scs = getComputedStyle(sib);
+                if (scs.position !== 'absolute' || scs.display === 'none'
+                  || scs.visibility === 'hidden' || parseFloat(scs.opacity) === 0) continue;
+                const q = sib.getBoundingClientRect();
+                if (!(q.width > 0 && q.height > 0)) continue;
+                const over = Math.min(q.right, glyphR) - Math.max(q.left, glyphL);
+                const vert = Math.min(q.bottom, r.bottom) - Math.max(q.top, r.top);
+                if (over > 0.5 && vert > 0.5)
+                  bad.push(`${v}: ${sib.tagName.toLowerCase()} covers ${over.toFixed(0)}px of the value`);
+              }
+            }
+            return bad.slice(0, 5);
+          })(),
+          tinyInputs: (() => {
+            const bad = [];
+            for (const el of document.querySelectorAll('main input, [role="dialog"] input')) {
+              const r = el.getBoundingClientRect();
+              if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
+              if (r.width <= 0) { bad.push(`${el.type}: 0px wide`); continue; }
+              const cs = getComputedStyle(el);
+              const content = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+              if (el.type !== 'range' && content < parseFloat(cs.fontSize))
+                bad.push(`${el.type}:${content.toFixed(1)}px<${cs.fontSize}`);
+            }
+            return bad.slice(0, 5);
+          })(),
+        };
+      }).then((m) => ({ ...m, settled }));
+    };
+    const p97 = await newTrackedPage({ viewport: { width: 390, height: 844 } });
+    const cdp = await p97.context().newCDPSession(p97);
+    await p97.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(p97, 'setup: clear the first-run tour before measuring the zoomed layout', { timeout: 20000 });
+    await p97.locator('.js-plotly-plot').first().waitFor({ state: 'attached', timeout: 20000 });
+    // The zoom model itself is a fixture: if CDP ever stopped dividing the
+    // layout viewport, every row below would pass by measuring zoom 1.
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 93, height: 281, deviceScaleFactor: 3, mobile: false });
+    const lv = await p97.evaluate(() => document.documentElement.clientWidth);
+    record('§100 fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)',
+      lv <= 95, `clientWidth=${lv}`);
+    const sweep = async (phase) => {
+      for (const [w, z] of COMBOS) {
+        const m = await measure(p97, cdp, w, z);
+        const at = `${phase} ${w}px at ${z * 100}%`;
+        // Per-condition, not once up front: if setDeviceMetricsOverride ever
+        // no-opped, every row below would silently measure an unzoomed page
+        // and pass (ds-rev finding 3).
+        record(`§100 ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
+          Math.abs(m.vw - Math.round(w / z)) <= 2, `measured=${m.vw} expected=${Math.round(w / z)}`);
+        record(`§100 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
+        record(`§100 ${at} fixture guard: the width held still before it was read (a slow runner is not a reflow failure)`,
+          m.settled, 'scrollWidth never held for 30 frames within 20 s');
+        record(`§100 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
+          m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
+        record(`§100 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
+        record(`§100 ${at}: no text was shredded to one character per line to buy the width`,
+          m.readable.length === 0, JSON.stringify(m.readable));
+        record(`§100 ${at}: an input's whole VALUE is visible, not just one character of it`,
+          m.clippedValues.length === 0, JSON.stringify(m.clippedValues));
+        record(`§100 ${at}: nothing is painted on top of an input's value`,
+          m.overlaidValues.length === 0, JSON.stringify(m.overlaidValues));
+        record(`§100 ${at}: every input is still wide enough to read one character of its own value`,
+          m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
+        record(`§100 ${at}: every box the fix made scrollable is reachable from the keyboard`,
+          m.unreachableScrollers.length === 0, JSON.stringify(m.unreachableScrollers));
+        record(`§100 ${at}: no control is painted entirely outside the viewport`,
+          m.unreachableControls.length === 0, JSON.stringify(m.unreachableControls));
+        // Inside the viewport but under something: a `fixed`/`sticky` overlay
+        // holds its corner no matter what reflows beneath it. The feedback pill
+        // (`fixed bottom-4 left-4`) swallowed the workspace menu and Sign In at
+        // a 93px layout viewport -- both on screen, neither clickable, and every
+        // scroll-based check green. Nine sample points per control; a control is
+        // only a failure when NONE of them reach it.
+        record(`§100 ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
+          m.coveredControls.length === 0, JSON.stringify(m.coveredControls));
+      }
+    };
+    await sweep('pre-run');
+    // The converged page renders rows the fresh page does not: the progress
+    // bar, the step-jump row, the equilibrium banner and the KaTeX result
+    // lines. Each was an independent cause; all of them are measured again.
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.getByRole('button', { name: 'Search Game' }).first().click();
+    await p97.getByRole('button', { name: /^Run$/ }).click();
+    await p97.waitForSelector('text=Converged', { timeout: 240000 });
+    record('§100 fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page',
+      await p97.getByText(/A indifferent:|A strictly prefers:/).first().isVisible().catch(() => false));
+    await sweep('post-run');
+    // Dark mode renders the same boxes, but Plotly re-fits later in dark — the
+    // one condition that produced a transient wide scrollWidth last round.
+    await p97.evaluate(() => { const b = [...document.querySelectorAll('button')]
+      .find((x) => /theme|dark|light/i.test(x.getAttribute('aria-label') || '')); b && b.click(); });
+    await p97.waitForTimeout(700);
+    record('§100 fixture guard: dark mode is actually on for the rows below',
+      await p97.evaluate(() => document.documentElement.classList.contains('dark')));
+    await sweep('dark post-run');
+    // The modals are the surface a `main`-scoped fix and a `main`-scoped oracle
+    // both miss: they render as siblings after </main>. Sweep one with real
+    // inputs open (ds-rev finding 6 — it had two unreadable fields at 93px).
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.getByRole('button', { name: /sign in.*sign up/i }).first().click().catch(() => {});
+    await p97.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 8000 }).catch(() => {});
+    // `exact: true` is load-bearing, not style: the coverage audit reads this
+    // file's selector vocabulary, and a NON-exact 'Account' credits every label
+    // containing it -- it silently marked MenuDrawer's never-pressed "Sign In to
+    // Your Account" as covered and evicted its allowlist entry (ds-rev finding
+    // D). The dialog's aria-label is exactly "Account", so nothing is lost.
+    record('§100 fixture guard: the Account dialog is open, so the rows below measure a real modal',
+      await p97.getByRole('dialog', { name: 'Account', exact: true }).isVisible().catch(() => false));
+    // TYPE into them: an empty field has no glyphs, so every value-overlap check
+    // skips it and the gutter icon painting over "ga<icon>me_t" was invisible to
+    // the sweep (ds-rev finding A). A filled field is also the state a user is
+    // actually in when the icon matters.
+    const acctFilled = await p97.evaluate(() => {
+      const d = document.querySelector('[role="dialog"][aria-label="Account"]');
+      if (!d) return 0;
+      const set = window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(set, 'value').set;
+      let n = 0;
+      for (const el of d.querySelectorAll('input')) {
+        if (el.type === 'checkbox' || el.type === 'radio') continue;
+        setter.call(el, el.type === 'password' ? 'TestPass123' : 'game_theorist@example.com');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        n += 1;
+      }
+      return n;
+    });
+    record('§100 fixture guard: the Account fields hold a value, so the overlap rows below have glyphs to measure',
+      acctFilled > 0, `filled ${acctFilled} inputs`);
+    await sweep('account dialog');
+    // The workspace drawer is a second modal shape with its own header row:
+    // `flex-nowrap` + `justify-between`, whose children default to
+    // `min-width:auto` and so refuse to shrink -- the close button was pushed to
+    // x=181 in a 93px viewport on main, entirely off-screen, and the drawer
+    // could not be closed at all. Opening it is not enough; the exit has to be
+    // pressed, because "visible" and "reachable" disagreed here.
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.keyboard.press('Escape').catch(() => {});
+    // Poll for the tour/modal to really go: a fixed wait raced it, and a
+    // leftover dialog then answered the drawer rows below (ds-rev finding F).
+    await p97.waitForFunction(() => !document.querySelector('[role="dialog"]'),
+      null, { timeout: 5000 }).catch(() => {});
+    // Three HEIGHTS, not one. The old row tested left/right at 700px only, so a
+    // close button pushed 675px DOWN by a wrapped title -- inside a `fixed`
+    // panel with `overflow-y: visible`, which can never scroll back -- passed
+    // it while the drawer was uncloseable at 281 and 400.
+    let drawerClosed = true;
+    for (const dh of [281, 400, 700]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width: 93, height: dh, deviceScaleFactor: 3, mobile: false });
+      await p97.getByRole('button', { name: /open workspace menu/i }).first()
+        .click({ timeout: 8000 }).catch(() => {});
+      await p97.waitForTimeout(900);
+      record(`§100 drawer fixture guard: the workspace drawer is open at 93x${dh}`,
+        await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
+          .some((d) => d.getBoundingClientRect().width > 0
+            && [...d.querySelectorAll('button')]
+              .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))));
+      record(`§100 drawer at 93x${dh}: its close control is fully inside the viewport`,
+        await p97.evaluate(() => {
+          const b = [...document.querySelectorAll('button')]
+            .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
+          if (!b) return false;
+          const r = b.getBoundingClientRect();
+          const de = document.documentElement;
+          return r.left >= -0.5 && r.right <= de.clientWidth + 0.5
+            && r.top >= -0.5 && r.bottom <= de.clientHeight + 0.5;
+        }),
+        await p97.evaluate(() => {
+          const b = [...document.querySelectorAll('button')]
+            .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
+          const r = b && b.getBoundingClientRect();
+          const de = document.documentElement;
+          return r ? `x=${Math.round(r.left)}..${Math.round(r.right)} y=${Math.round(r.top)}..${Math.round(r.bottom)} vw=${de.clientWidth} vh=${de.clientHeight}` : 'absent';
+        }));
+      const shut = await p97.getByRole('button', { name: /close menu/i }).first()
+        .click({ timeout: 10000 })
+        .then(() => p97.waitForTimeout(600))
+        .then(() => p97.evaluate(() => ![...document.querySelectorAll('[role="dialog"]')]
+          .some((d) => d.getBoundingClientRect().width > 0
+            && [...d.querySelectorAll('button')]
+              .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))))
+        .catch(() => false);
+      record(`§100 drawer at 93x${dh}: it can actually be closed again (not a trap)`, shut);
+      drawerClosed = drawerClosed && shut;
+      await p97.keyboard.press('Escape').catch(() => {});
+      await p97.waitForTimeout(300);
+    }
+    record('§100 drawer: closeable at EVERY height swept, not just the tallest', drawerClosed);
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
+    await p97.close();
+
+    // A TALL narrow viewport, SCROLLED. Every condition above is short (844/z),
+    // where the header is already static and the page barely scrolls -- so none
+    // of them can see an overlay that holds its corner while content moves
+    // under it. Both defects this found need exactly this shape: the feedback
+    // pill (`fixed bottom-4 left-4`) swallowed the workspace menu and Sign In,
+    // and the sticky header grows to 846px at a 93px width -- taller than a
+    // 700px viewport, covering every pixel of the page at every scroll offset.
+    const ps = await newTrackedPage({ viewport: { width: 93, height: 700 } });
+    await ps.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(ps, 'setup: clear the tour before the scrolled overlay sweep', { timeout: 20000 });
+    record('§100 scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner',
+      await ps.evaluate(() => document.documentElement.scrollHeight > innerHeight * 3),
+      await ps.evaluate(() => `docH=${document.documentElement.scrollHeight} vh=${innerHeight}`));
+    record('§100 scrolled-overlay fixture guard: no element covers the viewport from a stuck position',
+      await ps.evaluate(() => {
+        for (const el of document.querySelectorAll('body *')) {
+          const cs = getComputedStyle(el);
+          if (cs.position !== 'sticky' && cs.position !== 'fixed') continue;
+          const r = el.getBoundingClientRect();
+          if (r.width >= innerWidth - 1 && r.height >= innerHeight - 1 && cs.pointerEvents !== 'none') return false;
+        }
+        return true;
+      }));
+    const dead = await ps.evaluate(async () => {
+      const settle = () => new Promise((res) => { let last = -1, same = 0;
+        const t = () => { const y = window.scrollY; same = y === last ? same + 1 : 0; last = y;
+          if (same >= 5) res(); else requestAnimationFrame(t); }; requestAnimationFrame(t); });
+      const vw = innerWidth, vh = innerHeight, out = new Set();
+      const H = document.documentElement.scrollHeight;
+      for (let y = 0; y < H; y += Math.max(240, vh - 60)) {
+        window.scrollTo({ top: y, behavior: 'instant' });
+        await settle();
+        for (const b of document.querySelectorAll('main button, main a[href], main input')) {
+          const q = b.getBoundingClientRect();
+          if (!(q.width > 0 && q.height > 0) || q.bottom < 0 || q.top > vh) continue;
+          if (getComputedStyle(b).visibility === 'hidden') continue;
+          let hits = 0, pts = 0;
+          for (const fx of [0.15, 0.5, 0.85]) for (const fy of [0.15, 0.5, 0.85]) {
+            const x = q.left + q.width * fx, yy = q.top + q.height * fy;
+            if (x < 0 || x > vw || yy < 0 || yy > vh) continue;
+            pts += 1;
+            const t = document.elementFromPoint(x, yy);
+            if (t && (t === b || b.contains(t) || t.contains(b))) hits += 1;
+          }
+          if (pts > 0 && hits === 0) {
+            const t = document.elementFromPoint(
+              Math.min(Math.max(q.left + q.width / 2, 0.5), vw - 0.5),
+              Math.min(Math.max(q.top + q.height / 2, 0.5), vh - 0.5));
+            out.add(`${(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 16)} <- ${t ? `${t.tagName}.${String(t.className).slice(0, 20)}` : '?'}`);
+          }
+        }
+      }
+      window.scrollTo(0, 0);
+      return [...out];
+    });
+    record('§100 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset',
+      dead.length === 0, dead.slice(0, 5).join(' | '));
+    // And the ground truth a geometric check cannot give: press them.
+    for (const nm of [/search game/i, /open workspace menu/i, /^sign in/i]) {
+      const l = ps.getByRole('button', { name: nm }).first();
+      const pressed = await l.count()
+        ? await l.click({ timeout: 10000 }).then(() => true).catch(() => false) : false;
+      record(`§100 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
+      await ps.keyboard.press('Escape').catch(() => {});
+      await ps.waitForTimeout(300);
+    }
+    await ps.close();
+
+  });
+
+  // Split out of §100 (2026-09-16): §100 measured 225.0s against a 225.0s
+  // per-section budget once the payoff checks landed. These three share one
+  // subject -- the number a payoff FIELD actually shows -- so they split
+  // cleanly rather than being trimmed.
+  section('102', 'a payoff always renders as the number it holds', async () => {
+    // A payoff that PRINTS as a different number is the worst defect this
+    // surface can carry: "-99.999" rendered "-99." and "-100" rendered "-10".
+    // The field clamps to PAYOFF_RANGE quantised to 3dp, so the widest legal
+    // strings are enumerated here, not sampled. `scrollWidth > clientWidth`
+    // is the browser's OWN verdict on clipping -- no font maths to get wrong.
+    // Two over-long strings are included as well, and they are the reason the
+    // write and the read are separate tasks: they canonicalise on commit
+    // ("-99.9999" and "-100.0000" both settle to "-100"), so the value the
+    // user is left reading is the SETTLED one, never the raw entry.
+    const WIDEST_PAYOFFS = ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345', '-99.9999', '-100.0000'];
+    const LEGIBILITY_VIEWPORTS = [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1], [280, 3], [320, 2], [390, 3]];
+    let clipRows = [];
+    for (const [vw, zoom] of LEGIBILITY_VIEWPORTS) {
+      const pv = await newTrackedPage({ viewport: { width: Math.round(vw / zoom), height: Math.round(900 / zoom) } });
+      const cdpv = await pv.context().newCDPSession(pv);
+      await cdpv.send('Emulation.setDeviceMetricsOverride', {
+        width: Math.round(vw / zoom), height: Math.round(900 / zoom), deviceScaleFactor: zoom, mobile: false });
+      await pv.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(pv, 'setup: clear the tour before the payoff-legibility sweep', { timeout: 20000 });
+      for (const val of WIDEST_PAYOFFS) {
+        await pv.evaluate((v) => {
+          const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+          document.querySelectorAll('[data-tour="matrix"] input').forEach((el) => {
+            // FOCUS first: `blur()` on an unfocused element is a no-op, so the
+            // commit path that canonicalises an over-long entry never ran and
+            // the check read raw setter text no user is ever left looking at.
+            el.focus();
+            d.set.call(el, v);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.blur();
+          });
+        }, val);
+        // SETTLE, and deterministically: the commit canonicalises on React's
+        // NEXT render, so reading in the same task measures the raw text and
+        // reports a misread that no user can see ("-99.9999" paints
+        // "-99.999" -- but the field settles to "-100"). Stable across two
+        // frames, not a sleep, so it cannot pass by being slow enough.
+        await pv.waitForFunction(() => new Promise((res) => {
+          const read = () => [...document.querySelectorAll('[data-tour="matrix"] input')].map((e) => e.value).join('\u0001');
+          requestAnimationFrame(() => {
+            const a = read();
+            requestAnimationFrame(() => res(a === read() && a === window.__b21cPrev ? true : (window.__b21cPrev = a, false)));
+          });
+        }), null, { timeout: 10000 });
+        const r = await pv.evaluate(() => {
+          const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+          // The honest invariant for an UNFOCUSED field: what it PAINTS is what
+          // it HOLDS. (While focused the caret scrolls the text -- a plain
+          // <input> does the same with no app code -- so that state is not a
+          // misread.) Measure the painted substring, not just the box.
+          const painted = (el) => {
+            const cs = getComputedStyle(el);
+            const cv = document.createElement('canvas').getContext('2d');
+            cv.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+            let vis = '';
+            for (let i = 0; i < el.value.length; i++) {
+              const a = cv.measureText(el.value.slice(0, i)).width;
+              const b2 = cv.measureText(el.value.slice(0, i + 1)).width;
+              if (a >= el.scrollLeft - 0.5 && b2 <= el.scrollLeft + el.clientWidth + 0.5) vis += el.value[i];
+            }
+            return vis;
+          };
+          return {
+            n: ins.length,
+            held: ins.map((e) => e.value),
+            // `clipped` STAYS alongside `misread`: it is the browser's own
+            // verdict on the box, independent of the canvas font maths, so the
+            // two instruments cannot fail silently together.
+            clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
+            zero: ins.filter((e) => e.clientWidth === 0).length,
+            misread: ins.filter((e) => painted(e) !== e.value)
+              .map((e) => `holds ${JSON.stringify(e.value)} paints ${JSON.stringify(painted(e))}`),
+            doc: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+          };
+        });
+        // An empty set cannot vouch for anything: a renamed matrix, or a field
+        // the write never reached, must FAIL here rather than read as 0 misreads.
+        if (r.n !== 8 || r.held.some((h) => h === '') || r.zero > 0 || r.doc
+            || r.clipped > 0 || r.misread.length > 0) {
+          clipRows.push(`${vw}@${zoom}x "${val}": n=${r.n}, ${r.misread.length} misread (${r.misread[0] || '-'}), ${r.clipped} clipped, ${r.zero} zero-width${r.doc ? ', DOC SCROLLS' : ''}`);
+        }
+      }
+      await cdpv.send('Emulation.clearDeviceMetricsOverride');
+      await pv.close();
+    }
+    record(
+      `§102 payoff legibility: an unfocused field paints exactly what it holds, at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports)`,
+      clipRows.length === 0,
+      clipRows.slice(0, 6).join(' | ') || 'every field painted its whole value; none zero-width; the document never scrolled sideways',
+    );
+
+    // A browser MINIMUM FONT SIZE (an accessibility preference) raises the
+    // payoff text no matter what the CSS asks, so a px-sized box always loses;
+    // the `ch` floor scales with the font instead. `Page.setFontSizes` sets the
+    // DEFAULT size and leaves an explicitly-sized input alone -- it CANNOT fail
+    // for this reason -- so this drives Blink's real `minimumFontSize`, which
+    // needs its own browser instance.
+    let minFontRows = [];
+    for (const minFs of [15, 18, 24]) {
+      const fontBrowser = await chromium.launch({
+        args: ['--disable-dev-shm-usage', `--blink-settings=minimumFontSize=${minFs}`],
+      });
+      try {
+        for (const fw of [320, 1280]) {
+        const fctx = await fontBrowser.newContext({ viewport: { width: fw, height: 900 } });
+        const pf = await fctx.newPage();
+        await pf.goto(BASE, { waitUntil: 'networkidle' });
+        await dismissTourForSetup(pf, 'setup: clear the tour before the minimum-font-size payoff check', { timeout: 20000 });
+        const r = await pf.evaluate(() => {
+          const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+          const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+          ins.forEach((el) => {
+            d.set.call(el, '-99.999');
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          });
+          return {
+            n: ins.length,
+            // `getComputedStyle(undefined)` THROWS, so an empty set would crash
+            // the evaluate and fail as an uncaught error instead of reporting
+            // the count -- guard the read rather than the message.
+            font: ins.length ? parseFloat(getComputedStyle(ins[0]).fontSize) : 0,
+            clipped: ins.filter((e) => e.scrollWidth > e.clientWidth + 1).length,
+          };
+        });
+        // The control: if the preference did not actually raise the payoff font,
+        // this check proves nothing and must say so rather than pass.
+        if (r.n !== 8) minFontRows.push(`min-font ${minFs}px @${fw}: found ${r.n} payoff fields, expected 8`);
+        else if (!(r.font >= minFs - 0.5)) minFontRows.push(`min-font ${minFs}px @${fw}: payoff font is ${r.font}px -- the preference did not apply, so this check would be vacuous`);
+        else if (r.clipped > 0) minFontRows.push(`min-font ${minFs}px @${fw}: ${r.clipped}/${r.n} clipped at ${r.font}px`);
+        await fctx.close();
+        }
+      } finally {
+        await fontBrowser.close();
+      }
+    }
+    record(
+      '§102 payoff legibility: a real minimum-font-size preference does not clip a payoff (15/18/24px)',
+      minFontRows.length === 0,
+      minFontRows.join(' | ') || 'the preference raised the payoff font at every size and nothing clipped',
+    );
+
+    // SC 2.5.8: the payoff field IS its own pointer target -- clicking the cell
+    // padding around it does not focus it -- so the input box must clear 24px.
+    let targetRows = [];
+    for (const vw of [280, 320, 390, 430, 1024, 1280]) {
+      const pt = await newTrackedPage({ viewport: { width: vw, height: 900 } });
+      await pt.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(pt, 'setup: clear the tour before the payoff target-size check', { timeout: 20000 });
+      const r = await pt.evaluate(() => {
+        const ins = [...document.querySelectorAll('[data-tour="matrix"] input')];
+        const boxes = ins.map((e) => e.getBoundingClientRect());
+        return {
+          n: ins.length,
+          minH: boxes.length ? Math.min(...boxes.map((b) => b.height)) : 0,
+          minW: boxes.length ? Math.min(...boxes.map((b) => b.width)) : 0,
+        };
+      });
+      // `Math.min()` of an empty array is Infinity, which would pass silently --
+      // so the field COUNT is asserted first and 0 fields is a failure.
+      if (r.n !== 8) targetRows.push(`${vw}px: found ${r.n} payoff fields, expected 8`);
+      else if (!(r.minH >= 24) || !(r.minW >= 24)) targetRows.push(`${vw}px: smallest payoff target ${r.minW.toFixed(1)}x${r.minH.toFixed(1)}px`);
+      await pt.close();
+    }
+    record(
+      '§102 payoff fields meet the 24x24 target minimum (SC 2.5.8) in BOTH axes at every width',
+      targetRows.length === 0,
+      targetRows.join(' | ') || 'every payoff field clears 24x24 at all six widths',
+    );
+  });
+
+  // §101 is §100's tour phase, moved out: §100 had grown to five phases in one
+  // shard unit and sat under 1 s of the packer's headroom line. The tour is a
+  // different surface anyway -- a modal walked step by step, not a page
+  // measured at rest -- so it splits cleanly rather than being trimmed.
+  // §101 and §103 are ONE walker over two viewport lists, not two copies: the
+  // oracle that decides "reachable" must not be able to drift between them.
+  // Split because adding the landscape trio took §101 to 259,112ms against the
+  // 225,000ms per-section budget -- the same split §100 -> §102 took, and the
+  // budget is never raised to fit.
+  const walkTourAt = (sid, SIZES) => async () => {
+    // THE TOUR — the FIRST thing a first-time visitor sees, and the one surface
+    // every other section DISMISSES before measuring (`dismissTourForSetup`), so
+    // until now nothing measured it at all. It is not in `main`, it is
+    // `position: fixed`, and its controls escape VERTICALLY (below the fold), so
+    // neither a document-scroll check nor a horizontal bleed check can see it.
+    // Walked, not just rendered: a tour whose Next cannot be pressed is a dead
+    // end, not a layout blemish. On main Back sits at x=-132 with Next below the
+    // fold, and only 4 of 10 width/height pairs can be walked to the end.
+    const pt = await newTrackedPage({ viewport: { width: 390, height: 844 } });
+    const cdpT = await pt.context().newCDPSession(pt);
+    await pt.goto(BASE, { waitUntil: 'networkidle' });
+    // Heights as well as widths: the sheet's cap is a fraction of the VIEWPORT
+    // HEIGHT, so a short screen shrinks the card below its own footer. 844/3
+    // = 281 is a 280px phone at 300%; 320 is the shortest layout height a
+    // 400%-zoomed phone produces.
+    for (const [w, h, z] of SIZES) {
+      const lw = Math.round(w / z), lh = Math.round(h / z);
+      await cdpT.send('Emulation.setDeviceMetricsOverride', {
+        width: lw, height: lh, deviceScaleFactor: z, mobile: false });
+      // `reload` rather than a cold `goto`: the tour must restart at step 0 for
+      // each condition, but the app is already warm, which is most of the cost.
+      await pt.reload({ waitUntil: 'domcontentloaded' });
+      await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+      // `visible` is not `placed`: the card anchors itself to its step's target
+      // after layout, so the first frame can be measured mid-placement -- one
+      // run in six caught Back at [-94,370] in a 130x320 viewport and failed a
+      // condition that passes 5/5 on its own. Wait for the card's own rect to
+      // hold still, the same settle the §100 phases use.
+      const placed = await pt.waitForFunction(() => new Promise((resolve) => {
+        const sel = '.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl';
+        let last = '', stable = 0;
+        const tick = () => {
+          const c = document.querySelector(sel);
+          if (!c) { resolve(true); return; }             // no card: nothing to settle
+          const r = c.getBoundingClientRect();
+          const v = `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+          stable = v === last ? stable + 1 : 0; last = v;
+          if (stable >= 10) resolve(true); else requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }), null, { timeout: 15000 }).then(() => true).catch(() => false);
+      const at = `tour ${w}px@${z}x(${lw}x${lh})`;
+      record(`§${sid} ${at} fixture guard: the card finished placing before it was measured (a slow runner is not a layout failure)`,
+        placed, 'the card rect never held still for 10 frames within 15 s');
+      record(`§${sid} ${at} fixture guard: the tour is actually open, so the rows below measure a real card`,
+        await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible().catch(() => false));
+      // WCAG 2.1.1. When the card's body overflows it holds up to 958px of step
+      // text a keyboard user can reach no other way: Tab lands on Back/Next,
+      // which are already past it, and the scroll keys went to the page behind
+      // the modal. §100 declares this shape a failure but dismisses the tour
+      // before sweeping, so nothing measured it. Mutant: drop the tabIndex/role
+      // and `focusable` goes false at every condition where it scrolls.
+      record(`§${sid} ${at}: a tour body that scrolls is reachable from the keyboard`,
+        await pt.evaluate(() => {
+          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          if (!card) return false;
+          const box = [...card.querySelectorAll('div')].find((d) => /auto|scroll/.test(getComputedStyle(d).overflowY)
+            && d.scrollHeight > d.clientHeight + 1);
+          const fitting = [...card.querySelectorAll('div')].filter((d) => d.className.includes('min-h-0')
+            && !(d.scrollHeight > d.clientHeight + 1) && d.tabIndex >= 0);
+          if (fitting.length) return false;            // a tab stop that does nothing
+          if (!box) return true;                       // nothing overflows here
+          if (!(box.tabIndex >= 0)) return false;
+          box.focus();
+          return document.activeElement === box && !!(box.getAttribute('aria-label') || box.getAttribute('role'));
+        }),
+        await pt.evaluate(() => {
+          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          const box = card && [...card.querySelectorAll('div')].find((d) => /auto|scroll/.test(getComputedStyle(d).overflowY)
+            && d.scrollHeight > d.clientHeight + 1);
+          return box ? `hidden=${box.scrollHeight - box.clientHeight}px tabIndex=${box.tabIndex} role=${box.getAttribute('role')}` : 'no scrolling body';
+        }));
+      // The measuring probe must not be reachable. Assert what ACTUALLY holds it
+      // out -- `inert` -- and prove it empirically, because the attribute-only
+      // version of this row matched 0 elements and passed vacuously.
+      record(`§${sid} ${at}: the off-screen measuring probe stays out of the tab order`,
+        await pt.evaluate(() => {
+          const probe = document.querySelector('[data-tour-float-probe]');
+          if (!probe) return false;                   // the probe must exist to be checked
+          if (!(probe.hasAttribute('inert') && probe.getAttribute('aria-hidden') === 'true')) return false;
+          // Empirical: focusing anything inside an inert subtree is a no-op.
+          const target = probe.querySelector('button, [tabindex]');
+          if (!target) return true;
+          const before = document.activeElement;
+          target.focus();
+          const moved = document.activeElement === target;
+          if (moved && before instanceof HTMLElement) before.focus();
+          return !moved;
+        }),
+        await pt.evaluate(() => {
+          const probe = document.querySelector('[data-tour-float-probe]');
+          return probe
+            ? `inert=${probe.hasAttribute('inert')} aria-hidden=${probe.getAttribute('aria-hidden')} focusables=${probe.querySelectorAll('button,[tabindex]').length}`
+            : 'probe absent';
+        }));
+      // Walk every step. `steps` counts how far a user could actually get.
+      // The cap is ABOVE the tour's length (19 steps) so that reaching it means
+      // the tour never ended -- a loop that stops at 14 makes "walked to the
+      // end" unfalsifiable, which is what it was (ds-rev finding C).
+      let steps = 0; let closed = false; let lastCounter = null;
+      const unreachable = [];
+      for (; steps < 25; steps += 1) {
+        const bad = await pt.evaluate(() => {
+          const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+          const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          if (!card) return null;
+          const out = [];
+          for (const b of card.querySelectorAll('button')) {
+            const r = b.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) continue;
+            const nm = (b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 14);
+            // Inside a scroll box, "reachable" means the BOX is on screen and
+            // the control fits its width — the user scrolls to reach the rest.
+            const sc = b.closest('[class*="overflow-y-auto"]');
+            if (sc && sc !== b) {
+              const sr = sc.getBoundingClientRect();
+              if (r.left < sr.left - 0.5 || r.right > sr.right + 0.5
+                  || sr.top < -0.5 || sr.bottom > vh + 0.5 || sr.left < -0.5 || sr.right > vw + 0.5)
+                out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] outside its scroll box`);
+              // ...but the control that WALKS the tour may not hide below the
+              // box's clip WHEN ITS ROW COULD HAVE FITTED: a Next the user
+              // cannot see is the dead end this section exists to catch, and
+              // "it is in a scroll box" excused exactly that (60px below the
+              // clip at 844x390). Measured exception, not a softening: at
+              // 93x281 the footer WRAPS to 202px against a 126px port, so no
+              // layout shows it at rest -- there the sticky footer degrades to
+              // the flow, and wheel + 46 Tabs both still reach and fire it.
+              const row = b.closest('div.border-t') || b.parentElement;
+              const rowFits = row.getBoundingClientRect().height <= sc.clientHeight + 0.5;
+              if (/next|finish|explore/i.test(nm) && rowFits && r.bottom > sr.bottom + 0.5)
+                out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)}] clipped ${Math.round(r.bottom - sr.bottom)}px below its scroll box (row ${Math.round(row.getBoundingClientRect().height)}px fits port ${Math.round(sc.clientHeight)}px)`);
+              continue;
+            }
+            // With NO scroll box there is nothing to scroll, so a control
+            // hanging below the fold is simply gone. The old test only asked
+            // whether the TOP had passed `vh`, so a button whose top was on
+            // screen and whose bottom sat 49px past it read as reachable.
+            if (r.top >= vh - 1 || r.bottom <= 1 || r.left < -0.5 || r.right > vw + 0.5
+                || r.bottom > vh + 0.5 || r.top < -0.5)
+              out.push(`${nm}@[${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.bottom)}] outside the viewport (vh ${vh})`);
+          }
+          return out;
+        });
+        if (bad === null) { closed = true; break; }    // tour finished: every step was advanced
+        unreachable.push(...bad);
+        const next = pt.getByRole('button', { name: /^(next|explore on your own)/i }).first();
+        if (!(await next.count())) { unreachable.push(`step ${steps}: no Next control at all`); break; }
+        const before = await pt.evaluate(() => {
+          const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          const e = c && c.querySelector('.text-indigo-600');
+          return e ? e.textContent.trim() : null;
+        });
+        lastCounter = before ?? lastCounter;
+        // 10s, not 3s: a real click on this control takes 1.2s alone but 2.5s
+        // with four browsers running, and a CI shard is busier than that. The
+        // check is "can it be pressed", not "how fast" — too tight a budget
+        // reports a dead control that is merely a loaded machine, and a guard
+        // that cries wolf gets ignored.
+        const advanced = await next.click({ timeout: 10000 }).then(() => true).catch(() => false);
+        if (!advanced) { unreachable.push(`step ${steps}: Next could not be clicked`); break; }
+        // Wait on the counter actually changing, not on a fixed sleep: it is
+        // both the correct signal (the step really advanced) and cheaper than
+        // the fixed delay it replaces.
+        const moved = await pt.waitForFunction((prev) => {
+          const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          if (!c) return true;                                   // tour finished
+          const e = c.querySelector('.text-indigo-600');
+          return !e || e.textContent.trim() !== prev;
+        }, before, { timeout: 10000 }).then(() => true).catch(() => false);
+        // Swallowing this is what made the old check unfalsifiable: a Next that
+        // accepts the click but never advances still ran the loop to its cap.
+        if (!moved) { unreachable.push(`step ${steps}: Next was pressed but the tour did not advance from ${before}`); break; }
+      }
+      record(`§${sid} ${at}: every tour control stays inside the viewport (or inside an on-screen scroll box)`,
+        unreachable.length === 0, unreachable.slice(0, 4).join(' | '));
+      // The EXIT REASON, not a step count: the tour is walked to the end only if
+      // it CLOSED (the last Next dismissed it) after its final counter. Anything
+      // else -- the cap, a dead Next, a Next that does not advance -- is a fail.
+      record(`§${sid} ${at}: the tour can be walked to its END (the last Next closes it), not just partway`,
+        closed && lastCounter === '19 / 19' && steps === 19,
+        `closed=${closed} steps=${steps} lastCounter=${lastCounter}`);
+    }
+    await cdpT.send('Emulation.clearDeviceMetricsOverride');
+    await pt.close();
+
+  };
+
+  // The `async () => ...` shape is load-bearing: e2esharding.test.ts PARSES it
+  // to enumerate the sections, so a section passed as a bare callback registers
+  // nowhere and silently never runs in CI.
+  section('101', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
+    await walkTourAt('101', [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]])();
+  });
+
+  // LANDSCAPE is its own orientation class, not more widths: a short, wide
+  // viewport is where the footer hid below the card's clip (60px at 844x390)
+  // while every portrait size passed.
+  section('103', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide', async () => {
+    await walkTourAt('103', [[844, 390, 1], [667, 375, 1], [740, 360, 1]])();
+
+    // Promoted out of _gen/ (Amendment 2): the invariant the landscape fix was
+    // CHOSEN by, stated so neither half can rot silently. Whenever the footer
+    // row fits the scroll port, the walking control is fully visible at rest;
+    // when it cannot fit (93x281 wraps it to 202px against a 126px port) the
+    // box must still be a tabbable region that scrolls to it. Reading both
+    // themes matters: the app themes from localStorage, NOT prefers-color-
+    // scheme, so a `colorScheme` context would measure light twice.
+    for (const dark of [false, true]) {
+      // One size per CLASS, not per viewport: 844x390 is the landscape case the
+      // walker above already re-walks (this asserts the resting geometry it
+      // cannot), 280x844@3x is the only case where the footer CANNOT fit its
+      // port, and 390x844@2x is a fits-but-was-clipped case. More sizes here
+      // buy nothing and cost the section its budget headroom.
+      for (const [w, h, z] of [[844, 390, 1], [280, 844, 3], [390, 844, 2]]) {
+        const lw = Math.round(w / z), lh = Math.round(h / z);
+        const pf = await newTrackedPage({ viewport: { width: lw, height: lh } });
+        await pf.addInitScript((d) => {
+          try { localStorage.setItem('nash_sim_theme', d ? 'dark' : 'light'); } catch { /* ignore */ }
+        }, dark);
+        const cdpF = await pf.context().newCDPSession(pf);
+        await cdpF.send('Emulation.setDeviceMetricsOverride', {
+          width: lw, height: lh, deviceScaleFactor: z, mobile: false });
+        await pf.goto(BASE, { waitUntil: 'networkidle' });
+        await pf.waitForTimeout(1200);
+        const bad = await pf.evaluate(() => {
+          const btn = [...document.querySelectorAll('button')]
+            .find((x) => /^(Next|Explore on your own)/.test((x.textContent || '').trim()));
+          if (!btn) return ['no Next/Explore control at all'];
+          const footer = btn.closest('div.border-t');
+          if (!footer) return ['the walking control is not inside the card footer'];
+          let sc = footer.parentElement;
+          while (sc && sc !== document.body) {
+            const cs = getComputedStyle(sc);
+            if (/auto|scroll/.test(cs.overflowY) && sc.scrollHeight > sc.clientHeight + 1) break;
+            sc = sc.parentElement;
+          }
+          const out = [];
+          const br = btn.getBoundingClientRect();
+          const card = btn.closest('.pointer-events-auto') || footer.parentElement;
+          if (!sc || sc === document.body) {
+            if (br.top < -0.5 || br.bottom > innerHeight + 0.5) out.push(`no scroll box and the control is outside the viewport [${Math.round(br.top)},${Math.round(br.bottom)}] vh ${innerHeight}`);
+            // With nothing to scroll, the caption must ALREADY be on screen.
+            // The early return used to skip it entirely (reviewer F3).
+            const cap0 = card.querySelector('p[aria-live="polite"]');
+            if (!cap0) out.push('the step caption (p[aria-live="polite"]) was not found at all');
+            else if (Math.min(cap0.getBoundingClientRect().bottom, innerHeight)
+                     - Math.max(cap0.getBoundingClientRect().top, 0) <= 0)
+              out.push('no scroll box and no part of the step caption is on screen');
+            return out;
+          }
+          const sr = sc.getBoundingClientRect();
+          const fr = footer.getBoundingClientRect();
+          const fits = fr.height <= sc.clientHeight + 0.5;
+          const visible = br.top >= sr.top - 0.5 && br.bottom <= sr.bottom + 0.5
+            && br.top >= -0.5 && br.bottom <= innerHeight + 0.5;
+          if (fits && !visible) out.push(`footer ${Math.round(fr.height)}px fits port ${Math.round(sc.clientHeight)}px but the control is not fully visible`);
+          if (!fits) {
+            const before = sc.scrollTop;
+            sc.scrollTop = sc.scrollHeight;
+            const b2 = btn.getBoundingClientRect(), s2 = sc.getBoundingClientRect();
+            // A control TALLER than the port can never sit wholly inside it --
+            // at minimumFontSize 24 the button is 108px against a 106px port,
+            // and 102px of it shows. Neither containment nor any percentage is
+            // the real question; "can a click land on it" is, so ask the
+            // browser: hit-test the centre of the visible slice. No threshold
+            // to justify, and it is the thing the user actually needs.
+            const top = Math.max(b2.top, s2.top, 0);
+            const bottom = Math.min(b2.bottom, s2.bottom, innerHeight);
+            // A 1px sliver would satisfy elementFromPoint while being
+            // unusable, so the slice must also clear a real target size: 24px
+            // (SC 2.5.8), or the whole port when the port is smaller.
+            // Calibrated, not guessed -- the smallest slice this regime
+            // actually produces is 50px (minFont 0/16/20/24 x 4 sizes).
+            const MIN_SLICE = Math.min(24, Math.round(s2.height));
+            const hits = bottom - top >= MIN_SLICE && (() => {
+              const q = document.elementFromPoint(
+                Math.round(b2.left + b2.width / 2), Math.round((top + bottom) / 2));
+              return !!(q && (q === btn || btn.contains(q)));
+            })();
+            sc.scrollTop = before;
+            if (!(hits && sc.tabIndex === 0 && sc.getAttribute('role') === 'region'))
+              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and no usable click reaches the control (visibleSlice=${Math.round(bottom - top)}px of ${Math.round(b2.height)}px, need >= ${MIN_SLICE}px, hits=${hits}, tabIndex=${sc.tabIndex}, role=${sc.getAttribute('role')})`);
+          }
+          // The caption gets the same bar, SCANNED across the scroll range --
+          // sampling only scrollTop 0 and max called six reachable captions
+          // unreachable (at 93x281 it is below the fold at 0 and has scrolled
+          // clean PAST the port at max).
+          // An ABSENT caption is a finding, not a skip: `if (cap && ...)`
+          // bypassed the scan while the pass message still claimed "caption
+          // reachable" (reviewer F1) -- the same vacuity class this file has
+          // already been caught by three times.
+          const cap = card.querySelector('p[aria-live="polite"]');
+          if (!cap) out.push('the step caption (p[aria-live="polite"]) was not found at all');
+          else if (!(cap.textContent || '').trim()) out.push('the step caption is present but empty');
+          else {
+            const before = sc.scrollTop;
+            const max = sc.scrollHeight - sc.clientHeight;
+            let best = 0;
+            for (let i = 0; i <= 40; i++) {
+              sc.scrollTop = Math.round((max * i) / 40);
+              const c = cap.getBoundingClientRect(), s3 = sc.getBoundingClientRect();
+              best = Math.max(best, Math.min(c.bottom, s3.bottom, innerHeight) - Math.max(c.top, s3.top, 0));
+            }
+            sc.scrollTop = before;
+            if (best <= 0) out.push('the step caption has text but no scroll position reveals any of it');
+          }
+          return out;
+        });
+        record(`§103 ${dark ? 'dark' : 'light'} ${w}x${h}@${z}x: the walking control is visible whenever its row fits, and scroll-reachable when it cannot`,
+          bad.length === 0, bad.join(' | ') || 'control visible or scroll-reachable; caption reachable');
+        await cdpF.send('Emulation.clearDeviceMetricsOverride');
+        await pf.close();
+      }
+    }
   });
 
 

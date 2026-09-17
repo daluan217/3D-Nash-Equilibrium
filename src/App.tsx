@@ -223,13 +223,55 @@ function clampLabelBeforeInput(e: React.FormEvent<HTMLInputElement>): void {
   }
 }
 
-// Typeset LaTeX inline via KaTeX (self-hosted, works offline)
+/**
+ * True while an element's content is wider than its box.
+ *
+ * Drives the ONE rule both scroll boxes below need: a region that scrolls has
+ * to be keyboard-operable (WCAG 2.1.1), and a region that fits must not become
+ * a tab stop that does nothing. Measured, not guessed from a media query, so it
+ * stays correct at any zoom.
+ */
+function useOverflowsX(deps: unknown) {
+  const ref = useRef<HTMLElement | null>(null);
+  const [scrollable, setScrollable] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const sync = () => setScrollable(el.scrollWidth > el.clientWidth + 1);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [deps]);
+  return { ref, scrollable };
+}
+
+// Typeset LaTeX inline via KaTeX (self-hosted, works offline).
+// KaTeX sets `white-space: nowrap`, so an expression is one unbreakable box: at
+// narrow widths / high zoom it pushed the DOCUMENT wider than the viewport,
+// which fails WCAG 1.4.10 reflow. Scrolling inside its own box does not.
 function MathTex({ tex, className }: { tex: string; className?: string }) {
   const html = useMemo(
     () => katex.renderToString(tex, { throwOnError: false }),
     [tex]
   );
-  return <span className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  // A box that scrolls must be operable from the keyboard (WCAG 2.1.1) — but a
+  // box that fits must NOT become a tab stop, or the desktop tab order grows 12
+  // stops that do nothing. So the stop tracks the measured overflow.
+  //
+  // Deliberately NO aria-label: KaTeX already renders a MathML copy that is the
+  // real accessible path, and labelling the wrapper REPLACED it — the measured
+  // accessible name became the literal string "\mathbb{E}[A]".
+  const { ref, scrollable } = useOverflowsX(html);
+  return (
+    <span
+      ref={ref as React.RefObject<HTMLSpanElement>}
+      tabIndex={scrollable ? 0 : undefined}
+      role={scrollable ? 'region' : undefined}
+      className={`inline-block min-w-0 max-w-full overflow-x-auto align-bottom focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded${className ? ` ${className}` : ''}`}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 }
 
 /**
@@ -4076,6 +4118,10 @@ export default function App() {
     col2: scenarioForReport?.col2 || 'Col 2',
   }), [scenarioForReport]);
 
+  // The matrix keeps a usable width and scrolls in its own box at narrow
+  // widths; the tab stop exists only while it actually scrolls.
+  const matrixScroll = useOverflowsX(activeLabels);
+
   /**
    * Terms ColorCoded highlights in AI/user text, per player. Inherits
    * scenarioForReport's matches-the-matrix gate the same way activeLabels
@@ -5229,7 +5275,7 @@ export default function App() {
       overlayClassName="fixed inset-0 z-[65] flex items-center justify-center p-4 sm:p-8 bg-slate-900/60 backdrop-blur-md select-none"
       panelClassName="w-full max-w-5xl h-[90vh] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl flex flex-col gap-3 p-5"
     >
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-y-1 gap-2">
           <span className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
             <Terminal className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
             Simulation Log
@@ -5434,7 +5480,7 @@ export default function App() {
             </div>
 
             {/* User Custom Saved Games Segment */}
-            <div className="flex items-center justify-between text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 text-slate-800 dark:text-slate-200 font-semibold text-xs uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pt-1.5 pb-2">
               <div className="flex items-center gap-2">
                 <Award className="w-4 h-4 text-accent-500" />
                 Custom Game Presets
@@ -5517,7 +5563,7 @@ export default function App() {
 
           {/* Payoff Matrix Editor Block */}
           <div className="bg-slate-50 dark:bg-slate-950/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm flex flex-col gap-4">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200 font-semibold text-sm">
                 <Sliders className="w-4 h-4 text-player-b-500" />
                 <span>
@@ -5556,14 +5602,29 @@ export default function App() {
                 whole grid — and the page — 235px past a 320px viewport
                 (WCAG 1.4.10). `minmax(0, 1fr)` matches what the per-cell
                 payoff-pair grid below already does correctly. */}
-            <div data-tour="matrix" className="grid grid-cols-[minmax(0,72px)_minmax(0,1fr)_minmax(0,1fr)] gap-3 text-center items-center">
+            {/* A 2x2 payoff matrix has an irreducible width: four editable
+                numbers plus row and column labels. Below ~200px of layout
+                viewport (a 390px phone at 200% browser zoom) there is no
+                honest side-by-side rendering — squeezing it gave 7.5px-wide
+                inputs. WCAG 1.4.10 exempts content that needs a
+                two-dimensional layout, so the matrix keeps a usable width and
+                scrolls INSIDE this box; the document still does not. */}
+            <div
+              ref={matrixScroll.ref as React.RefObject<HTMLDivElement>}
+              data-matrix-scroll
+              tabIndex={matrixScroll.scrollable ? 0 : undefined}
+              role={matrixScroll.scrollable ? 'region' : undefined}
+              aria-label={matrixScroll.scrollable ? 'Payoff matrix, scrollable' : undefined}
+              className="overflow-x-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-300 dark:focus-visible:ring-accent-700 rounded-xl"
+            >
+            <div data-tour="matrix" className="@container/matrix grid grid-cols-[minmax(72px,72px)_minmax(72px,1fr)_minmax(72px,1fr)] gap-3 text-center items-center">
               <div className="text-xs font-bold text-muted dark:text-muted-dark pr-2 text-left">Tactics</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col1}>B: {activeLabels.col1}</div>
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-b-600 dark:text-player-b-400 break-words hyphens-auto" title={activeLabels.col2}>B: {activeLabels.col2}</div>
 
               {/* Row 1 inputs */}
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row1}>A: {activeLabels.row1}</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5573,9 +5634,9 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a11')}
                   onBlur={() => handlePayoffBlur('a11')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
-                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5585,10 +5646,10 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b11')}
                   onBlur={() => handlePayoffBlur('b11')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5598,9 +5659,9 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a12')}
                   onBlur={() => handlePayoffBlur('a12')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
-                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5610,13 +5671,13 @@ export default function App() {
                   aria-label={`${activeLabels.row1 || 'Row 1'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b12')}
                   onBlur={() => handlePayoffBlur('b12')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
 
               {/* Row 2 inputs */}
               <div className="text-xs max-[380px]:text-[10.5px] font-bold text-player-a-500 text-left pr-2 break-words hyphens-auto" title={activeLabels.row2}>A: {activeLabels.row2}</div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5626,9 +5687,9 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a21')}
                   onBlur={() => handlePayoffBlur('a21')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
-                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5638,10 +5699,10 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col1 || 'Col 1'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b21')}
                   onBlur={() => handlePayoffBlur('b21')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] @max-[28rem]/matrix:grid-cols-1 items-center border border-slate-200 dark:border-slate-700 rounded-xl p-1.5 @max-[28rem]/matrix:p-1 bg-white dark:bg-slate-950 focus-within:ring-2 focus-within:ring-accent-100/50 dark:focus-within:ring-slate-800 focus-within:border-slate-300 dark:focus-within:border-slate-700 w-full min-w-0">
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5651,9 +5712,9 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player A payoff`}
                   onFocus={() => handlePayoffFocus('a22')}
                   onBlur={() => handlePayoffBlur('a22')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-a-500 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
-                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1">,</span>
+                <span className="text-slate-300 dark:text-slate-600 shrink-0 text-center select-none font-medium px-1 @max-[28rem]/matrix:hidden">,</span>
                 <input
                   type="text"
                   inputMode="decimal"
@@ -5663,10 +5724,11 @@ export default function App() {
                   aria-label={`${activeLabels.row2 || 'Row 2'}, ${activeLabels.col2 || 'Col 2'}, Player B payoff`}
                   onFocus={() => handlePayoffFocus('b22')}
                   onBlur={() => handlePayoffBlur('b22')}
-                  className="w-full min-w-0 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm"
+                  className="w-full min-w-[7ch] min-h-6 text-center font-mono font-medium text-player-b-600 dark:text-player-b-400 bg-transparent border-none outline-none text-xs sm:text-sm @max-[15.5rem]/matrix:text-[13px]"
                 />
               </div>
             </div>
+          </div>
           </div>
 
           {/* Expected math formulations */}
@@ -5681,15 +5743,11 @@ export default function App() {
             <div className="flex flex-col gap-2 text-sm">
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[A]" className="text-player-a-600 dark:text-player-a-400" />
-                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
-                  <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
-                </span>
+                <MathTex tex={`= ${eqAStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
                 <MathTex tex="\mathbb{E}[B]" className="text-player-b-600 dark:text-player-b-400" />
-                <span className="inline-block min-w-0 max-w-full overflow-x-auto">
-                  <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
-                </span>
+                <MathTex tex={`= ${eqBStr}`} className="text-slate-700 dark:text-slate-200" />
               </div>
             </div>
             {/* RED-APP-21/004: two clauses as two inline nodes in a wrapping row, not one
@@ -5713,7 +5771,18 @@ export default function App() {
                 fix — a WCAG 2.5.3 label-in-name mismatch. Removed; the real
                 <label> now supplies the accessible name, matching what is
                 on screen exactly. */}
-            <div className="grid grid-cols-2 gap-4">
+            {/* Still exactly two columns — but each may STACK rather than clip.
+                The field spends 10px of left padding and 40px on the stepper's
+                gutter, so a 5-character value (56px rendered) needs a 106px
+                cell; two 74px cells at a 260px layout viewport (390px at 150%
+                zoom) showed 2 of its 5 characters. `auto-fit` was the wrong
+                primitive here: it invented empty 0px tracks and dropped the
+                pair to one column at widths where it had always fitted. This
+                keeps the 2-column track list and only collapses when a 7rem
+                cell genuinely does not fit — below a 324px viewport, measured
+                by interpolating the real cell widths (260px->74, 320px->104,
+                390px->139), not guessed from a device size. */}
+            <div className="grid grid-cols-2 max-[324px]:grid-cols-1 gap-4">
               <div>
                 <label htmlFor={labelFor('coords', 'x0')} className="block text-xs text-player-a-500 font-semibold mb-1">Row Start Point (x₀)</label>
                 <div className="relative">
@@ -6178,7 +6247,7 @@ export default function App() {
                 cards clipped "0.217" to "0". Let the COLUMN COUNT respond instead:
                 auto-fit drops to one column when two no longer fit, so nothing overflows,
                 nothing is clipped, and labels still wrap at word boundaries. */}
-            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(7rem,1fr))] md:grid-cols-4">
+            <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(7rem,100%),1fr))] md:grid-cols-4">
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <span className="text-xs text-player-a-500 font-bold uppercase block tracking-wider">
                   x: P(A playing Row 1)
@@ -6311,13 +6380,13 @@ export default function App() {
                       <span className="font-sans font-semibold text-player-a-600 dark:text-player-a-400">
                         {lines.a.indifferent ? 'A indifferent:' : 'A strictly prefers:'}
                       </span>
-                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.a.tex} /></span>
+                      <MathTex tex={lines.a.tex} />
                     </div>
                     <div className="flex flex-wrap items-baseline gap-x-2">
                       <span className="font-sans font-semibold text-player-b-600 dark:text-player-b-400">
                         {lines.b.indifferent ? 'B indifferent:' : 'B strictly prefers:'}
                       </span>
-                      <span className="inline-block min-w-0 max-w-full overflow-x-auto"><MathTex tex={lines.b.tex} /></span>
+                      <MathTex tex={lines.b.tex} />
                     </div>
                     <div className="text-xs text-muted dark:text-muted-dark mt-2 font-sans font-medium">
                       {/* The COUNT is real (the regret branch increments
@@ -6691,7 +6760,7 @@ export default function App() {
         ariaLabel="Account"
         fallbackSelector='[data-focus-fallback="account"] button, [data-focus-fallback="account"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <User className="w-4 h-4" />
@@ -7039,7 +7108,7 @@ export default function App() {
         ariaLabel="Edit saved game"
         fallbackSelector='[data-focus-fallback="saved-games"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-accent-500" />
                 <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Edit Game</h3>
@@ -7289,7 +7358,7 @@ export default function App() {
         ariaLabel="Save custom game"
         fallbackSelector='[data-focus-fallback="save-preset"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <Award className="w-4 h-4" />
@@ -7674,7 +7743,7 @@ export default function App() {
         ariaLabel="Send feedback"
         fallbackSelector='[data-focus-fallback="feedback"]'
       >
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <span className="p-1.5 bg-accent-50 dark:bg-accent-950/40 text-accent-600 rounded-lg">
                   <MessageSquare className="w-4 h-4" />

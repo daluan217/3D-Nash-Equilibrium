@@ -426,6 +426,16 @@ jobs:
         env:
           CANCELLATION_TEST_PORT: '4800'
 
+      # A failed verification email returned the mail provider's own text --
+      # host, 535-5.7.8 credential code, per-attempt message id -- straight into
+      # the Account modal, and told the visitor to check "your server" for an
+      # operator-side misconfiguration. SMTP_HOST points at a closed port here,
+      # so the send always fails and the 500 branch is always the one measured.
+      - name: A failed verification email leaks no SMTP diagnostics to the browser
+        run: node src/integration/register-smtp-leak.test.mjs
+        env:
+          RSL_TEST_PORT: '3187'
+
       # RED-REGEN-7/001: two INDEPENDENT PATCH /api/games/:id requests (two
       # tabs/devices), each naming only the colour-term field it changed,
       # each naming the same real-world phrase in a different spelling
@@ -443,7 +453,7 @@ jobs:
           COLORTERMS_RACE_PORT: '3182'
 
   e2e_smoke:
-    name: e2e smoke (${{ matrix.shard }}/32)
+    name: e2e smoke (${{ matrix.shard }}/35)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: build
@@ -452,7 +462,7 @@ jobs:
       # GitHub's "Re-run failed jobs" then re-runs only the failed matrix child.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
     steps:
       - uses: actions/checkout@v5
 
@@ -520,7 +530,7 @@ jobs:
             echo "smoke_outcome=pass" >> "$GITHUB_OUTPUT"
           fi
         env:
-          E2E_SHARD: ${{ matrix.shard }}/32
+          E2E_SHARD: ${{ matrix.shard }}/35
           E2E_PORT: 309${{ matrix.shard }}
           E2E_BASE: http://localhost:309${{ matrix.shard }}
 
@@ -545,8 +555,8 @@ jobs:
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-32_section-*-attempt-*.png
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-32_section-*-attempt-*.html
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-35_section-*-attempt-*.png
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-35_section-*-attempt-*.html
             /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.png
             /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log

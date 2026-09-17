@@ -133,8 +133,23 @@ function openingTagAt(src: string, refIdx: number): string {
   const matrixGridClassMatch = app.slice(matrixGridIdx, matrixGridIdx + 300).match(/className="([^"]*)"/);
   ok(matrixGridClassMatch !== null, 'the outer matrix grid element must carry a className attribute');
   const matrixGridClasses = matrixGridClassMatch![1];
-  ok(matrixGridClasses.includes('grid-cols-[minmax(0,72px)_'),
-    `the outer matrix grid's label column must keep its minmax(0,72px) cap, got: ${JSON.stringify(matrixGridClasses)}`);
+  ok(/grid-cols-\[minmax\((?:0|72px),72px\)_/.test(matrixGridClasses),
+    `the outer matrix grid's label column must keep its 72px cap, got: ${JSON.stringify(matrixGridClasses)}`);
+  // The value tracks must keep a FLOOR: `minmax(0,1fr)` let them shrink to
+  // literally 0px below a ~261px layout viewport (eight empty pills), which the
+  // §100 oracles then skipped because they treated a 0px box as "not rendered".
+  const valueFloor = matrixGridClasses.match(/_minmax\((\d+)px,1fr\)_minmax\((\d+)px,1fr\)\]/);
+  ok(valueFloor !== null,
+    `the payoff value columns must carry a pixel floor, not minmax(0,1fr), got: ${JSON.stringify(matrixGridClasses)}`);
+  // ...and a CEILING. Raising the floor to fit the widest legal payoff ("-100"
+  // needs 110px) buys nothing: measured, 99px is where 390px first grows an
+  // INNER horizontal scrollbar it does not have today, and 113px does the same
+  // at 1024px. Clipping the tail of a 4-char value is pre-existing and equal to
+  // base at every width where these floors are inert; a scrollbar would be new.
+  for (const f of [valueFloor![1], valueFloor![2]]) {
+    ok(Number(f) <= 98,
+      `the payoff value floor must stay <= 98px (99px adds an inner scrollbar at a 390px viewport), got: ${f}px`);
+  }
   ok(!/max-\[[^\]]*\]:grid-cols-/.test(matrixGridClasses),
     `the outer matrix grid must not carry a narrow-viewport grid-cols override anywhere in its class list, `
     + `regardless of position relative to the base class (measured to have no effect; do not reintroduce it) -- `

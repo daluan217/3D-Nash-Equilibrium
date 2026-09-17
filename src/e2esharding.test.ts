@@ -34,20 +34,31 @@ const definitions: { id: string; name: string; shard?: number }[] = [...smoke.ma
 assert(!/section\('[^']+',\s*'[^']*',\s*\d+,\s*async/.test(smoke),
   'sections no longer name a shard by hand — selection.js packs them from shard-timings.json');
 
+// The parse above is the ONLY census of the suite, so a section written in a
+// shape it cannot see registers nowhere and never runs in CI -- green, and
+// protecting nothing. Count `section(` CALLS independently of the pattern that
+// reads them: the two numbers must agree. (§101/§103 were briefly passed a
+// pre-built callback, `section('103', '...', walkTourAt(...))`, which parsed to
+// zero sections and would have shipped the landscape guard switched off.)
+const sectionCalls = (smoke.match(/^\s*section\('/gm) || []).length;
+assert.strictEqual(definitions.length, sectionCalls,
+  `${sectionCalls} section() calls but only ${definitions.length} parsed — a section is written in a shape `
+  + 'the enumerator cannot see (it must be `section(\'id\', \'name\', async () => ...)`), so it would never run in CI');
+
 const expectedIds = [
   '1', '2', '3', '4', '5', '6', '6b', '7', '8', '9', '10', '11', '12',
   '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23',
   '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
   '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '50',
   '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
-  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96', '97',
+  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96', '100', '102', '101', '103', '97',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 32, 'the smoke suite is split into 32 CI shards (test.yml matrix must match) '
+assert.strictEqual(SHARD_COUNT, 35, 'the smoke suite is split into 35 CI shards (test.yml matrix must match) '
   + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
   + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
   + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
@@ -57,8 +68,13 @@ assert.strictEqual(SHARD_COUNT, 32, 'the smoke suite is split into 32 CI shards 
   + 'struct19-app 2026-09-08: correcting SS90 from a stale 56,000ms to its measured 88,551ms put five '
   + 'multi-section shards back over the line (worst 200,704ms); 31 cleared them (worst 195,221ms) before '
   + 'RED-REGEN-20/001 added measured §91 (175,615ms), which requires 32. '
-  + 'The 91 split into 91/91b/91c (5b21f1f) removed the over-budget section; 32 keeps every '
-  + 'multi-section shard at or under the line.');
+  + 'The 91 split into 91/91b/91c (5b21f1f) removed the over-budget section; 32 kept every '
+  + 'multi-section shard at or under the line. app-loop-21b 2026-09-15: the same two-branch shape '
+  + 'again -- merging main\'s \u00a797 (regen) with this branch\'s \u00a7100/\u00a7101 (reflow) put 5 '
+  + 'multi-section shards back over the line, worst shard 8 = \u00a742+\u00a794 at 201s, including the '
+  + 'long-standing \u00a77+\u00a742 = 200,097ms pair that sits 97ms over on its own; 33 clears every one '
+  + '(simulated over the merged table before landing). Re-measuring \u00a793/\u00a794/\u00a7100/\u00a7101 on the final tree (\u00a7100 110839 -> 165141) put shard 9 = \u00a77+\u00a742 back on the line at 200,097ms; 34 clears it. '
+  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; the table carries 125,000/180,000. Adding three LANDSCAPE conditions to \u00a7101 (the orientation that hid the tour footer) took it to a MEASURED 259,112ms -- over the same per-section budget -- so the trio split out as \u00a7103 behind one shared walker; re-measured alone, \u00a7101 is 104,486ms and \u00a7103 65,779-79,621ms (tabled at 120,000/200,000). 35 is the MINIMUM that clears the 200 s multi-section line: 34 puts four multi-section shards over it (9 = \u00a770+\u00a784 at 205 s, 10 at 203 s, 33 at 205 s, 34 at 204 s). 36 also clears it and leaves no shard empty -- it is simply not needed, and test.yml pins the matrix to whatever this constant says.');
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
@@ -143,7 +159,7 @@ assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'th
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
 // A shard selector returns exactly the packed assignment's members.
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: '1/32' }).selected.map(({ id }) => id);
+const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: `1/${SHARD_COUNT}` }).selected.map(({ id }) => id);
 assert.deepStrictEqual(shard1Now, definitions.filter((d) => d.shard === 1).map(({ id }) => id),
   'E2E_SHARD must select exactly the sections the packing assigned to that shard');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
@@ -154,7 +170,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '   ' }), /E2E
   'a whitespace-only shard must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2E_SECTION must not be blank/,
   'a whitespace-only section list must not silently become an unset selector');
-assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: '1/32', E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
+assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: `1/${SHARD_COUNT}`, E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
 assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
