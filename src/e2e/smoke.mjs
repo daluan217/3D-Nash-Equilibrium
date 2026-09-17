@@ -11443,8 +11443,16 @@ const suggestedScenario = {
           }
           const out = [];
           const br = btn.getBoundingClientRect();
+          const card = btn.closest('.pointer-events-auto') || footer.parentElement;
           if (!sc || sc === document.body) {
             if (br.top < -0.5 || br.bottom > innerHeight + 0.5) out.push(`no scroll box and the control is outside the viewport [${Math.round(br.top)},${Math.round(br.bottom)}] vh ${innerHeight}`);
+            // With nothing to scroll, the caption must ALREADY be on screen.
+            // The early return used to skip it entirely (reviewer F3).
+            const cap0 = card.querySelector('p[aria-live="polite"]');
+            if (!cap0) out.push('the step caption (p[aria-live="polite"]) was not found at all');
+            else if (Math.min(cap0.getBoundingClientRect().bottom, innerHeight)
+                     - Math.max(cap0.getBoundingClientRect().top, 0) <= 0)
+              out.push('no scroll box and no part of the step caption is on screen');
             return out;
           }
           const sr = sc.getBoundingClientRect();
@@ -11465,21 +11473,33 @@ const suggestedScenario = {
             // to justify, and it is the thing the user actually needs.
             const top = Math.max(b2.top, s2.top, 0);
             const bottom = Math.min(b2.bottom, s2.bottom, innerHeight);
-            const hits = bottom - top > 0 && (() => {
+            // A 1px sliver would satisfy elementFromPoint while being
+            // unusable, so the slice must also clear a real target size: 24px
+            // (SC 2.5.8), or the whole port when the port is smaller.
+            // Calibrated, not guessed -- the smallest slice this regime
+            // actually produces is 50px (minFont 0/16/20/24 x 4 sizes).
+            const MIN_SLICE = Math.min(24, Math.round(s2.height));
+            const hits = bottom - top >= MIN_SLICE && (() => {
               const q = document.elementFromPoint(
                 Math.round(b2.left + b2.width / 2), Math.round((top + bottom) / 2));
               return !!(q && (q === btn || btn.contains(q)));
             })();
             sc.scrollTop = before;
             if (!(hits && sc.tabIndex === 0 && sc.getAttribute('role') === 'region'))
-              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and no click reaches the control (visibleSlice=${Math.round(bottom - top)}px of ${Math.round(b2.height)}px, hits=${hits}, tabIndex=${sc.tabIndex}, role=${sc.getAttribute('role')})`);
+              out.push(`footer ${Math.round(fr.height)}px exceeds port ${Math.round(sc.clientHeight)}px and no usable click reaches the control (visibleSlice=${Math.round(bottom - top)}px of ${Math.round(b2.height)}px, need >= ${MIN_SLICE}px, hits=${hits}, tabIndex=${sc.tabIndex}, role=${sc.getAttribute('role')})`);
           }
           // The caption gets the same bar, SCANNED across the scroll range --
           // sampling only scrollTop 0 and max called six reachable captions
           // unreachable (at 93x281 it is below the fold at 0 and has scrolled
           // clean PAST the port at max).
-          const cap = (btn.closest('.pointer-events-auto') || footer.parentElement).querySelector('p[aria-live="polite"]');
-          if (cap && (cap.textContent || '').trim()) {
+          // An ABSENT caption is a finding, not a skip: `if (cap && ...)`
+          // bypassed the scan while the pass message still claimed "caption
+          // reachable" (reviewer F1) -- the same vacuity class this file has
+          // already been caught by three times.
+          const cap = card.querySelector('p[aria-live="polite"]');
+          if (!cap) out.push('the step caption (p[aria-live="polite"]) was not found at all');
+          else if (!(cap.textContent || '').trim()) out.push('the step caption is present but empty');
+          else {
             const before = sc.scrollTop;
             const max = sc.scrollHeight - sc.clientHeight;
             let best = 0;
