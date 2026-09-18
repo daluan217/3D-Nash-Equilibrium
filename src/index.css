@@ -441,22 +441,43 @@ input.no-native-spinner {
 }
 
 /* Plot fullscreen (PlotlyView): the native Fullscreen API on the plot
- * wrapper. ::backdrop can't be reached from Tailwind utilities, so the
- * fullscreen-painted background is set here — matching the plot's own
- * surface in each theme so no theme flash shows around the edges. */
+ * wrapper. Match theme-specific backgrounds on container and ::backdrop to
+ * prevent flashes during OS window transitions. */
+[data-tour="plot"] {
+  overflow: hidden;
+}
+
 [data-tour="plot"]:fullscreen {
   border: none;
   border-radius: 0;
   width: 100vw;
   height: 100vh;
   padding: 0.5rem;
+  background-color: var(--color-white);
 }
-[data-tour="plot"]:fullscreen [data-plot-root] { height: 100%; }
-[data-tour="plot"]:fullscreen::backdrop { background: transparent; }
 
-/* Fullscreen only: the legend panel (glyphs + text) reads small on a
- * full-viewport plot. Scale just Plotly's legend <g> — nothing on the
- * scene itself changes. */
+html.dark [data-tour="plot"]:fullscreen {
+  background-color: #000000;
+}
+
+[data-tour="plot"]:fullscreen::backdrop {
+  background-color: var(--color-white);
+}
+
+html.dark [data-tour="plot"]:fullscreen::backdrop {
+  background-color: #000000;
+}
+
+[data-tour="plot"]:fullscreen [data-plot-root] {
+  height: 100%;
+}
+
+/* Legend transition: smoothly glide scale between 1.0 and 1.25 instead of jumping */
+[data-tour="plot"] .js-plotly-plot svg g.legend {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: 0 0;
+}
+
 [data-tour="plot"]:fullscreen .js-plotly-plot svg g.legend {
   transform: scale(1.25);
   transform-origin: 0 0;

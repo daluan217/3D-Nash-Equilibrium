@@ -377,13 +377,74 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   const [dragMode, setDragMode] = useState<'turntable' | 'pan'>('turntable');
   const [uiRevision, setUiRevision] = useState<number>(0);
   const [plotFullscreen, setPlotFullscreen] = useState(false);
+  // Tracks the camera the user has rotated to so Plotly.react never overrides it
+  const cameraRef = useRef<any>(DEFAULT_CAMERA);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const onChange = () => setPlotFullscreen(document.fullscreenElement === el);
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const onChange = () => {
+      const isFs = document.fullscreenElement === el;
+      setPlotFullscreen(isFs);
+
+      const Plotly = (window as any).Plotly;
+      const gd = document.getElementById(plotId) as any;
+      if (!Plotly || !gd) return;
+
+      // Preserve live camera rotation without off-center drift
+      const live = readLiveCamera(plotId);
+      if (live?.eye) {
+        cameraRef.current = {
+          eye: { ...live.eye },
+          center: { x: 0, y: 0, z: 0 },
+          up: { x: 0, y: 0, z: 1 },
+        };
+        if (gd.layout?.scene) {
+          gd.layout.scene.camera = { ...cameraRef.current };
+        }
+      }
+
+      if (gd.layout) {
+        delete gd.layout.width;
+        delete gd.layout.height;
+      }
+
+      // Single settled resize after container dimensions stabilize
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(async () => {
+        if (isFs) {
+          await Plotly.relayout(gd, {
+            width: gd.clientWidth,
+            height: gd.clientHeight,
+            'scene.camera': cameraRef.current,
+          });
+        } else {
+          if (gd.layout) {
+            delete gd.layout.width;
+            delete gd.layout.height;
+          }
+          await Plotly.relayout(gd, {
+            width: null,
+            height: null,
+            autosize: true,
+            'scene.camera': cameraRef.current,
+          });
+        }
+        void waitForGlplotShapeSettled(plotId).then(() => {
+          rebindPlotInput();
+        });
+      }, 150);
+    };
+
     document.addEventListener('fullscreenchange', onChange);
-    return () => document.removeEventListener('fullscreenchange', onChange);
+    return () => {
+      clearTimeout(resizeTimer);
+      document.removeEventListener('fullscreenchange', onChange);
+    };
   }, []);
+
   const togglePlotFullscreen = () => {
     const el = containerRef.current;
     if (!el) return;
@@ -396,8 +457,6 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   };
   const pinchStartDist = useRef<number | null>(null);
   const pinchStartEye = useRef<{x: number; y: number; z: number} | null>(null);
-  // Tracks the camera the user has rotated to so Plotly.react never overrides it
-  const cameraRef = useRef<any>(DEFAULT_CAMERA);
   /** RED-MATH-13/002: this render's continuum component bookkeeping (trace
    *  indices + data-space points), and which components the DYNAMIC
    *  camera-aware rule currently has collapsed — reset every time `traces`
@@ -1793,7 +1852,7 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
   }, [dragMode]);
 
   return (
-    <div ref={containerRef} data-tour="plot" className={`w-full relative border rounded-xl p-2 md:p-4 shadow-sm h-[16rem] sm:h-[24rem] lg:h-[28rem] ${isDark ? 'bg-black border-slate-800' : 'bg-white border-slate-200'}`}>
+    <div ref={containerRef} data-tour="plot" className={`w-full relative border rounded-xl overflow-hidden p-2 md:p-4 shadow-sm h-[16rem] sm:h-[24rem] lg:h-[28rem] ${isDark ? 'bg-black border-slate-800' : 'bg-white border-slate-200'}`}>
       {/* Floating 3D Navigation Controls */}
       <div className={`absolute top-3 right-3 z-10 flex items-center gap-0.5 sm:gap-1 border p-1 rounded-xl shadow-xs ${isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-white/95 border-slate-200'}`}>
         <button
@@ -1889,7 +1948,11 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         <span className="hidden sm:inline">{plotFullscreen ? 'Exit fullscreen' : 'Fullscreen'}</span>
       </button>
 
-      <div id={plotId} data-plot-root className="w-full h-full" />
+      <div
+        id={plotId}
+        data-plot-root
+        className="w-full h-full"
+      />
     </div>
   );
 };
