@@ -236,6 +236,18 @@ jobs:
           DMG_TEST_PORT: '3109'
           DMG_TEST_GCS_PORT: '3110'
 
+      # A 2xx whose body is NOT the backend's JSON acknowledgement must never
+      # count as a completed write. Desktop cloud mode's API base is
+      # user-configurable, so a captive portal / filtering proxy can answer
+      # DELETE (or save, or edit) with `200 text/html` having done nothing —
+      # and a client that trusts res.ok alone tells the user their game is
+      # gone when it is not (RED-DESKTOP-20/002). Round 20's probe for this
+      # lived under _gen/ and referenced a mock server that did not exist, so
+      # it silently exercised nothing for two rounds; this is the checked-in,
+      # mutation-proven version (BLUE-LOOP-DESKTOP-22).
+      - name: Run the captive-portal write-honesty suite
+        run: node src/integration/desktop-captive-portal-write.test.mjs
+
       # Two dist/server.cjs processes on the SAME ELECTRON_USER_DATA_PATH used
       # to silently clobber each other's saved games (whole-file overwrite,
       # last write wins, no error to either window). Electron's own
