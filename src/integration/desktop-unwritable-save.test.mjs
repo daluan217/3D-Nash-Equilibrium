@@ -28,7 +28,7 @@
  *   node src/integration/desktop-unwritable-save.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -467,6 +467,141 @@ try {
   await reaped(server4);
   chmodSync(userData4, 0o755);
   rmSync(userData4, { recursive: true, force: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BLUE-LOOP-DESKTOP-22, invented angle J — the data directory pulled out from
+// under a RUNNING app.
+//
+// The cases above all hold the directory in one state for the whole session.
+// The data dir lives in ~/Library/Application Support: users clean it out,
+// sync tools relocate it, and "reset the app" advice tells people to delete
+// it. The app holds `inMemoryDb` for the whole process lifetime, so the
+// question none of the cases above ask is whether a save AFTER the rug-pull
+// still tells the truth.
+//
+// THE INVARIANT, one line: a save either lands on disk or reports failure.
+// A 200 "Game saved successfully!" with nothing on disk is the defect —
+// the same class as the RED-DESKTOP-4 finding at the top of this file, in a
+// shape that file never reached.
+//
+// MEASURED (_gen/b22-angleJ-rugpull.mjs, 0.0.224): deleted -> the write path
+// recreates the dir and the game really lands; replaced-by-a-file -> honest
+// 500; deleted-then-recreated -> lands, with the owner row; unwritable then
+// writable again -> honest 500, then recovers. No case claimed success with
+// nothing on disk. This block is what keeps that true.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const PORT5 = process.env.UNWRITABLE_SAVE_PORT5 || '3122';
+  const BASE5 = `http://localhost:${PORT5}`;
+  const userData5 = mkdtempSync(path.join(tmpdir(), 'nash-rugpull-'));
+  const call5 = async (method, url, body) => {
+    const r = await fetch(`${BASE5}${url}`, {
+      method,
+      headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    let json = null;
+    try { json = await r.json(); } catch { /* non-JSON */ }
+    return { status: r.status, json };
+  };
+  const server5 = spawn('node', [BUNDLE], {
+    cwd: userData5,
+    env: {
+      PATH: process.env.PATH, HOME: userData5, NODE_ENV: 'production',
+      PORT: PORT5, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: userData5,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let log5 = '';
+  server5.stdout.on('data', (d) => { log5 += d; });
+  server5.stderr.on('data', (d) => { log5 += d; });
+  try {
+    let ready = false;
+    for (let i = 0; i < 80 && !ready; i++) {
+      try { ready = (await fetch(`${BASE5}/api/health`)).ok; } catch { /* not up */ }
+      if (!ready) await new Promise((r) => setTimeout(r, 250));
+    }
+    record('rug-pull: the server booted', ready, ready ? '' : log5.slice(-300));
+
+    const dbOnDisk = () => {
+      const f = path.join(userData5, 'db.json');
+      if (!existsSync(f)) return null;
+      try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return 'unparseable'; }
+    };
+    const has = (name) => { const d = dbOnDisk(); return !!d && d !== 'unparseable' && (d.games ?? []).some((g) => g.name === name); };
+    // The judgement, in one place: a 200 with success:true MUST be on disk.
+    const honest = (label, res, name) => {
+      const claimed = res.status === 200 && res.json?.success === true;
+      record(`rug-pull ${label}: the save claim matches the disk`, !claimed || has(name),
+        `status=${res.status} claimedSaved=${claimed} onDisk=${has(name)}`);
+      return claimed;
+    };
+
+    // CONTROL FIRST. Without it, every "no false success" below would also
+    // pass on a build where saving never works at all.
+    const control = await call5('POST', '/api/games', { name: 'J-control', description: 'rugpull', payoffs: MP });
+    record('rug-pull CONTROL: an ordinary save succeeds and lands on disk',
+      control.status === 200 && control.json?.success === true && has('J-control'),
+      `status=${control.status} onDisk=${has('J-control')}`);
+
+    // A. Directory deleted outright underneath the running process.
+    rmSync(userData5, { recursive: true, force: true });
+    const afterDelete = await call5('POST', '/api/games', { name: 'J-after-delete', description: 'rugpull', payoffs: MP });
+    honest('after the directory was deleted', afterDelete, 'J-after-delete');
+    // Honesty is the floor, not the whole bar. A build that answers 500
+    // forever after the user cleans out Application Support is honest and
+    // still broken: every later save fails for the rest of the session with
+    // no way back short of a restart. The write path recreates a missing data
+    // directory (`if (!fs.existsSync(dbDir)) mkdirSync`), and that recovery is
+    // what this asserts — the honesty checks above pass with or without it,
+    // so without this line the mkdir could be deleted silently.
+    record('rug-pull: the app RECREATES a deleted data directory and the save really lands',
+      afterDelete.status === 200 && has('J-after-delete'),
+      `status=${afterDelete.status} onDisk=${has('J-after-delete')}`);
+
+    // B. Directory replaced by a regular FILE of the same name (the shape a
+    // sync tool or a careless script produces). Nothing can be written there,
+    // so the only honest answer is a failure.
+    rmSync(userData5, { recursive: true, force: true });
+    writeFileSync(userData5, 'not a directory');
+    const afterSwap = await call5('POST', '/api/games', { name: 'J-after-swap', description: 'rugpull', payoffs: MP });
+    honest('after the directory became a file', afterSwap, 'J-after-swap');
+    record('rug-pull: a save into a dir-turned-file FAILS rather than claiming success',
+      afterSwap.status >= 500 && afterSwap.json?.success !== true, `status=${afterSwap.status}`);
+
+    // C. Deleted and recreated empty — the "reset the app" shape. The write
+    // can succeed again here, so the bar is that whatever lands is coherent:
+    // a game on disk must have its owner row on disk.
+    rmSync(userData5, { force: true });
+    mkdirSync(userData5, { recursive: true });
+    const afterRecreate = await call5('POST', '/api/games', { name: 'J-after-recreate', description: 'rugpull', payoffs: MP });
+    honest('after the directory was recreated', afterRecreate, 'J-after-recreate');
+    if (has('J-after-recreate')) {
+      const d = dbOnDisk();
+      record('rug-pull: a game written after a recreate still has its owner row',
+        (d?.users ?? []).some((u) => u.id === 'local-owner'),
+        `users=${JSON.stringify((d?.users ?? []).map((u) => u.id))}`);
+    }
+
+    // D. Unwritable mid-session, then writable again: honest failure, then
+    // real recovery. The recovery half is the control for the failure half.
+    chmodSync(userData5, 0o555);
+    const whileLocked = await call5('POST', '/api/games', { name: 'J-locked', description: 'rugpull', payoffs: MP });
+    honest('while the directory is read-only', whileLocked, 'J-locked');
+    record('rug-pull: a save into a read-only dir FAILS rather than claiming success',
+      whileLocked.status >= 500 && whileLocked.json?.success !== true, `status=${whileLocked.status}`);
+    chmodSync(userData5, 0o755);
+    const recovered = await call5('POST', '/api/games', { name: 'J-recovered', description: 'rugpull', payoffs: MP });
+    record('rug-pull CONTROL: the app recovers once the directory is writable again',
+      recovered.status === 200 && has('J-recovered'),
+      `status=${recovered.status} onDisk=${has('J-recovered')}`);
+  } finally {
+    server5.kill('SIGKILL');
+    await reaped(server5);
+    try { chmodSync(userData5, 0o755); } catch { /* may be a file or gone */ }
+    rmSync(userData5, { recursive: true, force: true });
+  }
 }
 
 const fails = results.filter((r) => !r.pass);
