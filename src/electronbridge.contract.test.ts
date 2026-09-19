@@ -124,14 +124,42 @@ const members = exposedBody!
   .map((l) => l.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/, '').trim())
   .filter((l) => l.length > 0 && l !== ',');
 ok(members.length > 0, 'the exposed bridge object must have at least one member, or nothing is bridged');
+// Being a function expression is NECESSARY BUT NOT SUFFICIENT: `getRaw: () =>
+// ipcRenderer` is a perfectly good arrow function that RETURNS the live object,
+// so one call from the renderer has every channel in the app. So judge each
+// member's BODY as well as its shape, and do it per member rather than by
+// scanning the whole literal for `ipcRenderer` followed by `,` or `}` — that
+// blacklist missed a FINAL member with no trailing comma (reviewer finding,
+// reproduced: `getRaw: () => ipcRenderer` as the last entry passed).
+const memberBody = (m: string) => m.replace(/^[A-Za-z_$][\w$]*\s*:\s*/, '')
+  .replace(/^\([^)]*\)\s*=>\s*/, '').replace(/^[A-Za-z_$][\w$]*\s*=>\s*/, '')
+  .replace(/[,;]\s*$/, '').trim();
+const leaksRaw = (m: string) => {
+  const body = memberBody(m);
+  // A bare reference to the module object, however it is wrapped or returned.
+  return /^\{?\s*(?:return\s+)?ipcRenderer\s*;?\s*\}?$/.test(body) || /\bipcRenderer\s*(?:[,}\]);]|$)/.test(body);
+};
 for (const member of members) {
   ok(/^[A-Za-z_$][\w$]*\s*:\s*\(?[^:]*\)?\s*=>/.test(member),
     `every bridge member must be a function expression (\`name: (…) => …\`); found ${JSON.stringify(member.slice(0, 60))}. ` +
     'A bare identifier — `ipcRenderer,` as an ES6 shorthand — hands the renderer a live object ' +
     'rather than one narrow call, which is the "trusting the IPC sender" defect class.');
+  ok(!leaksRaw(member),
+    `bridge member ${JSON.stringify(member.slice(0, 60))} hands the renderer the raw ipcRenderer ` +
+    'object. Being an arrow function is not enough: one call to it returns every channel in the app.');
 }
-ok(!/\bipcRenderer\s*[,}]/.test(exposedBody!),
-  'the exposed bridge object must never carry `ipcRenderer` itself — that hands the renderer every channel');
+// Self-test on the reviewer's exact shapes plus the legitimate member, because
+// a leak detector that fires on everything (or nothing) proves nothing.
+for (const leak of ['getRaw: () => ipcRenderer', 'getRaw: () => ipcRenderer,',
+  'raw: () => { return ipcRenderer; }', 'ipcRenderer,', 'ipcRenderer: ipcRenderer,',
+  'send: ipcRenderer.send,']) {
+  ok(leaksRaw(leak) || !/^[A-Za-z_$][\w$]*\s*:\s*\(?[^:]*\)?\s*=>/.test(leak),
+    `SELF-TEST: ${JSON.stringify(leak)} must be rejected by one of the two member checks — it hands ` +
+    'the renderer the raw ipcRenderer. A detector that misses it cannot fail for its stated reason.');
+}
+ok(!leaksRaw("setBackgroundColor: (color) => ipcRenderer.send('set-background-color', color),"),
+  "SELF-TEST CONTROL: the app's own legitimate member (a narrow .send call) must NOT be flagged — " +
+  'a detector that rejects everything would pass every check above and ban the feature.');
 for (const raw of ['ipcRenderer.invoke', 'ipcRenderer.sendSync', 'ipcRenderer.postMessage',
   'exposeInIsolatedWorld', 'require(', 'process.']) {
   if (raw === 'require(') {
@@ -242,9 +270,27 @@ for (const forbidden of ['new BrowserWindow', "require('./dist/server.cjs')", 'c
 // The winning side must still do the work, or "no second instance" would be
 // satisfied by an app that never starts at all.
 const winIdx = main.indexOf('} else {', loseIdx);
-ok(winIdx !== -1 && main.slice(winIdx).includes("require('./dist/server.cjs')"),
+// Comments stripped FIRST. electron-main.cjs:310 mentions
+// "`require('./dist/server.cjs')` call below" inside a comment, so a bare
+// substring search stays green after the real call at :366 is deleted —
+// a control that cannot fail (reviewer finding, reproduced: the check passed
+// with the call removed and the comment intact).
+const codeOnly = main
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n').map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+const winCode = winIdx === -1 ? '' : codeOnly.slice(codeOnly.indexOf('} else {', codeOnly.indexOf(`if (!${lockVar})`)));
+ok(winIdx !== -1 && /(?:^|[^.\w])require\(\s*'\.\/dist\/server\.cjs'\s*\)\s*;/m.test(winCode),
   'CONTROL: the branch that HOLDS the lock must still start the server — otherwise these checks ' +
-  'are satisfied by an app that never runs');
+  'are satisfied by an app that never runs. Matched as a CALL in comment-stripped source, not as ' +
+  'a substring: electron-main.cjs names this require inside a comment too.');
+// Self-test: the comment alone must NOT satisfy it.
+{
+  const COMMENT_ONLY = "  // the `require('./dist/server.cjs')` call below runs before ready\n  startSomethingElse();";
+  const stripped = COMMENT_ONLY.split('\n').map((l) => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+  ok(!/(?:^|[^.\w])require\(\s*'\.\/dist\/server\.cjs'\s*\)\s*;/m.test(stripped),
+    'SELF-TEST: a source file whose ONLY mention of the server require is a comment must fail this ' +
+    'control. If it passes, the control cannot fail for the reason it claims.');
+}
 ok(/app\.on\(\s*['"]second-instance['"]/.test(main),
   "a 'second-instance' handler must exist so a second launch focuses the existing window rather " +
   'than doing nothing visible');

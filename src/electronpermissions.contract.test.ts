@@ -98,9 +98,33 @@ ok(reqLine.includes('ALLOWED_PERMISSIONS.has('),
   'the REQUEST handler must answer from ALLOWED_PERMISSIONS.has(permission), not a constant');
 ok(chkLine.includes('ALLOWED_PERMISSIONS.has('),
   'the CHECK handler must answer from ALLOWED_PERMISSIONS.has(permission), not a constant');
-ok(!/setPermissionRequestHandler\([^)]*callback\(true\)/.test(main),
-  'the REQUEST handler must never call callback(true) unconditionally — that is exactly the ' +
-  'default this fix exists to replace');
+// NOT `/setPermissionRequestHandler\([^)]*callback\(true\)/`. That was the
+// first draft and it is a DEAD ASSERTION: `[^)]*` stops at the handler's own
+// parameter-list `)`, so it can never reach the body and never fires — the
+// mutant `(_wc, permission, callback) => callback(true)` sails past it
+// (reviewer finding, reproduced). Read the handler's BODY — everything after
+// the arrow — and reject a constant answer there, whatever the parameter list
+// looks like.
+const reqBody = /setPermissionRequestHandler\(\s*\([^)]*\)\s*=>\s*([\s\S]{0,200})/.exec(main)?.[1] ?? '';
+ok(reqBody.length > 0,
+  'the REQUEST handler must be an arrow function whose body this contract can read');
+for (const constant of ['callback(true)', 'callback(!!1)', 'cb(true)']) {
+  ok(!reqBody.includes(constant),
+    `the REQUEST handler body must never answer with ${constant} — a constant grant is exactly the ` +
+    'Electron default this fix exists to replace. Body read: ' + JSON.stringify(reqBody.slice(0, 80)));
+}
+// Self-test: the predicate must FAIL on the reviewer's exact mutant, or it is
+// the dead assertion it replaced.
+{
+  const MUTANT = "ses.setPermissionRequestHandler((_wc, permission, callback) => callback(true));";
+  const mutantBody = /setPermissionRequestHandler\(\s*\([^)]*\)\s*=>\s*([\s\S]{0,200})/.exec(MUTANT)?.[1] ?? '';
+  ok(mutantBody.includes('callback(true)'),
+    'SELF-TEST: the body reader must see callback(true) in the mutant ' +
+    '`(_wc, permission, callback) => callback(true)`. If it does not, this check cannot fail for ' +
+    'the reason it claims — which is precisely the defect the first draft shipped.');
+  ok(!/ALLOWED_PERMISSIONS\.has\(/.test(mutantBody),
+    'SELF-TEST: the mutant body must NOT satisfy the allowlist check either');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. IT IS APPLIED TO EVERY webContents, VIA THE EXISTING HARDENING PATH
