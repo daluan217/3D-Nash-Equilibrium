@@ -244,6 +244,67 @@ try {
     fakeGcs.mediaRequestCount() === mediaCountBeforeHead,
     `media requests before: ${mediaCountBeforeHead}, after: ${fakeGcs.mediaRequestCount()}`);
 
+  // ── The range shapes the suite did not reach (BLUE-LOOP-DESKTOP-22).
+  //
+  // The cases above cover `bytes=N-M`, past-the-end, the RFC 9110 §14.1.2
+  // clamp and HEAD. Three shapes real clients actually send were untested,
+  // and each has a distinct way of going wrong:
+  //   - `bytes=-N` (SUFFIX): curl's `-r -100` and most resumers' "give me the
+  //     tail" form. The route computes start = size - N itself, so an
+  //     arithmetic slip here serves the WRONG BYTES with a 206 — silent
+  //     corruption of a resumed download, not a visible error.
+  //   - INVERTED (`bytes=500-100`) and MALFORMED (`bytes=abc-def`,
+  //     multi-range): these must not 5xx and must not serve a nonsense slice.
+  //     A NaN reaching createReadStream is the shape that 500s a CDN.
+  // Measured against LIVE production first (_gen/b22-dmgrange.mjs, the only
+  // condition where the GCS branch runs at all): suffix -> 206 with
+  // `bytes 136677198-136677261/136677262`; inverted -> 416; malformed and
+  // multi-range -> 200 full-file, no 5xx. Frozen here against the fake GCS.
+  //
+  // MUTATION-PROVEN (recorded 2026-09-19): changing the suffix branch's
+  // `start = Math.max(0, size - suffixLen)` to `size - suffixLen` without the
+  // clamp, or to `suffixLen`, fails the suffix checks below by name.
+  const suffixRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: 'bytes=-8' },
+  });
+  const suffixBody = Buffer.from(await suffixRes.arrayBuffer());
+  record('a SUFFIX range (bytes=-8, curl -r -8) returns the LAST 8 bytes as a 206',
+    suffixRes.status === 206
+      && suffixRes.headers.get('content-range') === `bytes ${DMG_CONTENT.length - 8}-${DMG_CONTENT.length - 1}/${DMG_CONTENT.length}`
+      && suffixBody.equals(DMG_CONTENT.subarray(DMG_CONTENT.length - 8)),
+    `status ${suffixRes.status}, content-range ${suffixRes.headers.get('content-range')}, ${suffixBody.length} bytes`);
+
+  // A suffix LONGER than the file must clamp to the whole file, not produce a
+  // negative start (which would be a nonsense Content-Range, or a throw).
+  const bigSuffixRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: `bytes=-${DMG_CONTENT.length + 5000}` },
+  });
+  const bigSuffixBody = Buffer.from(await bigSuffixRes.arrayBuffer());
+  record('a suffix range LONGER than the file clamps to the whole file (no negative start)',
+    bigSuffixRes.status === 206
+      && bigSuffixRes.headers.get('content-range') === `bytes 0-${DMG_CONTENT.length - 1}/${DMG_CONTENT.length}`
+      && bigSuffixBody.equals(DMG_CONTENT),
+    `status ${bigSuffixRes.status}, content-range ${bigSuffixRes.headers.get('content-range')}, ${bigSuffixBody.length} bytes`);
+
+  // An INVERTED range (last-byte-pos < first-byte-pos) is unsatisfiable: it
+  // must be a 416, never a 206 carrying a backwards or empty slice, and never
+  // a 500 from a negative length reaching createReadStream. Live production
+  // answers 416 with `bytes */<size>`; the same is required here.
+  // (The malformed / multi-range / wrong-unit / both-sides-empty shapes are
+  // already covered by the ignored-range block further down in this file —
+  // not repeated here, both to keep this suite under the route's own
+  // 10-requests-per-60s rate limit and because a duplicated check that can
+  // only ever agree with its twin adds no information.)
+  const invertedRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: 'bytes=500-100' },
+  });
+  const invertedBody = Buffer.from(await invertedRes.arrayBuffer());
+  record('an INVERTED range (bytes=500-100) is 416 with an empty body, not a 500 or a backwards slice',
+    invertedRes.status === 416
+      && invertedBody.length === 0
+      && invertedRes.headers.get('content-range') === `bytes */${DMG_CONTENT.length}`,
+    `status ${invertedRes.status}, content-range ${invertedRes.headers.get('content-range')}, ${invertedBody.length} bytes`);
+
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 
