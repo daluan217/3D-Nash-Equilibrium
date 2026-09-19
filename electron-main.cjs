@@ -9,8 +9,22 @@ app.setName('Nash Equilibrium Simulator');
 // Public site that hosts the latest DMG + version manifest (served from GCS via Cloud Run).
 const UPDATE_BASE_URL = 'https://nash-equilibrium-simulator.com';
 
+// A version is exactly three dot-separated integers. Anything else is not a
+// version and must never be compared as one.
+//
+// BLUE-LOOP-DESKTOP-22 (reviewer finding, reproduced): `parseInt` accepts a
+// LEADING integer and discards the rest, so the old compare read
+// `'0.0.224abc'` as 0.0.224 and `'999junk.0.0'` as 999.0.0 — both "newer" than
+// 0.0.223, both prompting every installed copy to download. `'1.0.0-beta.1'`
+// did the same. A corrupted or hand-edited app-version.json therefore drove
+// the update prompt.
+const VERSION_RE = /^\d+\.\d+\.\d+$/;
+function isVersion(v) { return typeof v === 'string' && VERSION_RE.test(v); }
+
 // Numeric semver compare: returns 1 if a > b, -1 if a < b, 0 if equal.
+// A non-version NEVER compares greater — the caller treats 0 as "no update".
 function compareVersions(a, b) {
+  if (!isVersion(a) || !isVersion(b)) return 0;
   const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
   const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
   for (let i = 0; i < 3; i++) {

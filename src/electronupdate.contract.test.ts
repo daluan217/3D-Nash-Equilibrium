@@ -77,10 +77,20 @@ const code = stripComments(main);
 // Extracting and running it is what makes checks 2-3 about behaviour rather
 // than about the presence of a word.
 // ─────────────────────────────────────────────────────────────────────────────
-const cvSrc = /function compareVersions[\s\S]*?\n\}/.exec(code);
-ok(cvSrc !== null, 'electron-main.cjs must define compareVersions(a, b)');
+// compareVersions leans on VERSION_RE/isVersion, so the eval'd scope needs all
+// three. Each is required separately: a missing one must fail here loudly, not
+// quietly yield a comparator built from half the shipped logic.
+const cvDeps = [
+  /const VERSION_RE = [^\n]+/,
+  /function isVersion\([^\n]+/,
+  /function compareVersions[\s\S]*?\n\}/,
+].map((re) => {
+  const m = re.exec(code);
+  ok(m !== null, `electron-main.cjs must define ${String(re)}`);
+  return (m as RegExpExecArray)[0];
+});
 const compareVersions = new Function(
-  `${(cvSrc as RegExpExecArray)[0]}; return compareVersions;`,
+  `${cvDeps.join('\n')}\nreturn compareVersions;`,
 )() as (a: string, b: string) => number;
 // The extracted function must actually discriminate, or every later assertion
 // would be reading a constant.
@@ -125,9 +135,56 @@ for (const newer of ['0.0.224', '0.1.0', '1.0.0', '10.0.0']) {
 
 // Junk manifests must not be read as "newer". Measured against the live binary
 // (b22-update.mjs); frozen here so a future parse change cannot regress it.
-for (const junk of ['abc', '', 'NaN.NaN.NaN', '0.0.223abc', '-1.0.0', '0x10.0.0', '0.0.1e3']) {
+//
+// THIS LIST WAS VACUOUS UNTIL 2026-09-19 (reviewer finding, reproduced): every
+// entry had a numeric prefix <= 0.0.223 or none at all, so the whole block
+// passed on the UNFIXED `parseInt` compare and never tested the class it names.
+// `parseInt` accepts a LEADING integer and discards the rest, so the pre-fix
+// code read '0.0.224abc' as 0.0.224 and '999junk.0.0' as 999.0.0 — both
+// "newer", both prompting every install to download from a corrupted manifest.
+// The four entries marked below are the ones that fail on the pre-fix compare;
+// without at least one of them this loop is decoration.
+for (const junk of [
+  'abc', '', 'NaN.NaN.NaN', '0.0.223abc', '-1.0.0', '0x10.0.0', '0.0.1e3',
+  '0.0.224abc',      // <- numeric prefix NEWER than current: passed before the fix
+  '999junk.0.0',     // <- ditto, via a junk middle component
+  '0.0.224-rc1',     // <- a prerelease tag is not an x.y.z release
+  '1.0.0-beta.1',    // <- ditto, and far "newer" by prefix
+  '0.0.224.1',       // <- four components is not this project's version shape
+]) {
   ok(!offersUpdate(junk),
-    `a junk version string ${JSON.stringify(junk)} must not be treated as newer than ${CURRENT}.`);
+    `a junk version string ${JSON.stringify(junk)} must not be treated as newer than ${CURRENT}. `
+    + 'A version is exactly three dot-separated integers; parseInt-style leading-number parsing '
+    + 'turns a corrupted manifest into an update prompt for every installed copy.');
+}
+// The validator must be in the SHIPPED source, not just implied by behaviour,
+// and it must be anchored — an unanchored /\d+\.\d+\.\d+/ matches '0.0.224abc'.
+ok(/VERSION_RE\s*=\s*\/\^\\d\+\\\.\\d\+\\\.\\d\+\$\//.test(code),
+  'electron-main.cjs must carry an ANCHORED three-integer version pattern (/^\\d+\\.\\d+\\.\\d+$/). '
+  + 'Unanchored, it matches "0.0.224abc" and the fix is undone.');
+ok(/if\s*\(!isVersion\(a\)\s*\|\|\s*!isVersion\(b\)\)\s*return 0;/.test(code),
+  'compareVersions must refuse to compare anything that is not a version, returning 0 (= "no '
+  + 'update") rather than letting parseInt decide.');
+// SELF-TEST: the four new entries must genuinely fail the PRE-FIX compare, or
+// this block is still decoration. The pre-fix function, verbatim.
+{
+  const preFix = (a: string, b: string) => {
+    const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+      if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    }
+    return 0;
+  };
+  for (const regressor of ['0.0.224abc', '999junk.0.0', '0.0.224-rc1', '1.0.0-beta.1']) {
+    ok(preFix(regressor, CURRENT) > 0,
+      `SELF-TEST: ${JSON.stringify(regressor)} must be OFFERED by the pre-fix parseInt compare — `
+      + 'if it is not, it does not discriminate and this loop cannot have caught the defect.');
+  }
+  ok(preFix('0.0.223abc', CURRENT) === 0,
+    'SELF-TEST: the ORIGINAL list entries did not fail the pre-fix compare — that is why the list '
+    + 'was vacuous, and recording it here keeps the lesson attached to the check.');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
