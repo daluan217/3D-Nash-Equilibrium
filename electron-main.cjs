@@ -46,10 +46,40 @@ function openExternalIfSafe(rawUrl) {
 // full-bleed page became a remote origin. Same policy for every door: stay on the
 // app's own origin, hand anything else to the OS through the scheme filter above.
 let appOrigin = null;
+
+// BLUE-LOOP-DESKTOP-22, angle G. Electron GRANTS most renderer permission
+// requests when no handler is installed, and none was. MEASURED against the
+// live 0.0.223 DMG over CDP: `getUserMedia({audio:true})` produced no
+// synchronous refusal — it reached the OS, where a macOS microphone prompt
+// would name this app (electron-builder's default Info.plist already ships
+// NSMicrophoneUsageDescription/NSCameraUsageDescription, so the prompt has
+// copy to show). This app is an offline 2x2-game visualiser: the ONLY
+// permission-gated API anywhere in src/ is `navigator.clipboard.writeText`
+// (DownloadModal's copy buttons), which needs no grant. So the honest policy
+// is a default-deny allowlist, not a per-permission patch: a capability that
+// arrives in a future Chromium is denied by default instead of inheriting a
+// yes. `media` covers camera+microphone+display-capture.
+const ALLOWED_PERMISSIONS = new Set(['clipboard-sanitized-write']);
+function applyPermissionPolicy(ses) {
+  if (!ses || ses.__nashPermissionPolicy) return;
+  ses.__nashPermissionPolicy = true;
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(ALLOWED_PERMISSIONS.has(permission)));
+  // The REQUEST handler alone is not enough: Chromium consults the CHECK
+  // handler for synchronous queries (navigator.permissions.query, and the
+  // pre-flight some APIs run), and its default also says yes.
+  ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
+  // Device pickers (WebHID/WebUSB/Bluetooth) ask separately; returning null
+  // is "no device", i.e. nothing to hand over.
+  if (typeof ses.setDevicePermissionHandler === 'function') ses.setDevicePermissionHandler(() => false);
+}
+
 const hardenedContents = new WeakSet();
 function hardenWebContents(contents) {
   if (!contents || hardenedContents.has(contents)) return;
   hardenedContents.add(contents);
+  // Per-contents, not once at startup: a webview or popup can carry its own
+  // session, and a partition created later would otherwise start unpoliced.
+  applyPermissionPolicy(contents.session);
   contents.setWindowOpenHandler(({ url }) => {
     openExternalIfSafe(url);
     return { action: 'deny' };
