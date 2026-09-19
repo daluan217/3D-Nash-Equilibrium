@@ -314,6 +314,19 @@ jobs:
         env:
           RECOVERY_HINT_PORT: '3111'
 
+      # G7 (BLUE-LOOP-DESKTOP-22): every game on disk must have its owner row
+      # on disk. `ensureLocalOwner()` ignores saveDB's return value, so a failed
+      # owner write is invisible to it; no orphan is reachable today only
+      # because loadDB() hands back the live in-memory db and the save path
+      # re-reads users at commit time. That is emergent, not asserted anywhere,
+      # so this suite asserts the OUTCOME and stays true however the internals
+      # move. Mutation-proven: sourcing `users` from the last persisted file
+      # instead of memory makes an orphan reachable and this suite goes red.
+      - name: Boot the production server and run the desktop owner-integrity suite
+        run: node src/integration/desktop-owner-integrity.test.mjs
+        env:
+          OWNER_INTEGRITY_PORT: '3141'
+
       # RED-DESKTOP-16/001: a Bearer token that WAS presented but does not
       # resolve (garbled, or invalidated by a REAL forgot/reset-password) must
       # be refused (401) on every game CRUD route, never silently re-owned by
