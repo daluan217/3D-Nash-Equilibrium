@@ -492,7 +492,12 @@ try {
 // nothing on disk. This block is what keeps that true.
 // ═══════════════════════════════════════════════════════════════════════════
 {
-  const PORT5 = process.env.UNWRITABLE_SAVE_PORT5 || '3122';
+  // 3123, not 3122: PORT4 already defaults to 3122 AND the workflow pins
+  // UNWRITABLE_SAVE_PORT4 to it, so the original default collided in both the
+  // local and the CI configuration (reviewer finding, verified: PORT4 line 384
+  // and test.yml's env block both read 3122). Phase 4's server is killed before
+  // this block, so the collision would have surfaced only as a flake.
+  const PORT5 = process.env.UNWRITABLE_SAVE_PORT5 || '3123';
   const BASE5 = `http://localhost:${PORT5}`;
   const userData5 = mkdtempSync(path.join(tmpdir(), 'nash-rugpull-'));
   const call5 = async (method, url, body) => {
@@ -519,7 +524,13 @@ try {
   try {
     let ready = false;
     for (let i = 0; i < 80 && !ready; i++) {
-      try { ready = (await fetch(`${BASE5}/api/health`)).ok; } catch { /* not up */ }
+      // Bounded, like every other health poll in this file: an UNBOUNDED fetch
+      // hangs past this loop's own retry budget if the endpoint accepts the
+      // connection but never completes the response (the 798s-hang class this
+      // repo guards elsewhere). Reviewer finding; the other three phases
+      // already used AbortSignal.timeout and this new one did not.
+      try { ready = (await fetch(`${BASE5}/api/health`, { signal: AbortSignal.timeout(2000) })).ok; }
+      catch { /* not up yet, or the health check itself timed out */ }
       if (!ready) await new Promise((r) => setTimeout(r, 250));
     }
     record('rug-pull: the server booted', ready, ready ? '' : log5.slice(-300));

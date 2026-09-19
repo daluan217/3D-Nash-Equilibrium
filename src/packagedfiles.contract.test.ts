@@ -97,7 +97,18 @@ for (const forbidden of ['db.json', './db.json', 'db.json 2']) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CHECK 3 — the database is EXPLICITLY excluded, not merely absent.
 // Absence alone is fragile: a future `"*.json"` or `"**/*"` include would
-// silently pull db.json back in. A negation keeps winning.
+// silently pull db.json back in.
+//
+// CORRECTION (BLUE-LOOP-DESKTOP-22 self-review). An earlier version of this
+// comment claimed "a negation keeps winning". That is FALSE, and it was
+// measured rather than argued: appending `"**/db.json"` AFTER the negations,
+// with a canary db.json in the checkout, produced a build whose app.asar
+// contains /db.json — `asar extract-file` recovered
+// {"users":[{"id":"CANARY3","email":"c3@leak.test","passwordHash":"..."}]}
+// while this contract still reported "21 checks passed". electron-builder
+// resolves LAST MATCHING PATTERN WINS, so a negation only protects what no
+// later include re-matches. CHECK 3b below is the check that would have caught
+// that; the presence checks here are necessary but not sufficient.
 // ─────────────────────────────────────────────────────────────────────────────
 ok(excludes.includes('db.json'),
   'package.json build.files must explicitly exclude "!db.json", not merely omit it. A later broad '
@@ -111,6 +122,76 @@ ok(excludes.some((e) => /^db\.json \[?\d/.test(e)),
   'build.files must exclude the iCloud/Finder conflict-copy shape ("!db.json [0-9]*"). This repo '
   + 'lives on iCloud Drive and routinely grows "db.json 2" siblings; npm test even has a guard for '
   + 'that filename class in the working tree.');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHECK 3b — NO INCLUDE MAY FOLLOW THE NEGATIONS AND RE-MATCH THE DATABASE.
+//
+// This is the check the presence checks above cannot make. electron-builder
+// applies patterns in order and the LAST match wins, so `!db.json` protects
+// nothing against a later `"**/db.json"`, `"*.json"` or `"**/*"`. Measured:
+// appending `"**/db.json"` after the negations shipped a canary account store
+// inside app.asar while every other check in this file still passed.
+//
+// Rather than blacklist spellings, evaluate the ACTUAL resolution: walk the
+// patterns in order against representative paths and require the final verdict
+// to be "excluded". A future glob nobody here anticipated is judged by what it
+// does, not by how it is written.
+// ─────────────────────────────────────────────────────────────────────────────
+function lastVerdict(patterns: string[], candidate: string): 'included' | 'excluded' {
+  // Minimal glob -> RegExp for the shapes electron-builder's `files` accepts.
+  // `**` crosses separators, `*` does not, `?` is one non-separator character.
+  const toRe = (glob: string) => {
+    let re = '';
+    for (let i = 0; i < glob.length; i++) {
+      const c = glob[i];
+      if (c === '*') {
+        if (glob[i + 1] === '*') { re += '.*'; i++; if (glob[i + 1] === '/') i++; }
+        else re += '[^/]*';
+      } else if (c === '?') re += '[^/]';
+      else if ('\\^$.|+()[]{}'.includes(c)) re += '\\' + c;
+      else re += c;
+    }
+    return new RegExp(`^${re}$`);
+  };
+  let verdict: 'included' | 'excluded' = 'excluded'; // nothing matched => not packaged
+  for (const p of patterns) {
+    const negated = p.startsWith('!');
+    const body = negated ? p.slice(1) : p;
+    const bare = body.startsWith('./') ? body.slice(2) : body;
+    if (toRe(bare).test(candidate)) verdict = negated ? 'excluded' : 'included';
+  }
+  return verdict;
+}
+// The resolver itself, proven on both polarities before anything trusts it —
+// otherwise a resolver that always says "excluded" would pass every case below.
+ok(lastVerdict(['**/*'], 'db.json') === 'included',
+  'RESOLVER SELF-TEST: a bare "**/*" include must resolve db.json as INCLUDED');
+ok(lastVerdict(['**/*', '!db.json'], 'db.json') === 'excluded',
+  'RESOLVER SELF-TEST: a trailing negation must resolve db.json as EXCLUDED');
+ok(lastVerdict(['**/*', '!db.json', '**/db.json'], 'db.json') === 'included',
+  'RESOLVER SELF-TEST: a re-include AFTER the negation must resolve as INCLUDED — that is the '
+  + 'measured leak this check exists for, and a resolver that misses it is inert');
+ok(lastVerdict(['dist/**/*'], 'dist/server.cjs') === 'included',
+  'RESOLVER SELF-TEST: "dist/**/*" must still include a file inside dist/');
+
+for (const sensitive of [
+  'db.json', 'db.json 2', 'db.json 3', 'db.json.corrupt-1700000000000',
+  'db.json.unreadable-1700000000000', 'db.json.tmp-123-456',
+  '.env', '.env.local', '.env.production',
+]) {
+  ok(lastVerdict(globs, sensitive) === 'excluded',
+    `build.files resolves ${JSON.stringify(sensitive)} as INCLUDED. electron-builder applies patterns `
+    + 'in order and the LAST match wins, so an include listed after the negations re-packages the '
+    + 'account store however emphatic the "!" lines above it are. Measured: appending "**/db.json" '
+    + 'put a canary db.json (e-mail + password hash) inside the shipped app.asar.');
+}
+// CONTROL: the app's own files must still resolve as INCLUDED, or "everything
+// is excluded" would satisfy every line above and ship a DMG that cannot run.
+for (const needed of ['dist/server.cjs', 'dist/index.html', 'electron-main.cjs', 'electron-preload.cjs']) {
+  ok(lastVerdict(globs, needed) === 'included',
+    `build.files resolves ${JSON.stringify(needed)} as EXCLUDED — the app cannot run without it. `
+    + 'A contract that only ever demands exclusion is satisfied by an empty package.');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CHECK 4 — dotenv files stay excluded (the pre-existing guarantee).
