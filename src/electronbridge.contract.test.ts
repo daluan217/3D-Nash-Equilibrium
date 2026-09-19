@@ -198,4 +198,55 @@ for (const good of ['#020617', '#FFFFFF', '#0a0A0a']) {
 ok(!accept('#000000\n'), 'the pattern must be end-anchored (a trailing newline must not pass)');
 ok(!accept('x#000000'), 'the pattern must be start-anchored');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. THE SINGLE-INSTANCE LOCK — BLUE-LOOP-DESKTOP-22, invented angle K
+//
+// MEASURED (`_gen/b22-angleK-twoinstances.mjs`, the real packaged binary
+// launched TWICE against one user-data directory): instance B exited with code
+// 0, bound no port, and A kept both its games — `db.json` ended
+// ["K-A-first","K-A-second"]. No rival writer, no data loss.
+//
+// The SERVER half of this is already guarded end-to-end
+// (desktop-concurrent-lock.test.mjs: a second dist/server.cjs refuses a
+// directory another live process owns). The ELECTRON half was checked only by
+// `desktop.contract.test.ts` requiring the module to LOAD — which passes just
+// as well if the lock's result is ignored entirely. These are the semantics
+// that make a second launch harmless, and they are what the probe measured:
+//   - the lock is requested, and a FAILED lock quits immediately. Requesting
+//     without acting is the whole defect: two live mains, two servers, two
+//     diverging in-memory databases, last writer wins.
+//   - the quit is UNCONDITIONAL on that branch. A quit behind a further
+//     condition is how a second instance survives in some states.
+//   - nothing in the losing branch creates a window or starts the server.
+// ─────────────────────────────────────────────────────────────────────────────
+ok(main.includes('app.requestSingleInstanceLock()'),
+  'electron-main.cjs must request the single-instance lock — without it a second launch is a ' +
+  'second server against the same db.json, and the last writer wins');
+const lockVar = /const\s+([A-Za-z_$][\w$]*)\s*=\s*app\.requestSingleInstanceLock\(\)/.exec(main)?.[1];
+ok(!!lockVar, 'the lock result must be captured in a constant, not discarded');
+const loseIdx = main.indexOf(`if (!${lockVar})`);
+ok(loseIdx !== -1,
+  `the lock result (${lockVar}) must be BRANCHED ON — requesting the lock and ignoring the answer ` +
+  'leaves two live main processes, which is the defect itself');
+const loseBranch = main.slice(loseIdx, main.indexOf('} else {', loseIdx) + 1);
+ok(/app\.quit\(\)\s*;/.test(loseBranch),
+  'the losing branch must call app.quit() — measured: the second instance exits with code 0 and ' +
+  'binds no port');
+ok(!/if\s*\(/.test(loseBranch.slice(loseBranch.indexOf('{') + 1)),
+  'the quit must be UNCONDITIONAL inside the losing branch; a further condition is how a second ' +
+  `instance survives in some states. Branch was: ${JSON.stringify(loseBranch.slice(0, 120))}`);
+for (const forbidden of ['new BrowserWindow', "require('./dist/server.cjs')", 'createWindow(']) {
+  ok(!loseBranch.includes(forbidden),
+    `the losing branch must not ${forbidden} — a second instance must never start a window or a server`);
+}
+// The winning side must still do the work, or "no second instance" would be
+// satisfied by an app that never starts at all.
+const winIdx = main.indexOf('} else {', loseIdx);
+ok(winIdx !== -1 && main.slice(winIdx).includes("require('./dist/server.cjs')"),
+  'CONTROL: the branch that HOLDS the lock must still start the server — otherwise these checks ' +
+  'are satisfied by an app that never runs');
+ok(/app\.on\(\s*['"]second-instance['"]/.test(main),
+  "a 'second-instance' handler must exist so a second launch focuses the existing window rather " +
+  'than doing nothing visible');
+
 console.log(`electronbridge.contract.test.ts: ${checks} checks passed`);
