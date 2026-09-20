@@ -327,10 +327,24 @@ const fakeShell = {
   beep() {},
 };
 
+// Every main-process IPC channel the app listens on IS its attack surface from
+// the renderer: whatever is registered here can be reached by any script the
+// page runs, through the preload or otherwise. Record the names and the
+// registering API (`handle` is invoke/two-way, `on` is send/one-way).
+const ipcChannels = [];
+const fakeIpcMain = {
+  on(channel, fn) { ipcChannels.push(['on', String(channel)]); (fakeIpcMain._h[channel] ||= []).push(fn); },
+  once(channel, fn) { ipcChannels.push(['once', String(channel)]); (fakeIpcMain._h[channel] ||= []).push(fn); },
+  handle(channel, fn) { ipcChannels.push(['handle', String(channel)]); (fakeIpcMain._h[channel] ||= []).push(fn); },
+  handleOnce(channel, fn) { ipcChannels.push(['handleOnce', String(channel)]); (fakeIpcMain._h[channel] ||= []).push(fn); },
+  removeHandler() {}, removeAllListeners() {},
+  _h: {},
+};
+
 const fakeElectron = {
   app: fakeApp,
   BrowserWindow: FakeBrowserWindow,
-  ipcMain: { on() {}, handle() {} },
+  ipcMain: fakeIpcMain,
   dialog: { showMessageBox: () => Promise.resolve({ response: 0 }), showErrorBox() {} },
   shell: fakeShell,
   session: { defaultSession: fakeSession, fromPartition: () => fakeSession },
@@ -665,6 +679,25 @@ if (mode === 'openexternal') {
     }
   }
 
+  // Navigation and window.open are not the only doors to the OS. Electron
+  // delivers URLs to the app through LIFECYCLE events too — `open-url` (a
+  // registered scheme or a clicked link handed to the app by macOS),
+  // `second-instance` (argv from a relaunch). A handler there that forwards to
+  // shell.openExternal is the same capability with none of the scheme policy,
+  // and nothing above would ever drive it. Fire every registered app event with
+  // hostile payloads in the shapes Electron uses; openedUrls records the result.
+  for (const url of HOSTILE) {
+    for (const event of Object.keys(onHandlers)) {
+      if (event === 'ready' || event === 'will-quit' || event === 'before-quit') continue;
+      for (const args of [[{ preventDefault() {} }, url], [{ preventDefault() {} }, [url], '/tmp'],
+        [{ preventDefault() {} }, { url }]]) {
+        try { for (const cb of onHandlers[event]) cb(...args); } catch { /* handler's own error */ }
+      }
+    }
+  }
+  const lifecycleEventsDriven = Object.keys(onHandlers)
+    .filter((e) => !['ready', 'will-quit', 'before-quit'].includes(e));
+
   // THE CONTROL. Every assertion above is satisfied by a handler that calls
   // preventDefault() unconditionally and never looks at the URL — which would
   // also break in-app navigation completely and hand the OS nothing to open.
@@ -693,6 +726,8 @@ if (mode === 'openexternal') {
     windowOpenHandlerInstalled: typeof capturedWindowOpenHandler === 'function',
     willNavigateHandlerCount: willNavigateHandlers.length,
     willFrameNavigateHandlerCount: willFrameNavigateHandlers.length,
+    lifecycleEventsDriven,
+    ipcChannels,
     backendLoaded,
   }), 300);
 }

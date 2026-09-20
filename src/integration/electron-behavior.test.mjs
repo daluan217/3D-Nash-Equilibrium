@@ -319,6 +319,24 @@ for (const [where, prevented, opened] of ext.inApp) {
     `${where} handed the app's own URL (${ext.appOriginProbed}) to the OS. An in-app route must `
     + 'never be bounced out to a browser.');
 }
+// FOUND BY THIS AGENT, sweep 2. Navigation and window.open are not the only
+// doors to the OS: Electron hands the app URLs through LIFECYCLE events too.
+// `app.on('open-url', (e, u) => shell.openExternal(u))` is the same capability
+// with none of the scheme policy, and nothing here drove those handlers at all.
+// Every registered app event is now fired with hostile payloads, and whatever
+// reaches the OS lands in openedUrls below like any other door.
+ok(ext.lifecycleEventsDriven.length >= 3,
+  "CONTROL: the app's lifecycle handlers must actually be driven (drove "
+  + `${JSON.stringify(ext.lifecycleEventsDriven)}). With none driven, an open-url handler that `
+  + 'forwards straight to the OS would never be exercised.');
+// Same shape one layer down: every main-process IPC channel is renderer-reachable.
+assert.deepStrictEqual(ext.ipcChannels, [['on', 'set-background-color']],
+  `the main process listens on ${JSON.stringify(ext.ipcChannels)}. Exactly one channel may be `
+  + 'registered, by `on`. Every channel here is reachable from any script the page runs, so a '
+  + 'second one is a second capability — measured by what the app REGISTERS, not by what the '
+  + 'preload chooses to expose, because the preload is not the only way to reach ipcMain.');
+checks++;
+
 ok(ext.openedUrls.length > 0,
   'CONTROL: at least one URL must reach shell.openExternal during the run, or the scheme assertions '
   + 'below are checking an empty list — which is exactly how a broken harness looks like a pass.');
