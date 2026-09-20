@@ -176,30 +176,39 @@ try {
   // the third outcome: a clean run with no Vite and no error, which is what a
   // deleted or short-circuited dev branch looks like, and which would make
   // every desktop check above pass for free.
-  // The signal has to come from ENTERING the branch, not from the module
-  // graph. My first attempt matched /vite|rollup/ over the whole log and was
-  // TOOTHLESS: `import { createServer as createViteServer } from "vite"` is a
-  // TOP-LEVEL import, so every boot prints "…loading ES Module
-  // …/vite/dist/node/index.js using require()" whether the branch runs or not.
-  // Measured: with the dev branch replaced by `if (false)`, the toothless
-  // version still passed 10/10.
+  // WHAT THIS CONTROL MAY ASSERT, arrived at by getting it wrong twice.
   //
-  // Two signals that only a branch that RAN can produce:
-  //   injected  — Vite started and transformed the shell (the local outcome)
-  //   crashed   — createViteServer threw, which on ubuntu CI it does, because
-  //               Vite loads rollup's native module and npm's optional-
-  //               dependency bug leaves the wrong platform's binary installed
-  //               ("Cannot find module @rollup/rollup-darwin-x64" on Linux).
-  // The failure text is matched specifically, not by the word "rollup".
+  // Attempt 1 — "the shell must carry /@vite/client". Passed locally, FAILED
+  // in CI. Attempt 2 — "the log must mention vite or rollup". Passed
+  // everywhere and proved NOTHING: the vite import is TOP-LEVEL, so every
+  // boot prints "…loading ES Module …/vite/dist/node/index.js using
+  // require()" whether the branch runs or not; with the dev branch replaced
+  // by `if (false)` it still passed 10/10.
+  //
+  // The reason attempt 1 split is worth writing down, because it is a
+  // worktree artifact and not a product difference: Vite's root is the child's
+  // cwd (a temp dir) and it walks UP looking for a config and an index.html.
+  // In an agent worktree `node_modules` is a SYMLINK to the main checkout, so
+  // that walk lands in a directory that HAS an index.html and Vite transforms
+  // it. On CI, node_modules is real and there is nothing to find, so Vite
+  // starts and serves nothing. Both are the dev branch behaving correctly.
+  //
+  // So the only thing this control can honestly assert is that the branch was
+  // ENTERED, and the one observable that means exactly that — in both
+  // environments, and only when the branch runs — is the dev server ANSWERING
+  // for a path the production build has no file for. `/@vite/client` is
+  // Vite's own endpoint: served when its middleware is mounted, 404 or the
+  // SPA fallback when it is not.
   const injected = DEV_MARKERS.filter((m) => web.shell.includes(m));
-  const crashed = /\[vite\]|Cannot find module @rollup|failed to load config|vite\.config/i
-    .test(web.log());
-  record('CONTROL: without IS_ELECTRON the dev branch is still ENTERED',
-    injected.length > 0 || crashed,
-    `injected: ${JSON.stringify(injected)}; branch-entry evidence in the log: ${crashed}. `
-    + 'One must hold. Neither means the dev branch is gone or short-circuited rather than '
-    + 'refused, which would make every desktop check above pass for free. Log tail: '
-    + `${web.log().trim().split('\n').slice(-3).join(' | ').slice(0, 300)}`);
+  const viteRes = await fetch(`http://127.0.0.1:${WEB_PORT}/@vite/client`);
+  const viteBody = await viteRes.text();
+  const viteMounted = viteRes.status === 200 && viteBody.length > 20000;
+  record('CONTROL: without IS_ELECTRON the dev middleware is still MOUNTED',
+    viteMounted || injected.length > 0,
+    `GET /@vite/client -> ${viteRes.status} ${viteBody.length}b; markers in the shell: `
+    + `${JSON.stringify(injected)}. Neither means the dev branch is gone or short-circuited `
+    + 'rather than refused, which would make every desktop check above pass for free. '
+    + `Log tail: ${web.log().trim().split('\n').slice(-3).join(' | ').slice(0, 250)}`);
 } catch (err) {
   record('suite ran to completion', false, String(err && err.message));
 } finally {
