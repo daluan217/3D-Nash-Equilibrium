@@ -150,20 +150,56 @@ try {
     acao(preflight) !== '*' && acao(preflight) !== HOSTILE,
     `acao=${acao(preflight)} status=${preflight.status}`);
 
-  // ── CONTROL 1: the app's OWN renderer must keep working. Without this,
+  // ── SR-59: "a loopback origin" is TOO WIDE, and it was measured to be.
+  //    The first fix used isLocalClientOrigin (any localhost/127.0.0.1 with
+  //    any port), and every one of these was echoed back:
+  //      http://127.0.0.1:5173  a Vite dev server
+  //      http://localhost:8080  any other local app the user runs
+  //      https://localhost:443
+  //    A page served by ANY of them is a different origin in the same browser,
+  //    which is the whole threat model here. The app's own renderer needs none
+  //    of that latitude: loadURL('http://127.0.0.1:<port>') plus getApiUrl
+  //    returning a RELATIVE path means its requests are same-origin and carry
+  //    no Origin at all. So the allowed set is exactly "origin.host equals the
+  //    request's Host" — derived, not hardcoded, because the EADDRINUSE walk
+  //    moves the port.
+  for (const other of ['http://127.0.0.1:5173', 'http://localhost:8080',
+    'https://localhost:443', 'http://127.0.0.1:3000']) {
+    const res = await fetch(`${base}/api/games`, { headers: { Origin: other } });
+    record(`another LOCAL app on ${other} cannot read the library either`,
+      !acao(res),
+      `acao=${acao(res)} — loopback is not a trust boundary between origins`);
+  }
+
+  // ── CONTROL 1: the app's OWN origin must keep working. Without this,
   //    "no ACAO" is also what a broken middleware and a dead server look like.
-  for (const own of ['http://127.0.0.1:14321', 'http://localhost:14321']) {
+  //    Built from the port under test, so it follows the EADDRINUSE walk
+  //    instead of rotting against a hardcoded 14321.
+  {
+    const own = `http://127.0.0.1:${DESKTOP_PORT}`;
     const res = await fetch(`${base}/api/games`, { headers: { Origin: own } });
-    record(`CONTROL: the app's own loopback origin ${own} is still allowed`,
+    record(`CONTROL: the app's own origin ${own} is still allowed`,
       acao(res) === own,
       `acao=${acao(res)}`);
+  }
+  // Same-origin requests carry NO Origin header — this is what the renderer
+  // actually sends, and it must pass through untouched.
+  {
+    const res = await fetch(`${base}/api/games`);
+    record('CONTROL: a same-origin request (no Origin header) still succeeds',
+      res.status === 200,
+      `status=${res.status} — this is the renderer's real shape: getApiUrl returns a `
+      + 'relative path in local mode');
   }
   // PATCH must survive the preflight: the client updates a saved game in place
   // (scenario keep, rename), and dropping it breaks those calls for the
   // Electron client only — a failure that reads as "couldn't reach the server".
   const ownPreflight = await fetch(`${base}/api/games`, {
     method: 'OPTIONS',
-    headers: { Origin: 'http://localhost:14321', 'Access-Control-Request-Method': 'PATCH' },
+    headers: {
+      Origin: `http://127.0.0.1:${DESKTOP_PORT}`,
+      'Access-Control-Request-Method': 'PATCH',
+    },
   });
   record('CONTROL: PATCH is still preflight-allowed for the app itself',
     (ownPreflight.headers.get('access-control-allow-methods') || '').includes('PATCH'),

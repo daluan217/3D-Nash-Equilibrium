@@ -3119,7 +3119,28 @@ async function startServer() {
       // CORS is for, and `*` switches it off. The app's own renderer is a
       // loopback origin, so it keeps working; the rule is the same one the
       // admin branch above already uses.
-      if (origin && (isLocalClientOrigin(origin) || corsAllowlist.includes(origin))) {
+      // SR-59. "Loopback" is too wide, and it was measured to be: with
+      // `isLocalClientOrigin` alone, http://127.0.0.1:5173,
+      // http://localhost:8080 and https://localhost:443 were each echoed back,
+      // so a Vite dev server, a Jupyter notebook, or any other local app or
+      // page the user runs could read the whole saved-game library. The
+      // renderer does not need that latitude: it is loaded with
+      // `mainWindow.loadURL('http://127.0.0.1:<port>')` and `getApiUrl`
+      // returns a RELATIVE path in local mode, so its requests are
+      // same-origin and carry no Origin header at all (they fall through
+      // untouched — no ACAO is needed for a same-origin request).
+      //
+      // The bound port is not a constant (the EADDRINUSE walk moves it), so
+      // the app's own origin is derived from the REQUEST's Host rather than
+      // hardcoded: same-origin means origin.host === host. That stays correct
+      // whatever port the walk lands on, and cannot be spoofed into echoing a
+      // FOREIGN origin — a request from evil.example carries the app's Host
+      // and evil.example's Origin, which do not match.
+      const sameOriginAsApp = (() => {
+        if (!origin || !req.headers.host) return false;
+        try { return new URL(origin).host === req.headers.host; } catch { return false; }
+      })();
+      if (origin && (sameOriginAsApp || corsAllowlist.includes(origin))) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Vary", "Origin");
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
