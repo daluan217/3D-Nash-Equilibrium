@@ -109,15 +109,33 @@ const isBundle = bundleRoot.endsWith('.app') && fs.existsSync(path.join(bundleRo
 // /Users/x/.ssh/id_rsa` sits inside the dependency carve-out and passed every
 // rule. Auditing the path alone cannot see that.
 const symlinks = [];
+// Permission bits and link counts, gathered in the same pass — the walk already
+// stats every entry, so these cost nothing and answer questions a path list
+// cannot. A DMG preserves modes, so what is measured here is what the user
+// mounts.
+const worldWritable = [];
+const setuidOrSetgid = [];
+const hardLinked = [];
 function walk(dir, prefix, acc) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const rel = `${prefix}/${entry.name}`;
+    const abs = path.join(dir, entry.name);
     acc.push(rel);
     if (entry.isSymbolicLink()) {
-      try { symlinks.push([rel, fs.readlinkSync(path.join(dir, entry.name))]); } catch { /* raced */ }
+      try { symlinks.push([rel, fs.readlinkSync(abs)]); } catch { /* raced */ }
       continue; // never descend: a link out of the bundle would walk the disk
     }
-    if (entry.isDirectory()) walk(path.join(dir, entry.name), rel, acc);
+    if (entry.isFile()) {
+      try {
+        const st = fs.lstatSync(abs);
+        if (st.mode & 0o002) worldWritable.push(rel);
+        if (st.mode & 0o6000) setuidOrSetgid.push(rel);
+        // A hard link shares one inode with a file elsewhere on disk: same
+        // escape as a symlink, no link to read.
+        if (st.nlink > 1) hardLinked.push(rel);
+      } catch { /* raced */ }
+    }
+    if (entry.isDirectory()) walk(abs, rel, acc);
   }
   return acc;
 }
@@ -320,6 +338,22 @@ for (const [linkPath, target] of symlinks) {
     'SELF-TEST: an absolute symlink target resolved INSIDE the bundle root, so the escape check '
     + 'above cannot fire and its clean result means nothing.');
 }
+
+// MODE AND LINK INVARIANTS. All three measured as zero on the real bundle
+// before being asserted, so none of them is a threshold anyone has to tune.
+ok(worldWritable.length === 0,
+  `the bundle ships world-writable file(s) ${JSON.stringify(worldWritable.slice(0, 5))} `
+  + `(${worldWritable.length} total). Any local process could rewrite them — in an app bundle `
+  + 'that means replacing code the user then runs. The real bundle has none.');
+ok(setuidOrSetgid.length === 0,
+  `the bundle ships setuid/setgid file(s) ${JSON.stringify(setuidOrSetgid.slice(0, 5))} `
+  + `(${setuidOrSetgid.length} total). This is an unsigned, user-installed math tool; nothing in `
+  + 'it has any reason to run as another user. The real bundle has none.');
+ok(hardLinked.length === 0,
+  `the bundle ships hard-linked file(s) ${JSON.stringify(hardLinked.slice(0, 5))} `
+  + `(${hardLinked.length} total, link count > 1). A hard link shares one inode with a file `
+  + 'elsewhere on disk — the same escape a symlink gives, with no link to read and no path rule '
+  + 'able to see it. The real bundle has none.');
 
 const FRAMEWORK_BASELINE = 203; // electron ^31.7.7, darwin-arm64
 const frameworkPaths = bundleListing.filter((p) => p.startsWith('/Contents/Frameworks/'));
