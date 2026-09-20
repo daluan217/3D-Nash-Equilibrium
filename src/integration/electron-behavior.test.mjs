@@ -226,16 +226,72 @@ for (const role of perms.menuRoles) {
 // rather than the finding: if an upgrade ever moves a devtools item into a
 // container role this template DOES use, the list below is what has to be
 // re-measured, and this check names it.
+// SR-62 (this agent, sweep 19). The block below compared against a HAND-WRITTEN
+// list of four role names. That pins the APP's side of the assumption but not
+// ELECTRON's — and the dangerous half of the claim is about Electron: "of every
+// container role Electron offers, only viewMenu expands to devtools/reload". A
+// literal cannot notice Electron GAINING a container role. It already had six,
+// not four: `shareMenu` is declared by the installed Electron and was named in
+// neither the list nor the note above, and an upgrade adding a seventh would
+// leave this reading clean while the measurement behind it went stale.
+//
+// So derive the UNIVERSE from the installed electron.d.ts — the same technique
+// the permission block above uses, for the same reason — and require every
+// declared container role to be either measured-safe or denylisted. Never
+// neither.
+//
+// RE-MEASURED this sweep, one role at a time, on an ad-hoc-signed Electron
+// 31.7.7 whose version was checked against the .app's OWN Electron Framework
+// Info.plist (both CFBundleVersion 31.7.7), walking each built menu recursively
+// (_gen/b22-s19-menu-expansion.mjs):
+//   appMenu 10 items, fileMenu 2, editMenu 20, windowMenu 5, shareMenu 1 —
+//   ZERO devtools/reload/inspect items between them
+//   viewMenu 10 items -> reload, forceReload, toggleDevTools. That is the
+//   POSITIVE CONTROL of the measurement: it proves the detector fires at all,
+//   and it is denylisted by the loop above.
 {
-  const CONTAINER_ROLES_USED = ['appMenu', 'fileMenu', 'editMenu', 'windowMenu'];
-  const used = perms.menuRoles.filter((r) => CONTAINER_ROLES_USED.includes(r));
-  assert.deepStrictEqual(used.slice().sort(), CONTAINER_ROLES_USED.slice().sort(),
-    `the template's container roles are ${JSON.stringify(used)}, not `
-    + `${JSON.stringify(CONTAINER_ROLES_USED)}. Each of those four was measured on real Electron `
-    + '31.7.7 and expands to NO devtools/reload/inspect item; only `viewMenu` does, and it is '
-    + 'denylisted above. A container role outside that measured set must be expanded and '
-    + 're-measured before it ships — the checks above read the template, so they cannot see '
-    + 'what Electron builds from it.');
+  const dts = readFileSync(join(repo, 'node_modules/electron/electron.d.ts'), 'utf8');
+  const roleLine = dts.split('\n').find((l) => /role\?:/.test(l) && /appMenu/.test(l) && /viewMenu/.test(l));
+  ok(!!roleLine, 'CONTROL: the MenuItem role union was not found in electron.d.ts — the derivation '
+    + 'below would assert against an empty universe and pass for free.');
+  const declaredContainers = [...new Set((roleLine || '').match(/'[a-zA-Z]+Menu'/g) || [])]
+    .map((s) => s.replace(/'/g, ''));
+  ok(declaredContainers.length >= 5,
+    `CONTROL: only ${declaredContainers.length} container roles parsed out of electron.d.ts `
+    + `(${JSON.stringify(declaredContainers)}); the parse broke.`);
+  ok(declaredContainers.includes('shareMenu'),
+    'CONTROL: this Electron declares shareMenu — the role the old hand-written list of four '
+    + `omitted, which is the finding this block is for. Parsed: ${JSON.stringify(declaredContainers)}.`);
+
+  // Measured safe THIS SWEEP, each expanded on the pinned Electron.
+  const MEASURED_SAFE = ['appMenu', 'fileMenu', 'editMenu', 'windowMenu', 'shareMenu'];
+  // Measured DANGEROUS, and denylisted by name in the loop above.
+  const MEASURED_DANGEROUS = ['viewMenu'];
+  const unaccounted = declaredContainers
+    .filter((r) => !MEASURED_SAFE.includes(r) && !MEASURED_DANGEROUS.includes(r));
+  assert.deepStrictEqual(unaccounted, [],
+    `the installed Electron declares container role(s) ${JSON.stringify(unaccounted)} that have `
+    + 'never been expanded and measured. Electron EXPANDS a container role into real menu items '
+    + 'with real capabilities, and every check above reads only the TEMPLATE, so a new container '
+    + 'role carrying a devtools or reload item would be invisible here. Expand it on the pinned '
+    + 'Electron (_gen/b22-s19-menu-expansion.mjs), then add it to MEASURED_SAFE, or to '
+    + 'MEASURED_DANGEROUS *and* to the denylist regex above.');
+  checks++;
+
+  // And the app's own template may only use roles from the measured-safe set.
+  const usedContainers = [...new Set(perms.menuRoles.filter((r) => declaredContainers.includes(r)))];
+  const usedButNotSafe = usedContainers.filter((r) => !MEASURED_SAFE.includes(r));
+  assert.deepStrictEqual(usedButNotSafe, [],
+    `the shipped template uses container role(s) ${JSON.stringify(usedButNotSafe)} that are not in `
+    + `the measured-safe set ${JSON.stringify(MEASURED_SAFE)}. Only viewMenu is known to expand into `
+    + 'reload/forceReload/toggleDevTools, so using it — or any unmeasured container — puts a live '
+    + 'inspector or an SPA-destroying reload in the shipped menu bar.');
+  checks++;
+  ok(usedContainers.length >= 4,
+    `CONTROL: only ${usedContainers.length} container roles were seen in the installed template `
+    + `(${JSON.stringify(usedContainers)}). Both checks above are satisfied trivially by an EMPTY `
+    + 'template, which is exactly what Menu.setApplicationMenu(null) produces — the door the '
+    + 'shipped inspector came through in the first place.');
   checks++;
 }
 ok(perms.menuSetToNull === false,
