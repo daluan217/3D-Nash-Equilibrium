@@ -216,6 +216,9 @@ if (!fs.existsSync(asarPath)) {
 
 const listing = execFileSync('npx', ['asar', 'list', asarPath], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   .split('\n').map((l) => l.trim()).filter(Boolean);
+// The same library `npx asar` wraps, for the per-file reads below. Resolved from
+// the repo so the audit uses the version this build actually packaged with.
+const asarLib = require(require.resolve('@electron/asar', { paths: [repo] }));
 
 // Everything shipped OUTSIDE the archive. app.asar lives at
 // <App>.app/Contents/Resources/app.asar, so the bundle root is two levels up.
@@ -401,15 +404,31 @@ const SECRET_PATTERNS = [
 ];
 let secretScanned = 0;
 let secretChecksRun = 0;
-const SECRET_SCAN_FILES = ['dist/server.cjs', 'dist/index.html', 'electron-main.cjs',
-  'electron-preload.cjs'];
+// DERIVED FROM THE ARCHIVE, not hand-listed. The four names here used to be
+// hardcoded, with a comment calling them "the shipped text surface" — measurably
+// false: /dist/assets/index-*.js is the RENDERER bundle, and Vite inlines any
+// referenced `import.meta.env.VITE_*` value into it verbatim. Reproduced end to
+// end: referenced a VITE_LEAK_PROBE holding an `sk-…` key, built, packaged, and
+// the audit reported 290/290 with the key sitting in the .dmg's app.asar.
+// So: every text-bearing file the app ships, whatever it is called. Fonts and
+// images are excluded by extension — they are the only binaries here, and a
+// hashed filename is exactly what a hand-written list cannot keep up with.
+const SECRET_SKIP_RE = /\.(woff2?|ttf|otf|eot|png|jpe?g|gif|ico|icns|webp|avif|mp4|webm|wasm|zip|gz)$/i;
+// `ours`, not the whole listing: node_modules is third-party code nobody here
+// writes a credential into, and scanning 13k files takes the audit from seconds
+// to minutes. What this exists to cover is OUR build output.
+const SECRET_SCAN_FILES = ours
+  .filter((p) => !SECRET_SKIP_RE.test(p) && /\.[A-Za-z0-9]+$/.test(p))
+  .map((p) => p.replace(/^\//, ''))
+  .sort();
 for (const rel of SECRET_SCAN_FILES) {
   if (!listing.includes(`/${rel}`)) continue;
-  const outDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nash-audit-sec-'));
   try {
-    execFileSync('npx', ['asar', 'extract-file', asarPath, rel],
-      { cwd: outDir, maxBuffer: 128 * 1024 * 1024 });
-    const text = fs.readFileSync(path.join(outDir, path.basename(rel)), 'utf8');
+    // The Node API, not `npx asar` per file: the list is derived now (dozens of
+    // files, not four) and a subprocess each made the audit take minutes. Same
+    // library the CLI wraps. Also avoids the extract-file-writes-basename trap —
+    // two files named index.js in different directories cannot collide here.
+    const text = asarLib.extractFile(asarPath, rel).toString('utf8');
     secretScanned += text.length;
     for (const [re, what] of SECRET_PATTERNS) {
       const m = re.exec(text);
@@ -422,8 +441,6 @@ for (const rel of SECRET_SCAN_FILES) {
     }
   } catch (e) {
     ok(false, `could not scan the packaged ${rel} for secrets (${String(e.message).slice(0, 120)}).`);
-  } finally {
-    fs.rmSync(outDir, { recursive: true, force: true });
   }
 }
 // The rules above pass on an empty read, which is also what a broken extract
@@ -446,10 +463,24 @@ for (const f of SECRET_SCAN_FILES) {
     `${f} is not in the archive, so the secret scan skipped it. Every file in SECRET_SCAN_FILES is `
     + 'one the app needs; a missing one means the scan covered less than it claims.');
 }
-ok(SECRET_PATTERNS.length >= 6 && SECRET_SCAN_FILES.length === 4 && secretChecksRun === 24,
-  `the secret scan ran ${secretChecksRun} checks (${SECRET_SCAN_FILES.length} files x `
-  + `${SECRET_PATTERNS.length} patterns); expected 24 over 4 files and at least 6 patterns. A `
-  + 'shortened pattern or file list narrows the scan silently and still exits 0.');
+// The file list is derived now, so a count taken from it would be self-derived
+// (the SR-35 trap: both sides move together and the check cannot fail). Anchor
+// on the files that must be in ANY build of this app, named literally, plus the
+// renderer bundle matched by shape because its name is content-hashed.
+const MUST_SCAN = ['dist/server.cjs', 'dist/index.html', 'electron-main.cjs', 'electron-preload.cjs'];
+for (const f of MUST_SCAN) {
+  ok(SECRET_SCAN_FILES.includes(f),
+    `${f} is not in the derived secret-scan list. The derivation dropped a file the app certainly `
+    + 'ships, so it is filtering too hard and the clean result covers less than it claims.');
+}
+ok(SECRET_SCAN_FILES.some((f) => /^dist\/assets\/index-[^/]+\.js$/.test(f)),
+  'the derived secret-scan list contains no dist/assets/index-*.js. That is the RENDERER bundle, '
+  + 'the file Vite inlines import.meta.env values into — the one this derivation exists to cover.');
+ok(SECRET_PATTERNS.length >= 6 && SECRET_SCAN_FILES.length >= 8
+  && secretChecksRun === SECRET_SCAN_FILES.length * SECRET_PATTERNS.length,
+  `the secret scan ran ${secretChecksRun} checks over ${SECRET_SCAN_FILES.length} files x `
+  + `${SECRET_PATTERNS.length} patterns; every listed file must have met every pattern, over at `
+  + 'least 8 files and 6 patterns. A file that failed to extract lowers this and still exits 0.');
 
 // THE PACKAGED electron-main.cjs / electron-preload.cjs MUST BE THE AUDITED ONES.
 //
