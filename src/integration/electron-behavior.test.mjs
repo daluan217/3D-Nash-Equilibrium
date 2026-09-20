@@ -694,6 +694,29 @@ checks++;
 // So assert the instrumentation exists, not only that today's list is clean: a
 // future runner edit that drops the wrapper would make the check above pass for
 // the wrong reason (nothing recorded because nothing is watching).
+// SR-55, the same class one level up. The census attributed a load by
+// `parent.filename`, which asks WHOSE require object was used — and
+// electron-main can borrow another one. `require.main.require('dns')` resolves
+// through the RUNNER's module, so parent.filename was the runner and the census
+// stayed empty; a worker spawned that way ran dns.lookup in a SEPARATE THREAD,
+// where none of the in-process patches exist, and wrote its proof file with all
+// 452 checks green. Attribution is now by nearest call-stack frame.
+//
+// This CONTROL pins both directions, because the walk failed both ways while I
+// was writing it: too loose and the BACKEND's 39 transitive modules were
+// credited to electron-main (it requires dist/server.cjs synchronously, so
+// electron-main is always further down the stack); too tight and the borrowed
+// spellings walked free again.
+ok(egress.requiredModules.includes('./dist/server.cjs'),
+  'CONTROL: the census must still credit electron-main with its OWN requires. If this is missing '
+  + 'the stack walk has become too strict and every borrowed-require check below passes vacuously.');
+for (const m of ['express', 'nodemailer', 'openai', 'dotenv']) {
+  ok(!egress.requiredModules.includes(m),
+    `CONTROL: ${m} is a module the BACKEND requires, not electron-main. Its presence means the `
+    + 'stack walk got too loose and is crediting electron-main with everything dist/server.cjs '
+    + 'pulls in — which would make the exact-list assertion fail for a correct product.');
+}
+
 for (const door of ['binding', '_linkedBinding', 'getBuiltinModule']) {
   ok((egress.moduleDoorsInstrumented || []).includes(door),
     `CONTROL: process.${door} is not instrumented by the runner, so a module obtained through it `

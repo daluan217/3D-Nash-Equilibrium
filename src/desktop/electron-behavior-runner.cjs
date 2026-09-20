@@ -1102,10 +1102,61 @@ function loadBackend() {
   } finally { process.chdir(cwd); }
 }
 
+// SR-55. Attribution by `parent.filename` alone asks WHOSE require object was
+// used, and electron-main can borrow another one: `require.main.require('dns')`
+// resolves through the RUNNER's module, so parent.filename is the runner and
+// the census recorded nothing. Measured: a worker spawned that way ran
+// `dns.lookup` in a separate thread — where none of the in-process patches
+// exist — and wrote its proof file with all 452 checks green. Attribute by the
+// CALL STACK too: whoever borrowed the require object, the frame that asked for
+// it is still in electron-main.cjs. ~3.5us per load, and this file is a harness.
+const MAIN_RESOLVED = path.resolve(mainCjs);
+// The hook's own frame reads `at Module._load (<this file>:LINE:COL)`. Matched
+// by function name + file so it cannot swallow an unrelated runner frame.
+const HOOK_FRAME = `at Module._load (${__filename}`;
+const SELF_FRAME = `at calledFromMain (${__filename}`;
+// It must be the NEAREST frame, not merely present: electron-main requires
+// dist/server.cjs synchronously, so every transitive require the BACKEND makes
+// still has electron-main further down the stack. A contains-check therefore
+// dragged all 39 of the backend's own modules into electron-main's census.
+const calledFromMain = () => {
+  const prev = Error.stackTraceLimit;
+  Error.stackTraceLimit = 30;
+  const stack = new Error().stack || '';
+  Error.stackTraceLimit = prev;
+  // Frames 0..n are the machinery between us and the caller: this hook itself,
+  // node:diagnostics_channel (traceSync), and node:internal/modules/*. The
+  // first frame past them is the REAL caller. Measured shapes:
+  //   require('x')            -> hook, traceSync, wrapModuleLoad, <caller>
+  //   require.main.require(x) -> hook, traceSync, wrapModuleLoad,
+  //                              Module.require, <caller>
+  // THIS FILE is skipped only as the hook frame at the top; a later frame in
+  // the runner means the runner really is the caller (loadBackend's own
+  // require('os') — measured, it showed up in the census as `os`).
+  // MEASURED frame shapes, not guessed (the guess was wrong twice):
+  //   require('x') from main   -> calledFromMain, Module._load(runner),
+  //                               traceSync, wrapModuleLoad, <main>
+  //   require.main.require('x')-> ..., wrapModuleLoad, Module.require,
+  //                               require(helpers), <main>
+  // So skip this function's own frame, the hook's, and every node: frame; the
+  // first file frame after them is the caller. A `node:` frame is never the
+  // answer, which is why they are skipped rather than terminating the walk —
+  // require.main.require puts TWO of them between the hook and the caller.
+  const frames = stack.split('\n').slice(1);
+  let i = 0;
+  while (i < frames.length
+    && (frames[i].includes('node:') || frames[i].includes(SELF_FRAME)
+      || frames[i].includes(HOOK_FRAME))) i += 1;
+  const m = /\(?((?:\/|[A-Za-z]:\\)[^):]+)/.exec(frames[i] || '');
+  return !!m && m[1] === MAIN_RESOLVED;
+};
+
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   // Only record what electron-main itself pulls in, not transitive deps.
-  if (parent && parent.filename === path.resolve(mainCjs)) requiredModules.push(request);
+  if ((parent && parent.filename === MAIN_RESOLVED) || calledFromMain()) {
+    requiredModules.push(request);
+  }
   if (request === 'electron') return fakeElectron;
   if (/dist[/\\]server\.cjs$/.test(request)) {
     // Only the egress mode needs the backend; the others would pay its boot
