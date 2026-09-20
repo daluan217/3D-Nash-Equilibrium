@@ -814,6 +814,53 @@ for (const rel of plists) {
     + 'from the Dock and handles no URL scheme; a registered scheme is an input channel any web '
     + 'page can drive, and nothing in electron-main.cjs is written to receive one.');
 }
+// THE VERSION THE APP REPORTS MUST BE THE VERSION THE RELEASE ANNOUNCES.
+//
+// Three numbers have to agree and nothing checked any pair of them:
+//   package.json          -> what the workflow writes into app-version.json
+//   Info.plist            -> what app.getVersion() returns at runtime
+//   the .dmg/.zip filename -> the artifact actually uploaded
+// checkForUpdates prompts whenever compareVersions(manifest, app.getVersion())
+// > 0, so a manifest ahead of the installed plist means every copy is offered
+// an update, downloads it, still reports the old version, and is prompted
+// again — forever. RED-DESKTOP-19/002 was the mirror of this (same version
+// republished, nobody ever offered it); this is the loop in the other
+// direction, and the workflow's republish guard compares package.json to the
+// manifest, so it is watching two numbers that are equal BY CONSTRUCTION
+// while the one the user runs drifts.
+//
+// Reproduced: bump package.json to 0.0.225 without rebuilding. The audit
+// passed, the manifest would announce 0.0.225, and the DMG installs 0.0.224.
+// A stale dist-electron/ is the normal way this happens — the build is not
+// re-run because "only the version changed".
+if (isBundle) {
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8')).version;
+  const top = JSON.parse(execFileSync('plutil',
+    ['-convert', 'json', '-o', '-', path.join(bundleRoot, '/Contents/Info.plist')],
+    { encoding: 'utf8' }));
+  ok(top.CFBundleShortVersionString === pkgVersion,
+    `the packaged app reports version ${JSON.stringify(top.CFBundleShortVersionString)} but `
+    + `package.json says ${JSON.stringify(pkgVersion)}. The release writes package.json's value `
+    + "into app-version.json while the installed app reports the plist's via app.getVersion(), so "
+    + 'every installed copy would be offered an update that never changes its version — a prompt '
+    + 'loop on every launch. Rebuild dist-electron/ after bumping the version.');
+  ok(top.CFBundleVersion === pkgVersion,
+    `CFBundleVersion is ${JSON.stringify(top.CFBundleVersion)}, not ${JSON.stringify(pkgVersion)}.`);
+  // The artifact FILENAME carries the version too, and it is what the upload
+  // step globs. A name disagreeing with the bundle means two different builds
+  // are sitting in dist-electron/ and `dmgs[0]` picks by shell glob order.
+  const distDir = path.join(repo, 'dist-electron');
+  if (fs.existsSync(distDir)) {
+    for (const f of fs.readdirSync(distDir)) {
+      if (!/\.(dmg|zip)$/.test(f)) continue;
+      ok(f.includes(pkgVersion),
+        `dist-electron/${f} does not carry version ${pkgVersion}. The release uploads `
+        + 'dist-electron/*.dmg by glob, so a stale artifact from an earlier version can be the one '
+        + 'that ships while app-version.json announces this one.');
+    }
+  }
+}
+
 ok(plistsParsed === plists.length,
   `only ${plistsParsed} of ${plists.length} Info.plist files parsed to anything. A plist that `
   + 'reads as empty satisfies every rule above, so this is what makes their clean result mean '
