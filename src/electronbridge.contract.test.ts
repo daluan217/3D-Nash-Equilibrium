@@ -139,7 +139,10 @@ const memberBody = (m: string) => m.replace(/^[A-Za-z_$][\w$]*\s*:\s*/, '')
 // the generic SENDER itself, so one call from the renderer reaches every
 // channel in the app, exactly the defect class this file exists to prevent.
 // Only an immediately-invoked call on a literal channel name is acceptable.
-const ALLOWED_IPC_CALL = /^ipcRenderer\.(?:send|invoke)\(\s*'[a-z0-9-]+'/;
+// The channel literal must be COMPLETE, i.e. followed by `,` or `)`. Matching
+// only a literal PREFIX would bless `ipcRenderer.send('a' + v, v)`, where the
+// renderer still chooses the channel.
+const ALLOWED_IPC_CALL = /^ipcRenderer\.(?:send|invoke)\(\s*'[a-z0-9-]+'\s*[,)]/;
 const leaksRaw = (m: string) => {
   const body = memberBody(m);
   if (!/\bipcRenderer\b/.test(body)) return false;
@@ -170,7 +173,14 @@ for (const leak of ['getRaw: () => ipcRenderer', 'getRaw: () => ipcRenderer,',
   'on: () => ipcRenderer.on,',
   'alias: () => { const s = ipcRenderer.send; return s; }',
   // A dynamic channel is a generic sender too: the renderer picks the channel.
-  'sendAny: (ch, v) => ipcRenderer.send(ch, v),']) {
+  'sendAny: (ch, v) => ipcRenderer.send(ch, v),',
+  // Self-review: a literal PREFIX is not a literal channel — the renderer still
+  // chooses the rest, so the allowlist requires the literal to be complete.
+  "sendish: (v) => ipcRenderer.send('a' + v, v),",
+  'tpl: (v) => ipcRenderer.send(`chan-${v}`, v),',
+  // Neither of these is the narrow send/invoke pair.
+  "sync: (c) => ipcRenderer.sendSync('set-background-color', c),",
+  "post: (c) => ipcRenderer.postMessage('set-background-color', c),"]) {
   ok(leaksRaw(leak) || !/^[A-Za-z_$][\w$]*\s*:\s*\(?[^:]*\)?\s*=>/.test(leak),
     `SELF-TEST: ${JSON.stringify(leak)} must be rejected by one of the two member checks — it hands ` +
     'the renderer the raw ipcRenderer. A detector that misses it cannot fail for its stated reason.');

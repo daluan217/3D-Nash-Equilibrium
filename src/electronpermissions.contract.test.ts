@@ -83,6 +83,20 @@ const allowed = [...allowMatch![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
 // have granted the renderer filesystem access with this contract still green.
 // An allowlist is only reviewable if the review pins its exact contents.
 const EXPECTED_ALLOWLIST = ['clipboard-sanitized-write'];
+// The literal is only the allowlist if nothing edits the Set afterwards:
+// `ALLOWED_PERMISSIONS.add('media')` one line later grants a real capability
+// while the declaration this check reads stays innocent.
+for (const mutator of ['add', 'delete', 'clear']) {
+  ok(!new RegExp(`ALLOWED_PERMISSIONS\\s*\\.\\s*${mutator}\\s*\\(`).test(main),
+    `ALLOWED_PERMISSIONS must never be mutated after it is declared (found .${mutator}()). `
+    + 'This contract reads the literal; a post-construction edit changes the real policy without '
+    + 'touching the text being reviewed.');
+}
+// Double-quoted entries would extract as [] and pass a "length 0" reading, so
+// pin that the declaration uses the single-quoted form this extraction models.
+ok(!/const ALLOWED_PERMISSIONS = new Set\(\[[^\]]*"/.test(main),
+  'ALLOWED_PERMISSIONS entries must be single-quoted — the extraction below reads \'…\' only, and a '
+  + 'double-quoted entry would be silently invisible to it.');
 ok(allowed.length === EXPECTED_ALLOWLIST.length
   && EXPECTED_ALLOWLIST.every((p, i) => allowed[i] === p),
   `ALLOWED_PERMISSIONS must be exactly ${JSON.stringify(EXPECTED_ALLOWLIST)} (found ` +
