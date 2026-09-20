@@ -218,7 +218,21 @@ const listing = execFileSync('npx', ['asar', 'list', asarPath], { encoding: 'utf
   .split('\n').map((l) => l.trim()).filter(Boolean);
 // The same library `npx asar` wraps, for the per-file reads below. Resolved from
 // the repo so the audit uses the version this build actually packaged with.
-const asarLib = require(require.resolve('@electron/asar', { paths: [repo] }));
+// @electron/asar is electron-builder's own dependency, not a declared one, so
+// it is reachable only because npm HOISTS it to the top level. That is a real
+// dependency this file now has: if a lockfile change ever nests it, every
+// content rule below stops running. Fail loudly with the reason rather than
+// crashing on an opaque MODULE_NOT_FOUND — a silent skip here would take the
+// whole secret scan with it.
+let asarLib;
+try {
+  asarLib = require(require.resolve('@electron/asar', { paths: [repo] }));
+} catch (e) {
+  console.error('audit-packaged-asar: cannot load @electron/asar, which the content rules need to '
+    + 'read files out of the archive. It arrives hoisted from electron-builder; if that changed, '
+    + `declare it in package.json devDependencies. (${String(e.message).slice(0, 120)})`);
+  process.exit(1);
+}
 
 // Everything shipped OUTSIDE the archive. app.asar lives at
 // <App>.app/Contents/Resources/app.asar, so the bundle root is two levels up.
