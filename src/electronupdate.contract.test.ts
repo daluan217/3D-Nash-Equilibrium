@@ -49,6 +49,7 @@
  *   npx tsx src/electronupdate.contract.test.ts
  */
 import assert from 'node:assert';
+import ts from 'typescript';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -377,7 +378,63 @@ const deString = (s: string) => s
   .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
   .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
   .replace(/`(?:[^`\\]|\\.)*`/g, '``');
-const scannable = deString(code);
+/**
+ * CODE ONLY, via TypeScript's own scanner — not another hand-rolled stripper.
+ *
+ * Reviewer finding (9router, accepted and reproduced): the regex pair above
+ * cannot see a REGEX LITERAL, so `const re = /a\/\/b/; shell.openExternal(u);`
+ * had its `//` treated as a comment, the rest of the line deleted, and the
+ * real call vanished — the count read one fewer and the contract passed. Two
+ * shapes reproduce it (a `//` inside a regex body and inside a character
+ * class), which is the same defect as the `${x}//y` one a commit earlier.
+ * Patching a third case would leave a fourth: JS tokenisation is not a regex
+ * problem. `typescript` is already a dependency (it IS `npm run lint`), and
+ * its scanner distinguishes regex literals from division, which is the part
+ * no pattern can do. Non-code tokens are blanked, preserving offsets and
+ * newlines so any positional reporting stays honest.
+ */
+function codeOnly(src: string): string {
+  // The PARSER, not the raw scanner: a bare scanner cannot resume a template
+  // after `${...}` without parser context — it stopped at the `}` of
+  // `` `a${x}//y` `` and silently dropped the rest of the file. Measured.
+  const sf = ts.createSourceFile('probe.js', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const out = src.split('');
+  const blank = (a: number, b: number) => {
+    for (let i = a; i < b; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  const LITERALS = new Set<number>([
+    ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+    ts.SyntaxKind.RegularExpressionLiteral, ts.SyntaxKind.TemplateHead,
+    ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail,
+  ]);
+  const walk = (n: import('typescript').Node): void => {
+    if (LITERALS.has(n.kind)) blank(n.getStart(sf), n.getEnd());
+    for (const r of ts.getLeadingCommentRanges(src, n.getFullStart()) ?? []) blank(r.pos, r.end);
+    for (const r of ts.getTrailingCommentRanges(src, n.getEnd()) ?? []) blank(r.pos, r.end);
+    n.forEachChild(walk);
+  };
+  walk(sf);
+  return out.join('');
+}
+// SELF-TESTS: the two shapes the reviewer used, plus the ones the old stripper
+// already handled, plus a CONTROL so a scanner that blanked everything fails.
+for (const [shape, src] of [
+  ['a // inside a regex literal', 'const re = /a\\/\\/b/; shell.openExternal(u);'],
+  ['a // inside a regex char class', 'const re = /[/\\/]/; shell.openExternal(u);'],
+  ['a // inside a template', 'const t = `a${x}//y`; shell.openExternal(u);'],
+] as const) {
+  ok(codeOnly(src).includes('shell.openExternal('),
+    `SELF-TEST: a real call after ${shape} must still be COUNTED. The hand-rolled stripper `
+    + 'deleted it and the contract passed with one fewer call site.');
+}
+ok(!codeOnly("const m = 'shell.openExternal(x)';").includes('openExternal'),
+  'SELF-TEST: a call named inside a STRING must not be counted.');
+ok(!codeOnly('// shell.openExternal(evil)').includes('openExternal'),
+  'SELF-TEST: a call named inside a comment must not be counted.');
+ok(codeOnly('shell.openExternal(url);').includes('shell.openExternal('),
+  'SELF-TEST CONTROL: a plain real call IS counted — a scanner that blanked everything would '
+  + 'drive the count to 0 and make the assertion below unfailable.');
+const scannable = codeOnly(main);
 ok(!deString("const m = 'shell.openExternal(x)';").includes('openExternal'),
   'SELF-TEST: the string blanker must remove a call mentioned inside a string literal, or this '
   + 'count fails for prose rather than for code.');
