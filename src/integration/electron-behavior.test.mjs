@@ -143,6 +143,31 @@ for (const prop of perms.sessionReads) {
 // 2. BRIDGE — identity, not text. Nothing exposed may BE a live IPC handle.
 // ─────────────────────────────────────────────────────────────────────────────
 const bridge = run('bridge');
+// FOUND BY THIS AGENT, sweep 2. The runner kept only the LAST exposure, so a
+// second `exposeInMainWorld('nashInternal', {raw: ipcRenderer})` overwrote
+// itself out of the measurement while still reaching the renderer. And
+// `exposeInIsolatedWorld` is a separate API with the same effect. Every
+// exposure is judged now, in every world.
+assert.deepStrictEqual(bridge.allExposures.map((e) => `${e.world}:${e.key}`), ['main:nashDesktop'],
+  `the preload made these exposures: ${JSON.stringify(bridge.allExposures)}. Exactly one is `
+  + 'allowed, in the main world, named nashDesktop. A second call is a second namespace handed to '
+  + 'the renderer whatever it is named, and exposeInIsolatedWorld reaches any script in that world.');
+checks++;
+for (const e of bridge.allExposures) {
+  ok(e.leaks === false,
+    `the exposure ${e.world}:${e.key} contains a live ipcRenderer handle (keys `
+    + `${JSON.stringify(e.keys)}).`);
+}
+// A preload runs with `window` as its global: a plain assignment reaches the
+// page with no contextBridge involved and no isolation to cross.
+assert.deepStrictEqual(bridge.globalsAdded, [],
+  `the preload added globals ${JSON.stringify(bridge.globalsAdded)}. A preload's global object IS `
+  + 'the page\'s window, so `globalThis.x = ipcRenderer` hands the renderer a live handle without '
+  + 'touching contextBridge — contextIsolation does not stop an assignment made inside the preload.');
+checks++;
+ok(bridge.globalLeaks.length === 0,
+  `preload globals ${JSON.stringify(bridge.globalLeaks)} hold a live IPC handle.`);
+
 ok(bridge.exposedKey === 'nashDesktop',
   `the preload must expose exactly one namespace, "nashDesktop" (got ${JSON.stringify(bridge.exposedKey)}).`);
 assert.deepStrictEqual(bridge.keys, ['setBackgroundColor'],

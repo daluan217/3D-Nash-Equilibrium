@@ -74,11 +74,21 @@ if (mode === 'bridge') {
   }
   ipcRenderer.__isFakeIpcRenderer = true;
 
-  let exposed = null;
-  let exposedKey = null;
+  // EVERY exposure, not just the last one. Keeping a single `exposed` let a
+  // second `exposeInMainWorld('nashInternal', {raw: ipcRenderer})` overwrite
+  // itself out of the measurement — the namespace still reached the renderer.
+  const exposures = [];
   const contextBridge = {
-    exposeInMainWorld(key, api) { exposedKey = key; exposed = api; },
+    exposeInMainWorld(key, api) { exposures.push({ world: 'main', key, api }); },
+    // A separate API with the same effect for any script in that world.
+    exposeInIsolatedWorld(worldId, key, api) {
+      exposures.push({ world: `isolated:${worldId}`, key, api });
+    },
   };
+
+  // A preload runs with `window` as its global, so a plain assignment reaches
+  // the page without contextBridge at all. Snapshot the globals, then diff.
+  const globalsBefore = new Set(Reflect.ownKeys(globalThis));
 
   const originalLoad = Module._load;
   Module._load = function (request, parent, isMain) {
@@ -87,6 +97,12 @@ if (mode === 'bridge') {
   };
   require(path.resolve(preloadCjs));
   Module._load = originalLoad;
+
+  const globalsAdded = Reflect.ownKeys(globalThis)
+    .filter((k) => !globalsBefore.has(k)).map(String);
+
+  const exposed = exposures.length === 1 ? exposures[0].api : null;
+  const exposedKey = exposures.length === 1 ? exposures[0].key : null;
 
   // Is this value a live IPC handle — the module object itself, or any of its
   // methods? Identity, not text: an alias, a rename, a property copy and a
@@ -188,7 +204,30 @@ if (mode === 'bridge') {
     }
     members.push(entry);
   }
-  out({ exposedKey, keys: Object.keys(exposed || {}), members, sent, invoked, walkerSelfTest });
+  // Judge every exposure, not only the single one the checks above unpack: a
+  // second namespace is a second capability whatever it is called.
+  // Each exposure's own TOP-LEVEL members are allowed to reach IPC (that is
+  // what a bridge is for); their channels face the whitelist separately. Below
+  // that, anything reaching IPC is a leak — so walk each member with itself
+  // exempted, exactly as the per-member checks do.
+  const exposureLeaks = (api) => {
+    if (isLiveIpc(api)) return true;
+    if (api === null || typeof api !== 'object') return findLiveIpc(api);
+    return Object.values(api).some((v) => findLiveIpc(v, 0, new Set(), v));
+  };
+  const allExposures = exposures.map((e) => ({
+    world: e.world,
+    key: e.key,
+    keys: e.api && typeof e.api === 'object' ? Object.keys(e.api) : [typeof e.api],
+    leaks: exposureLeaks(e.api),
+  }));
+  // A preload global that holds a live IPC handle reaches the page without
+  // contextBridge at all.
+  const globalLeaks = globalsAdded.filter((k) => {
+    try { return findLiveIpc(globalThis[k]); } catch { return false; }
+  });
+  out({ exposedKey, keys: Object.keys(exposed || {}), members, sent, invoked, walkerSelfTest,
+    allExposures, globalsAdded, globalLeaks });
 }
 
 // ── shared fakes for the main-process modes ─────────────────────────────────
