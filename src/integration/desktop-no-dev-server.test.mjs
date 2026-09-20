@@ -157,11 +157,49 @@ try {
   web = await boot(WEB_PORT, {});
   record('CONTROL: the web-condition server starts at all', web.up,
     web.up ? `pid ${web.child.pid}` : web.log().slice(-400));
+  // The control asks "is the dev branch alive at all?" and it must be able to
+  // answer without asserting a value only ONE host can produce. On ubuntu CI
+  // it cannot: Vite pulls in rollup's native module and npm's optional-
+  // dependency bug leaves the wrong platform's binary installed
+  // ("Cannot find module @rollup/rollup-darwin-x64" on a Linux runner), so
+  // createViteServer throws, the server falls through to the static branch,
+  // and NOTHING is injected — while the product is perfectly correct.
+  //
+  // MEASURED both ways: locally the web arm injects /@vite/client (182,753
+  // bytes); in CI it injects nothing and the log carries the rollup error.
+  // Asserting "Vite must inject" is therefore an SR-46-class check — one that
+  // measures the HOST, not the shipping condition. This one caught itself on
+  // its first CI run, which is the point of running it there.
+  //
+  // So: the dev branch must REACH Vite, proven by either outcome — the client
+  // injected, or a Vite/rollup failure in the log. What is NOT acceptable is
+  // the third outcome: a clean run with no Vite and no error, which is what a
+  // deleted or short-circuited dev branch looks like, and which would make
+  // every desktop check above pass for free.
+  // The signal has to come from ENTERING the branch, not from the module
+  // graph. My first attempt matched /vite|rollup/ over the whole log and was
+  // TOOTHLESS: `import { createServer as createViteServer } from "vite"` is a
+  // TOP-LEVEL import, so every boot prints "…loading ES Module
+  // …/vite/dist/node/index.js using require()" whether the branch runs or not.
+  // Measured: with the dev branch replaced by `if (false)`, the toothless
+  // version still passed 10/10.
+  //
+  // Two signals that only a branch that RAN can produce:
+  //   injected  — Vite started and transformed the shell (the local outcome)
+  //   crashed   — createViteServer threw, which on ubuntu CI it does, because
+  //               Vite loads rollup's native module and npm's optional-
+  //               dependency bug leaves the wrong platform's binary installed
+  //               ("Cannot find module @rollup/rollup-darwin-x64" on Linux).
+  // The failure text is matched specifically, not by the word "rollup".
   const injected = DEV_MARKERS.filter((m) => web.shell.includes(m));
-  record('CONTROL: without IS_ELECTRON the dev branch still runs Vite',
-    injected.length > 0,
-    `injected: ${JSON.stringify(injected)} — if this fails, the gate above is passing `
-    + 'because the dev server is broken, not because it is correctly refused');
+  const crashed = /\[vite\]|Cannot find module @rollup|failed to load config|vite\.config/i
+    .test(web.log());
+  record('CONTROL: without IS_ELECTRON the dev branch is still ENTERED',
+    injected.length > 0 || crashed,
+    `injected: ${JSON.stringify(injected)}; branch-entry evidence in the log: ${crashed}. `
+    + 'One must hold. Neither means the dev branch is gone or short-circuited rather than '
+    + 'refused, which would make every desktop check above pass for free. Log tail: '
+    + `${web.log().trim().split('\n').slice(-3).join(' | ').slice(0, 300)}`);
 } catch (err) {
   record('suite ran to completion', false, String(err && err.message));
 } finally {
