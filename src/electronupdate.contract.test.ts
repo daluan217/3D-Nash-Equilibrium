@@ -357,18 +357,43 @@ ok(nonUpdateCalls.length === 0,
 // stopped a SECOND, direct `shell.openExternal(...)` elsewhere in the file from
 // bypassing that gate entirely — the wrapper would still look perfect.
 // ─────────────────────────────────────────────────────────────────────────────
-const openExternalSites = [...code.matchAll(/\bshell\.openExternal\s*\(/g)];
+// String literals survive comment-stripping, so a prose mention of
+// "shell.openExternal(" inside a message would inflate the count and fail CI
+// for the wrong reason. Blank string bodies before counting.
+const deString = (s: string) => s
+  .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+  .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+  .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+const scannable = deString(code);
+ok(!deString("const m = 'shell.openExternal(x)';").includes('openExternal'),
+  'SELF-TEST: the string blanker must remove a call mentioned inside a string literal, or this '
+  + 'count fails for prose rather than for code.');
+ok(deString("shell.openExternal(url); // real").includes('shell.openExternal('),
+  'SELF-TEST CONTROL: the string blanker must keep real code — a blanker that erases everything '
+  + 'would drive the count to 0 and make the check unfailable.');
+const openExternalSites = [...scannable.matchAll(/\bshell\.openExternal\s*\(/g)];
 ok(openExternalSites.length === 1,
   `shell.openExternal must appear exactly once in electron-main.cjs (found ${openExternalSites.length}). `
   + 'Every hand-off to the OS must go through openExternalIfSafe; a direct call elsewhere skips the '
   + 'scheme allowlist, and file:// opens Finder on an arbitrary path.');
+// A call site is not the only way to reach the OS: `const go = shell.openExternal`
+// hands the raw function to a caller that never consults the scheme allowlist,
+// and the call-site regex above cannot see it (`go(url)` looks like any call).
+const openExternalRefs = [...scannable.matchAll(/\bshell\.openExternal\b(?!\s*\()/g)];
+ok(openExternalRefs.length === 0,
+  `shell.openExternal must never be referenced without being called (found ${openExternalRefs.length} `
+  + 'bare reference(s)). Aliasing it — `const go = shell.openExternal` — carries the unguarded '
+  + 'function past openExternalIfSafe, and the call-site count cannot see the alias being invoked.');
 {
   const gate = /function openExternalIfSafe[\s\S]*?\n\}/.exec(code);
   ok(gate !== null && gate[0].includes('shell.openExternal'),
     'the one shell.openExternal call must be INSIDE openExternalIfSafe — outside it, the scheme '
     + 'allowlist is not consulted at all.');
   // CONTROL: the count check must be able to fail.
-  ok([...`${code}\nshell.openExternal('file:///tmp');`.matchAll(/\bshell\.openExternal\s*\(/g)].length === 2,
+  // Through the SAME pipeline the real check uses (deString), or the control
+  // proves a different scan can fail than the one that guards the tree.
+  ok([...deString(`${code}\nshell.openExternal('file:///tmp');`)
+    .matchAll(/\bshell\.openExternal\s*\(/g)].length === openExternalSites.length + 1,
     'SELF-TEST: adding one direct call must make the scan see two sites — otherwise the count '
     + 'above cannot fail for the reason it claims.');
 }
