@@ -48,8 +48,16 @@ const preloadCjs = path.join(repoRoot, 'electron-preload.cjs');
 // then walk up into ports this process does not own. Overridable for CI.
 const EGRESS_PORT = Number(process.env.EGRESS_PROBE_PORT || 4897);
 
+// Write the result to a FILE, not stdout. The payload grew past the pipe
+// buffer, and a truncated line reads as "SyntaxError: Unexpected end of JSON
+// input" — a harness failure that looks nothing like the assertion it hides.
+// stdout carries only the path. process.exit after a synchronous write is safe;
+// console.log is not (it can drop a buffered tail on exit).
+const RESULT_FILE = process.env.RUNNER_RESULT_FILE
+  || path.join(require('os').tmpdir(), `nash-runner-${process.pid}.json`);
 const out = (payload) => {
-  console.log(`RUNNER_RESULT ${JSON.stringify(payload)}`);
+  require('fs').writeFileSync(RESULT_FILE, JSON.stringify(payload));
+  process.stdout.write(`RUNNER_RESULT_FILE ${RESULT_FILE}\n`);
   process.exit(0);
 };
 
@@ -251,6 +259,8 @@ const injectedScripts = [];
 const injectedCss = [];
 const loadedUrls = [];
 const windowEvents = {};
+const windowBackgroundColors = [];
+let mainWindowInstance = null;
 let mainContents = null;
 
 function totalStub(name) {
@@ -349,6 +359,7 @@ class FakeBrowserWindow {
   constructor(opts) {
     windowOptions.push(opts && opts.webPreferences ? { ...opts.webPreferences } : null);
     this.webContents = new FakeWebContents(); mainContents = this.webContents;
+    mainWindowInstance = this;
   }
   loadURL(url) { loadedUrls.push(String(url)); }
   on(event, cb) { (windowEvents[event] ||= []).push(cb); }
@@ -357,9 +368,15 @@ class FakeBrowserWindow {
   isMinimized() { return false; }
   restore() {}
   focus() {}
-  setBackgroundColor() {}
-  static fromWebContents() { return null; }
-  static getAllWindows() { return []; }
+  setBackgroundColor(color) { windowBackgroundColors.push(color); }
+  // Returning null here meant the ipcMain handler's `if (win)` was always
+  // false, so every payload driven through it reached nothing and the whole
+  // IPC probe measured an early return. Resolve the sender to its window the
+  // way Electron does.
+  static fromWebContents(contents) {
+    return contents && contents === mainContents ? mainWindowInstance : null;
+  }
+  static getAllWindows() { return mainWindowInstance ? [mainWindowInstance] : []; }
 }
 
 // Chromium reads its command line during startup, so these switches ARE the
@@ -799,7 +816,31 @@ if (mode === 'egress') {
 if (mode === 'openexternal') {
   const HOSTILE = ['file:///etc/passwd', 'smb://evil/share', 'javascript:alert(1)',
     'data:text/html,<script>1</script>', 'tel:+15551234', 'vscode://evil/x',
-    'http://plain.example/x', 'https://ok.example/x'];
+    'http://plain.example/x', 'https://ok.example/x',
+    // LOOK-ALIKES. A gate that asks whether the URL "contains 127.0.0.1" or
+    // ends with the app's host, rather than comparing the parsed ORIGIN,
+    // accepts every one of these — and each is a remote origin driving the
+    // whole UI inside a window with no URL bar (titleBarStyle: 'hidden').
+    'https://127.0.0.1.evil.example/x',
+    'https://evil.example/?x=http://127.0.0.1:14322/',
+    'https://evil.example/#http://127.0.0.1:14322/',
+    'https://evil.example/127.0.0.1:14322',
+    'http://127.0.0.1:14322@evil.example/x',
+    'https://127.0.0.1:9999/x',
+    // Scheme downgrade on the app's own host: same origin string to a
+    // substring check, a different origin to the browser.
+    'https://127.0.0.1:14322/x',
+    // Encoded and mixed-case spellings of the schemes above.
+    'JaVaScRiPt:alert(1)', 'FILE:///etc/passwd', '\u0001javascript:alert(1)',
+    ' javascript:alert(1)',
+    // RAW vs PARSED. `new URL()` normalises: it strips leading/trailing
+    // whitespace and control characters, lowercases the scheme and host, and
+    // percent-encodes the rest. A gate that VALIDATES `parsed` but hands the
+    // OS the RAW string validates one value and acts on another — so these
+    // must arrive at shell.openExternal in their normalised form or not at all.
+    '  https://ok.example/x  ', '\thttps://ok.example/x\n',
+    'https://OK.EXAMPLE/x', 'https://ok.example/x\u0000',
+    'https://ok.example/a\u0001b'];
   const windowOpenVerdicts = [];
   const navigationPrevented = [];
   const framePrevented = [];
@@ -856,6 +897,35 @@ if (mode === 'openexternal') {
   const lifecycleEventsDriven = Object.keys(onHandlers)
     .filter((e) => !['ready', 'will-quit', 'before-quit'].includes(e));
 
+  // Drive every registered ipcMain handler with renderer-controlled garbage.
+  // These run in the MAIN process with full Node privileges, and their only
+  // input is whatever the page sends. Record what each one does with values it
+  // was not designed for — `setBackgroundColor` reaches a native window API.
+  const ipcAccepted = [];
+  const ipcThrew = [];
+  // '#001122' is the POSITIVE CONTROL and must be first: with only hostile
+  // payloads, "nothing was accepted" is indistinguishable from "the handler was
+  // never reached", which is exactly what happened when BrowserWindow
+  // .fromWebContents returned null and `if (win)` was always false.
+  const IPC_PAYLOADS = ['#001122',
+    undefined, null, 0, 1, true, '', '#fff', '#zzzzzz', '#0011223',
+    'red', 'rgb(0,0,0)', 'javascript:alert(1)', '#001122; background: url(x)',
+    '\u0000#001122', '#001122\n', ' #001122', '#001122'.repeat(5000), {}, [], () => {},
+    { toString: () => '#001122' }, Symbol.iterator];
+  for (const [channel, handlers] of Object.entries(fakeIpcMain._h)) {
+    for (const fn of handlers) {
+      for (const payload of IPC_PAYLOADS) {
+        const before = windowBackgroundColors.length;
+        try {
+          fn({ sender: mainContents, frameId: 1, processId: 1 }, payload);
+          if (windowBackgroundColors.length > before) {
+            ipcAccepted.push([channel, String(windowBackgroundColors[windowBackgroundColors.length - 1])]);
+          }
+        } catch (e) { ipcThrew.push([channel, String(e && e.message).slice(0, 80)]); }
+      }
+    }
+  }
+
   // Window events too — the fullscreen handlers call executeJavaScript, which
   // runs code IN THE RENDERER from the main process, to one side of every
   // policy this file checks. Fire them so whatever they inject is recorded.
@@ -900,6 +970,9 @@ if (mode === 'openexternal') {
     lifecycleEventsDriven,
     windowEventsDriven: Object.keys(windowEvents),
     ipcChannels,
+    ipcAccepted,
+    ipcThrew,
+    windowBackgroundColors,
     injectedScripts,
     injectedCss,
     loadedUrls,

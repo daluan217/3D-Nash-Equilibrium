@@ -34,6 +34,7 @@
  *   node src/integration/electron-behavior.test.mjs
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import assert from 'node:assert';
@@ -60,9 +61,19 @@ function run(mode, env = {}) {
       + 'unhandled error in the main process is itself a finding — commonly an outbound call the '
       + `interception layer could not stub. Last output:\n${detail}`);
   }
-  const line = stdout.split('\n').find((l) => l.startsWith('RUNNER_RESULT '));
-  assert(line, `runner (${mode}) printed no RUNNER_RESULT:\n${stdout}`);
-  const result = JSON.parse(line.slice('RUNNER_RESULT '.length));
+  // The result comes back via a FILE: the payload outgrew the pipe buffer once,
+  // and a truncated JSON line fails as "Unexpected end of JSON input" — a
+  // harness failure wearing none of the vocabulary of the assertion it hides.
+  const line = stdout.split('\n').find((l) => l.startsWith('RUNNER_RESULT_FILE '));
+  assert(line, `runner (${mode}) printed no RUNNER_RESULT_FILE:\n${stdout.slice(-2000)}`);
+  const file = line.slice('RUNNER_RESULT_FILE '.length).trim();
+  const raw = readFileSync(file, 'utf8');
+  rmSync(file, { force: true });
+  let result;
+  try { result = JSON.parse(raw); } catch (e) {
+    assert.fail(`runner (${mode}) wrote unparseable output (${e.message}). First 500 chars:\n`
+      + raw.slice(0, 500));
+  }
   assert(!result.error, `runner (${mode}) could not measure anything: ${result.error}`);
   return result;
 }
@@ -489,6 +500,33 @@ for (const u of ext.loadedUrls) {
 }
 ok(ext.loadedUrls.length > 0, 'CONTROL: the window must actually be pointed at a URL.');
 
+// FOUND BY THIS AGENT, sweep 2. The navigation gate must compare the parsed
+// ORIGIN, not look for the app's host inside the string. The hostile set now
+// includes look-alikes that a substring or suffix check accepts:
+//   https://127.0.0.1.evil.example/x          host is a SUBDOMAIN of evil
+//   http://127.0.0.1:14322@evil.example/x     the app's origin as USERINFO
+//   https://evil.example/?x=http://127.0.0.1  the app's origin in the query
+//   https://127.0.0.1:14322/x                 the app's host, other scheme
+// Each is a remote origin driving the whole UI inside a window that has no URL
+// bar (titleBarStyle: 'hidden'), so nothing on screen would say so. They are
+// asserted by the loops above — every one must be prevented, and the scheme
+// gate decides separately whether it may be handed to the OS.
+for (const u of ext.openedUrls) {
+  ok(!/^https?:\/\/[^/]*@/.test(u),
+    `the OS was handed ${JSON.stringify(u)}, which carries USERINFO before the host. `
+    + '"http://127.0.0.1:14322@evil.example/" reads as the app\'s own origin to a human and to a '
+    + 'substring check; its actual origin is evil.example.');
+}
+// A URL with a control character or leading whitespace must not survive into
+// the OS call in its raw form: `new URL()` normalises, and passing the RAW
+// string instead of the parsed one is how a gate validates one thing and acts
+// on another.
+for (const u of ext.openedUrls) {
+  ok(u === u.trim() && !/[\u0000-\u001f]/.test(u),
+    `the OS was handed ${JSON.stringify(u)} with whitespace or a control character intact — the `
+    + 'parsed URL was validated but the RAW string was passed on.');
+}
+
 // Same shape one layer down: every main-process IPC channel is renderer-reachable.
 assert.deepStrictEqual(ext.ipcChannels, [['on', 'set-background-color']],
   `the main process listens on ${JSON.stringify(ext.ipcChannels)}. Exactly one channel may be `
@@ -496,6 +534,26 @@ assert.deepStrictEqual(ext.ipcChannels, [['on', 'set-background-color']],
   + 'second one is a second capability — measured by what the app REGISTERS, not by what the '
   + 'preload chooses to expose, because the preload is not the only way to reach ipcMain.');
 checks++;
+// FOUND BY THIS AGENT, sweep 2. Registering the channel set is one question;
+// what the handler DOES with renderer-controlled input is another, and nothing
+// asked it. These run in the main process with full Node privileges and their
+// only input is whatever the page sends. Driven with 22 payloads — wrong types,
+// a function, a Symbol, a 30KB string, a toString() that returns a valid colour,
+// CSS injection, a NUL prefix, a trailing newline, a leading space.
+assert.deepStrictEqual(ext.ipcAccepted, [['set-background-color', '#001122']],
+  `the IPC handlers accepted ${JSON.stringify(ext.ipcAccepted)}. Exactly one payload may get `
+  + 'through — the plain 6-digit hex POSITIVE CONTROL. Everything else must be rejected before it '
+  + 'reaches a native API: " #001122" and "#001122\\n" are not hex, and an object whose toString() '
+  + 'returns one is a renderer-supplied getter running in the main process.');
+checks++;
+assert.deepStrictEqual(ext.ipcThrew, [],
+  `an IPC handler THREW on renderer input: ${JSON.stringify(ext.ipcThrew)}. A page can send `
+  + 'anything, so an uncaught throw here is a renderer-triggered main-process error.');
+checks++;
+ok(ext.ipcAccepted.length > 0,
+  'CONTROL: the positive payload must be accepted. With only hostile payloads, "nothing was '
+  + 'accepted" is indistinguishable from "the handler was never reached" — which is exactly what '
+  + 'happened while BrowserWindow.fromWebContents returned null and `if (win)` was always false.');
 
 ok(ext.openedUrls.length > 0,
   'CONTROL: at least one URL must reach shell.openExternal during the run, or the scheme assertions '
