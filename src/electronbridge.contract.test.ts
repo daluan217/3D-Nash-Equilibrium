@@ -134,10 +134,18 @@ ok(members.length > 0, 'the exposed bridge object must have at least one member,
 const memberBody = (m: string) => m.replace(/^[A-Za-z_$][\w$]*\s*:\s*/, '')
   .replace(/^\([^)]*\)\s*=>\s*/, '').replace(/^[A-Za-z_$][\w$]*\s*=>\s*/, '')
   .replace(/[,;]\s*$/, '').trim();
+// Whitelist, not blacklist. The previous form rejected `ipcRenderer` followed
+// by punctuation, which missed `send: () => ipcRenderer.send` — that returns
+// the generic SENDER itself, so one call from the renderer reaches every
+// channel in the app, exactly the defect class this file exists to prevent.
+// Only an immediately-invoked call on a literal channel name is acceptable.
+const ALLOWED_IPC_CALL = /^ipcRenderer\.(?:send|invoke)\(\s*'[a-z0-9-]+'/;
 const leaksRaw = (m: string) => {
   const body = memberBody(m);
-  // A bare reference to the module object, however it is wrapped or returned.
-  return /^\{?\s*(?:return\s+)?ipcRenderer\s*;?\s*\}?$/.test(body) || /\bipcRenderer\s*(?:[,}\]);]|$)/.test(body);
+  if (!/\bipcRenderer\b/.test(body)) return false;
+  // Any mention of ipcRenderer that is not the narrow call form is a leak:
+  // the bare object, a returned method, an alias, a property read.
+  return !ALLOWED_IPC_CALL.test(body.replace(/\s+/g, ''));
 };
 for (const member of members) {
   ok(/^[A-Za-z_$][\w$]*\s*:\s*\(?[^:]*\)?\s*=>/.test(member),
@@ -152,7 +160,17 @@ for (const member of members) {
 // a leak detector that fires on everything (or nothing) proves nothing.
 for (const leak of ['getRaw: () => ipcRenderer', 'getRaw: () => ipcRenderer,',
   'raw: () => { return ipcRenderer; }', 'ipcRenderer,', 'ipcRenderer: ipcRenderer,',
-  'send: ipcRenderer.send,']) {
+  'send: ipcRenderer.send,',
+  // Reviewer finding, 2026-09-19: the arrow form RETURNS the generic sender
+  // rather than the module object, so the old punctuation-based detector let it
+  // through while it handed the renderer every channel in the app.
+  'send: () => ipcRenderer.send',
+  'send: () => ipcRenderer.send,',
+  'invoke: () => ipcRenderer.invoke,',
+  'on: () => ipcRenderer.on,',
+  'alias: () => { const s = ipcRenderer.send; return s; }',
+  // A dynamic channel is a generic sender too: the renderer picks the channel.
+  'sendAny: (ch, v) => ipcRenderer.send(ch, v),']) {
   ok(leaksRaw(leak) || !/^[A-Za-z_$][\w$]*\s*:\s*\(?[^:]*\)?\s*=>/.test(leak),
     `SELF-TEST: ${JSON.stringify(leak)} must be rejected by one of the two member checks — it hands ` +
     'the renderer the raw ipcRenderer. A detector that misses it cannot fail for its stated reason.');

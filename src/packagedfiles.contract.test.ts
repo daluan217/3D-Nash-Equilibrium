@@ -148,11 +148,41 @@ function lastVerdict(patterns: string[], candidate: string): 'included' | 'exclu
         if (glob[i + 1] === '*') { re += '.*'; i++; if (glob[i + 1] === '/') i++; }
         else re += '[^/]*';
       } else if (c === '?') re += '[^/]';
-      else if ('\\^$.|+()[]{}'.includes(c)) re += '\\' + c;
+      // Character classes are REAL glob syntax and this file's own iCloud
+      // exclusion uses one ("db.json [0-9]*"). Escaping [ and ] as literals
+      // made that pattern match only the literal text "db.json [0-9]…", never
+      // "db.json 2" — so the exclusion was inert in the resolver and an include
+      // appended after it would have been missed.
+      else if (c === '[') {
+        const close = glob.indexOf(']', i + 1);
+        if (close === -1) { re += '\\['; } else {
+          let body = glob.slice(i + 1, close);
+          if (body.startsWith('!')) body = '^' + body.slice(1);
+          re += '[' + body.replace(/\\/g, '\\\\') + ']';
+          i = close;
+        }
+      } else if (c === '{') {
+        const close = glob.indexOf('}', i + 1);
+        if (close === -1) { re += '\\{'; } else {
+          const alts = glob.slice(i + 1, close).split(',')
+            .map((a) => a.replace(/[\\^$.|+()[\]{}*?]/g, '\\$&'));
+          re += `(?:${alts.join('|')})`;
+          i = close;
+        }
+      } else if ('\\^$.|+()]}'.includes(c)) re += '\\' + c;
       else re += c;
     }
     return new RegExp(`^${re}$`);
   };
+  // The resolver must model the syntax the real patterns use, or an exclusion
+  // it cannot parse silently protects nothing.
+  assert(toRe('db.json [0-9]*').test('db.json 2'),
+    'RESOLVER SELF-TEST: "db.json [0-9]*" must match "db.json 2" — a character class escaped as a '
+    + 'literal makes the iCloud conflict-copy exclusion inert.');
+  assert(!toRe('db.json [0-9]*').test('db.json x'),
+    'RESOLVER SELF-TEST: the class must still discriminate — [0-9] must not match a letter.');
+  assert(toRe('{a,b}.txt').test('b.txt') && !toRe('{a,b}.txt').test('c.txt'),
+    'RESOLVER SELF-TEST: brace alternation must match its alternatives and nothing else.');
   let verdict: 'included' | 'excluded' = 'excluded'; // nothing matched => not packaged
   for (const p of patterns) {
     const negated = p.startsWith('!');

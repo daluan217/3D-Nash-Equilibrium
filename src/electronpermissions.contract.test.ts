@@ -77,10 +77,18 @@ ok(allowMatch !== null,
   'the policy must be expressed as a literal `ALLOWED_PERMISSIONS` Set — a function that decides ' +
   'per call is not reviewable at a glance, and this is a security boundary');
 const allowed = [...allowMatch![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
-ok(allowed.length > 0 && allowed.length <= 2,
-  `the allowlist must stay minimal (found ${allowed.length}: ${allowed.join(', ')}). The app uses ` +
-  'exactly one permission-gated API, navigator.clipboard.writeText. Adding an entry here hands a ' +
-  'real capability to the renderer and needs its own measurement.');
+// EXACT equality, not a bound plus a blacklist. A count <= 2 with a finite
+// blacklist let any unlisted permission through: `fileSystem` is a real
+// Electron permission name, absent from the list below, and adding it would
+// have granted the renderer filesystem access with this contract still green.
+// An allowlist is only reviewable if the review pins its exact contents.
+const EXPECTED_ALLOWLIST = ['clipboard-sanitized-write'];
+ok(allowed.length === EXPECTED_ALLOWLIST.length
+  && EXPECTED_ALLOWLIST.every((p, i) => allowed[i] === p),
+  `ALLOWED_PERMISSIONS must be exactly ${JSON.stringify(EXPECTED_ALLOWLIST)} (found ` +
+  `${JSON.stringify(allowed)}). The app uses exactly one permission-gated API, ` +
+  'navigator.clipboard.writeText. Any other entry hands a real capability to a renderer that ' +
+  'displays model output, and must be argued for here rather than slipped past a length check.');
 for (const forbidden of ['media', 'camera', 'microphone', 'geolocation', 'display-capture',
   'midi', 'midiSysex', 'clipboard-read', 'notifications', 'hid', 'serial', 'usb', 'bluetooth',
   'idle-detection', 'window-management', 'fullscreen', 'openExternal', 'pointerLock']) {
