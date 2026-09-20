@@ -555,6 +555,115 @@ if (process.platform === 'win32' || (typeof process.getuid === 'function' && pro
   rmSync(userData, { recursive: true, force: true });
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// 9. THE ELEMENTS INSIDE THE ARRAYS (BLUE-LOOP-DESKTOP-22 / SR-61, found by
+//    this agent). Every section above validates the CONTAINER — "users" and
+//    "games" are arrays — which is exactly as far as RED-DESKTOP-6/001's fix
+//    went, so the class it closed survived one level down. `[null]` IS an
+//    array: it passed normalizeDbShape whole, and the next reader
+//    dereferenced the element.
+//
+//    MEASURED on the unfixed tree, real dist/server.cjs, packaged condition
+//    (env -i, empty cwd, IS_ELECTRON=true — probes/s18-dbelements.log):
+//      users:[null]  ensureLocalOwner's `db.users.find(u => u.id === ...)`
+//                    threw "Cannot read properties of null (reading 'id')".
+//                    GET /api/games 500 and POST /api/games 500 for the LIFE
+//                    of the process — the app looks permanently broken with
+//                    nothing ever naming db.json.
+//      games:[null]  migrateOwnerlessGames' `g.userId` threw in the STARTUP
+//                    path, before serverListening, so handleFatalAsync took
+//                    its process.exit(1) branch. server.ts is required
+//                    IN-PROCESS by electron-main.cjs, so that exits the whole
+//                    Electron main process: no window, no dialog — #88/#93's
+//                    silent-vanish class through a third door.
+//    Both now take this function's existing unguessable-shape policy: throw,
+//    preserve the bytes aside, refuse to boot through the same hook.
+//
+//    WHY THESE CANNOT PASS BY COINCIDENCE: section 9c is a CONTROL on the
+//    same code path with an element that IS an object but carries none of the
+//    fields these readers want (`{}`). It must still BOOT and SERVE. A guard
+//    that rejected "anything that doesn't look like a User" — or that simply
+//    refused every non-empty array — would pass 9a and 9b and fail 9c.
+for (const [label, doc, expectMsg] of [
+  ['users[0] is null', { users: [null], games: [] }, /"users\[0\]" is null, not an object/],
+  ['games[0] is null', { users: [], games: [null] }, /"games\[0\]" is null, not an object/],
+  ['users[0] is a string', { users: ['nope'], games: [] }, /"users\[0\]" is a string, not an object/],
+  ['games[1] is a number (the index is the REAL one, not 0)',
+    { users: [], games: [{ id: 'g1', userId: 'local-owner', name: 'ok' }, 7] },
+    /"games\[1\]" is a number, not an object/],
+  ['users[0] is an array (arrays are objects to typeof — the check must not be fooled)',
+    { users: [[]], games: [] }, /"users\[0\]" is an array, not an object/],
+]) {
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-el-'));
+  const original = JSON.stringify(doc);
+  writeFileSync(path.join(userData, 'db.json'), original);
+
+  const child = spawnServer(userData, port);
+  // NOT a bare `await waitExit(...)`: on an unfixed tree the server BOOTS and
+  // serves 500s instead of exiting, so waitExit rejects on its own timeout and
+  // takes the whole file down with an unnamed stack trace — a guard that
+  // detects the defect but reports nothing and skips every later section.
+  // Catch it and turn "it kept running" into the failing check it actually is.
+  let code = null; let log = '';
+  try {
+    ({ code, log } = await waitExit(child));
+  } catch (err) {
+    log = `(did not exit) ${err && err.message}`;
+    await stop(child);
+  }
+
+  record(`element shape, ${label}: the process refuses to start (exits non-zero)`,
+    code !== null && code !== 0, `exit code ${code} — ${log.slice(0, 200)}`);
+  record(`element shape, ${label}: the refusal names the exact offending ELEMENT and index`,
+    expectMsg.test(log), log.slice(0, 400));
+
+  let bootedAnyway = false;
+  try {
+    const probe = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1000) });
+    bootedAnyway = probe.ok;
+  } catch { /* good: nothing listening */ }
+  record(`element shape, ${label}: never bound the port (no 500-forever server)`, !bootedAnyway);
+
+  const entries = readdirSync(userData);
+  const corrupt = entries.find((f) => f.startsWith('db.json.corrupt-'));
+  record(`element shape, ${label}: the user's bytes are PRESERVED aside, unmodified`,
+    !!corrupt && readFileSync(path.join(userData, corrupt), 'utf-8') === original,
+    `entries=${JSON.stringify(entries)}`);
+
+  rmSync(userData, { recursive: true, force: true });
+  port += 1;
+}
+
+// 9c. THE CONTROL. `{}` is a genuine object — not a recognised User, but
+// nothing about it is unguessable in the way `null`/`7`/`"nope"` are, and the
+// readers that crashed above (`u.id`, `g.userId`) simply read `undefined` from
+// it, which is a value they already handle. It must boot AND serve.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-el-control-'));
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ users: [{}], games: [{}] }));
+
+  const child = spawnServer(userData, port);
+  try {
+    await waitReady(child, port);
+    const list = await fetch(`http://127.0.0.1:${port}/api/games`);
+    record('CONTROL: an object element with no known fields still BOOTS and serves',
+      list.ok, `GET /api/games status ${list.status}`);
+    const save = await fetch(`http://127.0.0.1:${port}/api/games`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'probe', description: 'd',
+        payoffs: { a11: 1, b11: 1, a12: 0, b12: 0, a21: 0, b21: 0, a22: 1, b22: 1 } }),
+    });
+    record('CONTROL: and saving still works on it (the refusal did not widen to every array)',
+      save.ok, `POST /api/games status ${save.status}`);
+  } catch (err) {
+    record('CONTROL: an object element with no known fields still BOOTS and serves', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DB-SHAPE REFUSAL: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {
