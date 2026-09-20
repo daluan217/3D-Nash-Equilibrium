@@ -708,8 +708,25 @@ jobs:
           set -euo pipefail
           if docker exec nash-ci sh -c 'ls dist/*.map' 2>/dev/null; then
             echo "::error::a sourcemap is inside the image"; exit 1; fi
+          # SR-48: /server.cjs.map is now REFUSED (404) rather than falling
+          # through to the SPA, because the same middleware also refuses
+          # /server.cjs — the 1.5MB backend bundle express.static was
+          # publishing. Both shapes satisfy the invariant this step exists for
+          # ("no sourcemap body is served"); a 404 satisfies it more strictly.
+          # What must never appear is a 200 carrying map JSON, which the
+          # sourcesContent grep below is the real test of.
           hdr=$(curl -sS -o /tmp/map.body -w '%{http_code} %{content_type}' http://localhost:8080/server.cjs.map)
-          case "$hdr" in "200 text/html"*) ;; *) echo "::error::/server.cjs.map must fall through to the SPA page, got: $hdr"; exit 1;; esac
+          case "$hdr" in
+            "200 text/html"*|"404 application/json"*) ;;
+            *) echo "::error::/server.cjs.map must be refused (404 json) or fall through to the SPA page, got: $hdr"; exit 1;;
+          esac
+          # The backend bundle itself must not be downloadable either.
+          bhdr=$(curl -sS -o /tmp/bundle.body -w '%{http_code}' http://localhost:8080/server.cjs)
+          case "$bhdr" in
+            404) ;;
+            *) echo "::error::/server.cjs must be refused; got $bhdr ($(wc -c </tmp/bundle.body) bytes)"; exit 1;;
+          esac
+          grep -q 'acquireDesktopLock' /tmp/bundle.body && { echo "::error::the backend bundle was served at /server.cjs"; exit 1; }
           grep -q '"sourcesContent"' /tmp/map.body && { echo "::error::sourcemap body served"; exit 1; }
           echo "no sourcemap in image; /server.cjs.map -> $hdr"
 
