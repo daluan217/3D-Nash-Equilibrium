@@ -64,12 +64,25 @@ const main = readFileSync(join(repo, 'electron-main.cjs'), 'utf8');
 /** A comment must never satisfy this contract — this file's own header quotes
  *  `data.url` and `http:` in prose, and so does electron-main.cjs's. */
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  // ONE pass over strings AND comments, because two passes cannot tell them
+  // apart: a `//` inside a string used to be cut to end-of-line, truncating
+  // the literal and unbalancing every quote after it. `https://` survived only
+  // because of a `:` lookbehind; `${x}//y` did not, and it silently ate the
+  // real shell.openExternal call below (count 0). Strings pass through whole.
+  return src.replace(
+    /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
+    (m) => (/^['"`]/.test(m) ? m : ''),
+  );
 }
 ok(!stripComments("// const UPDATE_BASE_URL = 'http://evil';").includes('evil'),
   'the comment stripper must remove a line comment');
 ok(stripComments("const UPDATE_BASE_URL = 'https://x';").includes('UPDATE_BASE_URL'),
   'the comment stripper must keep real code');
+ok(stripComments('const m = `a${x}//b`; shell.openExternal(u);').includes('shell.openExternal('),
+  'SELF-TEST: a `//` INSIDE a string is not a comment. Cutting it to end-of-line truncates the '
+  + 'literal and swallows the code after it — which is how the call-site count once read 0.');
+ok(!stripComments("const m = 'keep'; // shell.openExternal(evil)").includes('openExternal'),
+  'SELF-TEST CONTROL: a real trailing comment after a string is still removed.');
 const code = stripComments(main);
 
 // ─────────────────────────────────────────────────────────────────────────────

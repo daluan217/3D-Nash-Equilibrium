@@ -48,6 +48,14 @@ function openExternalIfSafe(rawUrl) {
     console.warn(`Refused to open an external URL with an unsupported scheme: ${String(rawUrl).slice(0, 120)}`);
     return false;
   }
+  // `https://apple.com@attacker.example/signin` IS https, and its host is
+  // attacker.example. The scheme check above passes it. No link this app owns
+  // carries userinfo, and a URL that does either hands the OS a credential or
+  // reads as an origin it is not — so the gate refuses the shape outright.
+  if (parsed.username !== '' || parsed.password !== '') {
+    console.warn(`Refused to open an external URL carrying userinfo, real host ${parsed.host}`);
+    return false;
+  }
   Promise.resolve(shell.openExternal(parsed.toString())).catch((err) => {
     console.warn(`The operating system refused to open ${parsed.origin}: ${err && err.message}`);
   });
