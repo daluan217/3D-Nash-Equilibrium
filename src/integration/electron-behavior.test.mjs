@@ -98,6 +98,39 @@ checks++;
 ok(perms.deviceGranted === false,
   `the device permission handler must deny (returned ${JSON.stringify(perms.deviceGranted)}).`);
 
+// FOUND BY THIS AGENT, sweep 2. A webview, a popup or a devtools child arrives
+// LATER, via `web-contents-created`, and carries its own session. If that path
+// stops hardening, the policy covers only the first window — and every count
+// above still reads correct, because every one of them measures that window.
+ok(perms.lateHardened === true,
+  'a webContents created later (webview, popup, devtools child) was NOT given the permission '
+  + 'policy. `web-contents-created` is the only door for contents this app did not construct '
+  + 'itself, and a session created later starts unpoliced without it.');
+assert.deepStrictEqual(perms.lateGranted, ['clipboard-sanitized-write'],
+  `a late webContents was granted ${JSON.stringify(perms.lateGranted)} — it must get exactly the `
+  + 'same allowlist as the main window, not a wider one and not none at all.');
+checks++;
+ok(perms.lateNavigationGated === true,
+  'a late webContents did not get both navigation handlers. An iframe or popup navigating away is '
+  + 'the same capability as the main window doing it.');
+
+// Chromium reads its command line during startup, so these switches ARE the
+// browser's configuration. `disable-background-networking` is the measured
+// primary guard keeping the renderer off Google's networks (39/40 idle
+// snapshots non-loopback before it, 7/40 after). And a `remote-debugging-port`
+// appended here would open the whole renderer to any local process — a door
+// that bypasses contextIsolation, the permission policy and the bridge at once.
+assert.deepStrictEqual(perms.commandLineSwitches, ['disable-background-networking'],
+  `the app appended ${JSON.stringify(perms.commandLineSwitches)} to Chromium's command line. `
+  + "Exactly one switch is expected. A new one is a change to the browser's security "
+  + 'configuration made outside every API this file otherwise checks — remote-debugging-port, '
+  + 'disable-web-security and ignore-certificate-errors all live here.');
+checks++;
+ok(perms.singleInstanceLockRequested === true,
+  'app.requestSingleInstanceLock() was never called. Without it a second launch is a second '
+  + 'process writing the same db.json, and the desktop lock in server.ts is left as the only thing '
+  + 'standing between the user and two writers on one database.');
+
 // FOUND BY THIS AGENT, sweep 2 (not by a reviewer). getDisplayMedia is granted
 // through setDisplayMediaRequestHandler, NOT through the permission handler —
 // installing one and calling back with a stream hands over the screen while

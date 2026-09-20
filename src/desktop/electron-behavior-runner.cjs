@@ -362,16 +362,30 @@ class FakeBrowserWindow {
   static getAllWindows() { return []; }
 }
 
+// Chromium reads its command line during startup, so these switches ARE the
+// browser's configuration — one of them is the only thing keeping the renderer
+// off Google's networks, and a `remote-debugging-port` added here would open
+// the whole renderer to any local process. Record every one.
+const commandLineSwitches = [];
+let singleInstanceLockRequested = false;
+
 const fakeApp = {
   isReady: () => true,
   on(event, cb) { (onHandlers[event] ||= []).push(cb); },
   quit() {}, exit() {},
-  requestSingleInstanceLock: () => true,
+  requestSingleInstanceLock: () => { singleInstanceLockRequested = true; return true; },
   whenReady: () => Promise.resolve(),
   getPath: () => '/tmp',
   getVersion: () => '0.0.224',
   setName() {},
-  commandLine: { appendSwitch() {}, appendArgument() {}, hasSwitch: () => false, getSwitchValue: () => '' },
+  commandLine: {
+    appendSwitch(name, value) {
+      commandLineSwitches.push(value === undefined ? String(name) : `${name}=${value}`);
+    },
+    appendArgument(arg) { commandLineSwitches.push(`arg:${String(arg)}`); },
+    hasSwitch: () => false,
+    getSwitchValue: () => '',
+  },
 };
 
 // shell.openExternal is recorded on the FUNCTION, so destructuring it
@@ -690,6 +704,38 @@ if (mode === 'permissions') {
   // getDisplayMedia does NOT go through the permission handler once a display
   // media handler is installed — it is a separate grant channel. If the app
   // ever installs one, whatever it hands back IS the screen-capture policy.
+  // A webview, a popup or a devtools child arrives LATER, through
+  // `web-contents-created`, and carries its own session. If that path does not
+  // harden, the policy above covers only the first window — and every count in
+  // this section still reads correct, because it measures that first window.
+  // Drive the event with a fresh contents on a FRESH session and see whether
+  // the policy lands on it too.
+  // A genuinely FRESH session. Spreading the existing one copied its
+  // `__nashPermissionPolicy: true` marker, so the product correctly skipped it
+  // and the probe read "not hardened" for a product that was right — the probe
+  // had smuggled in the already-policed flag.
+  const lateSession = {};
+  for (const name of CAPABILITY_HANDLERS) lateSession[name] = () => {};
+  lateSession.webRequest = { onBeforeRequest() {}, onHeadersReceived() {} };
+  lateSession.setSpellCheckerEnabled = () => {};
+  const lateHandlers = { request: null, check: null, device: null };
+  lateSession.setPermissionRequestHandler = (fn) => { lateHandlers.request = fn; };
+  lateSession.setPermissionCheckHandler = (fn) => { lateHandlers.check = fn; };
+  lateSession.setDevicePermissionHandler = (fn) => { lateHandlers.device = fn; };
+  // A brand-new webContents has NOT navigated yet: getURL() is ''. Inheriting
+  // the main window's URL here made the probe describe a contents that does not
+  // exist, and a gate conditioned on "has a URL already" would pass for free.
+  const lateContents = new FakeWebContents();
+  lateContents.session = lateSession;
+  lateContents.getURL = () => '';
+  fire('web-contents-created', { preventDefault() {} }, lateContents);
+  const lateGranted = [];
+  for (const p of ALL) {
+    if (typeof lateHandlers.request === 'function') {
+      lateHandlers.request({}, p, (allow) => { if (allow) lateGranted.push(p); });
+    }
+  }
+
   let displayMediaGrant = null;
   for (const fn of installedHandlers.setDisplayMediaRequestHandler || []) {
     if (typeof fn !== 'function') continue;
@@ -716,6 +762,15 @@ if (mode === 'permissions') {
     // corresponding census entry — the silent-skip shape this probe was
     // written for.
     sessionReads: [...sessionReads].sort(),
+    // A LATE webContents (webview / popup / devtools child) on its own session.
+    lateHardened: typeof lateHandlers.request === 'function'
+      && typeof lateHandlers.check === 'function'
+      && typeof lateHandlers.device === 'function',
+    lateGranted,
+    lateNavigationGated: typeof lateContents._on['will-navigate'] !== 'undefined'
+      && typeof lateContents._on['will-frame-navigate'] !== 'undefined',
+    commandLineSwitches,
+    singleInstanceLockRequested,
   });
 }
 
