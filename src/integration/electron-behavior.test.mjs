@@ -118,9 +118,19 @@ for (const [name, passed] of Object.entries(bridge.walkerSelfTest || {})) {
     + 'object, any of its methods, and either nested one or several levels inside a returned object; '
     + 'it must NOT flag a clean object, and must not hang on a cyclic one.');
 }
-ok(Object.keys(bridge.walkerSelfTest || {}).length >= 6,
+ok(Object.keys(bridge.walkerSelfTest || {}).length >= 10,
   'SELF-TEST: the walker self-test must actually report its cases — an empty object would make the '
   + 'loop above iterate over nothing.');
+// Named individually: the loop above only checks whatever cases are PRESENT, so
+// deleting a case would silently retire the capability it proves.
+for (const name of ['findsTopLevel', 'findsMethod', 'findsNested', 'findsDeep', 'ignoresClean',
+  'survivesCycle', 'findsReturnedClosure', 'ignoresInertClosure', 'probeLeavesNoTrace']) {
+  ok(name in (bridge.walkerSelfTest || {}),
+    `SELF-TEST: the walker no longer reports its "${name}" case. Review 3 got past this file with `
+    + '`(c) => ipcRenderer.send(ok, c) || ((...a) => ipcRenderer.send(...a))`: a RETURNED CLOSURE is '
+    + 'identity-equal to nothing, so only invoking it reveals that it reaches IPC on a '
+    + 'renderer-chosen channel. Dropping a case silently retires that detection.');
+}
 
 ok(bridge.members.length > 0,
   'CONTROL: the bridge must expose at least one member — zero members would make every leak check '
@@ -190,8 +200,28 @@ for (const spec of egress.dynamicImports) {
 assert.deepStrictEqual(egress.requiredModules.slice().sort(), ALLOWED_MODULES.slice().sort(),
   `electron-main.cjs must require exactly ${JSON.stringify(ALLOWED_MODULES)} (got `
   + `${JSON.stringify(egress.requiredModules)}). Adding net/tls/http2/dgram/dns/child_process/ws here `
-  + 'is the precondition for any egress route that does not go through fetch.');
+  + 'is the precondition for any egress route that does not go through fetch. '
+  + '`getBuiltinModule:` entries are process.getBuiltinModule() calls — that API bypasses '
+  + 'Module._load entirely and has no legitimate use in this app.');
 checks++;
+
+// The backend is the other half of the desktop process, and the half with an
+// LLM client in it. It used to be stubbed to `{}` here, which meant this whole
+// section measured electron-main alone and called that "the app's egress".
+ok(egress.backendLoaded === true,
+  'CONTROL: the real dist/server.cjs must be loaded during the egress run. While it was stubbed to '
+  + '{}, every outbound call the BACKEND makes — the LLM provider, the scenario bank fetches, '
+  + 'anything a future route adds — was outside the measurement entirely.');
+// Wrapping the builtins in place is what closes the two doors Module._load
+// cannot see: ESM import() and process.getBuiltinModule() both hand back the
+// REAL module object (both verified), so only instrumenting that object works.
+for (const label of ['net.Socket.connect', 'tls.connect', 'https.request', 'http.request',
+  'http2.connect', 'dns.lookup', 'dgram.createSocket', 'child_process.spawn']) {
+  ok((egress.instrumented || []).includes(label),
+    `CONTROL: ${label} was not instrumented, so a call through it would be invisible. The recorder `
+    + 'wraps the real builtin objects in place precisely because import() and getBuiltinModule() '
+    + 'return those same objects while bypassing Module._load.');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. OPEN-EXTERNAL — what actually reached the OS, by recorded argument.
@@ -214,6 +244,39 @@ for (const [url, prevented] of ext.navigationPrevented) {
   ok(prevented === true,
     `a will-navigate to ${JSON.stringify(url)} was NOT prevented. The window must stay on its own `
     + 'origin; anything else is navigated externally through the scheme gate or not at all.');
+}
+// `will-frame-navigate` is a SEPARATE Electron event, and the product handles
+// it separately (electron-main.cjs, next to the will-navigate handler). The
+// fake used to record only `will-navigate`, so this door read as covered while
+// nothing was ever driven through it — the handler could have been deleted and
+// this file would not have noticed.
+ok(ext.willFrameNavigateHandlerCount > 0,
+  'a will-frame-navigate handler must be installed. will-navigate does NOT fire for subframe '
+  + 'navigations, so an iframe in model-rendered content is a third door to the same capability.');
+ok(ext.framePrevented.length >= 8,
+  `every hostile scheme must be driven through the frame handler (got ${ext.framePrevented.length}).`);
+for (const [url, prevented] of ext.framePrevented) {
+  ok(prevented === true,
+    `a will-frame-navigate to ${JSON.stringify(url)} was NOT prevented. The suffix names the `
+    + 'argument SHAPE: Electron has passed both `(event)` with the URL on the event and '
+    + '`(event, details)` with it on the details, so a handler that reads only one shape fails '
+    + 'open on real Electron versions that send the other.');
+}
+// THE CONTROL for both events. Everything above passes for a handler that calls
+// preventDefault() unconditionally without ever parsing the URL — which would
+// also break every in-app link and send nothing to the OS. The app's own origin
+// must pass through untouched, which is only possible if the URL was read.
+ok(ext.inApp.length > 0,
+  'CONTROL: the in-app navigation probe must run, or nothing forces these handlers to actually '
+  + 'READ the URL rather than blanket-prevent.');
+for (const [where, prevented, opened] of ext.inApp) {
+  ok(prevented === false,
+    `${where} prevented a navigation to the app's OWN origin (${ext.appOriginProbed}). A handler `
+    + 'that blanket-prevents satisfies every hostile-scheme assertion above while breaking in-app '
+    + 'navigation entirely — this is the check that distinguishes a policy from a wall.');
+  ok(opened === false,
+    `${where} handed the app's own URL (${ext.appOriginProbed}) to the OS. An in-app route must `
+    + 'never be bounced out to a browser.');
 }
 ok(ext.openedUrls.length > 0,
   'CONTROL: at least one URL must reach shell.openExternal during the run, or the scheme assertions '
