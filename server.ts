@@ -815,7 +815,16 @@ function desktopAuthSecret(): string | null {
       const existing = fs.readFileSync(file, "utf-8").trim();
       // Only accept something that is actually a key. A truncated or empty file
       // must not silently become a one-character HMAC secret that still "works".
-      if (/^[0-9a-f]{64}$/.test(existing)) return existing;
+      if (/^[0-9a-f]{64}$/.test(existing)) {
+        // Repair the mode on the way out. This is the NORMAL path — every
+        // launch after the first — and it used to return before reaching the
+        // chmod below, so a key left world-readable by an older build (or by
+        // a umask, a restore-from-backup, or another process) stayed that way
+        // for the life of the install. Best-effort: a key we can read but not
+        // chmod is still better than refusing to boot.
+        try { fs.chmodSync(file, 0o600); } catch { /* keep the working key */ }
+        return existing;
+      }
     }
     const fresh = crypto.randomBytes(32).toString("hex");
     fs.mkdirSync(dir, { recursive: true });

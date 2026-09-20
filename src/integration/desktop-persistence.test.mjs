@@ -216,6 +216,41 @@ try {
     /^[0-9a-f]{64}$/.test(readFileSync(secretFile, 'utf-8').trim()),
     'the file holds a fresh 64-hex key');
 
+  // …AND THE PATH THAT ACTUALLY RUNS: A VALID KEY THAT IS ALREADY EXPOSED.
+  //
+  // The two checks above cover the REWRITE path — the file was rejected, so a
+  // new key is written. That is the rare case. The common one is a valid
+  // 64-hex key being reused, which is every launch after the first, and it
+  // returned early: `if (/^[0-9a-f]{64}$/.test(existing)) return existing;`
+  // sat above the chmod. A key left world-readable by an older build, a
+  // umask, a restore-from-backup or a sync client stayed that way for the
+  // life of the install, and both checks above passed throughout — they only
+  // ever fed the function a file it would reject.
+  //
+  // Measured on the packaged bundle: 0666 -> 0666 before the fix,
+  // 0666 -> 0600 after, with the key unchanged.
+  //
+  // Found by the 9router reviewer on this branch; the repair I shipped first
+  // was on the branch the guard happened to exercise, not the one that runs.
+  await stop(srv);
+  srv = null;
+  const priorKey = readFileSync(secretFile, 'utf-8').trim();
+  chmodSync(secretFile, 0o666);
+  const validModeBefore = (statSync(secretFile).mode & 0o777).toString(8);
+  port += 1;
+  srv = await boot(userData, port);
+  const validModeAfter = (statSync(secretFile).mode & 0o777).toString(8);
+  record('an EXISTING VALID auth-secret that is world-writable is repaired to 0600',
+    validModeAfter === '600', `${validModeBefore} -> ${validModeAfter}`);
+  // The repair must not be a rewrite in disguise: replacing the key would log
+  // every user out on upgrade, so "0600" reached by minting a new secret is
+  // the wrong fix passing the right check.
+  record('CONTROL: the repair kept the existing key (0600 by rotating it would log everyone out)',
+    readFileSync(secretFile, 'utf-8').trim() === priorKey && /^[0-9a-f]{64}$/.test(priorKey),
+    readFileSync(secretFile, 'utf-8').trim() === priorKey
+      ? 'same 64-hex key before and after'
+      : 'THE KEY WAS ROTATED — every existing session is now invalid');
+
   // The CREATE path, on its own: no file at all, and the umask must not widen
   // it. A default 022 umask turns a 0666 request into 0644, so a mode argument
   // dropped from the create call would go unnoticed without this.
