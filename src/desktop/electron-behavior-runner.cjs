@@ -260,6 +260,8 @@ const injectedCss = [];
 const loadedUrls = [];
 const windowEvents = {};
 const windowBackgroundColors = [];
+const menuTemplates = [];
+const menusInstalled = [];
 let mainWindowInstance = null;
 let mainContents = null;
 
@@ -447,7 +449,19 @@ const fakeElectron = {
   shell: fakeShell,
   session: { defaultSession: fakeSession, fromPartition: () => fakeSession },
   nativeTheme: { shouldUseDarkColors: false, on() {} },
-  Menu: { setApplicationMenu() {}, buildFromTemplate: () => ({}) },
+  // The MENU is a capability surface: Electron installs a DEFAULT application
+  // menu when none is set, and its View submenu carries live `toggleDevTools`,
+  // `reload` and `forceReload` roles — a shipped inspector on the production
+  // renderer (RED-DESKTOP-21/001). Record the template built AND what was
+  // finally installed, so "no menu set at all" is distinguishable from "a
+  // correct menu set".
+  Menu: {
+    setApplicationMenu(menu) { menusInstalled.push(menu === null ? null : (menu && menu.__template) || 'unknown'); },
+    buildFromTemplate: (template) => {
+      menuTemplates.push(template);
+      return { __template: template };
+    },
+  },
   autoUpdater: totalStub('autoUpdater'),
   net: {
     request: (...a) => { networkCalls.push(['net.request', String(a[0]?.url ?? a[0])]); return totalStub('net.request()'); },
@@ -788,6 +802,23 @@ if (mode === 'permissions') {
       && typeof lateContents._on['will-frame-navigate'] !== 'undefined',
     commandLineSwitches,
     singleInstanceLockRequested,
+    // Every `role` anywhere in the installed menu tree, flattened. A role is a
+    // live Electron capability, not a label: `toggleDevTools` opens an
+    // inspector on the production renderer whatever the item is called.
+    menuRoles: menusInstalled.flatMap((t) => {
+      const roles = [];
+      const walk = (items) => {
+        for (const item of Array.isArray(items) ? items : []) {
+          if (item && typeof item.role === 'string') roles.push(item.role);
+          if (item && item.submenu) walk(item.submenu);
+        }
+      };
+      walk(Array.isArray(t) ? t : []);
+      return roles;
+    }),
+    menusInstalledCount: menusInstalled.length,
+    menuSetToNull: menusInstalled.some((t) => t === null),
+    menuTemplatesBuilt: menuTemplates.length,
   });
 }
 

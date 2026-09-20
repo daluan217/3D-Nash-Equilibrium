@@ -109,6 +109,35 @@ checks++;
 ok(perms.deviceGranted === false,
   `the device permission handler must deny (returned ${JSON.stringify(perms.deviceGranted)}).`);
 
+// FOUND BY THIS AGENT, sweep 2. The MENU is a capability surface and this file
+// had never looked at it. A `role` is a live Electron capability, not a label:
+// `toggleDevTools` opens an inspector on the production renderer whatever the
+// item is called, and the `viewMenu` role expands into toggleDevTools + reload
+// + forceReload on its own (RED-DESKTOP-21/001, found in the shipped app).
+// Worse, Electron installs its DEFAULT menu — carrying all three — when none is
+// set, so "no menu" is strictly more dangerous than a wrong one.
+assert.deepStrictEqual(perms.menuRoles, ['appMenu', 'fileMenu', 'editMenu', 'resetZoom',
+  'zoomIn', 'zoomOut', 'togglefullscreen', 'windowMenu'],
+  `the installed menu carries roles ${JSON.stringify(perms.menuRoles)}. Roles are capabilities: `
+  + 'toggleDevTools/reload/forceReload must never appear, and `viewMenu` must never appear either '
+  + 'because it expands into exactly those three. Collected by walking the template the app '
+  + 'actually handed to Menu.setApplicationMenu, submenus included, so nesting one deeper does '
+  + 'not hide it.');
+checks++;
+for (const role of perms.menuRoles) {
+  ok(!/^(toggle)?[dD]ev[tT]ools$|^(force)?[rR]eload$|^viewMenu$/.test(role),
+    `the menu carries the role ${JSON.stringify(role)} — a live inspector or reload on the `
+    + 'production renderer. devTools:false on the window kills the inspector, but reload still '
+    + 'restarts an SPA mid-state.');
+}
+ok(perms.menuSetToNull === false,
+  'Menu.setApplicationMenu(null) was called. That does not mean "no menu": Electron then installs '
+  + 'its DEFAULT application menu, whose View submenu carries live toggleDevTools, reload and '
+  + 'forceReload roles. Passing null is how the shipped inspector got there in the first place.');
+ok(perms.menusInstalledCount === 1,
+  `setApplicationMenu was called ${perms.menusInstalledCount} times. The last call wins, so a `
+  + 'second one silently replaces the audited template with whatever it carries.');
+
 // FOUND BY THIS AGENT, sweep 2. A webview, a popup or a devtools child arrives
 // LATER, via `web-contents-created`, and carries its own session. If that path
 // stops hardening, the policy covers only the first window — and every count
