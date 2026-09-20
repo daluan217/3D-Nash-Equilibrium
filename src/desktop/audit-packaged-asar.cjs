@@ -482,8 +482,15 @@ ok(frameworkPaths.length === FRAMEWORK_BASELINE,
 // would disagree with the parser that actually decides what launchd does.
 // Every Info.plist in the bundle, not just the top one — the four helper .apps
 // have their own, and the renderer helper is the one that hosts web content.
-const plists = bundleListing.filter((p) => p.endsWith('/Info.plist'));
-ok(plists.length >= 5,
+// Guarded on isBundle like every other bundle rule above: pointed at a bare
+// app.asar outside a .app, bundleListing is empty and these read a plist path
+// that does not exist. The first spelling threw an unhandled
+// `Command failed: plutil` and killed the run — exit non-zero for the wrong
+// reason, with every remaining check unevaluated. `ok(isBundle, …)` above
+// already FAILS that case loudly, which is the honest verdict; these must not
+// turn it into a crash.
+const plists = isBundle ? bundleListing.filter((p) => p.endsWith('/Info.plist')) : [];
+ok(!isBundle || plists.length >= 5,
   `found ${plists.length} Info.plist file(s) in the bundle; an Electron app ships at least five `
   + '(the app plus four helpers). A short list means the collector missed some and the rules '
   + 'below audited fewer files than they claim.');
@@ -564,7 +571,7 @@ ok(plistsWithKnownEnv >= 5,
 // Between them they cover both a file changed after packaging and a hostile
 // value packaged in legitimately (electron-builder's `extendInfo`), which no
 // signature can distinguish from an intended one.
-{
+if (isBundle) {
   const r = require('child_process').spawnSync('codesign',
     ['--verify', '--deep', bundleRoot], { encoding: 'utf8' });
   const detail = `${r.stdout || ''}${r.stderr || ''}`.trim().split('\n').slice(0, 3).join(' / ');
@@ -586,7 +593,7 @@ ok(plistsWithKnownEnv >= 5,
 // app.asar's HEADER against this value, so a hash edited to match a tampered
 // archive is precisely how a swapped asar passes that check — recomputed here
 // from the bytes on disk rather than trusted.
-{
+if (isBundle) {
   const top = JSON.parse(execFileSync('plutil',
     ['-convert', 'json', '-o', '-', path.join(bundleRoot, '/Contents/Info.plist')],
     { encoding: 'utf8' }));
