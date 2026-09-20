@@ -241,6 +241,48 @@ for (const [api, target] of egress.networkCalls) {
     + 'API layer, so a URL built by concatenation, a template literal, or an alias is caught the '
     + 'same way — including a hostile host that merely MENTIONS the update constant.');
 }
+// FOUND BY THIS AGENT, sweep 2. The update server's JSON is UNTRUSTED INPUT:
+// whoever answers /api/version — the host, a proxy, a captive portal, DNS —
+// chooses every field in it. The fake used to reply with exactly `{version}`,
+// which tests only the happy path. It now replies with every plausible field an
+// app might follow, each carrying an attacker URL (downloadUrl, manifestUrl,
+// notesUrl: javascript:, path: /etc/passwd ...). The app must ignore all of
+// them: whatever it dials lands in networkCalls above and whatever it hands the
+// OS lands in openedUrls below, so `openExternalIfSafe(data.downloadUrl || ...)`
+// fails without needing an assertion of its own.
+ok(egress.dialogsShown.length > 0,
+  'CONTROL: the update dialog must actually be shown, and the fake answers "Download Update". '
+  + 'If the dialog never appears, the only branch that hands a URL to the OS is never taken and '
+  + 'the openedUrls check below is reading an empty list.');
+for (const u of egress.openedUrls) {
+  ok(u === 'https://nash-equilibrium-simulator.com/api/download/dmg',
+    `the update flow handed the OS ${JSON.stringify(u)}. The download URL must be built from the `
+    + 'compiled-in UPDATE_BASE_URL constant and nothing else — the server\'s reply supplied '
+    + 'downloadUrl/url/dmg/manifestUrl fields pointing at evil.example, and following any of them '
+    + 'turns "check for updates" into "run whatever the server names".');
+}
+
+// The renderer's security model is set on the WINDOW, not in the preload: with
+// contextIsolation off, the preload's globals ARE the page's globals and every
+// bridge guarantee in section 2 is void — while all of those checks still pass,
+// because they measure the preload, not the window it is loaded into.
+ok(egress.windowOptions.length > 0,
+  'CONTROL: at least one BrowserWindow must be constructed during the run.');
+for (const wp of egress.windowOptions) {
+  ok(wp && wp.contextIsolation === true,
+    `a window was created with contextIsolation=${JSON.stringify(wp && wp.contextIsolation)}. `
+    + 'Without it the preload shares a global scope with the page: the bridge checks above keep '
+    + 'passing while the isolation they assume does not exist.');
+  ok(wp && wp.nodeIntegration === false,
+    `a window was created with nodeIntegration=${JSON.stringify(wp && wp.nodeIntegration)}. `
+    + 'That hands require() to a renderer displaying model-generated content.');
+  ok(wp && wp.sandbox === true,
+    `a window was created with sandbox=${JSON.stringify(wp && wp.sandbox)}.`);
+  ok(wp && wp.devTools === false,
+    `a window was created with devTools=${JSON.stringify(wp && wp.devTools)}; the packaged app `
+    + 'must not ship an inspector into the renderer.');
+}
+
 // The module list IS the egress surface: a network module that is never
 // required cannot be called, whatever the call-site text looks like.
 const ALLOWED_MODULES = ['electron', 'path', 'fs', './dist/server.cjs'];

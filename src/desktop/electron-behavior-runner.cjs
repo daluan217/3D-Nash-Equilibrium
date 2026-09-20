@@ -246,6 +246,7 @@ const willNavigateHandlers = [];
 // from a missing one, so its verdict on that door is worth nothing.
 const willFrameNavigateHandlers = [];
 const lifecycleThrows = [];
+const dialogsShown = [];
 let mainContents = null;
 
 function totalStub(name) {
@@ -329,8 +330,18 @@ class FakeWebContents {
   getUserAgent() { return 'fake'; }
 }
 
+// The options every BrowserWindow is actually constructed with. `sandbox`,
+// `contextIsolation` and `nodeIntegration` ARE the renderer's security model:
+// with contextIsolation off, the preload's own globals are the page's globals
+// and every bridge guarantee above is void — while all of those checks still
+// pass, because they measure the preload, not the window it is loaded into.
+const windowOptions = [];
+
 class FakeBrowserWindow {
-  constructor() { this.webContents = new FakeWebContents(); mainContents = this.webContents; }
+  constructor(opts) {
+    windowOptions.push(opts && opts.webPreferences ? { ...opts.webPreferences } : null);
+    this.webContents = new FakeWebContents(); mainContents = this.webContents;
+  }
   loadURL() {}
   on() {}
   once() {}
@@ -384,7 +395,16 @@ const fakeElectron = {
   app: fakeApp,
   BrowserWindow: FakeBrowserWindow,
   ipcMain: fakeIpcMain,
-  dialog: { showMessageBox: () => Promise.resolve({ response: 0 }), showErrorBox() {} },
+  // response 0 = the FIRST button, i.e. the user accepting. Answering "yes" is
+  // what drives the update flow's download branch; a fake that declined would
+  // leave the only code path that reaches the OS untested.
+  dialog: {
+    showMessageBox: (...a) => {
+      dialogsShown.push(JSON.stringify((a[1] && a[1].message) || (a[0] && a[0].message) || ''));
+      return Promise.resolve({ response: 0 });
+    },
+    showErrorBox() {},
+  },
   shell: fakeShell,
   session: { defaultSession: fakeSession, fromPartition: () => fakeSession },
   nativeTheme: { shouldUseDarkColors: false, on() {} },
@@ -479,13 +499,32 @@ function instrumentOutbound() {
 instrumentOutbound();
 
 // fetch is a global, not a module: wrap it before the app loads.
+//
+// The update server's JSON is UNTRUSTED INPUT — whoever answers
+// /api/version (the real host, a proxy, a captive portal, DNS) chooses every
+// field in it. A reply of exactly `{version}` tests only the happy path, so the
+// body is hostile: every plausible field an app might follow carries an
+// attacker URL. Anything the app then dials or opens is recorded by the same
+// networkCalls / openedUrls the assertions already read, so a mutant that
+// trusts `data.downloadUrl` fails without needing its own assertion.
+const HOSTILE_UPDATE_JSON = {
+  version: '9.9.9',
+  downloadUrl: 'https://evil.example/payload.dmg',
+  url: 'https://evil.example/payload.dmg',
+  dmg: 'file:///Applications/Calculator.app',
+  manifestUrl: 'https://evil.example/manifest.json',
+  notesUrl: 'javascript:alert(1)',
+  releaseNotes: 'https://evil.example/notes',
+  updateUrl: 'https://evil.example/u',
+  path: '/etc/passwd',
+};
 globalThis.fetch = (url, init) => {
   networkCalls.push(['fetch', String(url)]);
   return Promise.resolve({
     ok: true,
     status: 200,
-    json: async () => ({ version: '9.9.9' }),
-    text: async () => '{"version":"9.9.9"}',
+    json: async () => ({ ...HOSTILE_UPDATE_JSON }),
+    text: async () => JSON.stringify(HOSTILE_UPDATE_JSON),
   });
 };
 globalThis.WebSocket = function (url) { networkCalls.push(['WebSocket', String(url)]); return totalStub('ws'); };
@@ -671,6 +710,8 @@ if (mode === 'egress') {
       openedUrls,
       backendLoaded,
       instrumented,
+      windowOptions,
+      dialogsShown,
     });
   };
   fire('browser-window-created', {}, { webContents: mainContents });
