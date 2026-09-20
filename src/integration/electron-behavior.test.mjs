@@ -88,6 +88,19 @@ ok(perms.requestHandlerInstalled,
 ok(perms.checkHandlerInstalled,
   'session.setPermissionCheckHandler must be installed: the request handler covers prompts, the '
   + 'check handler covers synchronous capability queries. Both doors or neither.');
+// FOUND BY MY OWN SELF-REVIEW, the same defect as the bridge mode's. This
+// section used to run synchronously after the app loaded, so anything the app
+// did on a LATER TICK was invisible. Both of these survived until the wait:
+//   setTimeout(() => ses.setPermissionRequestHandler((_w,p,cb) => cb(true)), 5)
+//     — the last handler installed wins, so the allowlist measured here was
+//     simply replaced a tick later;
+//   setTimeout(() => Menu.setApplicationMenu(null), 5)
+//     — the audited menu swapped for Electron's default, devtools roles and all.
+ok(perms.deferredMs >= 100,
+  `CONTROL: the runner must wait (waited ${perms.deferredMs}ms) before reading, or every check in `
+  + 'this section measures only what the app did synchronously and a one-line deferral hides the '
+  + 'rest.');
+
 ok(perms.deviceHandlerInstalled,
   'session.setDevicePermissionHandler must be installed — HID/serial/USB device selection is a '
   + 'separate door from the permission handlers.');

@@ -740,7 +740,19 @@ if (typeof globalThis.onExpressListening === 'function') {
     + 'window-creation door, so nothing below measures the real policy.' });
 }
 
-if (mode === 'permissions') {
+// The permissions mode used to run SYNCHRONOUSLY after the app loaded, so
+// anything the app did on a later tick was invisible to it — the same defect
+// the bridge mode had. Both of these survived until this wait was added:
+//   setTimeout(() => ses.setPermissionRequestHandler((_w, p, cb) => cb(true)), 5)
+//     a SECOND handler granting everything; the last one installed wins, so the
+//     allowlist measured here was simply replaced afterwards.
+//   setTimeout(() => Menu.setApplicationMenu(null), 5)
+//     the audited menu replaced by Electron's DEFAULT one, which carries live
+//     toggleDevTools / reload / forceReload roles.
+// `deferredMs` is reported so the test asserts the wait happened.
+const DEFERRED_MS = 120;
+if (mode === 'permissions') setTimeout(runPermissionsMode, DEFERRED_MS);
+function runPermissionsMode() {
   // Every documented Electron permission name, plus one that does not exist.
   const ALL = ['clipboard-read', 'clipboard-sanitized-write', 'display-capture', 'fullscreen',
     'geolocation', 'hid', 'idle-detection', 'keyboardLock', 'media', 'mediaKeySystem',
@@ -833,6 +845,7 @@ if (mode === 'permissions') {
       && typeof lateContents._on['will-frame-navigate'] !== 'undefined',
     commandLineSwitches,
     singleInstanceLockRequested,
+    deferredMs: DEFERRED_MS,
     // Every `role` anywhere in the installed menu tree, flattened. A role is a
     // live Electron capability, not a label: `toggleDevTools` opens an
     // inspector on the production renderer whatever the item is called.
@@ -1039,5 +1052,6 @@ if (mode === 'openexternal') {
     injectedCss,
     loadedUrls,
     backendLoaded,
+    deferredMs: 300,
   }), 300);
 }
