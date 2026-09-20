@@ -499,7 +499,13 @@ try {
   // this block, so the collision would have surfaced only as a flake.
   const PORT5 = process.env.UNWRITABLE_SAVE_PORT5 || '3123';
   const BASE5 = `http://localhost:${PORT5}`;
-  const userData5 = mkdtempSync(path.join(tmpdir(), 'nash-rugpull-'));
+  // One extra level: the data directory sits inside a PRIVATE parent, so case
+  // E below can take write permission off that parent without touching the
+  // shared system temp dir (which would break every other process on the
+  // machine, including suites running in parallel in CI).
+  const rugpullRoot = mkdtempSync(path.join(tmpdir(), 'nash-rugpull-'));
+  const userData5 = path.join(rugpullRoot, 'data');
+  mkdirSync(userData5);
   const call5 = async (method, url, body) => {
     const r = await fetch(`${BASE5}${url}`, {
       method,
@@ -607,11 +613,74 @@ try {
     record('rug-pull CONTROL: the app recovers once the directory is writable again',
       recovered.status === 200 && has('J-recovered'),
       `status=${recovered.status} onDisk=${has('J-recovered')}`);
+
+    // E. THE DIRECTORY CANNOT BE RECREATED (BLUE-LOOP-DESKTOP-22, sweep 21).
+    //
+    // Case A above passes because saveDB recreates a missing data directory.
+    // "It recreates it" is only an answer while mkdir can SUCCEED. Delete the
+    // directory AND take write permission off its PARENT and mkdirSync fails
+    // EACCES — the one branch where the recovery that makes A honest is not
+    // available. Nothing in this suite reached it: every other unwritable case
+    // leaves the directory itself in place. Measured on the real bundle
+    // (_gen probe, sweep 21): the save answers
+    // {"error":"Could not save your changes. Please try again."} and the log
+    // names the cause. The failure mode being guarded is the opposite — a 200
+    // "Game saved successfully!" for a write that cannot physically happen.
+    //
+    // `rugpullRoot` is this block's own private parent (see its creation
+    // above), never the shared system temp dir.
+    let parentLocked = false;
+    try {
+      rmSync(userData5, { recursive: true, force: true });
+      chmodSync(rugpullRoot, 0o555);
+      parentLocked = true;
+    } catch { /* fall through to the setup check below */ }
+    // Never bank a silent skip: if the OS would not let this fixture exist,
+    // say so instead of recording a pass for a case that never ran.
+    record('rug-pull setup: the data directory is gone and its parent is unwritable',
+      parentLocked && !existsSync(userData5), `parentLocked=${parentLocked} dirExists=${existsSync(userData5)}`);
+    if (parentLocked) {
+      try {
+        // Proof the fixture really is unrecreatable — otherwise the refusal
+        // below could be coming from something else entirely.
+        let mkdirBlocked = false;
+        try { mkdirSync(userData5); } catch { mkdirBlocked = true; }
+        record('rug-pull setup: mkdir into the locked parent really fails',
+          mkdirBlocked && !existsSync(userData5), `mkdirBlocked=${mkdirBlocked}`);
+
+        const unrecreatable = await call5('POST', '/api/games', { name: 'J-unrecreatable', description: 'rugpull', payoffs: MP });
+        record('rug-pull: a save that CANNOT recreate its directory fails instead of claiming success',
+          unrecreatable.status >= 500 && unrecreatable.json?.success !== true,
+          `status=${unrecreatable.status} body=${JSON.stringify(unrecreatable.json)}`);
+        record('rug-pull: that refusal tells the user the change was not saved',
+          typeof unrecreatable.json?.error === 'string' && /could not save|try again/i.test(unrecreatable.json.error),
+          JSON.stringify(unrecreatable.json));
+
+        // And the failed write must not have emptied the library the app is
+        // still serving: the user's existing games stay readable through an
+        // outage they did not cause.
+        const stillServed = await call5('GET', '/api/games');
+        record('rug-pull: the games already in memory are still served after the refused write',
+          Array.isArray(stillServed.json) && stillServed.json.some((g) => g.name === 'J-recovered'),
+          `status=${stillServed.status} names=${JSON.stringify(Array.isArray(stillServed.json) ? stillServed.json.map((g) => g.name) : stillServed.json)}`);
+      } finally {
+        chmodSync(rugpullRoot, 0o755);
+      }
+      // CONTROL: with the parent writable again the very same request works,
+      // so the refusal above was about the locked parent and nothing else.
+      const afterUnlock = await call5('POST', '/api/games', { name: 'J-after-unlock', description: 'rugpull', payoffs: MP });
+      record('rug-pull CONTROL: the same save succeeds once the parent is writable again',
+        afterUnlock.status === 200 && has('J-after-unlock'),
+        `status=${afterUnlock.status} onDisk=${has('J-after-unlock')}`);
+    }
   } finally {
     server5.kill('SIGKILL');
     await reaped(server5);
+    // Unlock the private parent FIRST: case E leaves it 0555 if it threw, and
+    // an rm inside a read-only parent cannot remove anything.
+    try { chmodSync(rugpullRoot, 0o755); } catch { /* already gone */ }
     try { chmodSync(userData5, 0o755); } catch { /* may be a file or gone */ }
-    rmSync(userData5, { recursive: true, force: true });
+    rmSync(rugpullRoot, { recursive: true, force: true });
   }
 }
 
