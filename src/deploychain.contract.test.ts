@@ -242,7 +242,53 @@ function republishGuarded(yml: string): boolean {
   if (republishGuarded(lenient)) fail('known-positive fixture "malformed manifest read as unpublished" was NOT flagged');
 }
 
+/* ---------------------------------------------------------------- check 6
+ * The packaging audit must RUN, and run BEFORE the upload.
+ *
+ * `src/desktop/audit-packaged-asar.cjs` is what stands between a leaked
+ * account store and a published DMG, and two separate defects in it were found
+ * by hand this round. Neither would have mattered if the step invoking it were
+ * deleted — and it could be: the audit step was removed from both workflows and
+ * every test in this repo, this file included, still passed green. A comment in
+ * the YAML saying "BEFORE the upload, not after" is not a check.
+ *
+ * Ordering is the half that is easy to lose silently. An audit that runs after
+ * `gcloud storage cp` fails a workflow whose artifact is already public.
+ */
+function auditRunsBeforeUpload(yml: string): boolean {
+  const audit = yml.indexOf('node src/desktop/audit-packaged-asar.cjs');
+  const upload = yml.indexOf('gcloud storage cp');
+  return audit !== -1 && upload !== -1 && audit < upload;
+}
+{
+  const yml = read('release-desktop.yml');
+  if (!auditRunsBeforeUpload(yml)) {
+    fail('release-desktop.yml must run src/desktop/audit-packaged-asar.cjs BEFORE the first '
+      + '`gcloud storage cp`. After the upload is too late: the artifact is already public.');
+  }
+  const deleted = yml.replace(/\n[^\n]*node src\/desktop\/audit-packaged-asar\.cjs[^\n]*\n/, '\n');
+  if (deleted === yml) fail('known-positive fixture for the audit step did not land (the invocation moved)');
+  if (auditRunsBeforeUpload(deleted)) fail('known-positive fixture "release workflow with the audit step deleted" was NOT flagged');
+  // Reordered rather than removed — the case a "does it appear anywhere" check misses.
+  const after = yml.replace(/\n([^\n]*node src\/desktop\/audit-packaged-asar\.cjs[^\n]*)\n/, '\n')
+    + '\n      - name: Audit too late\n        run: node src/desktop/audit-packaged-asar.cjs\n';
+  if (auditRunsBeforeUpload(after)) fail('known-positive fixture "audit moved after the upload" was NOT flagged');
+
+  // Same step in the PR-time workflow: without it, the audit first runs on a
+  // release, where failing is expensive and the tempting fix is to switch it off.
+  const test = read('test.yml');
+  if (!/node src\/desktop\/audit-packaged-asar\.cjs/.test(test)) {
+    fail('test.yml must run src/desktop/audit-packaged-asar.cjs (the package-audit job) so a '
+      + 'packaging leak is caught on the PR, not first discovered mid-release.');
+  }
+  // …and it must actually package something first, or it audits nothing and exits 2.
+  if (!/electron-builder --dir/.test(test)) {
+    fail('test.yml runs the audit without `electron-builder --dir`, so there is no artifact to '
+      + 'audit and the job cannot pass for the right reason.');
+  }
+}
+
 console.log(
-  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on Deploy site's merged-head check gate (no Test rerun on main), workflow_run triggers filtered to main, `
+  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on Deploy site's merged-head check gate (no Test rerun on main), workflow_run triggers filtered to main, packaging audit runs before the upload, `
   + `${MUST_FLAG.length} known-positive fixtures flagged, 2 controls clean`,
 );
