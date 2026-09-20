@@ -4703,9 +4703,13 @@ async function startServer() {
         let decoded: string;
         try { decoded = decodeURIComponent(req.path); } catch { decoded = req.path; }
         // Windows-style separators reach the filesystem as separators too.
-        const candidate = path.resolve(distPath, '.' + decoded.replace(/\\/g, '/'))
-          .toLowerCase();
-        if (forbiddenFiles.has(candidate)) {
+        const candidate = path.resolve(distPath, '.' + decoded.replace(/\\/g, '/'));
+        // Resolve the REQUEST too: express.static follows symlinks, so an alias
+        // inside dist/ pointing at the bundle would be served under its own
+        // name (reviewer, hotfix-live-exposures-22). Compare both spellings.
+        let real = candidate;
+        try { real = fs.realpathSync(candidate); } catch { /* absent: static will 404 */ }
+        if (forbiddenFiles.has(candidate.toLowerCase()) || forbiddenFiles.has(real.toLowerCase())) {
           res.status(404).json({ error: "Not found" });
           return;
         }

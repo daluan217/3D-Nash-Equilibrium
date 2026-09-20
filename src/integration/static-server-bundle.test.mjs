@@ -26,7 +26,7 @@
  *   node src/integration/static-server-bundle.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -47,6 +47,12 @@ if (!existsSync(BUNDLE)) {
 }
 
 const userData = mkdtempSync(path.join(tmpdir(), 'nash-static-bundle-'));
+// express.static follows symlinks, so an alias inside dist/ that points at the
+// bundle is served under its own name unless the refusal resolves the REQUEST
+// (reviewer finding on the hotfix). Plant one for this run only; removed below.
+const ALIAS = path.join(repo, 'dist/backend-alias-test.cjs');
+rmSync(ALIAS, { force: true });
+symlinkSync('server.cjs', ALIAS);
 const child = spawn(process.execPath, [BUNDLE], {
   cwd: tmpdir(),
   env: {
@@ -147,10 +153,20 @@ try {
   record('a path that merely mentions server.cjs is not special-cased into a 404',
     lookalike.status === 200,
     `status=${lookalike.status}`);
+
+  // ── A symlink alias to the bundle must be refused by what it RESOLVES to.
+  //    Fails on a request-path-only check: static follows the link and serves
+  //    the real bundle under the alias name.
+  const alias = await fetch(`${BASE}/backend-alias-test.cjs`);
+  const aliasBody = await alias.text();
+  record('GET <symlink alias -> server.cjs> never returns the backend bundle',
+    alias.status === 404 && !/desktopAuthSecret|acquireDesktopLock/.test(aliasBody),
+    `status=${alias.status} bytes=${aliasBody.length}`);
 } catch (err) {
   record('suite ran to completion', false, String(err && err.message));
 } finally {
   child.kill('SIGKILL');
+  rmSync(ALIAS, { force: true });
   rmSync(userData, { recursive: true, force: true });
 }
 
