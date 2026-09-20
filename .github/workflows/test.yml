@@ -530,6 +530,18 @@ jobs:
           DESKTOP_CORS_PORT: '3201'
           DESKTOP_CORS_WEB_PORT: '3202'
 
+      # What a TOKENLESS LOCAL CALLER can do to the desktop app. The desktop
+      # authenticates nothing by design, so these are the properties holding
+      # that surface together: the route census (derived from the shipped
+      # bundle, so a new route is covered automatically), no cross-owner read
+      # or write, RED-DESKTOP-11/001's "login must not steal the no-account
+      # library", the rate-limit split that keeps the locally-returned recovery
+      # code un-guessable, and the startup scratch-file sweep vs. link classes.
+      - name: Boot the production server and check the desktop local surface
+        run: node src/integration/desktop-local-surface.test.mjs
+        env:
+          LOCAL_SURFACE_PORT: '3212'
+
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
       # route (404 off) and the /api/health capability bit; the avoid gate
