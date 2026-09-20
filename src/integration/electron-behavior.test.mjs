@@ -425,6 +425,37 @@ ok(ext.lifecycleEventsDriven.length >= 3,
   "CONTROL: the app's lifecycle handlers must actually be driven (drove "
   + `${JSON.stringify(ext.lifecycleEventsDriven)}). With none driven, an open-url handler that `
   + 'forwards straight to the OS would never be exercised.');
+// FOUND BY THIS AGENT, sweep 2. `executeJavaScript` runs arbitrary code IN THE
+// RENDERER from the main process, to one side of every policy this file checks:
+// the permission handlers, the navigation gate and the contextBridge all sit
+// elsewhere. It is called from the fullscreen handlers, which are registered on
+// `mainWindow.on` — and the fake ignored window events entirely, so those
+// handlers had never run here at all. Both are driven now and every script is
+// recorded and pinned.
+assert.deepStrictEqual(ext.injectedScripts, [
+  "window.dispatchEvent(new CustomEvent('electron-fullscreen-change', { detail: true }))",
+  "window.dispatchEvent(new CustomEvent('electron-fullscreen-change', { detail: false }))",
+], `the main process injected ${JSON.stringify(ext.injectedScripts)} into the renderer. Only these `
+  + 'two fixed fullscreen notifications are allowed, verbatim. Any interpolation here is a '
+  + 'main-process eval in the page: whatever value is spliced in runs as code, and nothing else in '
+  + 'this file would see it.');
+checks++;
+assert.deepStrictEqual(ext.injectedCss, [],
+  `the main process injected CSS: ${JSON.stringify(ext.injectedCss)}.`);
+checks++;
+ok(ext.windowEventsDriven.length >= 2,
+  `CONTROL: the window's own event handlers must be driven (drove `
+  + `${JSON.stringify(ext.windowEventsDriven)}), or the injection list above is empty for the `
+  + 'boring reason that nothing ever called it.');
+// The window must only ever be pointed at its own loopback server.
+for (const u of ext.loadedUrls) {
+  ok(/^http:\/\/127\.0\.0\.1:\d+$/.test(u),
+    `loadURL was called with ${JSON.stringify(u)}. The window loads the app's own loopback origin `
+    + 'and nothing else — a remote origin here means the whole UI is served by someone else, and '
+    + "with titleBarStyle 'hidden' there is no URL bar to show it.");
+}
+ok(ext.loadedUrls.length > 0, 'CONTROL: the window must actually be pointed at a URL.');
+
 // Same shape one layer down: every main-process IPC channel is renderer-reachable.
 assert.deepStrictEqual(ext.ipcChannels, [['on', 'set-background-color']],
   `the main process listens on ${JSON.stringify(ext.ipcChannels)}. Exactly one channel may be `

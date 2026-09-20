@@ -247,6 +247,10 @@ const willNavigateHandlers = [];
 const willFrameNavigateHandlers = [];
 const lifecycleThrows = [];
 const dialogsShown = [];
+const injectedScripts = [];
+const injectedCss = [];
+const loadedUrls = [];
+const windowEvents = {};
 let mainContents = null;
 
 function totalStub(name) {
@@ -321,8 +325,12 @@ class FakeWebContents {
   setZoomFactor() {}
   setZoomLevel() {}
   setVisualZoomLevelLimits() {}
-  insertCSS() { return Promise.resolve(''); }
-  executeJavaScript() { return Promise.resolve(undefined); }
+  insertCSS(css) { injectedCss.push(String(css)); return Promise.resolve(''); }
+  // executeJavaScript runs arbitrary code IN THE RENDERER, from the main
+  // process, outside every policy above — the permission handlers, the
+  // navigation gate and the contextBridge all sit to one side of it. Record
+  // every script so the test can pin what the app is allowed to inject.
+  executeJavaScript(code) { injectedScripts.push(String(code)); return Promise.resolve(undefined); }
   reload() {}
   removeAllListeners() {}
   once(event, cb) { return this.on(event, cb); }
@@ -342,9 +350,9 @@ class FakeBrowserWindow {
     windowOptions.push(opts && opts.webPreferences ? { ...opts.webPreferences } : null);
     this.webContents = new FakeWebContents(); mainContents = this.webContents;
   }
-  loadURL() {}
-  on() {}
-  once() {}
+  loadURL(url) { loadedUrls.push(String(url)); }
+  on(event, cb) { (windowEvents[event] ||= []).push(cb); }
+  once(event, cb) { return this.on(event, cb); }
   show() {}
   isMinimized() { return false; }
   restore() {}
@@ -793,13 +801,26 @@ if (mode === 'openexternal') {
   const lifecycleEventsDriven = Object.keys(onHandlers)
     .filter((e) => !['ready', 'will-quit', 'before-quit'].includes(e));
 
+  // Window events too — the fullscreen handlers call executeJavaScript, which
+  // runs code IN THE RENDERER from the main process, to one side of every
+  // policy this file checks. Fire them so whatever they inject is recorded.
+  for (const event of Object.keys(windowEvents)) {
+    for (const cb of windowEvents[event]) {
+      try { cb({ preventDefault() {} }); } catch { /* handler's own error */ }
+    }
+  }
+
   // THE CONTROL. Every assertion above is satisfied by a handler that calls
   // preventDefault() unconditionally and never looks at the URL — which would
   // also break in-app navigation completely and hand the OS nothing to open.
   // The app's own origin must pass THROUGH: not prevented, and not shipped to
   // shell.openExternal. This is what forces the handler to actually parse.
   const inApp = [];
-  const IN_APP_URL = 'http://127.0.0.1:14322/some/in-app/route';
+  // Derived from what the app ACTUALLY loaded, not hardcoded: with a literal
+  // port this control fails whenever loadURL changes for any reason, and the
+  // failure names the navigation policy instead of the real cause. The loadURL
+  // assertion in the test pins the origin itself.
+  const IN_APP_URL = `${(loadedUrls[0] || 'http://127.0.0.1:14322').replace(/\/$/, '')}/some/in-app/route`;
   for (const [event, handlers, , documented] of EVENTS) {
     for (const shape of documented) {
       for (const cb of handlers) {
@@ -822,7 +843,11 @@ if (mode === 'openexternal') {
     willNavigateHandlerCount: willNavigateHandlers.length,
     willFrameNavigateHandlerCount: willFrameNavigateHandlers.length,
     lifecycleEventsDriven,
+    windowEventsDriven: Object.keys(windowEvents),
     ipcChannels,
+    injectedScripts,
+    injectedCss,
+    loadedUrls,
     backendLoaded,
   }), 300);
 }
