@@ -137,9 +137,42 @@ function testEveryRootCjsLoads() {
   assert(loadFails(MAIN_CJS) === null, 'the real electron-main.cjs does not load');
 }
 
+/**
+ * No root .cjs may build a shell command string out of an interpolated path.
+ *
+ * afterPack.cjs ran `execSync(\`xattr -cr "${appPath}"\`)`. Double quotes do NOT
+ * disable `$(...)` or backticks: MEASURED, a productName of
+ * `Bad$(touch /tmp/pwned)` executed the touch during the build. The value comes
+ * from our own package.json, so there was no live instance — but this is
+ * build-time code that signs the artifact users download, and the review mirror
+ * renames the product. execFileSync takes argv and never invokes a shell.
+ * Discovered over every root .cjs, so the next build hook is covered on sight.
+ */
+function testNoShellInterpolationInRootCjs() {
+  let checked = 0;
+  for (const f of rootCjsFiles()) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    // exec/execSync called with a template literal containing a substitution.
+    const bad = /\bexec(?:Sync)?\s*\(\s*`[^`]*\$\{/.test(src);
+    assert(!bad,
+      `${f} builds a shell command from an interpolated template literal. \`$(...)\` and backticks `
+      + 'survive inside double quotes, so an interpolated path executes at build time. Use '
+      + 'execFile/execFileSync with an argv array — it never starts a shell.');
+    checked++;
+  }
+  assert(checked >= 3, `only ${checked} root .cjs files were scanned for shell interpolation; the `
+    + 'discovery found fewer files than this repo has, so a clean result means nothing.');
+  // SELF-TEST: the pattern must actually fire on the spelling it forbids.
+  assert(/\bexec(?:Sync)?\s*\(\s*`[^`]*\$\{/.test('execSync(`xattr -cr "${appPath}"`)'),
+    'the shell-interpolation pattern does not match the exact line this check exists to forbid');
+  assert(!/\bexec(?:Sync)?\s*\(\s*`[^`]*\$\{/.test("execFileSync('xattr', ['-cr', appPath])"),
+    'the shell-interpolation pattern flags the SAFE execFileSync spelling — it would block the fix');
+}
+
 function runDesktopContractTests() {
   testEveryRootCjsParses();
   testEveryRootCjsLoads();
+  testNoShellInterpolationInRootCjs();
   console.log(`All desktop .cjs contract tests passed (${rootCjsFiles().length} root .cjs files covered).`);
 }
 
