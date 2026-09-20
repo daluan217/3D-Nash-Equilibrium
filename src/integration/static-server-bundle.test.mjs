@@ -76,7 +76,30 @@ async function waitForServer(timeoutMs = 25000) {
 try {
   if (!await waitForServer()) throw new Error('the packaged server never came up');
 
-  // ── THE GUARD: neither spelling of the backend bundle may be served.
+  // ── EVERY SPELLING, not the obvious one. The first fix tested `req.path`
+  //    against /^\/server\.cjs(\.map)?$/ and SIX of these walked past it while
+  //    serve-static happily delivered 1,568,183 bytes — it percent-decodes,
+  //    normalises `//` and `\`, and sits on a case-insensitive filesystem.
+  //    Measured leaks before the identity-based fix: //server.cjs, /SERVER.CJS,
+  //    /Server.cjs, /server%2Ecjs, /%73erver.cjs, /\server.cjs.
+  const BUNDLE_SPELLINGS = [
+    '/server.cjs', '/server.cjs.map', '/server.cjs?x=1', '/server.cjs/',
+    '//server.cjs', '/./server.cjs', '/SERVER.CJS', '/Server.cjs',
+    '/server%2Ecjs', '/%73erver.cjs', '/a/../server.cjs', '/assets/../server.cjs',
+    '/server.cjs#x', '/\\server.cjs', '/SERVER.CJS.MAP',
+  ];
+  for (const route of BUNDLE_SPELLINGS) {
+    const res = await fetch(`${BASE}${route}`);
+    const body = await res.text();
+    const isBundle = /desktopAuthSecret|acquireDesktopLock|writeFileAtomicSync/.test(body);
+    record(`GET ${route} never returns the backend bundle`,
+      !isBundle,
+      `status=${res.status} bytes=${body.length}`);
+  }
+
+  // ── The canonical spellings must be an explicit 404, not merely "not the
+  //    bundle" (a variant that lands on the SPA shell is acceptable for the
+  //    odd shapes above, but these two must be refused outright).
   for (const route of ['/server.cjs', '/server.cjs.map']) {
     const res = await fetch(`${BASE}${route}`);
     const body = await res.text();

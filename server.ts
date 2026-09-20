@@ -4726,8 +4726,29 @@ async function startServer() {
       // is source disclosure rather than a credential leak. Same door as
       // RED-CLOUD-21/001, which removed the .map and left the .cjs beside it.
       // Refuse it before the static mount; the SPA fallback then answers.
+      // Compare the RESOLVED FILE, not the request string. My first spelling
+      // tested `req.path` against /^\/server\.cjs(\.map)?$/ and six shapes
+      // walked straight past it while serve-static still delivered 1.5MB:
+      //   //server.cjs  /SERVER.CJS  /Server.cjs  /server%2Ecjs  /%73erver.cjs
+      //   /\server.cjs
+      // because serve-static percent-decodes, normalises, and sits on a
+      // case-insensitive filesystem. So decode and resolve exactly as `send`
+      // does, then refuse by identity: the file this bundle IS. `realpathSync`
+      // collapses case and any link, and the basename check below still holds
+      // if the bundle is not on disk under that exact name.
+      const forbiddenFiles = new Set<string>();
+      for (const name of ['server.cjs', 'server.cjs.map']) {
+        const p = path.join(distPath, name);
+        forbiddenFiles.add(path.resolve(p).toLowerCase());
+        try { forbiddenFiles.add(fs.realpathSync(p).toLowerCase()); } catch { /* absent is fine */ }
+      }
       app.use((req, res, next) => {
-        if (/^\/server\.cjs(\.map)?$/.test(req.path)) {
+        let decoded: string;
+        try { decoded = decodeURIComponent(req.path); } catch { decoded = req.path; }
+        // Windows-style separators reach the filesystem as separators too.
+        const candidate = path.resolve(distPath, '.' + decoded.replace(/\\/g, '/'))
+          .toLowerCase();
+        if (forbiddenFiles.has(candidate)) {
           res.status(404).json({ error: "Not found" });
           return;
         }
