@@ -470,6 +470,28 @@ jobs:
         env:
           DB_CONFLICT_TEST_PORT: '3175'
 
+      # BLUE-LOOP-DESKTOP-22 / SR-45: these three suites existed and ran
+      # nowhere. atomic-tmp-sweep and cloud-output-boundary were wired into
+      # `npm run test:integration` — which NO workflow invokes — and
+      # desktop-adopt-local (19 checks) was in neither list, so it had never
+      # run in CI at all. src/testscriptcoverage.test.ts now fails when any
+      # src/integration/*.test.mjs is missing from this job.
+      - name: Boot the production server and run the desktop adopt-local suite
+        run: node src/integration/desktop-adopt-local.test.mjs
+        env:
+          DESKTOP_ADOPT_PORT: '3117'
+
+      - name: Boot the production server and run the atomic tmp-sweep suite
+        run: node src/integration/atomic-tmp-sweep.test.mjs
+        env:
+          ATOMIC_SWEEP_PORT: '3721'
+
+      - name: Boot the production server and run the cloud output-boundary suite
+        run: node src/integration/cloud-output-boundary.test.mjs
+        env:
+          COB_TEST_PORT: '3180'
+          COB_STUB_PORT: '3181'
+
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
       # route (404 off) and the /api/health capability bit; the avoid gate

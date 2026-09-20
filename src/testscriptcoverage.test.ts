@@ -108,5 +108,32 @@ check('mutation: the command in a different workflow job cannot satisfy the requ
   workflowJobRuns(unrelatedJobDecoy, 'optional-decoy').some((run) => workflowInvocation.test(run))
   && !workflowRunsDevFallback(unrelatedJobDecoy));
 
+// EVERY integration suite, not one named file. The rules above guard
+// api-dev-fallback by name, so the other 27 were unchecked — and three were
+// dead: atomic-tmp-sweep and cloud-output-boundary were in test:integration but
+// absent from test.yml, and desktop-adopt-local (19 checks) was in NEITHER, so
+// it had never run in CI at all. No workflow invokes `npm run test:integration`,
+// so test.yml's per-file list is the ONLY path to CI; a suite missing from it
+// enforces nothing, exactly like a probe left under _gen/.
+const integrationFiles = readdirSync('src/integration')
+  .filter((f) => f.endsWith('.test.mjs')).sort();
+const ciIntegrationRuns = workflowJobRuns(ciWorkflow, 'integration').join('\n');
+const runsInCi = (file: string): boolean =>
+  new RegExp(`(?:^|&&\\s*|\\n\\s*)node\\s+src/integration/${escapeRegex(file)}(?=\\s|$)`, 'm')
+    .test(ciIntegrationRuns);
+const notInCi = integrationFiles.filter((f) => !runsInCi(f));
+check('every src/integration/*.test.mjs runs in the required GitHub integration job',
+  notInCi.length === 0,
+  `never executed by CI: ${JSON.stringify(notInCi)}. test.yml's per-file list is the only path — `
+  + 'no workflow runs `npm run test:integration`.');
+check('the integration-file discovery found the suites it claims to cover',
+  integrationFiles.length >= 25, `found only ${integrationFiles.length}`);
+// SELF-TEST: the matcher must fail for a file CI does not run, or the clean
+// result above is just a regex that matches everything.
+check('SELF-TEST: a suite absent from the integration job is reported',
+  !runsInCi('definitely-not-a-real-suite.test.mjs'));
+check('SELF-TEST: a suite the job really runs is recognised',
+  runsInCi('api.test.mjs'));
+
 if (failures > 0) { console.error(`✗ test-script coverage: ${failures} failed`); process.exit(1); }
 console.log(`✓ test-script coverage: ${files.length} unit files wired; dev API fallback wired locally and in CI`);
