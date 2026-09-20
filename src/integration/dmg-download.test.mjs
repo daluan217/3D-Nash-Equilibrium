@@ -580,7 +580,12 @@ try {
   {
     const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-trav-'));
     mkdirSync(path.join(cwd, 'dist-electron'));
-    writeFileSync(path.join(cwd, 'SENTINEL-OUTSIDE-DIST-ELECTRON'), 'SENTINEL-LEAKED');
+    // The sentinel's name must be EXACTLY what the encoded entry decodes to,
+    // or the case is unfalsifiable: the first version of this fixture planted
+    // "SENTINEL-OUTSIDE-DIST-ELECTRON" while the entry decoded to
+    // "../SENTINEL-OUTSIDE-DIST-ELECTRON.dmg", so a build that really did
+    // decode the name still found nothing there and the check passed anyway.
+    writeFileSync(path.join(cwd, 'SENTINEL-OUTSIDE-DIST-ELECTRON.dmg'), 'SENTINEL-LEAKED');
     writeFileSync(path.join(cwd, 'dist-electron', '..%2FSENTINEL-OUTSIDE-DIST-ELECTRON.dmg'), 'PLANTED-ENTRY-BYTES');
     try {
       srv = await desktopBoot(cwd);
