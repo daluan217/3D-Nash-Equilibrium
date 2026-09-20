@@ -233,6 +233,28 @@ ok(/cache:\s*['"]no-store['"]/.test(code),
   + 'answer about whether an update exists.');
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CHECK 6b — the update check is the app's ONLY outbound call.
+// Checks 5/6 pin WHERE that one call goes, but nothing stopped a SECOND call
+// being added to somewhere else entirely. This matters for a desktop app sold
+// as offline: on 2026-09-19 a live probe caught the packaged main process
+// opening HTTPS to a Google IP, and it took a net-log + DNS check to establish
+// that the IP *was* nash-equilibrium-simulator.com (Google-hosted, and made
+// over Node's fetch, so invisible to Chromium's net-log). A second endpoint
+// would have looked identical. Enumerate the call sites instead.
+// ─────────────────────────────────────────────────────────────────────────────
+const outboundCalls = [...code.matchAll(/\b(?:fetch|net\.request|https?\.(?:get|request))\s*\(\s*([^\n)]*)/g)]
+  .map((m) => m[1].trim());
+ok(outboundCalls.length > 0,
+  'CONTROL: the outbound-call scan must find the update fetch — zero matches would make this '
+  + 'check pass by scanning nothing.');
+const nonUpdateCalls = outboundCalls.filter((arg) => !arg.includes('UPDATE_BASE_URL'));
+ok(nonUpdateCalls.length === 0,
+  'the update check must be the ONLY outbound call in electron-main.cjs. Found: '
+  + JSON.stringify(nonUpdateCalls)
+  + ' — every other network destination in an offline desktop app is a data-egress question, and '
+  + 'main-process fetches do not appear in a Chromium net-log, so they are near-invisible.');
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CHECK 7 — the scheme allowlist that gates EVERY openExternal call.
 // `openExternalIfSafe` is the single door to the OS; https must be the only
 // scheme through it. Measured on the live binary: smb:// and tel: are refused

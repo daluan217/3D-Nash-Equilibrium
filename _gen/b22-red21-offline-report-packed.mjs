@@ -30,6 +30,16 @@ async function waitForPort(logGetter, timeoutMs = 15000) {
   throw new Error('server did not start:\n' + logGetter());
 }
 
+// Resolved live, not hardcoded: the app's own domain is Google-hosted and its
+// A records rotate, so a frozen IP list would quietly start reporting the
+// update check as a third-party leak (or vice versa).
+const OWN_ORIGIN_IPS = execSync('dig +short nash-equilibrium-simulator.com 2>/dev/null || true')
+  .toString().split('\n').map((s) => s.trim()).filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s));
+if (OWN_ORIGIN_IPS.length === 0) {
+  throw new Error('PRECONDITION: could not resolve nash-equilibrium-simulator.com — '
+    + 'without its IPs the probe cannot tell the app\'s own update check from a third-party leak');
+}
+
 function snapshotConns(pid) {
   try {
     // Red STATE fix (3): `lsof -p X -i` ORs the selectors, so without -a an
@@ -41,9 +51,18 @@ function snapshotConns(pid) {
     const pidList = [pid, ...kids, ...grandkids].join(',');
     const out = execSync(`lsof -a -p ${pidList} -i -n -P 2>/dev/null || true`).toString();
     const lines = out.split('\n').filter((l) => l.includes('->'));
-    const nonLoopback = lines.filter((l) => !l.includes('127.0.0.1') && !l.includes('localhost'));
-    return { total: lines.length, nonLoopback };
-  } catch { return { total: 0, nonLoopback: [] }; }
+    const external = lines.filter((l) => !l.includes('127.0.0.1') && !l.includes('localhost'));
+    // The app's own update check (checkForUpdates -> /api/version) is EXPECTED
+    // traffic and reaches nash-equilibrium-simulator.com, which is Google-hosted
+    // (216.239.32-38.21, reverse-DNS any-in-*.1e100.net). It also runs on Node's
+    // fetch in the main process, so it never appears in a Chromium net-log --
+    // which is exactly why it read as a mystery "leak" on 2026-09-19.
+    // The question this probe asks is whether REPORT data goes to a THIRD PARTY,
+    // so classify by destination instead of lumping all external traffic together.
+    const ownHost = OWN_ORIGIN_IPS.some((ip) => external.some((l) => l.includes(`->${ip}:`)));
+    const thirdParty = external.filter((l) => !OWN_ORIGIN_IPS.some((ip) => l.includes(`->${ip}:`)));
+    return { total: lines.length, nonLoopback: thirdParty, ownOrigin: ownHost ? external : [] };
+  } catch { return { total: 0, nonLoopback: [], ownOrigin: [] }; }
 }
 
 async function main() {
@@ -107,10 +126,15 @@ async function main() {
     console.log('distinct source values:', JSON.stringify(sources));
     console.log('distinct scenarioSource values:', JSON.stringify(scenarioSources));
     console.log('connection snapshots taken:', allConnSnapshots.length);
-    console.log('any non-loopback connection ever seen:', anyNonLoopback);
+    const anyOwnOrigin = allConnSnapshots.some((s) => (s.ownOrigin || []).length > 0);
+    console.log('any THIRD-PARTY connection ever seen:', anyNonLoopback);
     if (anyNonLoopback) {
-      console.log('NON-LOOPBACK DETAIL:', JSON.stringify(allConnSnapshots.filter((s) => s.nonLoopback.length > 0)));
+      console.log('THIRD-PARTY DETAIL:', JSON.stringify(allConnSnapshots.filter((s) => s.nonLoopback.length > 0)));
     }
+    console.log('own-origin (update check) connection seen:', anyOwnOrigin, '<- expected, not a leak');
+    console.log(anyNonLoopback
+      ? '*** HIT: the packaged app talked to a host that is neither loopback nor its own origin'
+      : 'EMPTY: every connection was loopback or the app\'s own update endpoint');
     console.log('any status != 200:', results.some((r) => r.status !== 200));
     console.log('any failure field with source llm-ish or mixed content:', results.filter((r) => r.source && r.source !== 'template' && r.source !== 'deterministic'));
 
