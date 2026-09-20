@@ -202,6 +202,42 @@ for (const role of perms.menuRoles) {
     + 'production renderer. devTools:false on the window kills the inspector, but reload still '
     + 'restarts an SPA mid-state.');
 }
+
+// SR-60. Everything above reads the TEMPLATE the app hands to
+// setApplicationMenu. Electron then EXPANDS the container roles, and nothing
+// had ever looked at the result: `{ role: 'fileMenu' }` is one entry here and
+// several real menu items with real capabilities in the shipped app.
+//
+// MEASURED against a real Electron 31.7.7 (ad-hoc signed copy of the dev
+// binary — the unsigned one is SIGKILLed on this machine), building this
+// app's exact template: 43 items, and 24 roles appear that the app never
+// wrote (about, close, copy, cut, delete, front, hide, hideOthers, minimize,
+// paste, pasteAndMatchStyle, quit, redo, selectAll, services,
+// showSubstitutions, start/stopSpeaking, toggleSmartDashes/Quotes,
+// toggleTextReplacement, undo, unhide, zoom). NONE is an inspector, a reload,
+// or a devtools item, so the template-level assertion above is sound TODAY.
+//
+// Why it is sound, exactly: of every container role Electron offers, only
+// `viewMenu` expands into reload/forceReload/toggleDevTools — measured one
+// role at a time (viewMenu -> those three; shareMenu, windowMenu, appMenu,
+// fileMenu, editMenu, help -> none). `viewMenu` is denylisted by name above.
+//
+// That is a property of Electron, not of this app, so pin the assumption
+// rather than the finding: if an upgrade ever moves a devtools item into a
+// container role this template DOES use, the list below is what has to be
+// re-measured, and this check names it.
+{
+  const CONTAINER_ROLES_USED = ['appMenu', 'fileMenu', 'editMenu', 'windowMenu'];
+  const used = perms.menuRoles.filter((r) => CONTAINER_ROLES_USED.includes(r));
+  assert.deepStrictEqual(used.slice().sort(), CONTAINER_ROLES_USED.slice().sort(),
+    `the template's container roles are ${JSON.stringify(used)}, not `
+    + `${JSON.stringify(CONTAINER_ROLES_USED)}. Each of those four was measured on real Electron `
+    + '31.7.7 and expands to NO devtools/reload/inspect item; only `viewMenu` does, and it is '
+    + 'denylisted above. A container role outside that measured set must be expanded and '
+    + 're-measured before it ships — the checks above read the template, so they cannot see '
+    + 'what Electron builds from it.');
+  checks++;
+}
 ok(perms.menuSetToNull === false,
   'Menu.setApplicationMenu(null) was called. That does not mean "no menu": Electron then installs '
   + 'its DEFAULT application menu, whose View submenu carries live toggleDevTools, reload and '
