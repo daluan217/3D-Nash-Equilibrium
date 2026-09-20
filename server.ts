@@ -1066,6 +1066,28 @@ function normalizeDbShape(parsed: unknown, filePath: string): DB {
     if (!Array.isArray(value)) {
       throw new Error(`${filePath}: "${name}" is present but is a ${typeof value}, not an array — refusing to guess its contents.`);
     }
+    // The CONTAINER was validated here; its ELEMENTS were not, so the class
+    // RED-DESKTOP-6/001 closed survived one level down. `[null]` is an array,
+    // so it passed whole, and the very next reader dereferences it: users
+    // through `ensureLocalOwner`'s `db.users.find(u => u.id === ...)` and games
+    // through `migrateOwnerlessGames`'s `g.userId`. MEASURED against the real
+    // bundle, packaged condition: `users:[null]` 500'd every saved-game request
+    // for the life of the process, and `games:[null]` threw in the STARTUP path
+    // (before `serverListening`), so `handleFatalAsync` exited — which, since
+    // electron-main requires this file IN-PROCESS, takes the whole app down
+    // with no window and no dialog. That is #88/#93's silent-vanish class,
+    // reached through a third door. A non-object element is not a recognised
+    // old shape and nothing can guess its intent, so it gets this function's
+    // existing policy for that case exactly: throw, and let the caller preserve
+    // the bytes aside and refuse to boot rather than serve a DB it misread.
+    const bad = value.findIndex((el) => el === null || typeof el !== "object" || Array.isArray(el));
+    if (bad !== -1) {
+      const el = value[bad];
+      throw new Error(
+        `${filePath}: "${name}[${bad}]" is ${el === null ? "null" : Array.isArray(el) ? "an array" : `a ${typeof el}`}, `
+        + `not an object — refusing to guess its contents.`
+      );
+    }
     return value;
   };
 
