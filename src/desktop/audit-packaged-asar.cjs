@@ -431,8 +431,16 @@ const SECRET_SKIP_RE = /\.(woff2?|ttf|otf|eot|png|jpe?g|gif|ico|icns|webp|avif|m
 // `ours`, not the whole listing: node_modules is third-party code nobody here
 // writes a credential into, and scanning 13k files takes the audit from seconds
 // to minutes. What this exists to cover is OUR build output.
+// Directories are excluded STRUCTURALLY (a dir's stat has `.files`, a file's
+// has `.size`), not by "has a dot in the name": the name test skipped every
+// EXTENSIONLESS file, so a secret in `config`, `Procfile` or `.npmrc` would
+// never have been read. Today only /dist and /dist/assets lack an extension,
+// so the old filter passed by luck rather than by construction.
+const isAsarDir = (rel) => {
+  try { return !!asarLib.statFile(asarPath, rel).files; } catch { return false; }
+};
 const SECRET_SCAN_FILES = ours
-  .filter((p) => !SECRET_SKIP_RE.test(p) && /\.[A-Za-z0-9]+$/.test(p))
+  .filter((p) => !SECRET_SKIP_RE.test(p) && !isAsarDir(p.replace(/^\//, '')))
   .map((p) => p.replace(/^\//, ''))
   .sort();
 for (const rel of SECRET_SCAN_FILES) {
