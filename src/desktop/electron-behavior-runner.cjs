@@ -91,21 +91,53 @@ if (mode === 'bridge') {
     || (typeof v === 'function' && typeof v.__isFakeIpcMethod === 'string')
     || (v !== null && typeof v === 'object' && v.__isFakeIpcRenderer === true);
 
+  // DEEP, not just the top level. Self-review found a surviving mutant:
+  //   setBackgroundColor: (c) => { ipcRenderer.send('set-background-color', c);
+  //                                return { raw: ipcRenderer }; }
+  // It sends legitimately (so the "must reach ipcRenderer" control is happy),
+  // keeps the key set unchanged (so the exact-keys check is happy), and the
+  // handle is one level down (so a top-level identity check is happy) — while
+  // the renderer still gets a live IPC object. Walk the whole returned graph.
+  const findLiveIpc = (v, depth = 0, seen = new Set()) => {
+    if (isLiveIpc(v)) return true;
+    if (depth > 4 || v === null || typeof v !== 'object' || seen.has(v)) return false;
+    seen.add(v);
+    for (const key of Reflect.ownKeys(v)) {
+      let child;
+      try { child = v[key]; } catch { continue; } // a throwing getter hides nothing
+      if (findLiveIpc(child, depth + 1, seen)) return true;
+    }
+    return false;
+  };
+
+  // The detector's own self-test, reported so the test can assert it. A walker
+  // that found everything (or nothing) would make every member verdict below
+  // meaningless, and a cyclic object must not hang it.
+  const cyc = {}; cyc.self = cyc;
+  const walkerSelfTest = {
+    findsTopLevel: findLiveIpc(ipcRenderer),
+    findsMethod: findLiveIpc(ipcRenderer.send),
+    findsNested: findLiveIpc({ raw: ipcRenderer }),
+    findsDeep: findLiveIpc({ a: { b: { c: ipcRenderer.send } } }),
+    ignoresClean: findLiveIpc({ ok: true, n: 1, s: 'ipcRenderer' }) === false,
+    survivesCycle: findLiveIpc(cyc) === false,
+  };
+
   const members = [];
   for (const [name, value] of Object.entries(exposed || {})) {
-    const entry = { name, type: typeof value, leaksDirectly: isLiveIpc(value) };
+    const entry = { name, type: typeof value, leaksDirectly: findLiveIpc(value) };
     if (typeof value === 'function') {
       // Invoke it and inspect the RETURN value too: `() => ipcRenderer.send`
       // hands back the generic sender without ever being one itself.
       const before = sent.length + invoked.length;
       let returned;
       try { returned = value('#000000'); entry.threw = false; } catch (e) { entry.threw = true; }
-      entry.leaksViaReturn = isLiveIpc(returned);
+      entry.leaksViaReturn = findLiveIpc(returned);
       entry.calledIpc = (sent.length + invoked.length) > before;
     }
     members.push(entry);
   }
-  out({ exposedKey, keys: Object.keys(exposed || {}), members, sent, invoked });
+  out({ exposedKey, keys: Object.keys(exposed || {}), members, sent, invoked, walkerSelfTest });
 }
 
 // ── shared fakes for the main-process modes ─────────────────────────────────

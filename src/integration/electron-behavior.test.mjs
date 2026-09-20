@@ -96,6 +96,20 @@ assert.deepStrictEqual(bridge.keys, ['setBackgroundColor'],
   `the bridge must expose exactly ['setBackgroundColor'] (got ${JSON.stringify(bridge.keys)}). Every `
   + 'additional member is a new capability handed to a renderer that renders model output.');
 checks++;
+// The leak detector's own self-test. Without this, a walker that silently
+// stopped finding things would turn every "no leak" verdict below into a
+// free pass — which is how a nested `return { raw: ipcRenderer }` survived
+// the first version of this file.
+for (const [name, passed] of Object.entries(bridge.walkerSelfTest || {})) {
+  ok(passed === true,
+    `SELF-TEST: the ipcRenderer leak walker failed its own "${name}" case. It must find the module `
+    + 'object, any of its methods, and either nested one or several levels inside a returned object; '
+    + 'it must NOT flag a clean object, and must not hang on a cyclic one.');
+}
+ok(Object.keys(bridge.walkerSelfTest || {}).length >= 6,
+  'SELF-TEST: the walker self-test must actually report its cases — an empty object would make the '
+  + 'loop above iterate over nothing.');
+
 ok(bridge.members.length > 0,
   'CONTROL: the bridge must expose at least one member — zero members would make every leak check '
   + 'below pass by iterating over nothing.');
