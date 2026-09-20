@@ -821,7 +821,11 @@ function desktopAuthSecret(): string | null {
     fs.mkdirSync(dir, { recursive: true });
     // 0600: the database beside it is only as private as the user's home
     // directory, but a session key should not be world-readable.
+    // `mode` is honoured only when writeFileSync CREATES the file, so an
+    // auth-secret already on disk keeps its old permissions — and this branch
+    // runs precisely when one was found and rejected. chmod unconditionally.
     fs.writeFileSync(file, fresh, { encoding: "utf-8", mode: 0o600 });
+    fs.chmodSync(file, 0o600);
     return fresh;
   } catch (err) {
     console.error("Could not persist the desktop session secret; sessions will not survive a restart:", err);

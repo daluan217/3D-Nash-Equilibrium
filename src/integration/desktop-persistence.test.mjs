@@ -27,7 +27,8 @@
  *   node src/integration/desktop-persistence.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync,
+  chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -185,6 +186,49 @@ try {
   const replaced = readFileSync(secretFile, 'utf-8').trim();
   record('a truncated auth-secret file is replaced with a real key, not used as one',
     /^[0-9a-f]{64}$/.test(replaced) && replaced !== 'deadbeef', `${replaced.length} chars`);
+
+  // …AND THE REPLACEMENT MUST NOT INHERIT THE OLD FILE'S PERMISSIONS.
+  //
+  // BLUE-LOOP-DESKTOP-22, reproduced before it was fixed. `writeFileSync`'s
+  // `mode` is honoured only when it CREATES the file; over an existing one it
+  // is ignored. The check above passes on content alone, so a freshly minted
+  // HMAC key kept whatever permissions were already on disk — and this branch
+  // runs precisely when a bad secret was found, i.e. the moment the app
+  // "repairs" a tampered file is the moment it leaves the new one exposed.
+  //
+  // Measured 0666 -> 0666 before the fix, 0666 -> 0600 after. The precondition
+  // needs no attacker: a sync client, a restore that flattened modes, a shared
+  // machine, or a build of this app from before the mode argument existed.
+  //
+  // world-readable  = any local process can forge a session for any account
+  // world-writable  = any local process can CHOOSE the key
+  await stop(srv);
+  srv = null;
+  writeFileSync(secretFile, 'deadbeef', 'utf-8');
+  chmodSync(secretFile, 0o666);
+  const modeBefore = (statSync(secretFile).mode & 0o777).toString(8);
+  port += 1;
+  srv = await boot(userData, port);
+  const modeAfter = (statSync(secretFile).mode & 0o777).toString(8);
+  record('the rewritten auth-secret is 0600, not the old file\'s permissions',
+    modeAfter === '600', `${modeBefore} -> ${modeAfter}`);
+  record('CONTROL: the rewrite really happened (a stale file would pass the mode check for free)',
+    /^[0-9a-f]{64}$/.test(readFileSync(secretFile, 'utf-8').trim()),
+    'the file holds a fresh 64-hex key');
+
+  // The CREATE path, on its own: no file at all, and the umask must not widen
+  // it. A default 022 umask turns a 0666 request into 0644, so a mode argument
+  // dropped from the create call would go unnoticed without this.
+  await stop(srv);
+  srv = null;
+  const freshUserData = mkdtempSync(path.join(tmpdir(), 'nash-desktop-secret-create-'));
+  port += 1;
+  srv = await boot(freshUserData, port);
+  const freshSecret = path.join(freshUserData, 'auth-secret');
+  const freshMode = existsSync(freshSecret)
+    ? (statSync(freshSecret).mode & 0o777).toString(8) : 'no file';
+  record('a newly created auth-secret is 0600', freshMode === '600', `mode ${freshMode}`);
+  rmSync(freshUserData, { recursive: true, force: true });
 
   // ───────────────────────────────────────────────────────────────────────────
   // 2. AN UNREADABLE DATABASE IS PRESERVED, NOT OVERWRITTEN
