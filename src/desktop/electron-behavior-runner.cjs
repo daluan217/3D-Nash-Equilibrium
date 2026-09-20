@@ -69,20 +69,43 @@ const RESULT_FILE = process.env.RUNNER_RESULT_FILE
 //
 // A recorded call answers "what did it dial?"; what is still ARMED when the
 // window closes answers "what is it still going to do?", which no wait reaches.
+// Keyed by handle so clear* can find the record again. A CANCELLED timer is
+// not pending: electron-main.cjs legitimately arms a slow-boot fallback and
+// clears it when the window opens, and without this the census called that a
+// finding. Two reasons that matters, and the second is the important one —
+// a check that fires on correct code gets switched off, and `setTimeout(...)`
+// immediately followed by `clearTimeout` would otherwise be an easy way to
+// make a real beacon look like noise the next reader learns to ignore.
+const timerRecords = new Map();
 const scheduledTimers = [];
 const realSetTimeout = globalThis.setTimeout;
 const realSetInterval = globalThis.setInterval;
-globalThis.setTimeout = function (fn, ms, ...rest) {
-  const rec = { ms: Number(ms) || 0, fired: false, kind: 'timeout' };
+const realClearTimeout = globalThis.clearTimeout;
+const realClearInterval = globalThis.clearInterval;
+const track = (rec, handle) => {
   scheduledTimers.push(rec);
-  return realSetTimeout.call(this, (...a) => { rec.fired = true; return fn && fn(...a); }, ms, ...rest);
+  timerRecords.set(handle, rec);
+  return handle;
 };
-// An interval NEVER stops being armed, so it is always a pending timer.
+globalThis.setTimeout = function (fn, ms, ...rest) {
+  const rec = { ms: Number(ms) || 0, fired: false, cancelled: false, kind: 'timeout' };
+  return track(rec, realSetTimeout.call(this,
+    (...a) => { rec.fired = true; return fn && fn(...a); }, ms, ...rest));
+};
+// An interval never stops being armed unless it is cleared.
 globalThis.setInterval = function (fn, ms, ...rest) {
-  scheduledTimers.push({ ms: Number(ms) || 0, fired: false, kind: 'interval' });
-  return realSetInterval.call(this, fn, ms, ...rest);
+  const rec = { ms: Number(ms) || 0, fired: false, cancelled: false, kind: 'interval' };
+  return track(rec, realSetInterval.call(this, fn, ms, ...rest));
 };
-const pendingTimersNow = () => scheduledTimers.filter((t) => !t.fired).map((t) => t.ms);
+const markCancelled = (handle) => { const r = timerRecords.get(handle); if (r) r.cancelled = true; };
+globalThis.clearTimeout = function (handle) {
+  markCancelled(handle); return realClearTimeout.call(this, handle);
+};
+globalThis.clearInterval = function (handle) {
+  markCancelled(handle); return realClearInterval.call(this, handle);
+};
+const pendingTimersNow = () => scheduledTimers
+  .filter((t) => !t.fired && !t.cancelled).map((t) => t.ms);
 
 // OUTBOUND CALLS, recorded from the first line — for the preload too.
 //
