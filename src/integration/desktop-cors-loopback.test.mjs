@@ -38,6 +38,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 
 const repo = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(repo, 'dist/server.cjs');
@@ -218,6 +219,107 @@ try {
     acao(webRes) === '*',
     `acao=${acao(webRes)} — if this fails the fix leaked into the web build and the public `
     + 'site lost its CORS headers');
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // SR-63 — DNS REBINDING. The checks above all send a hostile Origin with the
+  // app's own Host, which is the shape CORS is for. Rebinding is the shape it
+  // is NOT: attacker.example resolves to its own server, the page loads, the
+  // name re-resolves to 127.0.0.1, and the browser now believes
+  // attacker.example:<port> IS the origin — so it sends NO Origin header at
+  // all and the CORS middleware never runs. Nothing in this file reached that,
+  // and `fetch` cannot: it forbids setting Host. Raw http.request can.
+  //
+  // MEASURED before the fix: Host: evil.example:<port> with no Origin returned
+  // 200 and the whole saved-game library; the same Host on POST /api/games
+  // created a game owned by local-owner.
+  // ───────────────────────────────────────────────────────────────────────────
+  const rawReq = (port, hostHeader, { method = 'GET', p = '/api/games', origin, body } = {}) =>
+    new Promise((resolve) => {
+      const headers = { Host: hostHeader };
+      if (origin) headers.Origin = origin;
+      if (body) {
+        headers['content-type'] = 'application/json';
+        headers['content-length'] = Buffer.byteLength(body);
+      }
+      const req = http.request(
+        { host: '127.0.0.1', port: Number(port), path: p, method, headers, setHost: false },
+        (r) => {
+          let d = '';
+          r.on('data', (x) => { d += x; });
+          r.on('end', () => resolve({
+            status: r.statusCode,
+            acao: r.headers['access-control-allow-origin'],
+            body: d,
+          }));
+        },
+      );
+      req.on('error', (e) => resolve({ status: 'error', acao: undefined, body: String(e.message) }));
+      if (body) req.write(body);
+      req.end();
+    });
+
+  // CONTROL FIRST: the raw-request helper itself reaches the app and gets the
+  // library. Without this, every "403" below would also be the reading for a
+  // helper that sends a malformed request the server rejects for some other
+  // reason entirely.
+  const rawControl = await rawReq(DESKTOP_PORT, `127.0.0.1:${DESKTOP_PORT}`);
+  record('CONTROL: a raw request with the loopback Host reads the library (the helper works)',
+    rawControl.status === 200 && rawControl.body.includes('cors-probe-game'),
+    `status=${rawControl.status} body=${rawControl.body.slice(0, 80)}`);
+
+  const rebindGet = await rawReq(DESKTOP_PORT, `evil.example:${DESKTOP_PORT}`);
+  record('SR-63: a rebound Host with NO Origin cannot read the library',
+    rebindGet.status === 403 && !rebindGet.body.includes('cors-probe-game'),
+    `status=${rebindGet.status} body=${rebindGet.body.slice(0, 90)}`);
+
+  const rebindPost = await rawReq(DESKTOP_PORT, `evil.example:${DESKTOP_PORT}`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'REBOUND-ATTACKER-GAME',
+      payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 },
+    }),
+  });
+  record('SR-63: a rebound Host cannot WRITE to the library either',
+    rebindPost.status === 403,
+    `status=${rebindPost.status} body=${rebindPost.body.slice(0, 90)}`);
+
+  // …and prove the write really did not land, rather than trusting the status.
+  const afterAttack = await rawReq(DESKTOP_PORT, `127.0.0.1:${DESKTOP_PORT}`);
+  record('SR-63: the refused write left nothing behind in the library',
+    !afterAttack.body.includes('REBOUND-ATTACKER-GAME'),
+    afterAttack.body.slice(0, 120));
+
+  record('SR-63: a rebound Host WITH an Origin is not echoed back either',
+    (await rawReq(DESKTOP_PORT, `evil.example:${DESKTOP_PORT}`, { origin: `http://evil.example:${DESKTOP_PORT}` })).acao === undefined,
+    'before the fix the same-origin test compared Origin against this very Host, so the attacker controlled both sides');
+
+  // The scheme was ignored in that comparison: https://127.0.0.1:<port> is a
+  // DIFFERENT origin from the renderer's http:// and was being echoed.
+  record('SR-63: an https Origin on the loopback host is NOT treated as same-origin',
+    (await rawReq(DESKTOP_PORT, `127.0.0.1:${DESKTOP_PORT}`, { origin: `https://127.0.0.1:${DESKTOP_PORT}` })).acao === undefined,
+    'only .host was compared, so the https origin matched');
+
+  // REGRESSION CONTROLS: every Host shape a real client sends must still work.
+  // A guard that 403s the renderer is worse than the defect it fixes.
+  for (const [hostHeader, why] of [
+    [`127.0.0.1:${DESKTOP_PORT}`, 'the renderer itself'],
+    [`localhost:${DESKTOP_PORT}`, 'a user typing localhost'],
+    [`[::1]:${DESKTOP_PORT}`, 'the IPv6 loopback literal'],
+    ['127.0.0.1', 'a Host with no port'],
+    [`LOCALHOST:${DESKTOP_PORT}`, 'an uppercase Host'],
+  ]) {
+    const r = await rawReq(DESKTOP_PORT, hostHeader);
+    record(`SR-63 CONTROL: Host "${hostHeader}" still works (${why})`,
+      r.status === 200, `status=${r.status}`);
+  }
+
+  // And the HOSTED build must not have inherited the guard: its Host is the
+  // real domain behind a proxy, so a leak here 403s every production request.
+  for (const hostHeader of ['nash-equilibrium-simulator.com', 'some-revision.a.run.app']) {
+    const r = await rawReq(WEB_PORT, hostHeader, { p: '/api/health' });
+    record(`SR-63 CONTROL: the hosted build still serves Host "${hostHeader}"`,
+      r.status === 200, `status=${r.status} — a leak here would 403 the whole public site`);
+  }
 } catch (err) {
   record('suite ran to completion', false, String(err && err.message));
 } finally {
