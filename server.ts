@@ -3092,6 +3092,38 @@ async function startServer() {
     next();
   });
 
+  // SR-63 (DNS rebinding). On the desktop every route answers as `local-owner`
+  // with no credential, so the only thing standing between a web page and the
+  // user's library is that the page cannot reach 127.0.0.1 as a first-party
+  // origin. DNS rebinding defeats exactly that: attacker.example resolves to
+  // its own server, the page loads, then the name re-resolves to 127.0.0.1.
+  // The browser now believes attacker.example:<port> IS the origin, so it
+  // sends NO Origin header at all and CORS never runs.
+  // MEASURED against the real bundle: `Host: evil.example:<port>` with no
+  // Origin returned 200 and the whole saved-game library, and a POST with the
+  // same Host created a game owned by local-owner. With an Origin it was also
+  // echoed back in Access-Control-Allow-Origin, because the same-origin test
+  // below compares Origin against this very Host — the attacker controls both
+  // sides of that comparison.
+  // The fix is to stop trusting the request's own alias: the desktop binds
+  // loopback, so a request whose Host is not a loopback literal did not come
+  // from the app's own origin, whatever it claims. Rejected before any route
+  // (and before the CORS block, which is what makes that comparison safe).
+  if (process.env.IS_ELECTRON === "true") {
+    app.use((req, res, next) => {
+      const host = req.headers.host;
+      // Strip the port; IPv6 literals arrive bracketed ([::1]:14321).
+      const hostname = typeof host === "string"
+        ? host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase()
+        : "";
+      if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1") {
+        next();
+        return;
+      }
+      res.status(403).json({ error: "Invalid Host header." });
+    });
+  }
+
   // CORS for cross-origin API access (e.g. from the local Electron client to the
   // website backend). Set CORS_ALLOWED_ORIGINS (comma-separated) to restrict to
   // known origins; if unset we fall back to "*" for backward compatibility.
@@ -3158,9 +3190,17 @@ async function startServer() {
       // whatever port the walk lands on, and cannot be spoofed into echoing a
       // FOREIGN origin — a request from evil.example carries the app's Host
       // and evil.example's Origin, which do not match.
+      // The Host guard above has already rejected anything that is not a
+      // loopback literal, so comparing against it is safe here. The SCHEME is
+      // compared too: the app's renderer is loaded over plain http, and
+      // `https://127.0.0.1:<port>` is a DIFFERENT origin that was being echoed
+      // because only `.host` was checked (reviewer finding, 2026-09-20).
       const sameOriginAsApp = (() => {
         if (!origin || !req.headers.host) return false;
-        try { return new URL(origin).host === req.headers.host; } catch { return false; }
+        try {
+          const u = new URL(origin);
+          return u.host === req.headers.host && u.protocol === "http:";
+        } catch { return false; }
       })();
       if (origin && (sameOriginAsApp || corsAllowlist.includes(origin))) {
         res.setHeader("Access-Control-Allow-Origin", origin);
