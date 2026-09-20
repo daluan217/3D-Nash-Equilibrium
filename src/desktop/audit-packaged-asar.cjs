@@ -44,25 +44,53 @@ const path = require('path');
 
 const repo = path.join(__dirname, '..', '..');
 
-function findAsar() {
+// EVERY bundle, not the first one found. `mac.target` is ["dmg","zip"] and a
+// --universal or --x64 build emits dist-electron/mac-arm64/ AND
+// dist-electron/mac-x64/ side by side; this returned on the first hit, so a
+// leak confined to the second slice was audited by nobody and the run still
+// exited 0 (reproduced: _gen/b22-sr13-second-arch-unaudited.sh). Both slices
+// are uploaded, so both are shipped.
+function findAsars() {
   const base = path.join(repo, 'dist-electron');
-  if (!fs.existsSync(base)) return null;
-  for (const dir of fs.readdirSync(base)) {
-    const app = path.join(base, dir);
-    if (!fs.statSync(app).isDirectory()) continue;
-    for (const entry of fs.readdirSync(app)) {
+  if (!fs.existsSync(base)) return [];
+  const found = [];
+  // One level down (dist-electron/mac-arm64/X.app) and at the top
+  // (dist-electron/X.app), which is where a single-target build can put it.
+  for (const dir of ['.', ...fs.readdirSync(base)]) {
+    const parent = path.join(base, dir);
+    if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) continue;
+    for (const entry of fs.readdirSync(parent)) {
       if (!entry.endsWith('.app')) continue;
-      const asar = path.join(app, entry, 'Contents', 'Resources', 'app.asar');
-      if (fs.existsSync(asar)) return asar;
+      const asar = path.join(parent, entry, 'Contents', 'Resources', 'app.asar');
+      if (fs.existsSync(asar)) found.push(asar);
     }
   }
-  return null;
+  return [...new Set(found)];
 }
 
-const asarPath = process.argv[2] || findAsar();
-if (!asarPath || !fs.existsSync(asarPath)) {
-  console.error('audit-packaged-asar: no app.asar found. Run `npx electron-builder --dir` first, '
-    + 'or pass the path. Refusing to report success without an artifact to audit.');
+if (!process.argv[2]) {
+  const all = findAsars();
+  if (all.length === 0) {
+    console.error('audit-packaged-asar: no app.asar found. Run `npx electron-builder --dir` first, '
+      + 'or pass the path. Refusing to report success without an artifact to audit.');
+    process.exit(2);
+  }
+  // Re-run for each bundle rather than auditing one and hoping the rest match.
+  // No `break` on failure: the point of an audit is the full list of leaks.
+  let worst = 0;
+  for (const p of all) {
+    const r = require('child_process').spawnSync(process.execPath, [__filename, p],
+      { stdio: 'inherit' });
+    worst = Math.max(worst, r.status === null ? 1 : r.status);
+  }
+  if (all.length > 1) console.log(`audit-packaged-asar: audited ${all.length} bundles.`);
+  process.exit(worst);
+}
+
+const asarPath = process.argv[2];
+if (!fs.existsSync(asarPath)) {
+  console.error(`audit-packaged-asar: ${asarPath} does not exist. Refusing to report success `
+    + 'without an artifact to audit.');
   process.exit(2);
 }
 
