@@ -87,7 +87,13 @@ if (!process.argv[2]) {
   process.exit(worst);
 }
 
-const asarPath = process.argv[2];
+// RESOLVED, because bundleRoot is derived from it and the symlink-escape check
+// compares that against a path.resolve()d target — i.e. an absolute one. Given
+// a RELATIVE argv the two were never comparable and all 14 of Electron's own
+// framework version stamps read as escaping the bundle. A check that fires on
+// a correct bundle is worse than no check: it gets switched off, and then its
+// false-positive shape is exactly where a real escaping link would hide.
+const asarPath = path.resolve(process.argv[2]);
 if (!fs.existsSync(asarPath)) {
   console.error(`audit-packaged-asar: ${asarPath} does not exist. Refusing to report success `
     + 'without an artifact to audit.');
@@ -326,22 +332,44 @@ ok(bundleUnexpected.length === 0,
 // Without this, an allowlisted path is not a safe path. A link named
 // harmless.dat inside the sidecar's node_modules passed all 52 checks while
 // pointing anywhere on the user's disk.
+// A named predicate so the self-test below can drive it with inputs this run
+// does not happen to have. `root` must be ABSOLUTE: path.resolve returns an
+// absolute path, so comparing it against a relative root compares two
+// different kinds of thing and every link reads as escaping.
+function escapesBundle(root, linkPath, target) {
+  const resolved = path.resolve(path.dirname(path.join(root, linkPath)), target);
+  return path.isAbsolute(target)
+    || !(resolved === root || resolved.startsWith(`${root}${path.sep}`));
+}
 for (const [linkPath, target] of symlinks) {
-  const resolved = path.resolve(path.dirname(path.join(bundleRoot, linkPath)), target);
-  const escapes = path.isAbsolute(target)
-    || !(resolved === bundleRoot || resolved.startsWith(`${bundleRoot}${path.sep}`));
-  ok(!escapes,
+  ok(!escapesBundle(bundleRoot, linkPath, target),
     `the bundle ships a symlink ${JSON.stringify(linkPath)} -> ${JSON.stringify(target)}, which `
     + 'resolves outside the .app. A symlink is a file whose content is chosen at open time on the '
     + "user's machine, so no path rule above can see what it exposes. Electron's own links are all "
     + 'relative and stay inside their framework.');
 }
-// The rules above are negatives, so prove the check can fire at all.
-{
-  const probe = path.resolve(path.dirname(path.join(bundleRoot, '/Contents/Resources/x')), '/etc/passwd');
-  ok(!probe.startsWith(`${bundleRoot}${path.sep}`),
-    'SELF-TEST: an absolute symlink target resolved INSIDE the bundle root, so the escape check '
-    + 'above cannot fire and its clean result means nothing.');
+// The rules above are negatives, so prove the check can fire at all — AND that
+// it does not fire on the links every Electron bundle ships.
+//
+// The second half is the one that was broken. bundleRoot is derived from argv,
+// so with a RELATIVE argv it was relative while path.resolve's output is
+// absolute, and `resolved.startsWith(root)` was false for all 14 of Electron's
+// own framework version stamps: a clean bundle reported 14 FAILURES. CI passes
+// no argument so nobody saw it, and the audit is exactly the check a human runs
+// by hand on a path they typed. Driven through the predicate with both spellings
+// of the root, so the argv form can never change the verdict again.
+for (const root of [bundleRoot, path.relative(process.cwd(), bundleRoot) || '.']) {
+  const absRoot = path.resolve(root);
+  ok(escapesBundle(absRoot, '/Contents/Resources/x', '/etc/passwd'),
+    `SELF-TEST (root spelled ${JSON.stringify(root)}): an absolute symlink target resolved INSIDE `
+    + 'the bundle, so the escape check above cannot fire and its clean result means nothing.');
+  ok(escapesBundle(absRoot, '/Contents/Resources/x', '../../../../../../etc/passwd'),
+    `SELF-TEST (root spelled ${JSON.stringify(root)}): a target climbing out with ../ was not `
+    + 'caught, which is the shape an attacker would actually use.');
+  ok(!escapesBundle(absRoot, '/Contents/Frameworks/Mantle.framework/Versions/Current', 'A'),
+    `SELF-TEST (root spelled ${JSON.stringify(root)}): Electron's own framework version stamp `
+    + 'reads as escaping. An audit that fires on every correct bundle gets switched off, and then '
+    + 'its false-positive shape is where a real escaping link hides.');
 }
 
 // THE COLLECTORS MUST HAVE COLLECTED.
@@ -431,6 +459,108 @@ ok(frameworkPaths.length === FRAMEWORK_BASELINE,
   + 'arbitrary file hidden in them — a `settings.dat` deep in Electron Framework.framework passed '
   + 'all 51 checks before this existed. If you upgraded Electron, update FRAMEWORK_BASELINE in the '
   + 'same commit; if you did not, something wrote into the bundle after packaging.');
+
+// ── Info.plist CONTENTS ─────────────────────────────────────────────────────
+//
+// Every rule above this point audits PATHS. `/Contents/Info.plist` is on the
+// allowlist and its contents were never read — and on macOS that file is a live
+// capability surface, not metadata:
+//   LSEnvironment      environment variables launchd sets for the process.
+//                      `DYLD_INSERT_LIBRARIES: /tmp/evil.dylib` loads an
+//                      arbitrary dylib into an UNSIGNED app before main() runs.
+//                      Verified: injected into the real bundle, 81/81 green.
+//   CFBundleURLTypes   URL schemes the app claims. Registering `nash-pwn://`
+//                      makes any web page able to hand this app a payload.
+//   ElectronAsarIntegrity  the SHA-256 Electron checks app.asar's header
+//                      against. Editing it to match a tampered archive is how
+//                      a swapped asar passes Electron's own check.
+// Auditing the path cannot see any of this, exactly as auditing a path could
+// not see where a symlink pointed.
+//
+// Read with `plutil -convert json`, the platform's own parser: this audit runs
+// on macOS only (both workflows pin macos-latest), and a hand-rolled XML reader
+// would disagree with the parser that actually decides what launchd does.
+// Every Info.plist in the bundle, not just the top one — the four helper .apps
+// have their own, and the renderer helper is the one that hosts web content.
+const plists = bundleListing.filter((p) => p.endsWith('/Info.plist'));
+ok(plists.length >= 5,
+  `found ${plists.length} Info.plist file(s) in the bundle; an Electron app ships at least five `
+  + '(the app plus four helpers). A short list means the collector missed some and the rules '
+  + 'below audited fewer files than they claim.');
+// The ONLY env vars any plist here may set. electron-builder writes
+// MallocNanoZone=0 into the app and every helper; nothing else belongs.
+const ALLOWED_LSENV = new Map([['MallocNanoZone', '0']]);
+// The per-plist rules below all pass when a plist parses to `{}` — which is
+// also what a plutil that stopped working produces. Count the ones that came
+// back with real content and assert against the app plist's known keys, so an
+// empty parse cannot read as a clean bundle. Same failure the symlink and mode
+// collectors had: "the list came back empty" is the verdict a broken collector
+// and a clean artifact both give.
+let plistsParsed = 0;
+let plistsWithKnownEnv = 0;
+for (const rel of plists) {
+  let info;
+  try {
+    info = JSON.parse(execFileSync('plutil',
+      ['-convert', 'json', '-o', '-', path.join(bundleRoot, rel)], { encoding: 'utf8' }));
+  } catch (e) {
+    ok(false, `${rel} could not be parsed by plutil (${String(e.message).slice(0, 120)}). An `
+      + 'unreadable plist is a finding: launchd reads this file whatever this audit can do with it.');
+    continue;
+  }
+  if (info && typeof info === 'object' && Object.keys(info).length > 0) plistsParsed++;
+  const env = info.LSEnvironment || {};
+  if (Object.keys(env).length > 0) plistsWithKnownEnv++;
+  for (const [k, v] of Object.entries(env)) {
+    ok(ALLOWED_LSENV.has(k) && String(ALLOWED_LSENV.get(k)) === String(v),
+      `${rel} sets LSEnvironment ${JSON.stringify(k)}=${JSON.stringify(v)}. launchd puts these in `
+      + 'the process environment before any code runs, so a DYLD_* entry loads a chosen dylib into '
+      + `this unsigned app. Only ${[...ALLOWED_LSENV.keys()].join(', ')} may appear.`);
+  }
+  ok(!('CFBundleURLTypes' in info),
+    `${rel} declares CFBundleURLTypes ${JSON.stringify(info.CFBundleURLTypes)}. This app is opened `
+    + 'from the Dock and handles no URL scheme; a registered scheme is an input channel any web '
+    + 'page can drive, and nothing in electron-main.cjs is written to receive one.');
+}
+ok(plistsParsed === plists.length,
+  `only ${plistsParsed} of ${plists.length} Info.plist files parsed to anything. A plist that `
+  + 'reads as empty satisfies every rule above, so this is what makes their clean result mean '
+  + 'something.');
+ok(plistsWithKnownEnv >= 5,
+  `only ${plistsWithKnownEnv} Info.plist file(s) carried an LSEnvironment block. electron-builder `
+  + 'writes MallocNanoZone into the app and all four helpers, so a lower count means the block is '
+  + 'not being read and the DYLD rule above never examined anything.');
+
+// The integrity hash must match the archive actually shipped. Electron checks
+// app.asar's HEADER against this value, so a hash edited to match a tampered
+// archive is precisely how a swapped asar passes that check — recomputed here
+// from the bytes on disk rather than trusted.
+{
+  const top = JSON.parse(execFileSync('plutil',
+    ['-convert', 'json', '-o', '-', path.join(bundleRoot, '/Contents/Info.plist')],
+    { encoding: 'utf8' }));
+  const entry = (top.ElectronAsarIntegrity || {})['Resources/app.asar'];
+  ok(entry && entry.algorithm === 'SHA256' && /^[0-9a-f]{64}$/.test(String(entry.hash)),
+    `Info.plist's ElectronAsarIntegrity for Resources/app.asar is ${JSON.stringify(entry)}. `
+    + 'Without a SHA256 entry Electron has nothing to verify the archive against.');
+  if (entry && typeof entry.hash === 'string') {
+    // asar header: bytes 12..16 are the header length, the header follows at 16.
+    const fd = fs.openSync(asarPath, 'r');
+    let actual = '';
+    try {
+      const lead = Buffer.alloc(16);
+      fs.readSync(fd, lead, 0, 16, 0);
+      const headerSize = lead.readUInt32LE(12);
+      const header = Buffer.alloc(headerSize);
+      fs.readSync(fd, header, 0, headerSize, 16);
+      actual = require('crypto').createHash('sha256').update(header).digest('hex');
+    } finally { fs.closeSync(fd); }
+    ok(actual === entry.hash,
+      `Info.plist claims app.asar's header hashes to ${entry.hash}, but the shipped archive hashes `
+      + `to ${actual}. Either the archive was replaced after packaging or the hash was edited to `
+      + 'match one — both defeat the integrity check Electron performs at startup.');
+  }
+}
 
 // CONTROL for the bundle allowlist: the fixture the rule is supposed to reject.
 // Without this, a BUNDLE_ALLOWED entry loosened to /^\/Contents/ would pass
