@@ -389,6 +389,15 @@ jobs:
       - name: Run the electron window-guard suite (stubbed electron, in-process require)
         run: node src/integration/electron-window-guard.test.mjs
 
+      # BEHAVIORAL guards for permissions / bridge / egress / openExternal.
+      # Three reviews in a row defeated the source-text regexes that used to
+      # guard these (a spread into the permission Set, `() => ipcRenderer.send`,
+      # `const { openExternal } = shell`, an evil URL that merely MENTIONS
+      # UPDATE_BASE_URL). These invoke the real handlers under a fake electron
+      # and judge by identity and recorded effect, so spelling cannot evade them.
+      - name: Run the electron behavioral guards (real handlers, fake electron)
+        run: node src/integration/electron-behavior.test.mjs
+
       # RED-DESKTOP-6/001: a db.json whose "users"/"games" field is PRESENT
       # but the WRONG TYPE (not a recognised old shape — a hand-edit or a
       # genuinely foreign schema) used to load with zero validation and only
