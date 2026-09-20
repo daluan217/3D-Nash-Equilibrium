@@ -222,14 +222,45 @@ function totalStub(name) {
   });
 }
 
-// One fake session, shared the way Electron shares a default session.
-const fakeSession = {
-  setPermissionRequestHandler(fn) { permissionRequestHandlers.push(fn); },
-  setPermissionCheckHandler(fn) { permissionCheckHandlers.push(fn); },
-  setDevicePermissionHandler(fn) { devicePermissionHandlers.push(fn); },
+// Every session API that can GRANT a capability. Each is a separate door:
+// `display-capture` in the permission handler does not gate getDisplayMedia
+// once setDisplayMediaRequestHandler is installed, and the device/USB/Bluetooth
+// pickers ask on their own channels. Handlers land here by name so the test can
+// assert on doors the product does not use today but might tomorrow.
+const CAPABILITY_HANDLERS = ['setPermissionRequestHandler', 'setPermissionCheckHandler',
+  'setDevicePermissionHandler', 'setDisplayMediaRequestHandler', 'setBluetoothPairingHandler',
+  'setUSBProtectedClassesHandler', 'setCertificateVerifyProc', 'setProxy', 'allowNTLMCredentialsForDomains'];
+const installedHandlers = {};
+// The product feature-detects (`typeof ses.X === 'function'`) before installing
+// several of these. A fake that LACKS a method therefore makes the product
+// silently skip it — the guard reads clean while the door was never measured.
+// So the fake carries every capability API by name, and records what it was
+// handed. `sessionReads` additionally records every property the product
+// TOUCHES, so a future feature-detect for something absent here is visible
+// rather than silent.
+const sessionReads = new Set();
+const fakeSessionTarget = {
   webRequest: { onBeforeRequest() {}, onHeadersReceived() {} },
   setSpellCheckerEnabled() {},
 };
+for (const name of CAPABILITY_HANDLERS) {
+  fakeSessionTarget[name] = (...args) => { (installedHandlers[name] ||= []).push(args[0]); };
+}
+fakeSessionTarget.setPermissionRequestHandler = (fn) => {
+  installedHandlers.setPermissionRequestHandler = [fn]; permissionRequestHandlers.push(fn);
+};
+fakeSessionTarget.setPermissionCheckHandler = (fn) => {
+  installedHandlers.setPermissionCheckHandler = [fn]; permissionCheckHandlers.push(fn);
+};
+fakeSessionTarget.setDevicePermissionHandler = (fn) => {
+  installedHandlers.setDevicePermissionHandler = [fn]; devicePermissionHandlers.push(fn);
+};
+const fakeSession = new Proxy(fakeSessionTarget, {
+  get(target, prop) {
+    if (typeof prop === 'string') sessionReads.add(prop);
+    return target[prop];
+  },
+});
 
 class FakeWebContents {
   constructor() {
@@ -541,12 +572,35 @@ if (mode === 'permissions') {
   if (devicePermissionHandlers.length) {
     try { deviceGranted = devicePermissionHandlers[0]({ deviceType: 'hid', device: {} }); } catch { deviceGranted = 'threw'; }
   }
+  // getDisplayMedia does NOT go through the permission handler once a display
+  // media handler is installed — it is a separate grant channel. If the app
+  // ever installs one, whatever it hands back IS the screen-capture policy.
+  let displayMediaGrant = null;
+  for (const fn of installedHandlers.setDisplayMediaRequestHandler || []) {
+    if (typeof fn !== 'function') continue;
+    try {
+      fn({ frame: null, securityOrigin: 'http://127.0.0.1:14322', videoRequested: true,
+        audioRequested: true, userGesture: false },
+      (streams) => { displayMediaGrant = streams === null ? null : JSON.stringify(streams); });
+    } catch { displayMediaGrant = 'threw'; }
+  }
   assertBooted();
   out({
     requestHandlerInstalled: typeof reqHandler === 'function',
     checkHandlerInstalled: typeof chkHandler === 'function',
     deviceHandlerInstalled: devicePermissionHandlers.length > 0,
     granted, checked, deviceGranted, probed: ALL.length,
+    displayMediaHandlerInstalled: (installedHandlers.setDisplayMediaRequestHandler || []).length > 0,
+    displayMediaGrant,
+    // Every capability API the fake offers, and whether the app installed
+    // anything on it. A door the app does not use must stay empty.
+    handlerCensus: Object.fromEntries(CAPABILITY_HANDLERS
+      .map((n) => [n, (installedHandlers[n] || []).length])),
+    // Every session property the product touched. A feature-detect for
+    // something the fake does not carry would show up here as a read with no
+    // corresponding census entry — the silent-skip shape this probe was
+    // written for.
+    sessionReads: [...sessionReads].sort(),
   });
 }
 

@@ -98,6 +98,47 @@ checks++;
 ok(perms.deviceGranted === false,
   `the device permission handler must deny (returned ${JSON.stringify(perms.deviceGranted)}).`);
 
+// FOUND BY THIS AGENT, sweep 2 (not by a reviewer). getDisplayMedia is granted
+// through setDisplayMediaRequestHandler, NOT through the permission handler —
+// installing one and calling back with a stream hands over the screen while
+// `granted: ['clipboard-sanitized-write']` above stays perfectly clean.
+//
+// The deeper shape: the product feature-detects (`typeof ses.X === 'function'`)
+// before installing several handlers, so a fake that LACKS a method makes the
+// product silently skip it and the guard reads clean on a door it never
+// measured. The fake now carries every capability API by name.
+ok(perms.displayMediaGrant === null,
+  `the display-media handler handed back ${JSON.stringify(perms.displayMediaGrant)}. Anything but `
+  + 'null is a screen/window/tab capture granted to a renderer that displays model-generated '
+  + 'content — and it does NOT show up in the permission-handler results above, because '
+  + 'getDisplayMedia consults this handler instead.');
+assert.deepStrictEqual(perms.handlerCensus, {
+  setPermissionRequestHandler: 1,
+  setPermissionCheckHandler: 1,
+  setDevicePermissionHandler: 1,
+  setDisplayMediaRequestHandler: 0,
+  setBluetoothPairingHandler: 0,
+  setUSBProtectedClassesHandler: 0,
+  setCertificateVerifyProc: 0,
+  setProxy: 0,
+  allowNTLMCredentialsForDomains: 0,
+}, `the set of session capability doors the app installs on has changed: `
+  + `${JSON.stringify(perms.handlerCensus)}. Exactly three may be used, and each of the zeros is a `
+  + 'capability grant with its own channel: display-media hands over the screen, the Bluetooth '
+  + 'pairing handler completes a device pairing, setCertificateVerifyProc can accept a bad TLS '
+  + 'certificate, and setProxy can route every request through a third party. A new non-zero here '
+  + 'is a new grant, whether or not the permission results above changed.');
+checks++;
+// The fake's own completeness control: the product touched only properties the
+// fake carries. A read of something absent would mean a feature-detect fell
+// through and the product's real behaviour was never exercised.
+for (const prop of perms.sessionReads) {
+  ok(prop === '__nashPermissionPolicy' || prop in { ...perms.handlerCensus, webRequest: 0, setSpellCheckerEnabled: 0 },
+    `SELF-TEST: the app read session.${prop}, which the fake does not carry. If that read is a `
+    + '`typeof ses.' + prop + ' === "function"` feature-detect, the product SKIPPED whatever it '
+    + 'guards and this run measured a door that was never opened. Add it to the fake.');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. BRIDGE — identity, not text. Nothing exposed may BE a live IPC handle.
 // ─────────────────────────────────────────────────────────────────────────────
