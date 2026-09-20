@@ -785,6 +785,31 @@ ok(!isBundle || plists.length >= 5,
 // The ONLY env vars any plist here may set. electron-builder writes
 // MallocNanoZone=0 into the app and every helper; nothing else belongs.
 const ALLOWED_LSENV = new Map([['MallocNanoZone', '0']]);
+// Every Info.plist key that may appear in a shipped bundle, across the app and
+// all eight helpers. Inert identity/metadata (CFBundle*, DT*, NS*UsageDescription
+// — a usage string grants nothing; the OS shows it only if the app asks, and the
+// permission handler in electron-main.cjs is what actually refuses) plus four
+// entries that DO carry capability and are checked by name above or below:
+// LSEnvironment (launchd env), ElectronAsarIntegrity (the asar hash),
+// NSAppTransportSecurity (electron-builder writes NSAllowsArbitraryLoads
+// unconditionally — configureLocalhostAts in app-builder-lib; ATS does not
+// govern Chromium's own network stack, and navigation is contained by
+// hardenWebContents, so it is inert here but must stay visible), and LSUIElement
+// (agent app: no Dock icon, no menu bar — present on the helpers, never the app).
+const ALLOWED_PLIST_KEYS = new Set([
+  'CFBundleDevelopmentRegion', 'CFBundleDisplayName', 'CFBundleExecutable',
+  'CFBundleIconFile', 'CFBundleIdentifier', 'CFBundleInfoDictionaryVersion',
+  'CFBundleName', 'CFBundlePackageType', 'CFBundleShortVersionString',
+  'CFBundleSignature', 'CFBundleVersion',
+  'DTCompiler', 'DTSDKBuild', 'DTSDKName', 'DTXcode', 'DTXcodeBuild',
+  'ElectronAsarIntegrity', 'LSApplicationCategoryType', 'LSEnvironment',
+  'LSMinimumSystemVersion', 'LSUIElement', 'NSAppTransportSecurity',
+  'NSBluetoothAlwaysUsageDescription', 'NSBluetoothPeripheralUsageDescription',
+  'NSCameraUsageDescription', 'NSHighResolutionCapable', 'NSHumanReadableCopyright',
+  'NSMainNibFile', 'NSMicrophoneUsageDescription', 'NSPrincipalClass',
+  'NSQuitAlwaysKeepsWindows', 'NSRequiresAquaSystemAppearance',
+  'NSSupportsAutomaticGraphicsSwitching',
+]);
 // The per-plist rules below all pass when a plist parses to `{}` — which is
 // also what a plutil that stopped working produces. Count the ones that came
 // back with real content and assert against the app plist's known keys, so an
@@ -816,6 +841,21 @@ for (const rel of plists) {
     `${rel} declares CFBundleURLTypes ${JSON.stringify(info.CFBundleURLTypes)}. This app is opened `
     + 'from the Dock and handles no URL scheme; a registered scheme is an input channel any web '
     + 'page can drive, and nothing in electron-main.cjs is written to receive one.');
+  // ALLOWLIST, not two named keys. The rules above name LSEnvironment and
+  // CFBundleURLTypes, so every OTHER capability key passed unread: planted
+  // NSAppleEventsUsageDescription, LSUIElement and a CFBundleDocumentTypes
+  // claiming `public.data` (every file on the machine) into the real bundle
+  // and the audit still reported 144/144. Same shape as the symlink rule —
+  // auditing the names you thought of cannot see the one you did not.
+  // A key added by a future electron-builder fails here on purpose: read what
+  // it grants, then add it below with a reason.
+  for (const k of Object.keys(info)) {
+    ok(ALLOWED_PLIST_KEYS.has(k),
+      `${rel} carries the unreviewed Info.plist key ${JSON.stringify(k)} = `
+      + `${JSON.stringify(info[k]).slice(0, 120)}. macOS reads this file to decide what the app may `
+      + 'do before any of its code runs. If the key is harmless, add it to ALLOWED_PLIST_KEYS with '
+      + 'a note saying what it grants; if it is not, it does not belong in a shipped bundle.');
+  }
 }
 // THE VERSION THE APP REPORTS MUST BE THE VERSION THE RELEASE ANNOUNCES.
 //
