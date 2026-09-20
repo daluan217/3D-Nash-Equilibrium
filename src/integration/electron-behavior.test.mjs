@@ -281,6 +281,14 @@ ok(bridge.lateExposures === 0,
 // arms its own two), and a preload that needs no timer today has no honest
 // reason to grow one. If it ever does, this fails loudly and the exemption is
 // written down here deliberately.
+//
+// This counts timers ARMED, and deliberately ignores cancellation, where the
+// main-process census (pendingTimers) subtracts cleared ones. The difference
+// is not an oversight: electron-main legitimately arms and clears a slow-boot
+// fallback, so counting arms there would fire on correct code, while the
+// preload's honest answer is zero timers at all — so "armed then cancelled"
+// is already a change worth failing on, and leaving it exempt would make
+// clearTimeout a place to park a beacon. Verified both ways.
 ok(bridge.preloadTimers === 0,
   `electron-preload.cjs armed ${bridge.preloadTimers} timer(s). A preload runs inside the renderer `
   + 'with bridge access, so deferred work there is the cheapest possible beacon: every other check '
