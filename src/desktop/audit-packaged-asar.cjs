@@ -197,6 +197,71 @@ for (const required of ['/electron-main.cjs', '/electron-preload.cjs', '/dist/se
     + 'on a broken archive is not an audit.');
 }
 
+// THE SHIPPED index.html MUST STILL CARRY THE ANALYTICS GATE.
+//
+// The gate in index.html is this app's documented primary egress guard
+// (RED-DESKTOP-21/002: without it www.google-analytics.com is the packaged
+// renderer's one non-loopback host, measured 39/40 idle snapshots before vs
+// 7/40 after). `electronmenu.contract.test.ts` executes it under four
+// identities with controls — but it reads the REPO's index.html. Nothing
+// checked the copy actually inside app.asar, which is the file the user runs.
+// The two can differ: index.html is an input to the vite build, so a plugin,
+// an html transform or a stale dist/ all produce a package whose gate is gone
+// while every source-level check stays green. Same blind spot Info.plist had,
+// one layer further in — a path listing cannot see contents.
+//
+// Read the file OUT of the archive and assert both halves of the gate.
+//
+// `gateRulesRan` is asserted below, OUTSIDE this block. Everything in here is
+// conditional — on the entry being listed, on the extract succeeding, on `html`
+// being non-empty — and each of those silently skips the gate rules while the
+// audit still exits 0, just with four fewer checks. Mutation-tested: emptying
+// `html` and making the condition `if (false)` both left the run GREEN at 103.
+// A skipped check and a passed check must not look the same from outside.
+let gateRulesRan = false;
+if (listing.includes('/dist/index.html')) {
+  // `asar extract-file` writes basename(file) into the CWD, so it gets a
+  // private directory: extracting into os.tmpdir() would collide with any other
+  // index.html there and this check would then audit someone else's file.
+  const outDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nash-audit-html-'));
+  let html = '';
+  try {
+    execFileSync('npx', ['asar', 'extract-file', asarPath, 'dist/index.html'],
+      { cwd: outDir, maxBuffer: 16 * 1024 * 1024 });
+    html = fs.readFileSync(path.join(outDir, 'index.html'), 'utf8');
+  } catch (e) {
+    ok(false, `could not read dist/index.html out of the archive (${String(e.message).slice(0, 120)}). `
+      + 'The gate rules below never ran.');
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+  if (html) {
+    ok(/navigator\.userAgent/.test(html) && /indexOf\(['"]electron['"]\)/i.test(html),
+      'the PACKAGED dist/index.html has no Electron user-agent check around analytics. This is the '
+      + "app's primary egress guard: without it the packaged renderer loads googletagmanager and "
+      + 'www.google-analytics.com becomes its one non-loopback host (RED-DESKTOP-21/002). The '
+      + 'source-level test in electronmenu.contract.test.ts reads the REPO file and cannot see this.');
+    ok(/nashDesktop/.test(html),
+      'the PACKAGED dist/index.html does not test for the preload bridge (window.nashDesktop). That '
+      + 'is the second, independent half of the gate — with only the UA test, a UA override '
+      + 're-enables analytics in the packaged app.');
+    // A STATIC tag would load before any gate could run.
+    ok(!/<script[^>]+src=["'][^"']*googletagmanager/i.test(html),
+      'the PACKAGED dist/index.html loads googletagmanager from a STATIC <script src>, which runs '
+      + 'before any gate can suppress it. The tag must be inserted by the gated script only.');
+    // CONTROL: prove we are reading the real page and not an empty/placeholder
+    // file, which would satisfy all three rules above by containing nothing.
+    ok(/<div id="root"><\/div>/.test(html) && /<script[^>]+src=["']\.?\/assets\//.test(html),
+      `the packaged dist/index.html (${html.length} bytes) does not look like the built page — no `
+      + '#root div or no hashed asset script. The gate rules above all pass on an empty file.');
+    gateRulesRan = true;
+  }
+}
+ok(gateRulesRan,
+  'the packaged-index.html gate rules never ran: dist/index.html was not listed in the archive, '
+  + 'could not be extracted, or read as empty. Every one of those paths exits 0 with the app\'s '
+  + 'primary egress guard unchecked, which is indistinguishable from a clean result.');
+
 const FORBIDDEN = [
   [/(^|\/)db\.json($| |\.)/i, 'the account store: usernames, emails and bcrypt password hashes. '
     + 'This exact file reached app.asar once already. The " " and "." alternatives catch the '
