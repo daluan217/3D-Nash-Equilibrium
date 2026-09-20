@@ -116,6 +116,10 @@ const symlinks = [];
 const worldWritable = [];
 const setuidOrSetgid = [];
 const hardLinked = [];
+// How many files the walk actually stat()ed. The three lists above are all
+// expected to be EMPTY, so without this a collector that never ran is
+// indistinguishable from a clean bundle.
+let checkedModes = 0;
 function walk(dir, prefix, acc) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const rel = `${prefix}/${entry.name}`;
@@ -128,6 +132,7 @@ function walk(dir, prefix, acc) {
     if (entry.isFile()) {
       try {
         const st = fs.lstatSync(abs);
+        checkedModes++;
         if (st.mode & 0o002) worldWritable.push(rel);
         if (st.mode & 0o6000) setuidOrSetgid.push(rel);
         // A hard link shares one inode with a file elsewhere on disk: same
@@ -337,6 +342,68 @@ for (const [linkPath, target] of symlinks) {
   ok(!probe.startsWith(`${bundleRoot}${path.sep}`),
     'SELF-TEST: an absolute symlink target resolved INSIDE the bundle root, so the escape check '
     + 'above cannot fire and its clean result means nothing.');
+}
+
+// THE COLLECTORS MUST HAVE COLLECTED.
+//
+// Every rule below this point passes when its list is EMPTY, which is also
+// exactly how a collector that stopped collecting behaves. Deleting the
+// `symlinks.push` line, or the `worldWritable.push` line, left all 70 checks
+// green — the same vacuity that SR-23 found in the behavioural runner, in a
+// second file. The bundle walk itself is guarded by the size checks near the
+// top; these two lists needed their own.
+//
+// Electron's framework version stamps are the known-positive: every bundle it
+// produces has them, so zero symlinks means the collector is broken, not that
+// the bundle is unusually clean. Modes have no such natural positive (the
+// honest count of world-writable files is zero), so instead assert the walk
+// STATTED something — `checkedModes` counts every file it examined.
+ok(symlinks.length >= 10,
+  `the symlink collector found ${symlinks.length} link(s). Every Electron bundle ships framework `
+  + 'version stamps (Versions/Current, Versions/Current/Resources, …), so a near-empty list means '
+  + 'the collector stopped collecting and the escape check below proves nothing.');
+ok(checkedModes > 50,
+  `the walk stat()ed only ${checkedModes} file(s), which is too few for an Electron bundle. The `
+  + 'mode and hard-link rules below all pass on an empty sample, so this is what makes their '
+  + 'clean result mean anything.');
+
+// …and one CANARY per mode rule, because `checkedModes` only proves the block
+// RAN. Deleting a single `push` line left it running and the list empty, which
+// is the expected answer — so plant a file that each rule must catch, in a
+// temp directory walked with the same function, and require it to be found.
+// (Not planted in the real bundle: an audit that mutates the artifact it is
+// auditing could ship what it planted if it crashed mid-run.)
+{
+  const probeDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'asar-audit-selftest-'));
+  const w = path.join(probeDir, 'ww.dat');
+  const s = path.join(probeDir, 'su.dat');
+  const h = path.join(probeDir, 'hard.dat');
+  const hSrc = path.join(probeDir, 'hard-src.dat');
+  try {
+    fs.writeFileSync(w, 'x'); fs.chmodSync(w, 0o666);
+    fs.writeFileSync(s, 'x'); fs.chmodSync(s, 0o4755);
+    fs.writeFileSync(hSrc, 'x'); fs.linkSync(hSrc, h);
+    fs.symlinkSync('/etc/passwd', path.join(probeDir, 'link.dat'));
+    const before = {
+      ww: worldWritable.length, su: setuidOrSetgid.length,
+      hl: hardLinked.length, sl: symlinks.length,
+    };
+    walk(probeDir, '__selftest', []);
+    ok(worldWritable.length > before.ww,
+      'SELF-TEST: the walk did not flag a 0666 file, so the world-writable rule cannot fire and '
+      + 'its clean result on the real bundle means nothing.');
+    ok(setuidOrSetgid.length > before.su,
+      'SELF-TEST: the walk did not flag a setuid file, so that rule cannot fire.');
+    ok(hardLinked.length > before.hl,
+      'SELF-TEST: the walk did not flag a hard-linked file, so that rule cannot fire.');
+    ok(symlinks.length > before.sl,
+      'SELF-TEST: the walk did not record a symlink, so the escape check cannot fire.');
+    // Remove the probe's own findings: they are this file's, not the bundle's.
+    worldWritable.length = before.ww; setuidOrSetgid.length = before.su;
+    hardLinked.length = before.hl; symlinks.length = before.sl;
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
 }
 
 // MODE AND LINK INVARIANTS. All three measured as zero on the real bundle
