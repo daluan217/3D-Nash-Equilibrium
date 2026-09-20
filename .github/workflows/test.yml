@@ -156,6 +156,36 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+  # Audit the ARTIFACT, not the spec. `src/packagedfiles.contract.test.ts`
+  # reasons about package.json's build.files globs; nothing looked at what
+  # electron-builder actually produced. A file can reach app.asar by a route the
+  # spec does not describe — an extraResources entry, an afterPack hook writing
+  # into the bundle, a default inclusion, or a glob that behaves differently
+  # from our model of it. MUTATION-PROVEN: adding "secrets/**/*" to build.files
+  # with a live-shaped API key inside SURVIVES the spec check and is caught
+  # here. macOS because that is the only runner that can package the .app.
+  package-audit:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and package the desktop app
+        run: |
+          npm run build
+          npx electron-builder --dir
+
+      - name: Audit the packaged app.asar
+        run: node src/desktop/audit-packaged-asar.cjs
+
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -86,6 +86,12 @@ jobs:
           npm run build
           npx electron-builder --publish never
 
+      # BEFORE the upload, not after: this is the last point at which a leaked
+      # file is still ours. The account store reached app.asar once already,
+      # and this workflow used to package and upload with nothing in between.
+      - name: Audit the packaged app.asar before uploading
+        run: node src/desktop/audit-packaged-asar.cjs
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
