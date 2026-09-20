@@ -158,8 +158,14 @@ try {
     });
     const reachable = [];
     for (const addr of targets) if (await canConnect(addr)) reachable.push(addr);
+    // An empty target list would report "not reachable" by never looking —
+    // and the fallback above exists precisely to stop that, so assert it
+    // worked rather than trusting it (a forced-empty `targets` passed this
+    // whole section for free until this line).
+    record('CONTROL: at least one non-loopback address was actually probed',
+      targets.length > 0, `probed ${targets.length}: ${targets.join(', ') || 'NOTHING'}`);
     record('the desktop server is NOT reachable on a non-loopback address',
-      reachable.length === 0,
+      targets.length > 0 && reachable.length === 0,
       reachable.length ? `answered on ${reachable.join(', ')}` : `refused on ${targets.join(', ')}`);
     // CONTROL: those refusals must mean "bound to loopback", not "nothing is
     // listening" — which is exactly how a crashed server would look.
