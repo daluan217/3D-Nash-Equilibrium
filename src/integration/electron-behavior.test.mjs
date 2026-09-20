@@ -304,6 +304,20 @@ assert.deepStrictEqual(bridge.preloadNetworkCalls, [],
   + 'reach. The packaged app must talk to loopback and nothing else.');
 checks++;
 
+// CONTROL: the harness must OFFER every outbound door before "no calls" means
+// anything. A preload runs in a renderer, where XMLHttpRequest and
+// navigator.sendBeacon exist; under plain Node they are undefined, so those
+// two mutants threw into their own catch and the suite passed without ever
+// measuring them — absence in the fake reading exactly like correctness in the
+// product, which is this harness's oldest trap. The runner reports which doors
+// it installed; if one disappears, this fails instead of going quiet.
+assert.deepStrictEqual([...bridge.outboundDoors].sort(),
+  ['XMLHttpRequest', 'WebSocket', 'fetch', 'sendBeacon'].sort(),
+  `the bridge runner offered the preload ${JSON.stringify(bridge.outboundDoors)}. A door it does `
+  + 'not provide is a door the preload cannot be caught using: the call throws, a beacon\'s '
+  + 'try/catch swallows it, and the empty preloadNetworkCalls above means nothing.');
+checks++;
+
 ok(bridge.exposedKey === 'nashDesktop',
   `the preload must expose exactly one namespace, "nashDesktop" (got ${JSON.stringify(bridge.exposedKey)}).`);
 assert.deepStrictEqual(bridge.keys, ['setBackgroundColor'],

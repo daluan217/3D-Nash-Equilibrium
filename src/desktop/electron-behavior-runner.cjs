@@ -98,17 +98,56 @@ const pendingTimersNow = () => scheduledTimers.filter((t) => !t.fired).map((t) =
 // replace globalThis.fetch later with the update-reply stub — that stub pushes
 // to this same array, so nothing is lost.
 const networkCalls = [];
-{
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = function (url, init) {
-    networkCalls.push(['fetch', String(url)]);
-    // Do NOT complete the request: a probe that really dials is a probe that
-    // exfiltrates. Resolving to a rejected promise keeps `.catch()` chains
-    // working, which is how a beacon is usually written.
-    return Promise.reject(new Error('blocked by the behavioural harness'));
+// Assigned without READING globalThis.fetch first: Node defines it as a lazy
+// getter, and touching it instantiates undici's dispatcher, which adds
+// Symbol(undici.globalDispatcher.1) to globalThis. The preload-globals diff
+// then reported that symbol as a global the PRELOAD added — a false positive
+// this instrumentation created, and the clean-tree run failed on it before
+// this comment existed. The real fetch is not needed: nothing here forwards.
+globalThis.fetch = function (url) {
+  networkCalls.push(['fetch', String(url)]);
+  // Do NOT complete the request: a probe that really dials is a probe that
+  // exfiltrates. A rejected promise keeps `.catch()` chains working, which is
+  // how a beacon is usually written.
+  return Promise.reject(new Error('blocked by the behavioural harness'));
+};
+
+// THE RENDERER'S OTHER OUTBOUND DOORS. A preload runs in a renderer, where
+// `XMLHttpRequest` and `navigator.sendBeacon` exist and work; under plain Node
+// they are undefined, so those two mutants threw into their own catch and
+// "passed" without ever being measured. That is the fake-lacks-the-method trap
+// this harness has hit before: absence in the fake reads exactly like
+// correctness in the product. Providing them turns a silent skip into a
+// recorded call. sendBeacon in particular is the one built FOR this — fire and
+// forget, survives page teardown.
+globalThis.XMLHttpRequest = function XMLHttpRequest() {
+  let target = '';
+  return {
+    open(method, url) { target = String(url); },
+    send() { networkCalls.push(['XMLHttpRequest', target]); },
+    setRequestHeader() {}, abort() {}, addEventListener() {}, removeEventListener() {},
+    get readyState() { return 0; }, get status() { return 0; }, get responseText() { return ''; },
   };
-  globalThis.fetch.__realFetch = realFetch;
-}
+};
+if (!globalThis.navigator) globalThis.navigator = {};
+try {
+  globalThis.navigator.sendBeacon = (url) => {
+    networkCalls.push(['sendBeacon', String(url)]);
+    return true; // what a real one returns when the send is queued
+  };
+} catch { /* a frozen navigator cannot carry a beacon either */ }
+
+// Which doors are actually live, PROBED rather than listed. A hardcoded list
+// would still say "sendBeacon" after a frozen navigator silently dropped it —
+// the control in the test would then be checking my intent, not the harness.
+const outboundDoors = () => {
+  const doors = [];
+  if (typeof globalThis.fetch === 'function') doors.push('fetch');
+  if (typeof globalThis.XMLHttpRequest === 'function') doors.push('XMLHttpRequest');
+  if (typeof globalThis.WebSocket === 'function') doors.push('WebSocket');
+  if (typeof globalThis.navigator?.sendBeacon === 'function') doors.push('sendBeacon');
+  return doors;
+};
 
 const out = (payload) => {
   // Attached here, not by each mode: a mode that forgot would report a clean
@@ -163,6 +202,7 @@ if (mode === 'bridge') {
   };
   const timersBeforePreload = scheduledTimers.length;
   const networkCallsBeforePreload = networkCalls.length;
+  const doorsOfferedToPreload = outboundDoors();
   require(path.resolve(preloadCjs));
   Module._load = originalLoad;
 
@@ -302,8 +342,25 @@ if (mode === 'bridge') {
   // itself created, caught because the first run after this change failed
   // naming three of them. Named explicitly rather than filtered by a pattern:
   // if the runner grows another global, this list must be updated deliberately.
+  //
+  // Symbol(undici.globalDispatcher.N) is NODE's, not the preload's: the first
+  // use of the built-in fetch stack anywhere in this process instantiates
+  // undici's dispatcher and stamps that symbol onto globalThis. It appeared
+  // the moment the outbound-door instrumentation went in, and the clean-tree
+  // run failed naming it — matched by prefix because the counter increments.
   const RUNNER_OWN_GLOBALS = new Set(['fetch', 'WebSocket', 'XMLHttpRequest',
-    'onExpressListening', 'onDesktopLockFailure', 'expressPort']);
+    'navigator', 'onExpressListening', 'onDesktopLockFailure', 'expressPort']);
+  // Exempt only if the value is NOT a live IPC handle. Two mutation rounds
+  // killed the name-shaped versions of this filter: matching the rendered name
+  // let `globalThis['Symbol(undici.evil)'] = ipcRenderer` through (an ordinary
+  // string property that merely prints like the symbol), and matching the
+  // prefix on a real symbol let `globalThis[Symbol.for('undici.sneaky')] =
+  // ipcRenderer` through. Any exemption written as a NAME can be spelled into.
+  // Undici's dispatcher is not an IPC handle and a leak is, so the exemption
+  // is the property of the value that actually matters.
+  const isNodeInternalSymbol = (k) => typeof k === 'symbol'
+    && String(k).startsWith('Symbol(undici.')
+    && !(() => { try { return findLiveIpc(globalThis[k]); } catch { return true; } })();
   const syncExposureCount = exposures.length;
   // What the PRELOAD armed, measured across its own require and nothing else.
   // out()'s census cannot answer this one: this file has no `return` after the
@@ -316,7 +373,9 @@ if (mode === 'bridge') {
   // counted as a timer the preload armed.
   realSetTimeout(() => {
     const globalsNow = Reflect.ownKeys(globalThis)
-      .filter((k) => !globalsBefore.has(k)).map(String)
+      // isNodeInternalSymbol BEFORE map(String): it must see the real key, or
+      // a string property that merely prints like the symbol is exempt too.
+      .filter((k) => !globalsBefore.has(k) && !isNodeInternalSymbol(k)).map(String)
       .filter((k) => !RUNNER_OWN_GLOBALS.has(k));
     const allExposures = exposures.map((e) => ({
       world: e.world,
@@ -344,6 +403,9 @@ if (mode === 'bridge') {
       // drain outlasts any microtask queue, so a queueMicrotask/Promise.then
       // beacon has already been recorded by the time this reads.
       preloadNetworkCalls: networkCalls.slice(networkCallsBeforePreload),
+      // Probed at the moment the preload ran, so the control cannot pass on a
+      // door that was never really there.
+      outboundDoors: doorsOfferedToPreload,
       drained: true });
   }, 60);
 }
