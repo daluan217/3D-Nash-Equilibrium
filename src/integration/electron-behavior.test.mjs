@@ -462,6 +462,15 @@ for (const [url, action] of ext.windowOpenVerdicts) {
     `window.open(${JSON.stringify(url)}) returned action=${JSON.stringify(action)}; it must always be `
     + '"deny" — the app opens links via the scheme-gated wrapper, never as a new Electron window.');
 }
+// The frame section below has this control; this one did not, found by my own
+// self-review. Deleting the will-navigate handler empties navigationPrevented,
+// and a loop over an empty list passes — the mutant died only on the LATE-
+// contents check further up, i.e. this section was carried by another one.
+// Every "for every recorded X" needs its own "X was recorded at all".
+ok(ext.navigationPrevented.length >= 8,
+  `every hostile URL must be driven through the will-navigate handler (got `
+  + `${ext.navigationPrevented.length}). An empty list makes the loop below pass by iterating `
+  + 'over nothing, which is exactly how deleting the handler would look.');
 for (const [url, prevented] of ext.navigationPrevented) {
   ok(prevented === true,
     `a will-navigate to ${JSON.stringify(url)} was NOT prevented. The window must stay on its own `
