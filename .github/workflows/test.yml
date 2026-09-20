@@ -492,6 +492,14 @@ jobs:
           COB_TEST_PORT: '3180'
           COB_STUB_PORT: '3181'
 
+      # SR-48: express.static(distPath) published dist/server.cjs — the whole
+      # backend bundle, 1.5MB, downloadable from the live public site. Same
+      # door as RED-CLOUD-21/001 (which removed the .map and left the .cjs).
+      - name: Boot the production server and check the backend bundle is not served
+        run: node src/integration/static-server-bundle.test.mjs
+        env:
+          STATIC_BUNDLE_PORT: '3198'
+
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
       # route (404 off) and the /api/health capability bit; the avoid gate

@@ -4718,6 +4718,21 @@ async function startServer() {
       ? __dirname
       : path.join(process.cwd(), 'dist');
     if (fs.existsSync(path.join(distPath, 'index.html'))) {
+      // The BACKEND BUNDLE lives in this same directory (the comment above says
+      // so: __dirname IS dist/), so express.static was publishing it. MEASURED
+      // on the live site: GET /server.cjs returned 1,566,939 bytes of the real
+      // server — every route, every check, 19 internal /api paths. No secret is
+      // in it (`--packages=external`, config comes from env), which is why this
+      // is source disclosure rather than a credential leak. Same door as
+      // RED-CLOUD-21/001, which removed the .map and left the .cjs beside it.
+      // Refuse it before the static mount; the SPA fallback then answers.
+      app.use((req, res, next) => {
+        if (/^\/server\.cjs(\.map)?$/.test(req.path)) {
+          res.status(404).json({ error: "Not found" });
+          return;
+        }
+        next();
+      });
       app.use(express.static(distPath));
       app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
