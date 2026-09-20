@@ -3081,7 +3081,16 @@ async function startServer() {
     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (req.path.startsWith("/api/admin/")) {
+    // `.toLowerCase()`: Express routes case-INSENSITIVELY unless
+    // `caseSensitive` is set, and it is not — so `GET /api/ADMIN/stats` is
+    // served by the same handler as `/api/admin/stats`, while a case-sensitive
+    // startsWith here fell to the else-branch and set
+    // `Access-Control-Allow-Origin: *` on it. MEASURED with a valid
+    // x-admin-secret: /api/ADMIN/stats and /API/ADMIN/STATS both returned the
+    // real stats body (totalUsers, verifiedUsers, …) with ACAO `*`, so any web
+    // page could read admin PII cross-origin. The gate has to agree with the
+    // router it is protecting.
+    if (req.path.toLowerCase().startsWith("/api/admin/")) {
       // Admin returns user PII and is gated by x-admin-secret. Don't expose it to
       // arbitrary internet origins via "*"; allow cross-origin calls only from the
       // first-party local (Electron) client or explicitly allowlisted origins.

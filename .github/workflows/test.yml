@@ -500,6 +500,14 @@ jobs:
         env:
           STATIC_BUNDLE_PORT: '3198'
 
+      # SR-50: Express routes case-insensitively but the CORS gate's
+      # startsWith was case-sensitive, so /api/ADMIN/stats served admin PII
+      # with Access-Control-Allow-Origin: *.
+      - name: Boot the production server and check the admin CORS gate is case-proof
+        run: node src/integration/admin-cors-case.test.mjs
+        env:
+          ADMIN_CORS_PORT: '3196'
+
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
       # route (404 off) and the /api/health capability bit; the avoid gate
