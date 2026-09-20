@@ -179,11 +179,24 @@ jobs:
         run: npm ci
 
       - name: Build and package the desktop app
+        # The FULL build (dmg + zip), not `--dir`. The audit mounts each .dmg
+        # and unpacks each .zip and applies every rule to the app.asar inside,
+        # because electron-builder produces those as separate artifacts from
+        # the staging dir and the release uploads the .dmg — a DMG carrying a
+        # baked-in API key passed with dist-electron/mac-arm64/ pristine. With
+        # `--dir` there is no .dmg here, so that whole code path would first
+        # run during a release, which is exactly when failing is expensive and
+        # switching the check off is tempting. Measured: 6s vs 40s.
         run: |
           npm run build
-          npx electron-builder --dir
+          npx electron-builder --publish never
 
       - name: Audit the packaged app.asar
+        # Same flag as the release step, so the PR checks what the release
+        # checks. Without it a build that produced no .dmg/.zip would audit the
+        # staging directory alone and pass.
+        env:
+          AUDIT_REQUIRE_SHIPPED: '1'
         run: node src/desktop/audit-packaged-asar.cjs
 
   integration:

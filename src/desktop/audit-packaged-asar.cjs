@@ -87,8 +87,11 @@ class AuditBail extends Error {
 // Reproduced: built a DMG whose app.asar carries
 // `const K = "sk-proj-..."` while leaving dist-electron/mac-arm64/ pristine.
 // The audit reported 140/140 GREEN and the DMG queued for upload held a live
-// API key. `mac.target` is ["dmg","zip"] and BOTH are uploaded, so the zip is
-// the same hole one file over.
+// API key. Only the .dmg is uploaded today (the workflow's single
+// `gcloud storage cp` of dmgs[0]) — `mac.target` also builds a .zip, which is
+// audited here because it is produced from the same staging dir, is the
+// natural artifact for a future auto-update feed, and costs one `ditto` to
+// check. Auditing it is defence in depth, not a claim that it ships.
 //
 // Mount each .dmg read-only and unzip each .zip, then audit the app.asar
 // inside exactly like any other — every rule in this file applies for free.

@@ -308,9 +308,24 @@ function auditRunsBeforeUpload(yml: string): boolean {
       + 'packaging leak is caught on the PR, not first discovered mid-release.');
   }
   // …and it must actually package something first, or it audits nothing and exits 2.
-  if (!/electron-builder --dir/.test(test)) {
-    fail('test.yml runs the audit without `electron-builder --dir`, so there is no artifact to '
-      + 'audit and the job cannot pass for the right reason.');
+  // `--publish never` (the full dmg+zip build) or `--dir` both produce a bundle;
+  // the PR job now uses the full build so that the .dmg/.zip code path — the one
+  // that guards the artifact the release actually uploads — is exercised before
+  // a release rather than during one. 6s vs 40s, measured.
+  if (!/electron-builder (--dir|--publish never)/.test(test)) {
+    fail('test.yml runs the audit without packaging anything (`electron-builder --dir` or '
+      + '`--publish never`), so there is no artifact to audit and the job cannot pass for the '
+      + 'right reason.');
+  }
+  // The PR job must check what the RELEASE checks. Without the flag, a build
+  // that produced no .dmg/.zip audits the staging directory alone and passes,
+  // and the divergence between the two is the defect this guards.
+  const testAuditStep = /\n(\s+)- name:[^\n]*\n(?:\1\s[^\n]*\n)*?\1\s+run:[^\n]*audit-packaged-asar\.cjs/
+    .exec(test);
+  if (!testAuditStep || !/^\s*AUDIT_REQUIRE_SHIPPED:\s*['"]?1['"]?\s*$/m.test(testAuditStep[0])) {
+    fail('test.yml must set AUDIT_REQUIRE_SHIPPED: \'1\' in the env block of the step that runs '
+      + 'audit-packaged-asar.cjs, so the PR audits the shipped .dmg/.zip and not just the staging '
+      + 'directory.');
   }
 }
 
