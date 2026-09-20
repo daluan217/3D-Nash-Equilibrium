@@ -29,7 +29,7 @@
  *   node src/integration/dmg-download.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
@@ -444,6 +444,159 @@ try {
     !(typeof json3?.message === 'string' && json3.message.includes('electron:dist')),
     JSON.stringify(json3));
   await stop(srv); srv = null;
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 4. THE DESKTOP BRANCH of the same route (BLUE-LOOP-DESKTOP-22, sweep 21).
+  //
+  // Everything above is the Cloud Run path. A PACKAGED app never reaches it —
+  // the GCS block is gated on `!ELECTRON_USER_DATA_PATH && GCS_BUCKET`, so on
+  // desktop control falls through to the dist-electron branch, which was
+  // entirely unguarded:
+  //
+  //   const distElectronPath = path.join(process.cwd(), "dist-electron");
+  //   const dmgFile = files.find(f => f.toLowerCase().endsWith(".dmg"));
+  //   return res.download(path.join(distElectronPath, dmgFile), dmgFile);
+  //
+  // The filename comes OFF THE FILESYSTEM and is handed to res.download, which
+  // puts it in Content-Disposition. A name carrying CRLF is header injection;
+  // a name carrying a quote can break out of the quoted-string. Measured
+  // against the real bundle (_gen/b22-s21-dmg-cwd.mjs): Express sanitizes both
+  // (CRLF -> "??" plus an RFC 5987 filename*), and an encoded-traversal name
+  // does not even match the .dmg suffix. These are Express's guarantees, not
+  // ours, which is exactly why they need a guard: an express major bump, or
+  // anyone "simplifying" this to a hand-built setHeader, silently reopens it.
+  // ───────────────────────────────────────────────────────────────────────────
+  const desktopBoot = async (cwd) => {
+    const child = spawn('node', [BUNDLE], {
+      cwd,
+      env: {
+        PATH: process.env.PATH, HOME: cwd, NODE_ENV: 'production',
+        PORT: String(port), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: cwd,
+        // No GCS_BUCKET_NAME/STORAGE_EMULATOR_HOST: the packaged condition.
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let log = '';
+    child.stdout.on('data', (d) => { log += d; });
+    child.stderr.on('data', (d) => { log += d; });
+    for (let i = 0; i < 80; i++) {
+      if (child.exitCode !== null) throw new Error(`desktop server exited (${child.exitCode})\n${log}`);
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
+        if (r.ok && (await r.json())?.pid === child.pid) return child;
+      } catch { /* not up yet */ }
+      await new Promise((res) => setTimeout(res, 250));
+    }
+    child.kill('SIGKILL');
+    throw new Error(`desktop server never became ready\n${log}`);
+  };
+
+  // CONTROL FIRST: with no dist-electron in cwd the route 404s. Without this,
+  // every "no injected header" check below would also pass on a build where
+  // the desktop branch never serves anything at all.
+  {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-none-'));
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      const j = await r.json().catch(() => null);
+      record('DESKTOP CONTROL: with no dist-electron in cwd the route 404s',
+        r.status === 404 && typeof j?.message === 'string' && j.message.includes('electron:dist'),
+        `status ${r.status}, ${JSON.stringify(j)}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
+
+  // CONTROL 2: a plainly-named .dmg in cwd/dist-electron really is served, so
+  // the hostile-name cases below are measuring sanitization and not a branch
+  // that refuses everything.
+  {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-plain-'));
+    mkdirSync(path.join(cwd, 'dist-electron'));
+    writeFileSync(path.join(cwd, 'dist-electron', 'Plain.dmg'), 'PLAIN DMG BYTES');
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      const body = await r.text();
+      record('DESKTOP CONTROL: a plainly-named dist-electron/*.dmg is served with its name',
+        r.status === 200 && body === 'PLAIN DMG BYTES'
+          && (r.headers.get('content-disposition') || '').includes('filename="Plain.dmg"'),
+        `status ${r.status}, disposition ${r.headers.get('content-disposition')}, body ${JSON.stringify(body.slice(0, 40))}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
+
+  // THE HOSTILE NAMES. Each asserts the SPECIFIC sanitization measured, not
+  // merely "no crash": a check that only demanded a non-500 would pass on a
+  // build that injected the header.
+  const HOSTILE = [
+    {
+      name: 'a\r\nX-Injected: yes.dmg',
+      label: 'a CRLF in the filename does not inject a response header',
+      expect: (r, disp) => !r.headers.has('x-injected')
+        && !/[\r\n]/.test(disp)
+        && disp.includes('??')
+        && disp.includes("filename*=UTF-8''a%0D%0AX-Injected%3A%20yes.dmg"),
+    },
+    {
+      name: 'a"b.dmg',
+      label: 'a quote in the filename is escaped inside the quoted-string, not left to terminate it',
+      expect: (_r, disp) => disp.includes('filename="a\\"b.dmg"'),
+    },
+    {
+      name: 'ünïcodé.dmg',
+      label: 'a non-ASCII filename is still served and carries no raw control bytes',
+      expect: (r, disp) => r.status === 200 && !/[\r\n]/.test(disp) && disp.includes('filename'),
+    },
+  ];
+  for (const h of HOSTILE) {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-evil-'));
+    mkdirSync(path.join(cwd, 'dist-electron'));
+    let planted = true;
+    try { writeFileSync(path.join(cwd, 'dist-electron', h.name), 'x'); }
+    catch { planted = false; }
+    // A filename the FILESYSTEM refuses is not a pass — it means this check
+    // measured nothing, so say so rather than banking a silent skip.
+    record(`DESKTOP setup: the hostile name ${JSON.stringify(h.name)} could be planted on disk`,
+      planted, planted ? '' : 'filesystem refused the name — the case below measured nothing');
+    if (!planted) { rmSync(cwd, { recursive: true, force: true }); continue; }
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      await r.arrayBuffer();
+      const disp = r.headers.get('content-disposition') || '';
+      record(`DESKTOP: ${h.label}`, h.expect(r, disp),
+        `status ${r.status}, disposition ${JSON.stringify(disp)}, x-injected present: ${r.headers.has('x-injected')}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
+
+  // An encoded traversal in the NAME never even reaches res.download: the
+  // suffix match is on the literal filename, and "..%2F..%2Fetc%2Fpasswd.dmg"
+  // is one directory entry, not a path. It must 404 like any other cwd with
+  // no real .dmg — i.e. the route must not treat the name as a path at all.
+  // A SENTINEL one level above dist-electron makes this bite: "no traversal"
+  // asserted only as "the body is not /etc/passwd" would also hold on a build
+  // that served nothing at all. The sentinel is a file the route could only
+  // ever reach by resolving the name as a PATH, and the planted entry's own
+  // bytes are the control for "the branch ran".
+  {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-trav-'));
+    mkdirSync(path.join(cwd, 'dist-electron'));
+    writeFileSync(path.join(cwd, 'SENTINEL-OUTSIDE-DIST-ELECTRON'), 'SENTINEL-LEAKED');
+    writeFileSync(path.join(cwd, 'dist-electron', '..%2FSENTINEL-OUTSIDE-DIST-ELECTRON.dmg'), 'PLANTED-ENTRY-BYTES');
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      const body = await r.text();
+      record('DESKTOP: an encoded-traversal filename never resolves to a file outside dist-electron',
+        !body.includes('SENTINEL-LEAKED'),
+        `status ${r.status}, body ${JSON.stringify(body.slice(0, 80))}`);
+      // The name is ONE directory entry, not a path: whatever the route does
+      // with it, it is either that entry's own bytes or a refusal — never the
+      // neighbouring file the encoded "../" points at.
+      record('DESKTOP: the traversal-shaped entry is treated as a name, not a path',
+        r.status !== 200 || body === 'PLANTED-ENTRY-BYTES',
+        `status ${r.status}, body ${JSON.stringify(body.slice(0, 80))}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
 
 } finally {
   await stop(srv);
