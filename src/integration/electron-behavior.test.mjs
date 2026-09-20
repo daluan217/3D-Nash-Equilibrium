@@ -220,7 +220,9 @@ ok(ext.openedUrls.length > 0,
   + 'below are checking an empty list — which is exactly how a broken harness looks like a pass.');
 for (const u of ext.openedUrls) {
   ok(u.startsWith('https://'),
-    `shell.openExternal received ${JSON.stringify(u)}, which is not https. Recorded on the fake `
+    `the OS was handed ${JSON.stringify(u)}, which is not an https URL. (An "openPath:" or `
+    + '"showItemInFolder:" prefix means a DIFFERENT shell door was used — those reach the OS too, '
+    + 'so they are recorded in the same list.) Recorded on the fake '
     + 'function itself, so destructuring (`const { openExternal } = shell`), aliasing, or calling it '
     + 'from inside a template interpolation records identically — the spelling cannot hide the call. '
     + 'file:// opens Finder on an arbitrary path; javascript:/data: execute.');
