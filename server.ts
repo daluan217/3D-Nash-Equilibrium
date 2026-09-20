@@ -3029,7 +3029,16 @@ async function startServer() {
     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (req.path.startsWith("/api/admin/")) {
+    // `.toLowerCase()`: Express routes case-INSENSITIVELY unless
+    // `caseSensitive` is set, and it is not — so `GET /api/ADMIN/stats` is
+    // served by the same handler as `/api/admin/stats`, while a case-sensitive
+    // startsWith here fell to the else-branch and set
+    // `Access-Control-Allow-Origin: *` on it. MEASURED with a valid
+    // x-admin-secret: /api/ADMIN/stats and /API/ADMIN/STATS both returned the
+    // real stats body (totalUsers, verifiedUsers, …) with ACAO `*`, so any web
+    // page could read admin PII cross-origin. The gate has to agree with the
+    // router it is protecting.
+    if (req.path.toLowerCase().startsWith("/api/admin/")) {
       // Admin returns user PII and is gated by x-admin-secret. Don't expose it to
       // arbitrary internet origins via "*"; allow cross-origin calls only from the
       // first-party local (Electron) client or explicitly allowlisted origins.
@@ -4666,6 +4675,42 @@ async function startServer() {
       ? __dirname
       : path.join(process.cwd(), 'dist');
     if (fs.existsSync(path.join(distPath, 'index.html'))) {
+      // The BACKEND BUNDLE lives in this same directory (the comment above says
+      // so: __dirname IS dist/), so express.static was publishing it. MEASURED
+      // on the live site: GET /server.cjs returned 1,566,939 bytes of the real
+      // server — every route, every check, 19 internal /api paths. No secret is
+      // in it (`--packages=external`, config comes from env), which is why this
+      // is source disclosure rather than a credential leak. Same door as
+      // RED-CLOUD-21/001, which removed the .map and left the .cjs beside it.
+      // Refuse it before the static mount; the SPA fallback then answers.
+      // Compare the RESOLVED FILE, not the request string. My first spelling
+      // tested `req.path` against /^\/server\.cjs(\.map)?$/ and six shapes
+      // walked straight past it while serve-static still delivered 1.5MB:
+      //   //server.cjs  /SERVER.CJS  /Server.cjs  /server%2Ecjs  /%73erver.cjs
+      //   /\server.cjs
+      // because serve-static percent-decodes, normalises, and sits on a
+      // case-insensitive filesystem. So decode and resolve exactly as `send`
+      // does, then refuse by identity: the file this bundle IS. `realpathSync`
+      // collapses case and any link, and the basename check below still holds
+      // if the bundle is not on disk under that exact name.
+      const forbiddenFiles = new Set<string>();
+      for (const name of ['server.cjs', 'server.cjs.map']) {
+        const p = path.join(distPath, name);
+        forbiddenFiles.add(path.resolve(p).toLowerCase());
+        try { forbiddenFiles.add(fs.realpathSync(p).toLowerCase()); } catch { /* absent is fine */ }
+      }
+      app.use((req, res, next) => {
+        let decoded: string;
+        try { decoded = decodeURIComponent(req.path); } catch { decoded = req.path; }
+        // Windows-style separators reach the filesystem as separators too.
+        const candidate = path.resolve(distPath, '.' + decoded.replace(/\\/g, '/'))
+          .toLowerCase();
+        if (forbiddenFiles.has(candidate)) {
+          res.status(404).json({ error: "Not found" });
+          return;
+        }
+        next();
+      });
       app.use(express.static(distPath));
       app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
