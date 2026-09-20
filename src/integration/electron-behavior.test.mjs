@@ -286,6 +286,24 @@ ok(bridge.preloadTimers === 0,
   + 'with bridge access, so deferred work there is the cheapest possible beacon: every other check '
   + 'in this file reads state before it would fire. Nothing in the preload needs a timer.');
 
+// …and the other half of the same question. The timer census answers "what is
+// still going to run?"; it says nothing about what ALREADY ran. They are not
+// the same: `queueMicrotask(() => fetch(...))` and
+// `Promise.resolve().then(() => fetch(...))` both defer past every synchronous
+// read in the bridge mode WITHOUT arming a timer, and both were verified to
+// actually fire before the child exits — they survived the timer check.
+//
+// So the outbound globals are now instrumented from the runner's first line,
+// before the preload is required. The preload is an offline math tool's bridge
+// to one IPC channel; it has no reason to dial anything, at any time, by any
+// route. The 60ms drain outlasts any microtask queue, so a deferred call has
+// been recorded by the time this reads.
+assert.deepStrictEqual(bridge.preloadNetworkCalls, [],
+  `electron-preload.cjs made outbound call(s) ${JSON.stringify(bridge.preloadNetworkCalls)}. The `
+  + 'preload runs in the renderer with bridge access; anything it dials carries whatever it can '
+  + 'reach. The packaged app must talk to loopback and nothing else.');
+checks++;
+
 ok(bridge.exposedKey === 'nashDesktop',
   `the preload must expose exactly one namespace, "nashDesktop" (got ${JSON.stringify(bridge.exposedKey)}).`);
 assert.deepStrictEqual(bridge.keys, ['setBackgroundColor'],

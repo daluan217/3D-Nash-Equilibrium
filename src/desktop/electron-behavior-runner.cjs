@@ -84,6 +84,32 @@ globalThis.setInterval = function (fn, ms, ...rest) {
 };
 const pendingTimersNow = () => scheduledTimers.filter((t) => !t.fired).map((t) => t.ms);
 
+// OUTBOUND CALLS, recorded from the first line — for the preload too.
+//
+// The census above answers "what is still going to run?". It does not answer
+// "what already ran?", and the two are not the same question: `queueMicrotask`
+// and `Promise.resolve().then` defer past every synchronous read in the bridge
+// mode WITHOUT arming a timer, and both were verified to actually fire before
+// the child exits. The main-process modes instrument fetch/WebSocket/XHR much
+// further down this file; the bridge block runs before that, so the preload was
+// handed the real ones and its calls went unrecorded.
+//
+// Installed here so every mode shares one record. The main-process modes
+// replace globalThis.fetch later with the update-reply stub — that stub pushes
+// to this same array, so nothing is lost.
+const networkCalls = [];
+{
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = function (url, init) {
+    networkCalls.push(['fetch', String(url)]);
+    // Do NOT complete the request: a probe that really dials is a probe that
+    // exfiltrates. Resolving to a rejected promise keeps `.catch()` chains
+    // working, which is how a beacon is usually written.
+    return Promise.reject(new Error('blocked by the behavioural harness'));
+  };
+  globalThis.fetch.__realFetch = realFetch;
+}
+
 const out = (payload) => {
   // Attached here, not by each mode: a mode that forgot would report a clean
   // run on an app still holding a live timer.
@@ -136,6 +162,7 @@ if (mode === 'bridge') {
     return originalLoad.call(this, request, parent, isMain);
   };
   const timersBeforePreload = scheduledTimers.length;
+  const networkCallsBeforePreload = networkCalls.length;
   require(path.resolve(preloadCjs));
   Module._load = originalLoad;
 
@@ -313,13 +340,17 @@ if (mode === 'bridge') {
       // and arms its own two (800, 3000). A wider window would report 2 on a
       // clean tree and force a threshold, which is what lets a beacon hide.
       preloadTimers,
+      // Everything the preload dialled, including from a microtask: the 60ms
+      // drain outlasts any microtask queue, so a queueMicrotask/Promise.then
+      // beacon has already been recorded by the time this reads.
+      preloadNetworkCalls: networkCalls.slice(networkCallsBeforePreload),
       drained: true });
   }, 60);
 }
 
 // ── shared fakes for the main-process modes ─────────────────────────────────
 const openedUrls = [];
-const networkCalls = [];
+// networkCalls is declared at the top of this file — the preload needs it too.
 const requiredModules = [];
 const onHandlers = {};
 const permissionRequestHandlers = [];
