@@ -274,6 +274,32 @@ function auditRunsBeforeUpload(yml: string): boolean {
     + '\n      - name: Audit too late\n        run: node src/desktop/audit-packaged-asar.cjs\n';
   if (auditRunsBeforeUpload(after)) fail('known-positive fixture "audit moved after the upload" was NOT flagged');
 
+  // …and the release audit must cover the SHIPPED artifacts, not the staging
+  // directory. electron-builder emits dist-electron/*.dmg and *.zip separately
+  // from dist-electron/mac-*/X.app, and the upload step takes the .dmg — so the
+  // two can diverge. Reproduced: a DMG whose app.asar carried an inlined
+  // `sk-proj-...` key uploaded while the audit reported 140/140 green on the
+  // untouched staging dir. AUDIT_REQUIRE_SHIPPED=1 makes "no shipped artifact
+  // to audit" a failure instead of a quieter pass.
+  if (!/AUDIT_REQUIRE_SHIPPED:\s*['"]?1/.test(yml)) {
+    fail('release-desktop.yml must set AUDIT_REQUIRE_SHIPPED=1 on the packaging audit step, or '
+      + 'the audit can pass having looked only at dist-electron/mac-*/X.app while a different '
+      + '.dmg is uploaded.');
+  }
+  // …on the audit step ITSELF, not merely somewhere in the file: a GitHub
+  // Actions `env:` block only reaches the step it belongs to. Matched as the
+  // ASSIGNMENT (`AUDIT_REQUIRE_SHIPPED: '1'`), never the bare word — the first
+  // spelling used indexOf on the name and hit the explanatory COMMENT above the
+  // step, then measured distance from there, so it failed on a correct file and
+  // would have passed on one where only a comment mentioned the flag.
+  const auditStep = /\n(\s+)- name:[^\n]*\n(?:\1\s[^\n]*\n)*?\1\s+run:[^\n]*audit-packaged-asar\.cjs/
+    .exec(yml);
+  if (!auditStep || !/^\s*AUDIT_REQUIRE_SHIPPED:\s*['"]?1['"]?\s*$/m.test(auditStep[0])) {
+    fail('AUDIT_REQUIRE_SHIPPED: \'1\' must be in the env block of the step that RUNS '
+      + 'audit-packaged-asar.cjs — an env block on another step, or the name in a comment, '
+      + 'does not reach it.');
+  }
+
   // Same step in the PR-time workflow: without it, the audit first runs on a
   // release, where failing is expensive and the tempting fix is to switch it off.
   const test = read('test.yml');

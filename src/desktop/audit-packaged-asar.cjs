@@ -68,23 +68,134 @@ function findAsars() {
   return [...new Set(found)];
 }
 
+// Thrown instead of calling process.exit() from inside the try below: exit()
+// terminates immediately and a `finally` never runs, so an early exit stranded
+// the hdiutil mount and the NEXT invocation failed with "attach failed -
+// Resource busy". The audit would then break the release purely by having been
+// run before. Carry the exit code on the error and let the finally detach.
+class AuditBail extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+// THE SHIPPED ARTIFACT IS THE .dmg, NOT THE STAGING DIRECTORY.
+//
+// `findAsars` walks dist-electron/mac-*/X.app. The release workflow uploads
+// `dist-electron/*.dmg`, which electron-builder produces as a SEPARATE artifact
+// from the same staging dir. Nothing connected the two, so the audit's verdict
+// was about a directory that is not what the user downloads.
+//
+// Reproduced: built a DMG whose app.asar carries
+// `const K = "sk-proj-..."` while leaving dist-electron/mac-arm64/ pristine.
+// The audit reported 140/140 GREEN and the DMG queued for upload held a live
+// API key. `mac.target` is ["dmg","zip"] and BOTH are uploaded, so the zip is
+// the same hole one file over.
+//
+// Mount each .dmg read-only and unzip each .zip, then audit the app.asar
+// inside exactly like any other — every rule in this file applies for free.
+function mountedArtifactAsars(cleanups) {
+  const base = path.join(repo, 'dist-electron');
+  if (!fs.existsSync(base)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(base)) {
+    const abs = path.join(base, entry);
+    if (entry.endsWith('.dmg')) {
+      const mnt = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nash-audit-dmg-'));
+      const r = require('child_process').spawnSync('hdiutil',
+        ['attach', '-nobrowse', '-readonly', '-noverify', '-mountpoint', mnt, abs],
+        { encoding: 'utf8' });
+      if (r.status !== 0) {
+        // hdiutil writes a DEPRECATION WARNING to stderr even on success, so a
+        // naive slice(0, 200) of stderr showed the warning and truncated the
+        // real cause to "hdiutil: attach fa" — a diagnostic that sent me
+        // looking in the wrong place. Keep the lines that state the failure,
+        // and always name the artifact and a next step.
+        const lines = `${r.stderr || ''}${r.stdout || ''}`.split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l && !/deprecated|Please use/i.test(l));
+        throw new AuditBail(2, `audit-packaged-asar: could not mount ${entry}: `
+          + `${lines.join(' / ').slice(0, 300) || `exit ${r.status}`}\n`
+          + '  Refusing to report success on an artifact that is uploaded but could not be opened. '
+          + '("Resource busy" usually means a previous run left it mounted: check `mount | grep '
+          + 'nash-audit` and `hdiutil detach` it.)');
+      }
+      cleanups.push(() => {
+        require('child_process').spawnSync('hdiutil', ['detach', mnt, '-force'], { stdio: 'ignore' });
+        fs.rmSync(mnt, { recursive: true, force: true });
+      });
+      for (const e of fs.readdirSync(mnt)) {
+        if (!e.endsWith('.app')) continue;
+        const asar = path.join(mnt, e, 'Contents', 'Resources', 'app.asar');
+        if (fs.existsSync(asar)) out.push(asar);
+      }
+    } else if (entry.endsWith('.zip')) {
+      const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nash-audit-zip-'));
+      const r = require('child_process').spawnSync('ditto',
+        ['-x', '-k', abs, dir], { encoding: 'utf8' });
+      if (r.status !== 0) {
+        throw new AuditBail(2, `audit-packaged-asar: could not unpack ${entry}: `
+          + `${(r.stderr || '').trim().slice(0, 200)}.`);
+      }
+      cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+      for (const e of fs.readdirSync(dir)) {
+        if (!e.endsWith('.app')) continue;
+        const asar = path.join(dir, e, 'Contents', 'Resources', 'app.asar');
+        if (fs.existsSync(asar)) out.push(asar);
+      }
+    }
+  }
+  return out;
+}
+
 if (!process.argv[2]) {
-  const all = findAsars();
-  if (all.length === 0) {
-    console.error('audit-packaged-asar: no app.asar found. Run `npx electron-builder --dir` first, '
-      + 'or pass the path. Refusing to report success without an artifact to audit.');
-    process.exit(2);
+  const cleanups = [];
+  // `process.exit()` terminates IMMEDIATELY — a `finally` block does not run.
+  // Every exit path below used to sit inside the try, so each invocation leaked
+  // its hdiutil mount and the NEXT run failed with "hdiutil: attach failed -
+  // Resource busy": the audit broke the release by having been run once. Record
+  // the code, let the finally detach, and exit after it.
+  const runCleanups = () => { for (const fn of cleanups) { try { fn(); } catch { /* best effort */ } } };
+  let staged = [];
+  let shipped = [];
+  let exitCode = 0;
+  try {
+    staged = findAsars();
+    shipped = mountedArtifactAsars(cleanups);
+    const all = [...staged, ...shipped];
+    if (all.length === 0) {
+      throw new AuditBail(2, 'audit-packaged-asar: no app.asar found. Run '
+        + '`npx electron-builder --dir` first, or pass the path. Refusing to report success '
+        + 'without an artifact to audit.');
+    }
+    // Re-run for each bundle rather than auditing one and hoping the rest match.
+    // No `break` on failure: the point of an audit is the full list of leaks.
+    let worst = 0;
+    for (const p of all) {
+      const r = require('child_process').spawnSync(process.execPath, [__filename, p],
+        { stdio: 'inherit' });
+      worst = Math.max(worst, r.status === null ? 1 : r.status);
+    }
+    // A `--dir` build produces no .dmg/.zip and that is a legitimate local run,
+    // but a release build must never audit the staging dir alone: that is the
+    // exact shape of the hole above. `AUDIT_REQUIRE_SHIPPED=1` in the release
+    // workflow makes the absence of a shipped artifact a failure rather than a
+    // quieter pass.
+    if (process.env.AUDIT_REQUIRE_SHIPPED === '1' && shipped.length === 0) {
+      throw new AuditBail(2, 'audit-packaged-asar: AUDIT_REQUIRE_SHIPPED=1 but no .dmg/.zip was '
+        + 'found in dist-electron/. The release uploads those artifacts; auditing only the '
+        + 'staging directory says nothing about what ships.');
+    }
+    if (all.length > 1) {
+      console.log(`audit-packaged-asar: audited ${all.length} bundles `
+        + `(${staged.length} staged, ${shipped.length} inside shipped artifacts).`);
+    }
+    exitCode = worst;
+  } catch (e) {
+    if (e instanceof AuditBail) { console.error(e.message); exitCode = e.code; } else { throw e; }
+  } finally {
+    runCleanups();
   }
-  // Re-run for each bundle rather than auditing one and hoping the rest match.
-  // No `break` on failure: the point of an audit is the full list of leaks.
-  let worst = 0;
-  for (const p of all) {
-    const r = require('child_process').spawnSync(process.execPath, [__filename, p],
-      { stdio: 'inherit' });
-    worst = Math.max(worst, r.status === null ? 1 : r.status);
-  }
-  if (all.length > 1) console.log(`audit-packaged-asar: audited ${all.length} bundles.`);
-  process.exit(worst);
+  // AFTER the finally, so every mount is detached before the process dies.
+  process.exit(exitCode);
 }
 
 // RESOLVED, because bundleRoot is derived from it and the symlink-escape check
