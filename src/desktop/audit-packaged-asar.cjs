@@ -67,7 +67,10 @@ function ok(cond, msg) { checks++; if (!cond) failures.push(msg); }
 // (`--packages=external` means the app REQUIRES node_modules at runtime, so it
 // cannot be pruned — recorded as a non-finding, not an oversight). These rules
 // are about this repo's own files.
-const ours = listing.filter((p) => !p.startsWith('/node_modules/'));
+// Note the `p !== '/node_modules'`: asar lists the DIRECTORY entry itself as
+// well as its contents, and filtering only on the trailing slash left that one
+// bare entry in `ours` — where the allowlist below correctly rejected it.
+const ours = listing.filter((p) => p !== '/node_modules' && !p.startsWith('/node_modules/'));
 
 ok(listing.length > 1000,
   `the asar holds only ${listing.length} entries. An empty or near-empty archive would make every `
@@ -97,6 +100,37 @@ for (const [re, why] of FORBIDDEN) {
   ok(hits.length === 0,
     `the package contains ${JSON.stringify(hits.slice(0, 5))} (${hits.length} total): ${why}`);
 }
+
+// THE ALLOWLIST — the check that actually decides.
+//
+// Everything above is a denylist, and a denylist of secret-shaped filenames
+// cannot be finished. My own self-review listed eighteen shapes that walked
+// straight past it: /database.json, /users.json, /secrets.json, /id_rsa,
+// /.npmrc, /.ssh/id_ed25519, /.aws/credentials, /.git-credentials,
+// /firebase-adminsdk.json, /auth-secret, /token.txt, /server.ts, /.DS_Store…
+// Adding eighteen more rules would leave the nineteenth.
+//
+// This app's own packaged surface is four files and one directory. Enumerating
+// what MAY be there is both shorter and total: anything else fails, whatever it
+// is called. The rules above are kept because their messages say WHY a
+// particular shape is dangerous, which "not on the allowlist" cannot.
+const ALLOWED_TOP_LEVEL = new Set([
+  '/electron-main.cjs', '/electron-preload.cjs', '/package.json',
+]);
+const unexpected = ours.filter((p) => {
+  if (ALLOWED_TOP_LEVEL.has(p)) return false;
+  // The built frontend + server bundle. `dist/` is produced by `npm run build`
+  // from sources in this repo, so its contents are ours by construction — but a
+  // source map or a stray .env inside it still fails the rules above.
+  if (p === '/dist' || p.startsWith('/dist/')) return false;
+  return true;
+});
+ok(unexpected.length === 0,
+  `the package contains ${JSON.stringify(unexpected.slice(0, 10))} (${unexpected.length} total), `
+  + `which is outside the app's own surface: ${[...ALLOWED_TOP_LEVEL].join(', ')} and dist/. This `
+  + 'is an ALLOWLIST on purpose — a denylist of secret-shaped filenames cannot be completed, and '
+  + 'eighteen shapes were found walking past the rules above. If you are adding a file the app '
+  + 'genuinely needs at runtime, add it here deliberately.');
 
 // SELF-TEST. Every rule above is a negative — it passes when it finds nothing,
 // which is also how a broken pattern behaves. Run each against a synthetic
