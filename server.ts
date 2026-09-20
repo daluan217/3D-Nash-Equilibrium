@@ -3100,6 +3100,31 @@ async function startServer() {
         res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "x-admin-secret");
       }
+    } else if (process.env.IS_ELECTRON === "true") {
+      // SR-57. `*` is harmless on the hosted site, where every private route
+      // needs a bearer token — /api/games there is 401 without one (verified
+      // against production). The DESKTOP is the opposite: it authenticates
+      // nothing, because `resolveGameOwner` hands any caller the `local-owner`
+      // identity, so /api/games answers 200 with the user's whole library and
+      // POST /api/games writes to it. The same `*` in front of that means any
+      // page the user visits while the app is running can read and modify
+      // their saved games with a plain cross-origin fetch to
+      // http://127.0.0.1:14321 — no token to steal, no prompt, nothing on
+      // screen. MEASURED: GET with `Origin: https://evil.example` returned
+      // `Access-Control-Allow-Origin: *` and 521 bytes of game data; POST
+      // created a game owned by local-owner.
+      //
+      // Loopback binding is not the boundary here. It stops another MACHINE,
+      // not another ORIGIN in the user's own browser — that is exactly what
+      // CORS is for, and `*` switches it off. The app's own renderer is a
+      // loopback origin, so it keeps working; the rule is the same one the
+      // admin branch above already uses.
+      if (origin && (isLocalClientOrigin(origin) || corsAllowlist.includes(origin))) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-secret");
+      }
     } else {
       if (corsAllowlist.length === 0) {
         res.setHeader("Access-Control-Allow-Origin", "*");

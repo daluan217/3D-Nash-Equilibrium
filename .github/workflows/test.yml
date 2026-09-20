@@ -519,6 +519,17 @@ jobs:
           NO_DEV_SERVER_PORT: '3199'
           NO_DEV_SERVER_WEB_PORT: '3200'
 
+      # SR-57: the desktop authenticates nothing (resolveGameOwner hands any
+      # caller local-owner), and the CORS middleware put ACAO * in front of it,
+      # so any page the user visited could read and write their saved games
+      # with a plain fetch to http://127.0.0.1:14321. Loopback stops another
+      # machine, not another origin in the user's own browser.
+      - name: Boot the production server and check desktop CORS is loopback-only
+        run: node src/integration/desktop-cors-loopback.test.mjs
+        env:
+          DESKTOP_CORS_PORT: '3201'
+          DESKTOP_CORS_WEB_PORT: '3202'
+
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
       # route (404 off) and the /api/health capability bit; the avoid gate
