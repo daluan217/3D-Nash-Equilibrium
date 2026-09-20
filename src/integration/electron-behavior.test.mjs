@@ -45,9 +45,21 @@ let checks = 0;
 function ok(cond, msg) { checks++; assert(cond, msg); }
 
 function run(mode) {
-  const stdout = execFileSync('node', [RUNNER, repo, mode], {
-    encoding: 'utf8', timeout: 60000, env: { ...process.env, NODE_ENV: 'test' },
-  });
+  let stdout;
+  try {
+    stdout = execFileSync('node', [RUNNER, repo, mode], {
+      encoding: 'utf8', timeout: 60000, env: { ...process.env, NODE_ENV: 'test' },
+    });
+  } catch (e) {
+    // A crashed runner must never read as a pass. This is not hypothetical: an
+    // `await import('node:tls')` egress mutant killed the run with an unhandled
+    // ENOTFOUND before any result was printed, so the failure arrived as a raw
+    // stack trace instead of naming the invariant it broke.
+    const detail = `${e.stdout ?? ''}${e.stderr ?? ''}`.trim().split('\n').slice(-6).join('\n');
+    assert.fail(`runner (${mode}) exited ${e.status ?? 'abnormally'} instead of reporting. An `
+      + 'unhandled error in the main process is itself a finding — commonly an outbound call the '
+      + `interception layer could not stub. Last output:\n${detail}`);
+  }
   const line = stdout.split('\n').find((l) => l.startsWith('RUNNER_RESULT '));
   assert(line, `runner (${mode}) printed no RUNNER_RESULT:\n${stdout}`);
   const result = JSON.parse(line.slice('RUNNER_RESULT '.length));
@@ -156,6 +168,25 @@ for (const [api, target] of egress.networkCalls) {
 // The module list IS the egress surface: a network module that is never
 // required cannot be called, whatever the call-site text looks like.
 const ALLOWED_MODULES = ['electron', 'path', 'fs', './dist/server.cjs'];
+// ESM `import()` bypasses Module._load entirely — verified: the dynamic import
+// resolves the REAL module and the interception hook never sees it. So
+// `await import('node:tls')` would make a live connection that the recorded
+// networkCalls above cannot see. The static import surface is therefore part
+// of the same invariant, not a separate nicety.
+ok(Array.isArray(egress.dynamicImports),
+  'the runner must report electron-main.cjs\'s import() / from-import specifiers.');
+for (const spec of egress.dynamicImports) {
+  ok(!spec.startsWith('<computed:'),
+    `electron-main.cjs contains a non-literal import specifier (${spec}). A computed import cannot `
+    + 'be checked statically and cannot be intercepted at runtime, so it is an unbounded egress '
+    + 'route: write the specifier as a literal.');
+  const bare = spec.replace(/^node:/, '');
+  ok(ALLOWED_MODULES.includes(spec) || ALLOWED_MODULES.includes(bare),
+    `electron-main.cjs dynamically imports ${JSON.stringify(spec)}, which is not in `
+    + `${JSON.stringify(ALLOWED_MODULES)}. import() does NOT go through Module._load, so a network `
+    + 'module pulled in this way makes real connections that the call recorder never sees.');
+}
+
 assert.deepStrictEqual(egress.requiredModules.slice().sort(), ALLOWED_MODULES.slice().sort(),
   `electron-main.cjs must require exactly ${JSON.stringify(ALLOWED_MODULES)} (got `
   + `${JSON.stringify(egress.requiredModules)}). Adding net/tls/http2/dgram/dns/child_process/ws here `

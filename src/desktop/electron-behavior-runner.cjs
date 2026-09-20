@@ -287,6 +287,24 @@ globalThis.fetch = (url, init) => {
 globalThis.WebSocket = function (url) { networkCalls.push(['WebSocket', String(url)]); return totalStub('ws'); };
 globalThis.XMLHttpRequest = function () { networkCalls.push(['XMLHttpRequest', '']); return totalStub('xhr'); };
 
+// ESM `import()` does NOT go through Module._load — verified: the dynamic
+// import resolves the REAL module and this hook never sees the request. So a
+// runtime-only egress guard has a hole an `await import("node:tls")` walks
+// straight through. Record the static import surface as well; the test treats
+// both as the module list, and a network module appearing either way fails.
+const dynamicImports = [];
+{
+  const src = require('fs').readFileSync(path.resolve(mainCjs), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  for (const m of src.matchAll(/\bimport\s*\(\s*['"`]([^'"`]+)['"`]/g)) dynamicImports.push(m[1]);
+  for (const m of src.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)) dynamicImports.push(m[1]);
+  // A non-literal specifier cannot be resolved statically; name it so the test
+  // fails loudly rather than silently accepting an unknown import.
+  for (const m of src.matchAll(/\bimport\s*\(\s*(?!['"`])([^)]{0,40})/g)) {
+    dynamicImports.push(`<computed:${m[1].trim().slice(0, 30)}>`);
+  }
+}
+
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   // Only record what electron-main itself pulls in, not transitive deps.
@@ -363,6 +381,7 @@ if (mode === 'egress') {
   const done = () => out({
     networkCalls,
     requiredModules: [...new Set(requiredModules)],
+    dynamicImports: [...new Set(dynamicImports)],
     openedUrls,
   });
   fire('browser-window-created', {}, { webContents: mainContents });
