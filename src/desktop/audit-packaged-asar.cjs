@@ -257,6 +257,35 @@ if (listing.includes('/dist/index.html')) {
     gateRulesRan = true;
   }
 }
+// THE PACKAGED electron-main.cjs / electron-preload.cjs MUST BE THE AUDITED ONES.
+//
+// Every behavioural guarantee in src/integration/electron-behavior.test.mjs is
+// measured by loading the REPO's copies of these two files. That is only
+// meaningful if the packaged copies are the same bytes — electron-builder
+// copies them unbundled today (verified: byte-identical), but `build.files` is
+// a glob list and dist/ is a build output, so a transform, a stale artifact or
+// a second copy shadowing them would leave all 440 behavioural checks green
+// while the shipped app runs different code. Hash, don't hope.
+for (const rel of ['electron-main.cjs', 'electron-preload.cjs']) {
+  const outDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nash-audit-src-'));
+  try {
+    execFileSync('npx', ['asar', 'extract-file', asarPath, rel],
+      { cwd: outDir, maxBuffer: 16 * 1024 * 1024 });
+    const packed = fs.readFileSync(path.join(outDir, rel));
+    const source = fs.readFileSync(path.join(repo, rel));
+    ok(packed.equals(source),
+      `the packaged ${rel} (${packed.length} bytes) differs from the repo's (${source.length}). `
+      + 'Every behavioural check in src/integration/electron-behavior.test.mjs loads the REPO copy '
+      + '— permissions, the context-bridge surface, egress, openExternal — so a packaged copy that '
+      + 'differs means those 440 checks measured a file the user never runs.');
+  } catch (e) {
+    ok(false, `could not compare the packaged ${rel} against the repo copy `
+      + `(${String(e.message).slice(0, 120)}).`);
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
 ok(gateRulesRan,
   'the packaged-index.html gate rules never ran: dist/index.html was not listed in the archive, '
   + 'could not be extracted, or read as empty. Every one of those paths exits 0 with the app\'s '
