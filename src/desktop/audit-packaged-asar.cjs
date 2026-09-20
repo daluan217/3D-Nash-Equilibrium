@@ -113,10 +113,19 @@ function walk(dir, prefix, acc) {
   }
   return acc;
 }
-// app.asar itself and its unpacked sidecar are audited through `listing`
-// above; re-walking them here would only duplicate findings.
+// Only the ARCHIVE FILE is excluded — its contents are audited through
+// `listing` above, so re-reading them here would duplicate findings.
+//
+// This was `!p.startsWith('/Contents/Resources/app.asar')`, a prefix that also
+// swallowed the SIBLING directory app.asar.unpacked/. That sidecar is a real
+// shipped surface (electron-builder puts native binaries there, and an
+// afterPack hook can write anything into it) and it is NOT in `asar list`, so
+// the exclusion made it invisible to both halves at once: a db.json planted
+// there passed all 51 checks. Found by the 9router reviewer; the comment I
+// replaced asserted the sidecar was covered, which is exactly the kind of
+// claim that needs a mutation rather than a sentence.
 const bundleListing = isBundle
-  ? walk(bundleRoot, '', []).filter((p) => !p.startsWith('/Contents/Resources/app.asar'))
+  ? walk(bundleRoot, '', []).filter((p) => p !== '/Contents/Resources/app.asar')
   : [];
 
 let checks = 0;
@@ -232,13 +241,23 @@ const BUNDLE_ALLOWED = [
   new RegExp(`^/Contents/MacOS(/${esc(appExe)})?$`),
   // Electron's frameworks and helper apps, by SHAPE — the tree inside them is
   // Electron's and changes with its version, but a file dropped directly into
-  // Frameworks/ is not part of any framework.
+  // Frameworks/ is not part of any framework. The contents of those trees are
+  // NOT enumerable here (they move every Electron release), so the size check
+  // below is what guards them; see BUNDLE_FRAMEWORK_BASELINE.
   /^\/Contents\/Frameworks(\/[^/]+\.(framework|app)(\/.*)?)?$/,
   /^\/Contents\/Resources$/,
   // Empty locale stubs. Verified empty in the built bundle, so there is no
   // reason to allow anything INSIDE them — that would be a place to hide a file.
   /^\/Contents\/Resources\/[A-Za-z0-9_]+\.lproj$/,
   /^\/Contents\/Resources\/(icon\.icns|electron\.icns)$/,
+  // app.asar.unpacked — electron-builder's sidecar for files that must exist
+  // on disk rather than inside the archive (native binaries it cannot load
+  // from an asar). Only node_modules, matching the carve-out `ours` already
+  // applies to the archive itself: vendored dependencies are a separate
+  // question, this repo's own files are not allowed here either way. A
+  // db.json written straight into app.asar.unpacked/ fails.
+  /^\/Contents\/Resources\/app\.asar\.unpacked$/,
+  /^\/Contents\/Resources\/app\.asar\.unpacked\/node_modules(\/.*)?$/,
 ];
 const bundleUnexpected = bundleListing.filter((p) => !BUNDLE_ALLOWED.some((re) => re.test(p)));
 ok(bundleUnexpected.length === 0,
@@ -248,6 +267,32 @@ ok(bundleUnexpected.length === 0,
   + 'extraFiles or an afterPack hook. `extraResources: ["db.json"]` puts the account store in '
   + 'Contents/Resources/db.json, which `asar list` cannot see and this audit reported as 31 '
   + 'checks passed before this rule existed.');
+
+// THE FRAMEWORK TREES, WHICH THE ALLOWLIST ABOVE WAVES THROUGH WHOLESALE.
+//
+// Their contents belong to Electron and are reshuffled by every release, so
+// they cannot be enumerated the way this app's own four files can. But "not
+// enumerable" is not "trusted": afterPack runs after these are laid down and
+// can write anywhere in them. The denylist catches a file CALLED db.json or
+// .env there; the 9router reviewer showed `settings.dat` deep inside
+// Electron Framework.framework walks straight past all 51 checks.
+//
+// So pin the COUNT, exactly. Nothing this project does adds a path to a
+// framework, so the only legitimate way this number changes is an Electron
+// upgrade — a deliberate act, in a commit that also changes package.json, and
+// the right moment to re-read this line. A tolerance band was the first
+// spelling and it is the wrong shape: "+/-12" is a licence to hide up to
+// twelve files, and an injected payload is usually one. Exact costs one
+// obvious edit per upgrade and hides nothing.
+const FRAMEWORK_BASELINE = 203; // electron ^31.7.7, darwin-arm64
+const frameworkPaths = bundleListing.filter((p) => p.startsWith('/Contents/Frameworks/'));
+ok(frameworkPaths.length === FRAMEWORK_BASELINE,
+  `the bundle's framework trees hold ${frameworkPaths.length} paths; the recorded baseline is `
+  + `${FRAMEWORK_BASELINE}. The allowlist cannot enumerate inside Electron's own frameworks (they `
+  + 'are reshuffled every release), so this count is what stands between an afterPack hook and an '
+  + 'arbitrary file hidden in them — a `settings.dat` deep in Electron Framework.framework passed '
+  + 'all 51 checks before this existed. If you upgraded Electron, update FRAMEWORK_BASELINE in the '
+  + 'same commit; if you did not, something wrote into the bundle after packaging.');
 
 // CONTROL for the bundle allowlist: the fixture the rule is supposed to reject.
 // Without this, a BUNDLE_ALLOWED entry loosened to /^\/Contents/ would pass
