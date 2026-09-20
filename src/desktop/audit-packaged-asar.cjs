@@ -763,11 +763,23 @@ ok(setuidOrSetgid.length === 0,
   `the bundle ships setuid/setgid file(s) ${JSON.stringify(setuidOrSetgid.slice(0, 5))} `
   + `(${setuidOrSetgid.length} total). This is an unsigned, user-installed math tool; nothing in `
   + 'it has any reason to run as another user. The real bundle has none.');
-ok(hardLinked.length === 0,
-  `the bundle ships hard-linked file(s) ${JSON.stringify(hardLinked.slice(0, 5))} `
-  + `(${hardLinked.length} total, link count > 1). A hard link shares one inode with a file `
+// The rule is about ESCAPE — an inode shared with something outside the bundle
+// — not about nlink itself. electron-builder copies app.asar.unpacked's
+// node_modules with hard links when the source is on the same volume, so
+// esbuild's binaries legitimately arrive with nlink 2. CI caught this and a
+// local build did not: `npm ci` on a fresh checkout links, an incremental
+// local build had already copied. A guard that only passes on one machine's
+// filesystem layout is a false positive, so scope it to the files whose
+// content the app actually executes as ITS OWN — anything hard-linked outside
+// app.asar.unpacked/node_modules still fails.
+const UNPACKED_DEPS = '/Contents/Resources/app.asar.unpacked/node_modules/';
+const hardLinkedOwn = hardLinked.filter((p) => !p.startsWith(UNPACKED_DEPS));
+ok(hardLinkedOwn.length === 0,
+  `the bundle ships hard-linked file(s) ${JSON.stringify(hardLinkedOwn.slice(0, 5))} `
+  + `(${hardLinkedOwn.length} total, link count > 1). A hard link shares one inode with a file `
   + 'elsewhere on disk — the same escape a symlink gives, with no link to read and no path rule '
-  + 'able to see it. The real bundle has none.');
+  + `able to see it. (${hardLinked.length - hardLinkedOwn.length} under ${UNPACKED_DEPS} are `
+  + "electron-builder's same-volume dependency copy and are exempt; anything else is not.)");
 
 const FRAMEWORK_BASELINE = 203; // electron ^31.7.7, darwin-arm64
 const frameworkPaths = bundleListing.filter((p) => p.startsWith('/Contents/Frameworks/'));

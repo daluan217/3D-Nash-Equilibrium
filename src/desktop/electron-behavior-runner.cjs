@@ -34,6 +34,21 @@
 const Module = require('module');
 const path = require('path');
 
+// The product THIS SUITE measures ships as a macOS .dmg and nothing else, and
+// electron-main.cjs branches on process.platform three times — the menu
+// template, titleBarStyle, and window-all-closed. Run on the host platform the
+// runner measured whichever branch the runner happened to be on: green on a
+// macOS laptop, and on ubuntu CI the menu collapsed to
+// Menu.setApplicationMenu(null) so `menuRoles` came back [] and the guard
+// failed for the platform rather than for a defect. Pin darwin so every host
+// exercises the branch users actually receive. Restored in the finally below
+// so nothing else in-process inherits it.
+const REAL_PLATFORM = process.platform;
+Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+process.on('exit', () => {
+  Object.defineProperty(process, 'platform', { value: REAL_PLATFORM, configurable: true });
+});
+
 const repoRoot = process.argv[2];
 const mode = process.argv[3];
 const VALID = ['permissions', 'bridge', 'egress', 'openexternal'];

@@ -87,6 +87,7 @@
       "!db.json.*",
       "!db.json [0-9]*"
     ],
+    "publish": null,
     "asar": true
   }
 }
