@@ -508,6 +508,17 @@ jobs:
         env:
           ADMIN_CORS_PORT: '3196'
 
+      # SR-56: the dev branch was gated on NODE_ENV alone, which a packaged app
+      # inherits from its launch environment. With NODE_ENV=development the
+      # shipped bundle booted a real Vite dev server and served @vite/client —
+      # the whole dev toolchain is in the asar, so it works rather than failing
+      # shut. Boots BOTH arms: desktop must refuse, web must still get Vite.
+      - name: Boot the production server and check a desktop build never runs Vite
+        run: node src/integration/desktop-no-dev-server.test.mjs
+        env:
+          NO_DEV_SERVER_PORT: '3199'
+          NO_DEV_SERVER_WEB_PORT: '3200'
+
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the
       # route (404 off) and the /api/health capability bit; the avoid gate

@@ -4712,8 +4712,20 @@ async function startServer() {
     res.status(404).json({ error: "Not found" });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  // Vite middleware for development.
+  //
+  // IS_ELECTRON is the second condition, and it is the load-bearing one. The
+  // dev branch was gated on NODE_ENV alone, which the PACKAGED app inherits
+  // from whatever environment launched it; electron-main.cjs overwrites it at
+  // line 183, so the only thing standing between a shipped desktop app and a
+  // live Vite dev server was the ordering of one assignment. MEASURED against
+  // the real dist/server.cjs under the packaged condition with
+  // NODE_ENV=development: it booted Vite and served a shell carrying
+  // @vite/client and @react-refresh. The whole dev toolchain is in the asar
+  // (vite, rollup, tailwind, babel) plus esbuild's 9.9MB native binary
+  // unpacked and executable, so the branch works rather than failing shut.
+  // A desktop build has no src/ tree to serve and never wants this.
+  if (process.env.NODE_ENV !== "production" && process.env.IS_ELECTRON !== "true") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
