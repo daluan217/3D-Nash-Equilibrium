@@ -28,7 +28,7 @@
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync,
-  chmodSync, statSync } from 'node:fs';
+  chmodSync, statSync, lstatSync, symlinkSync, mkdirSync } from 'node:fs';
 import { tmpdir, networkInterfaces } from 'node:os';
 import { connect } from 'node:net';
 import path from 'node:path';
@@ -300,6 +300,66 @@ try {
     readFileSync(secretFile, 'utf-8').trim() === priorKey
       ? 'same 64-hex key before and after'
       : 'THE KEY WAS ROTATED — every existing session is now invalid');
+
+  // auth-secret AS A SYMLINK — an arbitrary-file OVERWRITE, not a disclosure.
+  //
+  // writeFileSync follows a symlink, so `auth-secret -> <any path the user can
+  // write>` had the app write a fresh 64-hex key THROUGH it, and the chmod that
+  // follows set the TARGET to 0600. `mode: 0o600` protects the bytes, never the
+  // location. Reproduced against the shipped dist/server.cjs before the fix: a
+  // 644 file outside the data dir came back 600 holding the session key.
+  // A directory in the same place threw EISDIR out of desktopAuthSecret
+  // entirely, which silently downgraded every session to a per-process secret
+  // (sessions dropped on restart, with only a console line to say so).
+  await stop(srv);
+  srv = null;
+  for (const [label, make] of [
+    ['symlink', (dir, target) => symlinkSync(target, path.join(dir, 'auth-secret'))],
+    ['directory', (dir) => mkdirSync(path.join(dir, 'auth-secret'))],
+  ]) {
+    const poisoned = mkdtempSync(path.join(tmpdir(), `nash-desktop-secret-${label}-`));
+    const outside = path.join(poisoned, 'ESCAPED-target');
+    writeFileSync(outside, 'original-content', { mode: 0o644 });
+    chmodSync(outside, 0o644);
+    make(poisoned, outside);
+    port += 1;
+    srv = await boot(poisoned, port);
+    const sf = path.join(poisoned, 'auth-secret');
+    const st = lstatSync(sf);
+    // readFileSync THROWS EISDIR on the unfixed tree, and a crashed harness is
+    // not a verdict — it reports as a stack trace with none of the vocabulary
+    // of the assertion it hides, and takes the two checks below with it.
+    // Read defensively so the mutant FAILS BY NAME.
+    let body = null;
+    try { body = readFileSync(sf, 'utf-8').trim(); } catch (e) { body = `<unreadable: ${e.code}>`; }
+    record(`an auth-secret that is a ${label} is replaced with a real 0600 file`,
+      st.isFile() && (st.mode & 0o777).toString(8) === '600' && /^[0-9a-f]{64}$/.test(body),
+      `isFile=${st.isFile()} mode=${(st.mode & 0o777).toString(8)} body=${body.slice(0, 16)}`);
+    // THE ONE THAT MATTERS for the symlink case, and a control for the other:
+    // whatever the link pointed at must be untouched.
+    record(`a ${label} auth-secret does not overwrite the file outside the data dir`,
+      readFileSync(outside, 'utf-8') === 'original-content'
+        && (statSync(outside).mode & 0o777).toString(8) === '644',
+      `content=${JSON.stringify(readFileSync(outside, 'utf-8').slice(0, 20))} `
+      + `mode=${(statSync(outside).mode & 0o777).toString(8)}`);
+    // …and the app must still WORK. Refusing to boot, or falling back to a
+    // per-process secret, would satisfy both checks above while breaking
+    // session persistence — the EISDIR path did exactly that.
+    const again = await (async () => {
+      await stop(srv); srv = null; port += 1;
+      let key1 = null; let key2 = null;
+      try { key1 = readFileSync(sf, 'utf-8').trim(); } catch { key1 = null; }
+      srv = await boot(poisoned, port);
+      try { key2 = readFileSync(sf, 'utf-8').trim(); } catch { key2 = null; }
+      return key1 !== null && key1 === key2 && /^[0-9a-f]{64}$/.test(key1);
+    })();
+    record(`CONTROL: after the ${label} is replaced, the new key PERSISTS across a restart`,
+      again, again ? 'same key on the next boot' : 'the key was rotated — sessions do not survive');
+    await stop(srv); srv = null;
+    rmSync(poisoned, { recursive: true, force: true });
+  }
+  port += 1;
+  srv = await boot(userData, port);
 
   // The CREATE path, on its own: no file at all, and the umask must not widen
   // it. A default 022 umask turns a 0666 request into 0644, so a mode argument

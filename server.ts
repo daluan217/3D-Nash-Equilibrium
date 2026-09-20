@@ -811,7 +811,31 @@ function desktopAuthSecret(): string | null {
   if (!dir) return null;
   const file = path.join(dir, "auth-secret");
   try {
-    if (fs.existsSync(file)) {
+    // A SYMLINK here is not a secret file, it is a redirect. `writeFileSync`
+    // follows it, so `auth-secret -> ~/.ssh/authorized_keys` (or any path the
+    // user can write) had this function OVERWRITE that file with a fresh
+    // 64-hex key, and the `chmodSync` that follows changed the TARGET's mode
+    // to 0600 — the `mode: 0o600` protects the bytes, never the location.
+    // Reproduced: a 644 file outside the data dir came back 600 and holding
+    // the session key. A directory in its place threw EISDIR out of the whole
+    // function, which silently downgraded sessions to a per-process secret.
+    // Same reasoning as the bundle's symlink rule: auditing the path cannot
+    // see what the link resolves to, so refuse anything that is not a plain
+    // file and replace it in place.
+    let st: import("fs").Stats | null = null;
+    try { st = fs.lstatSync(file); } catch { /* absent: the fresh path below */ }
+    if (st && !st.isFile()) {
+      console.warn(`The desktop session secret at ${file} is not a regular file `
+        + `(${st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : "special"}); `
+        + "replacing it. A link here would redirect the key to another path.");
+      try {
+        if (st.isDirectory()) fs.rmSync(file, { recursive: true });
+        else fs.unlinkSync(file);
+      } catch (e) {
+        console.error("Could not remove it; sessions will not survive a restart:", e);
+        return null;
+      }
+    } else if (st) {
       const existing = fs.readFileSync(file, "utf-8").trim();
       // Only accept something that is actually a key. A truncated or empty file
       // must not silently become a one-character HMAC secret that still "works".
@@ -833,7 +857,22 @@ function desktopAuthSecret(): string | null {
     // `mode` is honoured only when writeFileSync CREATES the file, so an
     // auth-secret already on disk keeps its old permissions — and this branch
     // runs precisely when one was found and rejected. chmod unconditionally.
-    fs.writeFileSync(file, fresh, { encoding: "utf-8", mode: 0o600 });
+    // "wx" = O_CREAT|O_EXCL: it refuses to follow a symlink, so a link
+    // re-created between the lstat above and this write cannot be written
+    // through. O_EXCL also fails when a REGULAR file is present, which is the
+    // ordinary rejected-content path (a truncated or garbage auth-secret that
+    // must be replaced) — the first spelling returned null there and left the
+    // bad file in place, breaking five existing guards. Caught by running them:
+    // this is precisely the regression the fix could cause. So unlink first,
+    // and keep O_EXCL for the race.
+    try { fs.unlinkSync(file); } catch { /* already gone: the normal fresh path */ }
+    try {
+      fs.writeFileSync(file, fresh, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      console.error(`Something re-created ${file} while replacing it; not writing through it.`);
+      return null;
+    }
     fs.chmodSync(file, 0o600);
     return fresh;
   } catch (err) {
