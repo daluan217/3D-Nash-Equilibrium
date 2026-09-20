@@ -103,13 +103,21 @@ const listing = execFileSync('npx', ['asar', 'list', asarPath], { encoding: 'utf
 // split into two harmless-looking lines.
 const bundleRoot = path.dirname(path.dirname(path.dirname(asarPath)));
 const isBundle = bundleRoot.endsWith('.app') && fs.existsSync(path.join(bundleRoot, 'Contents'));
+// Symlink targets, collected while walking. A link is a file whose CONTENT is
+// chosen at open time on the user's machine, so an allowlisted path can still
+// be a window onto anything: `app.asar.unpacked/node_modules/harmless.dat ->
+// /Users/x/.ssh/id_rsa` sits inside the dependency carve-out and passed every
+// rule. Auditing the path alone cannot see that.
+const symlinks = [];
 function walk(dir, prefix, acc) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const rel = `${prefix}/${entry.name}`;
     acc.push(rel);
-    // Symlinks are NOT followed into: a link out of the bundle would walk the
-    // whole filesystem, and the link's own path is what ships.
-    if (entry.isDirectory() && !entry.isSymbolicLink()) walk(path.join(dir, entry.name), rel, acc);
+    if (entry.isSymbolicLink()) {
+      try { symlinks.push([rel, fs.readlinkSync(path.join(dir, entry.name))]); } catch { /* raced */ }
+      continue; // never descend: a link out of the bundle would walk the disk
+    }
+    if (entry.isDirectory()) walk(path.join(dir, entry.name), rel, acc);
   }
   return acc;
 }
@@ -284,6 +292,35 @@ ok(bundleUnexpected.length === 0,
 // spelling and it is the wrong shape: "+/-12" is a licence to hide up to
 // twelve files, and an injected payload is usually one. Exact costs one
 // obvious edit per upgrade and hides nothing.
+// EVERY SYMLINK MUST STAY INSIDE THE BUNDLE.
+//
+// The 14 legitimate ones are all Electron's framework version stamps
+// ("Versions/Current/Resources", "A"), and every one is RELATIVE and resolves
+// within its own .framework. Nothing this project ships is a link at all — the
+// app.asar.unpacked sidecar has zero. So the rule is simple and total: no
+// absolute target, and no target that climbs out of the bundle root.
+//
+// Without this, an allowlisted path is not a safe path. A link named
+// harmless.dat inside the sidecar's node_modules passed all 52 checks while
+// pointing anywhere on the user's disk.
+for (const [linkPath, target] of symlinks) {
+  const resolved = path.resolve(path.dirname(path.join(bundleRoot, linkPath)), target);
+  const escapes = path.isAbsolute(target)
+    || !(resolved === bundleRoot || resolved.startsWith(`${bundleRoot}${path.sep}`));
+  ok(!escapes,
+    `the bundle ships a symlink ${JSON.stringify(linkPath)} -> ${JSON.stringify(target)}, which `
+    + 'resolves outside the .app. A symlink is a file whose content is chosen at open time on the '
+    + "user's machine, so no path rule above can see what it exposes. Electron's own links are all "
+    + 'relative and stay inside their framework.');
+}
+// The rules above are negatives, so prove the check can fire at all.
+{
+  const probe = path.resolve(path.dirname(path.join(bundleRoot, '/Contents/Resources/x')), '/etc/passwd');
+  ok(!probe.startsWith(`${bundleRoot}${path.sep}`),
+    'SELF-TEST: an absolute symlink target resolved INSIDE the bundle root, so the escape check '
+    + 'above cannot fire and its clean result means nothing.');
+}
+
 const FRAMEWORK_BASELINE = 203; // electron ^31.7.7, darwin-arm64
 const frameworkPaths = bundleListing.filter((p) => p.startsWith('/Contents/Frameworks/'));
 ok(frameworkPaths.length === FRAMEWORK_BASELINE,
