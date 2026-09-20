@@ -1,5 +1,6 @@
 /**
- * Audit the ACTUAL app.asar that electron-builder produced.
+ * Audit the ACTUAL .app bundle that electron-builder produced — app.asar AND
+ * every file shipped alongside it.
  *
  * WHY THIS EXISTS. `src/packagedfiles.contract.test.ts` reasons about
  * `package.json`'s `build.files` globs — the SPEC. Nothing anywhere looked at
@@ -24,6 +25,15 @@
  *
  * It also asserts the package is NOT empty and DOES contain the files the app
  * needs to run — an audit that passes on an empty archive is not an audit.
+ *
+ * THE ARCHIVE IS NOT THE SHIPPED SURFACE. This file audited only `asar list`
+ * for its first revision, and `extraResources: ["db.json"]` — one line in
+ * `build` — lands the account store in `Contents/Resources/db.json`, NEXT TO
+ * app.asar rather than inside it. `asar list` cannot see it, so all 31 checks
+ * passed on a bundle carrying db.json and .env in the clear (reproduced, not
+ * theorised). `extraFiles` does the same one level up in `Contents/`, and an
+ * `afterPack` hook can write anywhere. What the user receives is the BUNDLE;
+ * that is what gets audited, with the same rules applied to both listings.
  *
  * Usage: node src/desktop/audit-packaged-asar.cjs [path/to/app.asar]
  *        (with no argument, finds the one under dist-electron/)
@@ -59,6 +69,28 @@ if (!asarPath || !fs.existsSync(asarPath)) {
 const listing = execFileSync('npx', ['asar', 'list', asarPath], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   .split('\n').map((l) => l.trim()).filter(Boolean);
 
+// Everything shipped OUTSIDE the archive. app.asar lives at
+// <App>.app/Contents/Resources/app.asar, so the bundle root is two levels up.
+// Walked with fs rather than `find` so a filename with a newline in it cannot
+// split into two harmless-looking lines.
+const bundleRoot = path.dirname(path.dirname(path.dirname(asarPath)));
+const isBundle = bundleRoot.endsWith('.app') && fs.existsSync(path.join(bundleRoot, 'Contents'));
+function walk(dir, prefix, acc) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = `${prefix}/${entry.name}`;
+    acc.push(rel);
+    // Symlinks are NOT followed into: a link out of the bundle would walk the
+    // whole filesystem, and the link's own path is what ships.
+    if (entry.isDirectory() && !entry.isSymbolicLink()) walk(path.join(dir, entry.name), rel, acc);
+  }
+  return acc;
+}
+// app.asar itself and its unpacked sidecar are audited through `listing`
+// above; re-walking them here would only duplicate findings.
+const bundleListing = isBundle
+  ? walk(bundleRoot, '', []).filter((p) => !p.startsWith('/Contents/Resources/app.asar'))
+  : [];
+
 let checks = 0;
 const failures = [];
 function ok(cond, msg) { checks++; if (!cond) failures.push(msg); }
@@ -75,6 +107,16 @@ const ours = listing.filter((p) => p !== '/node_modules' && !p.startsWith('/node
 ok(listing.length > 1000,
   `the asar holds only ${listing.length} entries. An empty or near-empty archive would make every `
   + 'exclusion below pass by having nothing to exclude.');
+ok(isBundle,
+  `${asarPath} is not inside a .app bundle, so everything electron-builder ships ALONGSIDE the `
+  + 'archive (extraResources, extraFiles, afterPack output) went unaudited. Point this at the '
+  + 'app.asar under dist-electron/<arch>/<App>.app/Contents/Resources/.');
+ok(!isBundle || bundleListing.length > 50,
+  `the bundle walk found only ${bundleListing.length} paths outside the archive, which is too few `
+  + 'for an Electron app — the walk is broken and every rule below would pass by seeing nothing.');
+ok(!isBundle || bundleListing.some((p) => /^\/Contents\/MacOS\/[^/]+$/.test(p)),
+  'CONTROL: the bundle walk did not find the app executable at /Contents/MacOS/, so it is not '
+  + 'walking the bundle it claims to walk.');
 for (const required of ['/electron-main.cjs', '/electron-preload.cjs', '/dist/server.cjs', '/dist/index.html']) {
   ok(listing.includes(required),
     `CONTROL: ${required} is missing from the package — the app cannot run. An audit that passes `
@@ -99,6 +141,14 @@ for (const [re, why] of FORBIDDEN) {
   const hits = ours.filter((p) => re.test(p));
   ok(hits.length === 0,
     `the package contains ${JSON.stringify(hits.slice(0, 5))} (${hits.length} total): ${why}`);
+  // Same rule, outside the archive. A secret shipped at
+  // Contents/Resources/db.json is no less readable than one inside app.asar —
+  // it is more so, since it needs no unpacking. Verified against the real
+  // bundle: every rule matches nothing there, so this cannot fire falsely.
+  const bundleHits = bundleListing.filter((p) => re.test(p));
+  ok(bundleHits.length === 0,
+    `the .app bundle ships ${JSON.stringify(bundleHits.slice(0, 5))} (${bundleHits.length} total) `
+    + `OUTSIDE app.asar: ${why}`);
 }
 
 // THE ALLOWLIST — the check that actually decides.
@@ -131,6 +181,65 @@ ok(unexpected.length === 0,
   + 'is an ALLOWLIST on purpose — a denylist of secret-shaped filenames cannot be completed, and '
   + 'eighteen shapes were found walking past the rules above. If you are adding a file the app '
   + 'genuinely needs at runtime, add it here deliberately.');
+
+// THE SAME ALLOWLIST, OUTSIDE THE ARCHIVE — and the one that would have caught
+// the extraResources leak whatever the file had been called.
+//
+// Electron's own bundle layout is fixed and none of it comes from this repo, so
+// the shipped-alongside surface can be enumerated exactly: the macOS skeleton,
+// the Electron framework and helpers, the locale packs, the icon, and the
+// archive. `extraResources`/`extraFiles`/`afterPack` have no legitimate use in
+// this project — the app needs nothing outside app.asar — so ANY path here that
+// is not Electron's own is a leak, named db.json or not.
+// The app's own name, so this file works unchanged on the review mirror (where
+// the product is renamed) instead of hardcoding one bundle's executable.
+const appExe = path.basename(bundleRoot, '.app');
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const BUNDLE_ALLOWED = [
+  /^\/Contents$/,
+  /^\/Contents\/(Info\.plist|PkgInfo)$/,
+  /^\/Contents\/_CodeSignature(\/CodeResources)?$/,
+  // Only the launcher. `extraFiles` with an explicit `to:` can write anywhere
+  // in the bundle, so "the MacOS directory" is not a safe unit to wave through.
+  new RegExp(`^/Contents/MacOS(/${esc(appExe)})?$`),
+  // Electron's frameworks and helper apps, by SHAPE — the tree inside them is
+  // Electron's and changes with its version, but a file dropped directly into
+  // Frameworks/ is not part of any framework.
+  /^\/Contents\/Frameworks(\/[^/]+\.(framework|app)(\/.*)?)?$/,
+  /^\/Contents\/Resources$/,
+  // Empty locale stubs. Verified empty in the built bundle, so there is no
+  // reason to allow anything INSIDE them — that would be a place to hide a file.
+  /^\/Contents\/Resources\/[A-Za-z0-9_]+\.lproj$/,
+  /^\/Contents\/Resources\/(icon\.icns|electron\.icns)$/,
+];
+const bundleUnexpected = bundleListing.filter((p) => !BUNDLE_ALLOWED.some((re) => re.test(p)));
+ok(bundleUnexpected.length === 0,
+  `the .app bundle ships ${JSON.stringify(bundleUnexpected.slice(0, 10))} `
+  + `(${bundleUnexpected.length} total) outside app.asar. Nothing in this project belongs there: `
+  + 'the app loads everything from the archive, so a file here arrived via extraResources, '
+  + 'extraFiles or an afterPack hook. `extraResources: ["db.json"]` puts the account store in '
+  + 'Contents/Resources/db.json, which `asar list` cannot see and this audit reported as 31 '
+  + 'checks passed before this rule existed.');
+
+// CONTROL for the bundle allowlist: the fixture the rule is supposed to reject.
+// Without this, a BUNDLE_ALLOWED entry loosened to /^\/Contents/ would pass
+// silently on a clean bundle, exactly as the missing rule did.
+ok(['/Contents/Resources/db.json', '/Contents/Resources/.env', '/Contents/config.json',
+  '/Contents/MacOS/db.json', '/Contents/Frameworks/db.json',
+  '/Contents/Resources/en.lproj/db.json', '/Contents/_CodeSignature/db.json']
+  .every((p) => !BUNDLE_ALLOWED.some((re) => re.test(p))),
+  'SELF-TEST: the bundle allowlist accepts a planted secret next to app.asar. One of the '
+  + 'BUNDLE_ALLOWED patterns is too broad — check for a prefix match where an anchored one was '
+  + 'meant.');
+for (const real of ['/Contents/Info.plist', `/Contents/MacOS/${appExe}`,
+  '/Contents/Resources/icon.icns', '/Contents/Resources/es_419.lproj',
+  '/Contents/_CodeSignature/CodeResources',
+  `/Contents/Frameworks/${appExe} Helper (GPU).app/Contents/MacOS/${appExe} Helper (GPU)`,
+  '/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework']) {
+  ok(BUNDLE_ALLOWED.some((re) => re.test(real)),
+    `SELF-TEST: the bundle allowlist rejects ${real}, which every Electron app ships. An audit `
+    + 'that fires on the real bundle is an audit someone will switch off.');
+}
 
 // SELF-TEST. Every rule above is a negative — it passes when it finds nothing,
 // which is also how a broken pattern behaves. Run each against a synthetic
