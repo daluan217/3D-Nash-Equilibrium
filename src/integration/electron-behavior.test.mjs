@@ -341,19 +341,31 @@ for (const u of egress.openedUrls) {
 // because they measure the preload, not the window it is loaded into.
 ok(egress.windowOptions.length > 0,
   'CONTROL: at least one BrowserWindow must be constructed during the run.');
+// The KEY SET, not a list of known-dangerous names. Naming contextIsolation /
+// nodeIntegration / sandbox / devTools individually leaves every OTHER
+// webPreference free: webSecurity:false turns off CORS and same-origin,
+// allowRunningInsecureContent lets http: script into an https: page,
+// webviewTag re-enables <webview>, nodeIntegrationInSubFrames hands require()
+// to an iframe, experimentalFeatures switches on unshipped Blink code. Each was
+// a surviving mutant. An allowlist of the exact keys catches all of them and
+// every one nobody has thought of yet, which is the point.
 for (const wp of egress.windowOptions) {
-  ok(wp && wp.contextIsolation === true,
-    `a window was created with contextIsolation=${JSON.stringify(wp && wp.contextIsolation)}. `
-    + 'Without it the preload shares a global scope with the page: the bridge checks above keep '
-    + 'passing while the isolation they assume does not exist.');
-  ok(wp && wp.nodeIntegration === false,
-    `a window was created with nodeIntegration=${JSON.stringify(wp && wp.nodeIntegration)}. `
-    + 'That hands require() to a renderer displaying model-generated content.');
-  ok(wp && wp.sandbox === true,
-    `a window was created with sandbox=${JSON.stringify(wp && wp.sandbox)}.`);
-  ok(wp && wp.devTools === false,
-    `a window was created with devTools=${JSON.stringify(wp && wp.devTools)}; the packaged app `
-    + 'must not ship an inspector into the renderer.');
+  assert.deepStrictEqual(wp, {
+    nodeIntegration: false,
+    contextIsolation: true,
+    sandbox: true,
+    devTools: false,
+    preload: wp && wp.preload,
+  }, `a window's webPreferences were ${JSON.stringify(wp)}. Exactly these five keys, with these `
+    + 'values. contextIsolation off would make every bridge check above pass while the isolation '
+    + 'they assume does not exist; nodeIntegration on hands require() to a renderer displaying '
+    + 'model-generated content; and any ADDED key is a Chromium security default being turned off '
+    + 'in a place nothing else in this file looks at.');
+  checks++;
+  ok(typeof wp.preload === 'string' && wp.preload.endsWith('/electron-preload.cjs'),
+    `the window's preload is ${JSON.stringify(wp && wp.preload)} — it must be the app's own `
+    + 'electron-preload.cjs, the file the bridge section actually audits. A preload from anywhere '
+    + 'else means the audited file is not the one that runs.');
 }
 
 // The same flow under the two server replies a real user hits: a broken server
