@@ -223,19 +223,50 @@ if (mode === 'bridge') {
     if (api === null || typeof api !== 'object') return findLiveIpc(api);
     return Object.values(api).some((v) => findLiveIpc(v, 0, new Set(), v));
   };
-  const allExposures = exposures.map((e) => ({
-    world: e.world,
-    key: e.key,
-    keys: e.api && typeof e.api === 'object' ? Object.keys(e.api) : [typeof e.api],
-    leaks: exposureLeaks(e.api),
-  }));
-  // A preload global that holds a live IPC handle reaches the page without
-  // contextBridge at all.
-  const globalLeaks = globalsAdded.filter((k) => {
-    try { return findLiveIpc(globalThis[k]); } catch { return false; }
-  });
-  out({ exposedKey, keys: Object.keys(exposed || {}), members, sent, invoked, walkerSelfTest,
-    allExposures, globalsAdded, globalLeaks });
+  // A preload is NOT finished when its top level is, and everything here used to
+  // run synchronously after the require. An exposure deferred by a microtask, a
+  // timer or a resolved promise —
+  //   queueMicrotask(() => exposeInMainWorld('nashLate', { raw: ipcRenderer }))
+  // — reached the renderer AFTER this process had reported "exactly one
+  // exposure" and exited: invisible, with the report saying the tree was clean.
+  // Drain both queues, then read. The counts are taken here rather than above
+  // so a late exposure is measured, and `lateExposures` is reported so the test
+  // can assert the drain happened instead of trusting that it did.
+  //
+  // Globals are read late TOO — a `Promise.resolve().then(() => globalThis.x =
+  // ipcRenderer)` is the same evasion one door over. But this file has no
+  // `return` after the bridge block, so the main-process section below keeps
+  // executing and installs globals of its OWN (fetch, XMLHttpRequest,
+  // WebSocket, onExpressListening, onDesktopLockFailure). Reading late without
+  // excluding those attributed them to the preload — a false positive the drain
+  // itself created, caught because the first run after this change failed
+  // naming three of them. Named explicitly rather than filtered by a pattern:
+  // if the runner grows another global, this list must be updated deliberately.
+  const RUNNER_OWN_GLOBALS = new Set(['fetch', 'WebSocket', 'XMLHttpRequest',
+    'onExpressListening', 'onDesktopLockFailure', 'expressPort']);
+  const syncExposureCount = exposures.length;
+  setTimeout(() => {
+    const globalsNow = Reflect.ownKeys(globalThis)
+      .filter((k) => !globalsBefore.has(k)).map(String)
+      .filter((k) => !RUNNER_OWN_GLOBALS.has(k));
+    const allExposures = exposures.map((e) => ({
+      world: e.world,
+      key: e.key,
+      keys: e.api && typeof e.api === 'object' ? Object.keys(e.api) : [typeof e.api],
+      leaks: exposureLeaks(e.api),
+    }));
+    // A preload global that holds a live IPC handle reaches the page without
+    // contextBridge at all.
+    const globalLeaks = globalsNow.filter((k) => {
+      try { return findLiveIpc(globalThis[k]); } catch { return false; }
+    });
+    out({ exposedKey: exposures.length === 1 ? exposures[0].key : null,
+      keys: Object.keys(exposed || {}), members, sent, invoked, walkerSelfTest,
+      allExposures, globalsAdded: globalsNow, globalLeaks,
+      // > 0 means the preload exposed or assigned something AFTER its top level.
+      lateExposures: exposures.length - syncExposureCount,
+      drained: true });
+  }, 60);
 }
 
 // ── shared fakes for the main-process modes ─────────────────────────────────

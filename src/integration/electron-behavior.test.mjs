@@ -241,6 +241,20 @@ checks++;
 ok(bridge.globalLeaks.length === 0,
   `preload globals ${JSON.stringify(bridge.globalLeaks)} hold a live IPC handle.`);
 
+// FOUND BY MY OWN SELF-REVIEW. The runner reported SYNCHRONOUSLY after loading
+// the preload, so anything the preload deferred —
+//   queueMicrotask(() => exposeInMainWorld('nashLate', { raw: ipcRenderer }))
+// — reached the renderer after this process had already said "exactly one
+// exposure" and exited. A preload is not finished when its top level is.
+ok(bridge.drained === true,
+  'CONTROL: the runner must drain the microtask and timer queues before reading. Without it every '
+  + 'exposure check above measures only what the preload did synchronously, and deferring one line '
+  + 'is enough to hand the renderer a live IPC handle invisibly.');
+ok(bridge.lateExposures === 0,
+  `the preload made ${bridge.lateExposures} exposure(s) AFTER its top level finished. Deferring an `
+  + 'exposure does not make it safer — it lands in the same renderer — and is the shape that '
+  + 'escapes any harness reading synchronously.');
+
 ok(bridge.exposedKey === 'nashDesktop',
   `the preload must expose exactly one namespace, "nashDesktop" (got ${JSON.stringify(bridge.exposedKey)}).`);
 assert.deepStrictEqual(bridge.keys, ['setBackgroundColor'],
