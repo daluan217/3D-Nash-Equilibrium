@@ -41,6 +41,10 @@ import assert from 'node:assert';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUNNER = join(repo, 'src', 'desktop', 'electron-behavior-runner.cjs');
+// Canary values the runner plants in each reported array so a FABRICATED one
+// cannot pass; kept in sync with the same names in the runner.
+const CANARY_URL = 'https://runner-canary.invalid/reporting-path';
+const CANARY_TIMER_MS = 987654;
 
 let checks = 0;
 function ok(cond, msg) { checks++; assert(cond, msg); }
@@ -289,10 +293,18 @@ ok(bridge.lateExposures === 0,
 // preload's honest answer is zero timers at all — so "armed then cancelled"
 // is already a change worth failing on, and leaving it exempt would make
 // clearTimeout a place to park a beacon. Verified both ways.
-ok(bridge.preloadTimers === 0,
-  `electron-preload.cjs armed ${bridge.preloadTimers} timer(s). A preload runs inside the renderer `
-  + 'with bridge access, so deferred work there is the cheapest possible beacon: every other check '
-  + 'in this file reads state before it would fire. Nothing in the preload needs a timer.');
+// The DELAYS the preload armed, with the runner's canary still among them, so
+// the expected value is exactly [987654]. A count was the first spelling and
+// it was too weak: `preloadTimers: 1` — a fabricated number that happens to
+// know about the canary — hid a live 100ms beacon. A list cannot do that; it
+// would have to drop the canary or carry the beacon.
+assert.deepStrictEqual(bridge.preloadTimers, [CANARY_TIMER_MS],
+  `electron-preload.cjs armed ${JSON.stringify(bridge.preloadTimers)} (the runner's own `
+  + `${CANARY_TIMER_MS}ms canary should be the only entry; its absence means the list was `
+  + 'fabricated rather than measured). A preload runs inside the renderer with bridge access, so '
+  + 'deferred work there is the cheapest possible beacon: every other check in this file reads '
+  + 'state before it would fire. Nothing in the preload needs a timer.');
+checks++;
 
 // …and the other half of the same question. The timer census answers "what is
 // still going to run?"; it says nothing about what ALREADY ran. They are not
@@ -306,8 +318,19 @@ ok(bridge.preloadTimers === 0,
 // to one IPC channel; it has no reason to dial anything, at any time, by any
 // route. The 60ms drain outlasts any microtask queue, so a deferred call has
 // been recorded by the time this reads.
-assert.deepStrictEqual(bridge.preloadNetworkCalls, [],
-  `electron-preload.cjs made outbound call(s) ${JSON.stringify(bridge.preloadNetworkCalls)}. The `
+// The runner plants a canary in each reported array (see its self-test block)
+// so a HARDCODED empty array cannot pass: it would arrive without the canary.
+// Asserted first, then subtracted, so the real verdict below is unaffected.
+ok(bridge.preloadNetworkCalls.some(([, u]) => u === CANARY_URL),
+  'the runner\'s network canary did not survive the trip to this test, so preloadNetworkCalls is '
+  + 'not the array the recorder wrote — hardcoding it to [] passes every check below for free.');
+ok((bridge.pendingTimers || []).includes(CANARY_TIMER_MS),
+  'the runner\'s timer canary did not survive the trip to this test, so pendingTimers is not the '
+  + 'census — hardcoding it to [] passes the armed-timer checks for free.');
+const preloadCalls = bridge.preloadNetworkCalls.filter(([, u]) => u !== CANARY_URL);
+
+assert.deepStrictEqual(preloadCalls, [],
+  `electron-preload.cjs made outbound call(s) ${JSON.stringify(preloadCalls)}. The `
   + 'preload runs in the renderer with bridge access; anything it dials carries whatever it can '
   + 'reach. The packaged app must talk to loopback and nothing else.');
 checks++;
@@ -319,11 +342,44 @@ checks++;
 // measuring them — absence in the fake reading exactly like correctness in the
 // product, which is this harness's oldest trap. The runner reports which doors
 // it installed; if one disappears, this fails instead of going quiet.
-assert.deepStrictEqual([...bridge.outboundDoors].sort(),
+// The canary door exists only during the probe, so a fabricated list cannot
+// contain it — hardcoding the four names passed this check for free.
+ok(bridge.outboundDoors.includes('__runnerCanaryDoor'),
+  `outboundDoors came back as ${JSON.stringify(bridge.outboundDoors)}, without the canary door the `
+  + 'runner installs for the probe. That list was not probed, so it describes nothing.');
+assert.deepStrictEqual(bridge.outboundDoors.filter((d) => d !== '__runnerCanaryDoor').sort(),
   ['XMLHttpRequest', 'WebSocket', 'fetch', 'sendBeacon'].sort(),
   `the bridge runner offered the preload ${JSON.stringify(bridge.outboundDoors)}. A door it does `
   + 'not provide is a door the preload cannot be caught using: the call throws, a beacon\'s '
   + 'try/catch swallows it, and the empty preloadNetworkCalls above means nothing.');
+checks++;
+
+// POSITIVE CONTROL: the recorders must actually record.
+//
+// Every preload verdict above is "the list came back empty", which is also
+// exactly what a broken recorder produces. Four separate ways of breaking one
+// left all 433 checks green: deleting the `networkCalls.push` line, hardcoding
+// `preloadNetworkCalls: []`, hardcoding `pendingTimers: []`, and returning a
+// fabricated `outboundDoors` list. The egress mode does have a positive
+// control, but it covers a DIFFERENT fetch — the update-reply stub installed
+// hundreds of lines further down — so it could not see any of them.
+//
+// The runner drives each door with a known URL before loading the preload and
+// reports whether the call landed, then rolls the arrays back.
+// WHAT THIS DOES NOT COVER, stated rather than left to be discovered. The
+// canaries defeat a runner field that was hardcoded to its expected EMPTY
+// value — the realistic way these rot, since every verdict here is "the list
+// came back empty". They do not defeat an edit that fabricates a field while
+// KNOWING the canary (`preloadTimers: [987654]`), which was measured to still
+// hide a timer-only beacon. That attacker is editing the guard itself, which
+// is a code-review problem and not one a self-test inside the same file can
+// solve; chasing it further would only move the same knowledge one level up.
+assert.deepStrictEqual(bridge.recorderSelfTest,
+  { fetch: true, XMLHttpRequest: true, sendBeacon: true, timerCensus: true },
+  `the bridge runner's own recorders failed their self-test `
+  + `(${JSON.stringify(bridge.recorderSelfTest)}). A recorder that does not record makes every `
+  + '"the preload dialled nothing" verdict above vacuous — they would all still pass on a preload '
+  + 'that beaconed on every door.');
 checks++;
 
 ok(bridge.exposedKey === 'nashDesktop',

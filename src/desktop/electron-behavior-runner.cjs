@@ -107,6 +107,13 @@ globalThis.clearInterval = function (handle) {
 const pendingTimersNow = () => scheduledTimers
   .filter((t) => !t.fired && !t.cancelled).map((t) => t.ms);
 
+// Canary values the bridge mode plants and the test subtracts again. Shared
+// here so the two files cannot drift apart silently. 987654 is not a delay any
+// real code would pick, so its presence is unambiguous.
+const CANARY_URL = 'https://runner-canary.invalid/reporting-path';
+const CANARY_TIMER_MS = 987654;
+const CANARY_DOOR = '__runnerCanaryDoor';
+
 // OUTBOUND CALLS, recorded from the first line — for the preload too.
 //
 // The census above answers "what is still going to run?". It does not answer
@@ -169,6 +176,7 @@ const outboundDoors = () => {
   if (typeof globalThis.XMLHttpRequest === 'function') doors.push('XMLHttpRequest');
   if (typeof globalThis.WebSocket === 'function') doors.push('WebSocket');
   if (typeof globalThis.navigator?.sendBeacon === 'function') doors.push('sendBeacon');
+  if (typeof globalThis[CANARY_DOOR] === 'function') doors.push(CANARY_DOOR);
   return doors;
 };
 
@@ -223,9 +231,60 @@ if (mode === 'bridge') {
     if (request === 'electron') return { contextBridge, ipcRenderer };
     return originalLoad.call(this, request, parent, isMain);
   };
+  // SELF-TEST of the recorders themselves, run BEFORE the preload and then
+  // rolled back. Every preload verdict below is "the list came back empty",
+  // which is also exactly what a broken recorder produces: deleting the
+  // `networkCalls.push` line, or hardcoding `preloadNetworkCalls: []`, or
+  // faking `outboundDoors`, each left all 433 checks green. The egress mode
+  // has a positive control but it covers a DIFFERENT fetch (the update-reply
+  // stub, installed ~650 lines further down), so it could not see any of this.
+  //
+  // Drive each door with a known URL and check it was recorded, then truncate
+  // the array so the real measurement starts clean.
+  const selfTest = {};
+  {
+    const before = networkCalls.length;
+    try { globalThis.fetch('https://selftest.invalid/f').catch(() => {}); } catch { /* recorded or not */ }
+    selfTest.fetch = networkCalls.length > before;
+    const b2 = networkCalls.length;
+    try {
+      const x = new globalThis.XMLHttpRequest();
+      x.open('GET', 'https://selftest.invalid/x'); x.send();
+    } catch { /* recorded or not */ }
+    selfTest.XMLHttpRequest = networkCalls.length > b2;
+    const b3 = networkCalls.length;
+    try { globalThis.navigator.sendBeacon('https://selftest.invalid/b', 'd'); } catch { /* ditto */ }
+    selfTest.sendBeacon = networkCalls.length > b3;
+    const b4 = scheduledTimers.length;
+    realClearTimeout(globalThis.setTimeout(() => {}, 60000));
+    selfTest.timerCensus = scheduledTimers.length > b4;
+    // Roll back: these are the harness's own calls, not the preload's.
+    networkCalls.length = before;
+    scheduledTimers.length = b4;
+  }
   const timersBeforePreload = scheduledTimers.length;
   const networkCallsBeforePreload = networkCalls.length;
+  // A CANARY that must reach the test through the real reporting path.
+  //
+  // The self-test above proves the recorders record; it says nothing about
+  // whether the payload carries what they recorded. Hardcoding
+  // `preloadNetworkCalls: []` or `pendingTimers: []` in out() left every check
+  // green, because both are asserted to BE empty. So plant one entry that must
+  // arrive, and have the test subtract it: a hardcoded empty array then loses
+  // the canary and fails, while a real array keeps it.
+  //
+  // Planted AFTER the two offsets above, so it lands inside the reported slice
+  // (planting it before put it outside and the canary never arrived — caught
+  // on the first run). The timer canary is pushed straight into the census
+  // rather than really armed: an unref'd interval would keep the child alive.
+  // preloadTimers is a COUNT taken from the same array, so it subtracts one.
+  networkCalls.push(['fetch', CANARY_URL]);
+  scheduledTimers.push({ ms: CANARY_TIMER_MS, fired: false, cancelled: false, kind: 'interval' });
+  // Probed live, and the canary door proves it was probed rather than typed:
+  // a fabricated list would not know about it. Installed only for this call.
+  globalThis[CANARY_DOOR] = () => {};
   const doorsOfferedToPreload = outboundDoors();
+  delete globalThis[CANARY_DOOR];
   require(path.resolve(preloadCjs));
   Module._load = originalLoad;
 
@@ -391,7 +450,12 @@ if (mode === 'bridge') {
   // two timers (800, 3000) to the global list. Snapshotting around the preload
   // require isolates it — and the preload's correct answer is exactly zero, so
   // there is no threshold here to tune or outwait.
-  const preloadTimers = scheduledTimers.length - timersBeforePreload;
+  // The DELAYS, not a count. A counter can always be faked to the expected
+  // number — `preloadTimers: 1` (knowing about the canary) hid a live beacon
+  // in exactly this way. A list has to contain the canary AND nothing else,
+  // so a fabricated one is either missing the canary or missing the beacon it
+  // is hiding. Reported with the canary still in; the test subtracts it.
+  const preloadTimers = scheduledTimers.slice(timersBeforePreload).map((t) => t.ms);
   // realSetTimeout for the drain itself, so the runner's own wait is not
   // counted as a timer the preload armed.
   realSetTimeout(() => {
@@ -429,6 +493,8 @@ if (mode === 'bridge') {
       // Probed at the moment the preload ran, so the control cannot pass on a
       // door that was never really there.
       outboundDoors: doorsOfferedToPreload,
+      // Proof the recorders above actually record; see the self-test block.
+      recorderSelfTest: selfTest,
       drained: true });
   }, 60);
 }
