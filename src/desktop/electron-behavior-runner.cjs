@@ -1119,12 +1119,30 @@ Module._load = function (request, parent, isMain) {
 // verified: it returns the REAL module. That is now harmless (the real module
 // is the instrumented one), but record the use: it has no legitimate purpose
 // in this app and is a strong signal on its own.
+const moduleDoorsInstrumented = [];
 if (typeof process.getBuiltinModule === 'function') {
   const original = process.getBuiltinModule.bind(process);
   process.getBuiltinModule = (request) => {
     requiredModules.push(`getBuiltinModule:${request}`);
     return original(request);
   };
+  moduleDoorsInstrumented.push('getBuiltinModule');
+}
+
+// SR-52. getBuiltinModule was ONE door of a family and closing it alone left
+// the others open. `process.binding('spawn_sync').spawn({file:'/bin/sh',…})`
+// ran /bin/sh from inside the main process — MEASURED, it wrote its proof file
+// — with all 440 checks green: no require, no getBuiltinModule, no fetch.
+// `tcp_wrap` hands back a live TCP/TCPConnectWrap pair the same way. Record
+// every internal-binding door; the exact-module-list assertion then kills them.
+for (const door of ['binding', '_linkedBinding']) {
+  if (typeof process[door] !== 'function') continue;
+  const original = process[door].bind(process);
+  process[door] = (request) => {
+    requiredModules.push(`${door}:${request}`);
+    return original(request);
+  };
+  moduleDoorsInstrumented.push(door);
 }
 
 // A fixed observation window can always be outwaited: `setTimeout(() =>
@@ -1187,12 +1205,17 @@ if (typeof globalThis.onExpressListening === 'function') {
 const DEFERRED_MS = 120;
 if (mode === 'permissions') setTimeout(runPermissionsMode, DEFERRED_MS);
 function runPermissionsMode() {
-  // Every documented Electron permission name, plus one that does not exist.
+  // Every permission name in the installed Electron's own handler unions, plus
+  // a name that does not exist. SR-53: this list carried the invented
+  // 'background-sync' and 'unknown-permission' but NOT Electron's real
+  // 'unknown' — the one name Electron actually sends for a permission it does
+  // not recognise, and the one a careless allowlist is most likely to contain.
+  // The test asserts this list against electron.d.ts, so it cannot drift.
   const ALL = ['clipboard-read', 'clipboard-sanitized-write', 'display-capture', 'fullscreen',
     'geolocation', 'hid', 'idle-detection', 'keyboardLock', 'media', 'mediaKeySystem',
     'midi', 'midiSysex', 'notifications', 'openExternal', 'pointerLock', 'serial',
     'speaker-selection', 'storage-access', 'top-level-storage-access', 'usb',
-    'window-management', 'fileSystem', 'background-sync', 'unknown-permission'];
+    'window-management', 'fileSystem', 'unknown', 'not-a-real-permission'];
   const granted = [];
   const checked = [];
   const reqHandler = permissionRequestHandlers[permissionRequestHandlers.length - 1];
@@ -1258,7 +1281,7 @@ function runPermissionsMode() {
     requestHandlerInstalled: typeof reqHandler === 'function',
     checkHandlerInstalled: typeof chkHandler === 'function',
     deviceHandlerInstalled: devicePermissionHandlers.length > 0,
-    granted, checked, deviceGranted, probed: ALL.length,
+    granted, checked, deviceGranted, probed: ALL.length, probedNames: ALL,
     displayMediaHandlerInstalled: (installedHandlers.setDisplayMediaRequestHandler || []).length > 0,
     displayMediaGrant,
     // Every capability API the fake offers, and whether the app installed
@@ -1317,6 +1340,10 @@ if (mode === 'egress') {
       openedUrls,
       backendLoaded,
       instrumented,
+      // Which of the Module._load-bypassing doors this runner actually wraps.
+      // Reported so the test can assert the census is watching, not merely that
+      // today's census is empty.
+      moduleDoorsInstrumented,
       windowOptions,
       dialogsShown,
     });

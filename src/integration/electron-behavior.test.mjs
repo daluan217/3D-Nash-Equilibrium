@@ -120,6 +120,54 @@ ok(perms.deviceHandlerInstalled,
 ok(perms.probed >= 20,
   `the probe must cover the documented permission surface (probed ${perms.probed}); a short list `
   + 'would leave real capabilities untested.');
+
+// SR-53. The probe list was hand-written and had drifted off the product: it
+// carried 'background-sync' and 'unknown-permission', neither of which the
+// installed Electron can ever send, and OMITTED 'unknown' — the real name
+// Electron uses for a permission it does not recognise, and therefore the one
+// name a lenient allowlist is most likely to wave through. MEASURED: a handler
+// reading `permission === 'unknown' || ALLOWED_PERMISSIONS.has(permission)`
+// left the literal Set untouched, so electronpermissions.contract.test.ts
+// passed 43/43 and this file passed with the old list. Derive the names from
+// the installed electron.d.ts so the list cannot drift again.
+{
+  const dts = readFileSync(join(repo, 'node_modules/electron/electron.d.ts'), 'utf8');
+  const electronVersion = JSON.parse(
+    readFileSync(join(repo, 'node_modules/electron/package.json'), 'utf8')).version;
+  const union = (method) => {
+    const line = dts.split('\n').find((l) => l.includes(`${method}(handler:`));
+    ok(!!line, `CONTROL: ${method}'s declaration was not found in electron.d.ts — the extraction `
+      + 'below would then assert against an empty set and pass for free.');
+    const m = /permission: ((?:'[^']+' \| )*'[^']+')/.exec(line || '');
+    ok(!!m, `CONTROL: could not read ${method}'s permission union out of electron.d.ts.`);
+    return (m ? m[1] : '').split(' | ').map((s) => s.replace(/'/g, ''));
+  };
+  const real = [...new Set([...union('setPermissionRequestHandler'),
+    ...union('setPermissionCheckHandler')])];
+  ok(real.length >= 20,
+    `CONTROL: only ${real.length} permission names came out of electron.d.ts; the parse broke and `
+    + 'the subset check below would be trivially satisfiable.');
+  ok(real.includes('unknown'),
+    'CONTROL: this Electron\'s union must contain "unknown" — that is the finding this guard is '
+    + `for. Parsed: ${JSON.stringify(real)}.`);
+  const missed = real.filter((p) => !perms.probedNames.includes(p));
+  assert.deepStrictEqual(missed, [],
+    `the permission probe never sends ${JSON.stringify(missed)}, which the installed Electron `
+    + `(${electronVersion}) CAN send. A capability the probe never requests is a capability the `
+    + 'allowlist is never tested against, so "granted: [clipboard-sanitized-write]" would hold '
+    + 'while the app granted one of these to every caller.');
+  checks++;
+  const invented = perms.probedNames.filter((p) => !real.includes(p) && p !== 'not-a-real-permission');
+  assert.deepStrictEqual(invented, [],
+    `the probe sends ${JSON.stringify(invented)}, which this Electron never sends. Probing names `
+    + 'that cannot occur inflates the count without testing anything; exactly one synthetic name '
+    + '("not-a-real-permission") is kept, to prove an unknown permission is denied.');
+  checks++;
+  ok(perms.probedNames.includes('not-a-real-permission'),
+    'CONTROL: the probe must still include one name Electron will never send, or nothing proves '
+    + 'the allowlist denies by default rather than matching a fixed list of real names.');
+}
+
 assert.deepStrictEqual(perms.granted, ['clipboard-sanitized-write'],
   `exactly one permission may be granted, and it must be clipboard-sanitized-write. Granted: `
   + `${JSON.stringify(perms.granted)} out of ${perms.probed} probed. This is measured by INVOKING `
@@ -633,9 +681,25 @@ assert.deepStrictEqual(egress.requiredModules.slice().sort(), ALLOWED_MODULES.sl
   `electron-main.cjs must require exactly ${JSON.stringify(ALLOWED_MODULES)} (got `
   + `${JSON.stringify(egress.requiredModules)}). Adding net/tls/http2/dgram/dns/child_process/ws here `
   + 'is the precondition for any egress route that does not go through fetch. '
-  + '`getBuiltinModule:` entries are process.getBuiltinModule() calls — that API bypasses '
-  + 'Module._load entirely and has no legitimate use in this app.');
+  + '`getBuiltinModule:` / `binding:` / `_linkedBinding:` entries are the three APIs that bypass '
+  + 'Module._load entirely and have no legitimate use in this app. SR-52: process.binding('
+  + "'spawn_sync') ran /bin/sh from the main process with every check here green.");
 checks++;
+
+// SR-52, mutation-named. Each of these ran against the real electron-main.cjs
+// and the suite stayed green before the runner recorded the door:
+//   process.binding('spawn_sync').spawn({file:'/bin/sh',args:['/bin/sh','-c',
+//     'echo PWNED > /tmp/b22-exfil-proof.txt'],stdio:[…]})   -> the file was written
+//   process.binding('tcp_wrap')  -> a live TCP / TCPConnectWrap pair
+// So assert the instrumentation exists, not only that today's list is clean: a
+// future runner edit that drops the wrapper would make the check above pass for
+// the wrong reason (nothing recorded because nothing is watching).
+for (const door of ['binding', '_linkedBinding', 'getBuiltinModule']) {
+  ok((egress.moduleDoorsInstrumented || []).includes(door),
+    `CONTROL: process.${door} is not instrumented by the runner, so a module obtained through it `
+    + 'never appears in the require census above and that census would be clean by blindness. '
+    + "process.binding('spawn_sync') is a working child-process door that needs no require.");
+}
 
 // The backend is the other half of the desktop process, and the half with an
 // LLM client in it. It used to be stubbed to `{}` here, which meant this whole
