@@ -28,7 +28,7 @@
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync,
-  chmodSync, statSync, lstatSync, symlinkSync, mkdirSync } from 'node:fs';
+  chmodSync, statSync, lstatSync, symlinkSync, linkSync, mkdirSync } from 'node:fs';
 import { tmpdir, networkInterfaces } from 'node:os';
 import { connect } from 'node:net';
 import path from 'node:path';
@@ -313,8 +313,18 @@ try {
   // (sessions dropped on restart, with only a console line to say so).
   await stop(srv);
   srv = null;
+  // SR-54, found by mutation-testing this very block: with only symlink and
+  // directory here, deleting the `unlinkSync` + `flag: "wx"` from the create
+  // path left all 30 checks PASSING. Those two lines are the defense against a
+  // link re-created after the lstat — and against a HARDLINK, which lstat
+  // cannot see at all: `lstat(auth-secret).isFile()` is TRUE for one, so the
+  // refusal above never fires, and a plain write goes straight through to the
+  // target (measured: 'original-content' became 64 f's, mode stayed 644).
+  // The unlink drops the link before the write, so the target survives. A
+  // hardlink is therefore the case that makes that line load-bearing.
   for (const [label, make] of [
     ['symlink', (dir, target) => symlinkSync(target, path.join(dir, 'auth-secret'))],
+    ['hardlink', (dir, target) => linkSync(target, path.join(dir, 'auth-secret'))],
     ['directory', (dir) => mkdirSync(path.join(dir, 'auth-secret'))],
   ]) {
     const poisoned = mkdtempSync(path.join(tmpdir(), `nash-desktop-secret-${label}-`));
