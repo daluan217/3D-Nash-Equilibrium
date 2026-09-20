@@ -113,6 +113,29 @@ const pendingTimersNow = () => scheduledTimers
 const CANARY_URL = 'https://runner-canary.invalid/reporting-path';
 const CANARY_TIMER_MS = 987654;
 const CANARY_DOOR = '__runnerCanaryDoor';
+// Two canaries because the census has TWO mechanisms and a canary only proves
+// the one it goes through. A single hand-written getter survived deleting the
+// whole descriptor-wrapping loop: it recorded, the list was non-empty, the
+// assertion passed — with every real global untrapped. So one canary is an
+// ordinary value property (wrapped by the same loop as `process`, `navigator`
+// …) and one is undefined (defined by the same loop as `document`).
+//
+// The names carry a per-run NONCE the test generates and passes in env. A
+// constant canary only defeats a list fabricated in ignorance of it:
+// `preloadGlobalReads: [CANARY_GLOBAL, CANARY_GLOBAL_UNDEF]` survived every
+// other check here, because it is exactly what the assertion wants. A name the
+// runner cannot know until it starts cannot be written into the runner.
+const NONCE = process.env.RUNNER_CANARY_NONCE || 'static';
+const CANARY_GLOBAL = `__runnerCanaryGlobalRead_${NONCE}`;
+const CANARY_GLOBAL_UNDEF = `__runnerCanaryGlobalUndef_${NONCE}`;
+
+// Renderer globals that do not exist under Node. The census defines each as a
+// recording getter (see ~line 366), so they are the HARNESS's additions, not
+// the preload's — excluded from globals-added by getter identity, never by name.
+const RENDERER_ONLY_GLOBALS = ['document', 'window', 'self', 'top', 'parent', 'location',
+  'WebTransport', 'ServiceWorker', 'SharedWorker', 'Worker', 'BroadcastChannel', 'indexedDB',
+  'localStorage', 'sessionStorage', 'caches', 'crypto', 'postMessage', 'open',
+  CANARY_GLOBAL_UNDEF];
 
 // OUTBOUND CALLS, recorded from the first line — for the preload too.
 //
@@ -259,6 +282,10 @@ if (mode === 'bridge') {
 
   // A preload runs with `window` as its global, so a plain assignment reaches
   // the page without contextBridge at all. Snapshot the globals, then diff.
+  // Planted as an ordinary value property BEFORE the snapshot, so the census's
+  // descriptor-wrapping loop wraps it exactly like `process` or `navigator` and
+  // the diff below never sees it as added.
+  globalThis[CANARY_GLOBAL] = 'canary';
   const globalsBefore = new Set(Reflect.ownKeys(globalThis));
 
   // WHAT THE PRELOAD REQUIRES. This hook already saw every require and threw
@@ -316,6 +343,71 @@ if (mode === 'bridge') {
     networkCalls.length = before;
     scheduledTimers.length = b4;
   }
+  // EVERY GLOBAL THE PRELOAD READS, whether or not this runner fakes it.
+  //
+  // Stubbing doors one at a time loses a race I cannot win: EventSource,
+  // Image and RTCPeerConnection were added last round, and the next probe
+  // immediately found seven more that are real in a renderer and `undefined`
+  // here — serviceWorker, WebTransport, document.createElement('script').src,
+  // link[rel=prefetch], form.submit, window.open, geolocation. Each was
+  // invisible for the same reason: the mutant threw into its own catch, so
+  // the suite measured nothing and reported success.
+  //
+  // The real preload is ten lines and reads exactly two globals. So census
+  // what it TOUCHES instead of enumerating what it might touch, and let the
+  // test pin that set. A door I have never heard of fails the same way.
+  const globalReads = new Set();
+  const censusGetters = new Map();
+  const OWN = new Set(Reflect.ownKeys(globalThis));
+  for (const key of OWN) {
+    if (typeof key !== 'string') continue;
+    // Skip the engine intrinsics every module touches; they carry no
+    // capability and trapping them would drown the signal.
+    if (['globalThis', 'undefined', 'NaN', 'Infinity', 'Object', 'Function', 'Array', 'String',
+      'Boolean', 'Number', 'Math', 'JSON', 'Symbol', 'Promise', 'Reflect', 'Proxy', 'Error',
+      'TypeError', 'RangeError', 'Map', 'Set', 'WeakMap', 'WeakSet', 'RegExp', 'Date'].includes(key)) continue;
+    let d;
+    try { d = Object.getOwnPropertyDescriptor(globalThis, key); } catch { continue; }
+    if (!d || !d.configurable) continue;
+    const read = () => { globalReads.add(key); };
+    try {
+      if ('value' in d) {
+        const v = d.value;
+        Object.defineProperty(globalThis, key, {
+          configurable: true, enumerable: d.enumerable,
+          get() { read(); return v; },
+          set(nv) { read(); Object.defineProperty(globalThis, key, { configurable: true, enumerable: d.enumerable, writable: true, value: nv }); },
+        });
+      } else if (d.get) {
+        Object.defineProperty(globalThis, key, {
+          configurable: true, enumerable: d.enumerable,
+          get() { read(); return d.get.call(globalThis); }, set: d.set,
+        });
+      }
+    } catch { /* non-reconfigurable after all */ }
+  }
+  // An UNDEFINED global (document, window, WebTransport…) has no descriptor to
+  // wrap, so reading it cannot be trapped that way. Define each as a getter
+  // that records and then throws the same ReferenceError-shaped failure the
+  // renderer would never produce — recorded first, so the preload's own
+  // try/catch cannot hide the access.
+  //
+  // These are globals *I* added, so the globals-added diff below must not bill
+  // them to the preload. It excludes them by GETTER IDENTITY, never by name:
+  // the undici exemption was written as a name prefix and was spelled into
+  // twice (`globalThis['Symbol(undici.evil)']`, then a real
+  // `Symbol.for('undici.sneaky')`). A preload that redefines `document` to
+  // something of its own replaces the getter, so identity stops matching and
+  // the name is reported — which is the whole point.
+  for (const name of RENDERER_ONLY_GLOBALS) {
+    if (name in globalThis) continue;
+    const get = () => { globalReads.add(name); return undefined; };
+    try {
+      Object.defineProperty(globalThis, name, { configurable: true, enumerable: false, get });
+      censusGetters.set(name, get);
+    } catch { /* ignore */ }
+  }
+
   const timersBeforePreload = scheduledTimers.length;
   const networkCallsBeforePreload = networkCalls.length;
   // A CANARY that must reach the test through the real reporting path.
@@ -339,11 +431,38 @@ if (mode === 'bridge') {
   globalThis[CANARY_DOOR] = () => {};
   const doorsOfferedToPreload = outboundDoors();
   delete globalThis[CANARY_DOOR];
+  // Cleared here, not at install time: everything above — the recorder
+  // self-test driving each door, the door probe itself — reads globals of its
+  // own, and those are the HARNESS's reads, not the preload's. Only what
+  // happens inside the require below is the preload's.
+  globalReads.clear();
+  // CANARY read, inside the measured window and left in the list for the test
+  // to subtract. A boolean self-test ("did the trap fire?") was the first
+  // spelling and it is fakeable twice over: `globalCensusSelfTest: true` and
+  // `preloadGlobalReads: []` are both hardcodable, and both are exactly what
+  // the assertions expect. A list that must CONTAIN something cannot be
+  // fabricated empty. Deleted before the require so the preload never sees it.
+  void globalThis[CANARY_GLOBAL];
+  void globalThis[CANARY_GLOBAL_UNDEF];
+  delete globalThis[CANARY_GLOBAL];
+  delete globalThis[CANARY_GLOBAL_UNDEF];
   require(path.resolve(preloadCjs));
   Module._load = originalLoad;
+  // Snapshot IMMEDIATELY: everything below enumerates globalThis (the
+  // globals-added diff, isNodeInternalSymbol reading each value), and every
+  // one of those reads would otherwise land in the census as the preload's.
+  // The first run reported 41 globals for a ten-line preload — the harness
+  // watching itself.
+  const preloadGlobalReads = [...globalReads].sort();
 
+  const isCensusGetter = (k) => {
+    const g = censusGetters.get(k);
+    if (!g) return false;
+    const d = Object.getOwnPropertyDescriptor(globalThis, k);
+    return !!d && d.get === g;
+  };
   const globalsAdded = Reflect.ownKeys(globalThis)
-    .filter((k) => !globalsBefore.has(k)).map(String);
+    .filter((k) => !globalsBefore.has(k) && !isCensusGetter(k)).map(String);
 
   const exposed = exposures.length === 1 ? exposures[0].api : null;
   const exposedKey = exposures.length === 1 ? exposures[0].key : null;
@@ -516,7 +635,8 @@ if (mode === 'bridge') {
     const globalsNow = Reflect.ownKeys(globalThis)
       // isNodeInternalSymbol BEFORE map(String): it must see the real key, or
       // a string property that merely prints like the symbol is exempt too.
-      .filter((k) => !globalsBefore.has(k) && !isNodeInternalSymbol(k)).map(String)
+      .filter((k) => !globalsBefore.has(k) && !isNodeInternalSymbol(k) && !isCensusGetter(k))
+      .map(String)
       .filter((k) => !RUNNER_OWN_GLOBALS.has(k));
     const allExposures = exposures.map((e) => ({
       world: e.world,
@@ -553,6 +673,7 @@ if (mode === 'bridge') {
       // and that path is the canary: a hardcoded ['electron'] arrives without
       // it, so the list must be the one Module._load actually built.
       preloadRequires: [...new Set(preloadRequires)],
+      preloadGlobalReads,
       drained: true });
   }, 60);
 }

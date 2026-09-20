@@ -38,6 +38,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import assert from 'node:assert';
+import { randomUUID } from 'node:crypto';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUNNER = join(repo, 'src', 'desktop', 'electron-behavior-runner.cjs');
@@ -45,6 +46,12 @@ const RUNNER = join(repo, 'src', 'desktop', 'electron-behavior-runner.cjs');
 // cannot pass; kept in sync with the same names in the runner.
 const CANARY_URL = 'https://runner-canary.invalid/reporting-path';
 const CANARY_TIMER_MS = 987654;
+// The global-read canaries carry a per-run NONCE: a constant name can simply be
+// typed into the runner (`preloadGlobalReads: [CANARY_GLOBAL, ...]` survived
+// every other check in this section), and a name chosen here at run time cannot.
+const NONCE = randomUUID().slice(0, 8);
+const CANARY_GLOBAL = `__runnerCanaryGlobalRead_${NONCE}`;
+const CANARY_GLOBAL_UNDEF = `__runnerCanaryGlobalUndef_${NONCE}`;
 
 let checks = 0;
 function ok(cond, msg) { checks++; assert(cond, msg); }
@@ -53,7 +60,7 @@ function run(mode, env = {}) {
   let stdout;
   try {
     stdout = execFileSync('node', [RUNNER, repo, mode], {
-      encoding: 'utf8', timeout: 60000, env: { ...process.env, NODE_ENV: 'test', ...env },
+      encoding: 'utf8', timeout: 60000, env: { ...process.env, NODE_ENV: 'test', RUNNER_CANARY_NONCE: NONCE, ...env },
     });
   } catch (e) {
     // A crashed runner must never read as a pass. This is not hypothetical: an
@@ -367,6 +374,38 @@ checks++;
 //
 // The runner drives each door with a known URL before loading the preload and
 // reports whether the call landed, then rolls the arrays back.
+// EVERY GLOBAL THE PRELOAD READS. Zero, and that is not a coincidence.
+//
+// Stubbing renderer doors one at a time is a race I cannot win. EventSource,
+// Image and RTCPeerConnection were added last round; the very next probe found
+// SEVEN more that are real in a renderer and `undefined` under Node —
+// navigator.serviceWorker.register, WebTransport,
+// document.createElement('script').src, link[rel=prefetch], form.submit,
+// window.open, navigator.geolocation. All seven passed for the same reason:
+// the mutant threw into its own catch, so nothing was measured and the suite
+// reported success. Enumerating doors will always be one probe behind.
+//
+// So census what the preload TOUCHES rather than what it might touch. The real
+// file is ten lines — `require('electron')`, one exposeInMainWorld, one
+// ipcRenderer.send — and reads no global at all. A door nobody has named yet
+// fails exactly like the ones above.
+//
+// Asserted as the canary ALONE, not as []. The runner reads one canary global
+// inside the measured window, so the list is never legitimately empty: a
+// hardcoded `preloadGlobalReads: []` — which is what a broken or disabled
+// census also produces — now fails for missing the canary, and a census that
+// never installed its traps fails the same way. Subtracting it here means the
+// control and the measurement are the same list, so they cannot disagree.
+assert.deepStrictEqual(bridge.preloadGlobalReads, [CANARY_GLOBAL, CANARY_GLOBAL_UNDEF].sort(),
+  `electron-preload.cjs read global(s) ${JSON.stringify(
+    (bridge.preloadGlobalReads || []).filter(
+      (g) => g !== CANARY_GLOBAL && g !== CANARY_GLOBAL_UNDEF))}, and BOTH census canaries `
+  + `(${CANARY_GLOBAL}, ${CANARY_GLOBAL_UNDEF} \u2014 one per census mechanism) must be present. It bridges one IPC channel and needs no global: each one `
+  + 'here is a renderer capability (document, navigator, WebTransport, localStorage …) and '
+  + 'reaching for one is the first half of using it. A missing canary means the census itself is '
+  + 'not running. If the preload legitimately grows a need, add it here deliberately.');
+checks++;
+
 // WHAT THE PRELOAD REQUIRES — exactly 'electron', nothing else.
 //
 // The outbound-door checks above cover renderer APIs. They cannot see
