@@ -137,11 +137,26 @@ ok(compareVersions('0.0.224', '0.0.223') > 0 && compareVersions('0.0.223', '0.0.
 // time the version hook bumps package.json, and a "newer" entry that has since
 // become the installed version asserts the forever-reappearing dialog.
 const [MAJ, MIN, PAT] = CURRENT.split('.').map((n) => parseInt(n, 10));
-const OLDER = [`${MAJ}.${MIN}.${PAT - 1}`, `${MAJ}.${MIN}.0`, '0.0.0', `${MAJ}.${MIN}.${PAT - 1}.9`];
+// Built by DECREMENTING, never by assuming a component is non-zero: at a
+// `x.y.0` release `${MAJ}.${MIN}.0` IS the current version and a naive list
+// would assert the installed build must not be offered *as an older one* —
+// and would trip the "no list may contain CURRENT" check below on release day.
+const older = (n: number) => {
+  if (PAT >= n) return `${MAJ}.${MIN}.${PAT - n}`;
+  if (MIN >= n) return `${MAJ}.${MIN - n}.0`;
+  if (MAJ >= n) return `${MAJ - n}.0.0`;
+  return null; // 0.0.0 has nothing below it
+};
+const OLDER = [older(1), older(2), MAJ + MIN + PAT > 0 ? '0.0.0' : null,
+  older(1) === null ? null : `${older(1)}.9`].filter((v): v is string => v !== null);
 const NEWER = [`${MAJ}.${MIN}.${PAT + 1}`, `${MAJ}.${MIN + 1}.0`, `${MAJ + 1}.0.0`, `${MAJ + 10}.0.0`];
 ok(!OLDER.includes(CURRENT) && !NEWER.includes(CURRENT),
   'CONTROL: neither the older nor the newer list may contain the installed version itself — that is '
   + `exactly how this check rotted before (CURRENT=${CURRENT}).`);
+ok(OLDER.length >= 3 && NEWER.length >= 3,
+  `CONTROL: both lists must be non-trivial (older=${JSON.stringify(OLDER)}, newer=${JSON.stringify(NEWER)}). `
+  + 'A shrunken list is a loop that iterates over nothing, which passes for free — the version is '
+  + `${CURRENT}; only a 0.0.0 build can legitimately have no older version, and that is not shippable.`);
 
 // Older versions: never offered. This is the downgrade-protection assertion.
 for (const older of OLDER) {
