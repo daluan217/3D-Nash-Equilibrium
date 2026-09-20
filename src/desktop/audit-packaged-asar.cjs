@@ -646,6 +646,49 @@ ok(bundleUnexpected.length === 0,
   + 'Contents/Resources/db.json, which `asar list` cannot see and this audit reported as 31 '
   + 'checks passed before this rule existed.');
 
+// SR-56 — A RECORD, DELIBERATELY NOT A FAILURE.
+//
+// The bundle ships a working native toolchain: app.asar.unpacked carries
+// esbuild's ~9.9MB darwin-arm64 binary, executable, and it runs straight out
+// of the installed .app (`--version` -> 0.25.12). Inside the archive sit vite,
+// rollup, tailwind, postcss, babel, react-refresh and lightningcss, because
+// server.ts imports vite at top level and electron-builder collects production
+// dependencies whatever `build.files` lists.
+//
+// That is why SR-56 mattered: server.ts's dev branch, gated on NODE_ENV alone,
+// did not fail shut in a packaged app — it WORKED, serving /@vite/client
+// (182,753 bytes, measured). The product-side refusal is the fix
+// (IS_ELECTRON !== 'true'), guarded behaviorally in
+// src/integration/desktop-no-dev-server.test.mjs.
+//
+// This block only RECORDS what ships. It must not fail on presence: removing
+// the toolchain is a build-graph change (dynamic-import vite, move it to
+// devDependencies) scheduled as its own PR, and a presence-fail here would
+// flip red the moment that lands — a guard that breaks on the fix it wants.
+// What IS asserted is that the record stays honest: if the sidecar ever holds
+// something other than the esbuild pair, say so, because "the dev toolchain
+// ships" must not quietly become "and so does something else".
+{
+  const unpackedNodeModules = bundleListing
+    .filter((p) => p.startsWith('/Contents/Resources/app.asar.unpacked/node_modules/'))
+    .map((p) => p.replace('/Contents/Resources/app.asar.unpacked/node_modules/', ''));
+  // A scope directory (`@esbuild`) is listed in its own right as well as its
+  // members; it is not a package, and counting it would put a name in the
+  // unexpected list that no one can remove.
+  const packages = [...new Set(unpackedNodeModules
+    .map((p) => (p.startsWith('@') ? p.split('/').slice(0, 2).join('/') : p.split('/')[0]))
+    .filter((p) => !/^@[^/]+$/.test(p)))];
+  console.log(`  note (SR-56): app.asar.unpacked ships ${JSON.stringify(packages)} — `
+    + 'a native toolchain in the shipped bundle. Recorded, not failed: removing it is a '
+    + 'scheduled build-graph change. The product must never EXECUTE it; that is enforced '
+    + 'by src/integration/desktop-no-dev-server.test.mjs, not here.');
+  const unexpected = packages.filter((p) => p !== 'esbuild' && p !== '@esbuild/darwin-arm64');
+  ok(unexpected.length === 0,
+    `app.asar.unpacked ships ${JSON.stringify(unexpected)} besides esbuild. The sidecar holds `
+    + 'files electron-builder cannot load from an archive — i.e. native executables — so a new '
+    + 'name here is a new binary in the shipped app and needs a reason.');
+}
+
 // THE FRAMEWORK TREES, WHICH THE ALLOWLIST ABOVE WAVES THROUGH WHOLESALE.
 //
 // Their contents belong to Electron and are reshuffled by every release, so

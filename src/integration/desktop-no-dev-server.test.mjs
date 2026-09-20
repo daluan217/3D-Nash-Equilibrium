@@ -126,6 +126,24 @@ try {
   record('a desktop build never boots the Vite dev server',
     !/\[vite\]/.test(desktop.log()),
     `log mentions of "[vite]": ${(desktop.log().match(/\[vite\]/g) || []).length}`);
+
+  // Asking for Vite's endpoints DIRECTLY, not only reading the shell. The
+  // director reproduced this on main with an empty cwd, where Vite had no
+  // index.html to transform: GET / was a 404 with no markers — the
+  // shell-scraping checks above would have read that as clean — while
+  // GET /@vite/client returned 200 and 182,765 bytes of live dev client.
+  // So the endpoints are probed by SIZE as well as status: the SPA fallback
+  // answers 200 for every unknown path, and at ~2.5KB it is unmistakable
+  // next to Vite's real module output.
+  for (const route of ['/@vite/client', '/@react-refresh', '/src/main.tsx']) {
+    const res = await fetch(`http://127.0.0.1:${DESKTOP_PORT}${route}`);
+    const body = await res.text();
+    const isDevModule = res.status === 200 && body.length > 20000;
+    record(`a desktop build does not serve ${route} from a dev server`,
+      !isDevModule,
+      `status=${res.status} bytes=${body.length} (the SPA fallback is ~2.5KB; `
+      + "Vite's client is ~180KB)");
+  }
   // …and it must still serve the real app, not merely nothing. A server that
   // answered 404 everywhere would satisfy every check above.
   record('a desktop build still serves the built SPA shell',
