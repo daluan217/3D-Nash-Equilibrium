@@ -29,7 +29,8 @@
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync,
   chmodSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, networkInterfaces } from 'node:os';
+import { connect } from 'node:net';
 import path from 'node:path';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
@@ -123,6 +124,49 @@ try {
   // 1. A SESSION SURVIVES QUIT AND RELAUNCH
   // ───────────────────────────────────────────────────────────────────────────
   srv = await boot(userData, port);
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 1a. THE DESKTOP SERVER LISTENS ON LOOPBACK ONLY
+  // ───────────────────────────────────────────────────────────────────────────
+  // server.ts picks '127.0.0.1' when IS_ELECTRON is true and '0.0.0.0'
+  // otherwise, with a careful comment explaining why. Nothing tested it:
+  // changing that line to a bare '0.0.0.0' left electronenv, serverpolicy,
+  // desktop.contract and this whole file green, while the packaged app served
+  // every saved game, the account store and /api/report to the entire LAN
+  // (verified — the mutant answered on this machine's en0 address and lsof
+  // showed `TCP *:PORT`). From another machine's point of view this API has
+  // no authentication worth the name.
+  //
+  // Asserted by CONNECTING, not by reading the source: a socket that refuses
+  // is the one piece of evidence that cannot be spelled around.
+  {
+    const lanAddrs = Object.values(networkInterfaces()).flat()
+      .filter((n) => n && n.family === 'IPv4' && !n.internal).map((n) => n.address);
+    // A machine with no non-loopback IPv4 (CI container, airplane mode) cannot
+    // answer this question, and a check that silently passes there is worse
+    // than one that says so. '0.0.0.0' is the universal fallback: a valid
+    // connect target meaning "this host, any interface", which a server bound
+    // to 127.0.0.1 still refuses.
+    const targets = lanAddrs.length ? lanAddrs : ['0.0.0.0'];
+    const canConnect = (host) => new Promise((resolve) => {
+      const sock = connect({ host, port, family: 4 });
+      const done = (v) => { sock.destroy(); resolve(v); };
+      sock.setTimeout(3000);
+      sock.once('connect', () => done(true));
+      sock.once('timeout', () => done(false));
+      sock.once('error', () => done(false));
+    });
+    const reachable = [];
+    for (const addr of targets) if (await canConnect(addr)) reachable.push(addr);
+    record('the desktop server is NOT reachable on a non-loopback address',
+      reachable.length === 0,
+      reachable.length ? `answered on ${reachable.join(', ')}` : `refused on ${targets.join(', ')}`);
+    // CONTROL: those refusals must mean "bound to loopback", not "nothing is
+    // listening" — which is exactly how a crashed server would look.
+    const loopbackOk = await canConnect('127.0.0.1');
+    record('CONTROL: it IS reachable on 127.0.0.1 (a dead server refuses everywhere)',
+      loopbackOk, loopbackOk ? 'loopback accepted' : 'loopback ALSO refused — the server is down');
+  }
 
   const cred = { username: 'desktopuser', email: 'desktop@example.test', password: 'Sup3rSecret!23' };
   const reg = await call(port, 'POST', '/api/auth/register', { body: cred });
