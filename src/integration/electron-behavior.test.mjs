@@ -44,11 +44,11 @@ const RUNNER = join(repo, 'src', 'desktop', 'electron-behavior-runner.cjs');
 let checks = 0;
 function ok(cond, msg) { checks++; assert(cond, msg); }
 
-function run(mode) {
+function run(mode, env = {}) {
   let stdout;
   try {
     stdout = execFileSync('node', [RUNNER, repo, mode], {
-      encoding: 'utf8', timeout: 60000, env: { ...process.env, NODE_ENV: 'test' },
+      encoding: 'utf8', timeout: 60000, env: { ...process.env, NODE_ENV: 'test', ...env },
     });
   } catch (e) {
     // A crashed runner must never read as a pass. This is not hypothetical: an
@@ -281,6 +281,35 @@ for (const wp of egress.windowOptions) {
   ok(wp && wp.devTools === false,
     `a window was created with devTools=${JSON.stringify(wp && wp.devTools)}; the packaged app `
     + 'must not ship an inspector into the renderer.');
+}
+
+// The same flow under the two server replies a real user hits: a broken server
+// and a garbage version string. Both used to be guarded only by the source-text
+// regex contract — the layer three consecutive reviews defeated with a new
+// spelling each time. A defect only the regex catches is one rename from
+// shipping, so both are behavioural now.
+//
+// The invariant for each is the same and needs no new vocabulary: NO dialog is
+// shown and NOTHING reaches the OS. An update prompt is the one thing that
+// moves a user to download and run a binary.
+for (const [reply, why] of [
+  ['notok', 'the update endpoint answered 503. An error body still parses as JSON, and a captive '
+    + 'portal answers 200 with a login page — acting on a non-ok response means any failing or '
+    + 'hostile intermediary can raise the prompt'],
+  ['junkversion', "the server's version was '999junk.0.0', which is not a version. parseInt used "
+    + 'to read it as 999.0.0 and prompt every installed copy to download; a corrupted or '
+    + 'hand-edited manifest must compare as "no update", not as "newer"'],
+]) {
+  const r = run('egress', { UPDATE_REPLY: reply, EGRESS_PROBE_PORT: reply === 'notok' ? '4898' : '4899' });
+  ok(r.networkCalls.length > 0,
+    `CONTROL (${reply}): the update check must still FIRE, or this case proves nothing by never `
+    + 'letting the app reach the code under test.');
+  assert.deepStrictEqual(r.dialogsShown, [],
+    `an update dialog was shown when ${why}. Shown: ${JSON.stringify(r.dialogsShown)}.`);
+  checks++;
+  assert.deepStrictEqual(r.openedUrls, [],
+    `the OS was handed ${JSON.stringify(r.openedUrls)} when ${why}.`);
+  checks++;
 }
 
 // The module list IS the egress surface: a network module that is never

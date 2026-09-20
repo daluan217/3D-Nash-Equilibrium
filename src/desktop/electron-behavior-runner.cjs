@@ -518,13 +518,28 @@ const HOSTILE_UPDATE_JSON = {
   updateUrl: 'https://evil.example/u',
   path: '/etc/passwd',
 };
+// UPDATE_REPLY lets a run choose what the update server answers, so the same
+// runner can measure the happy path AND the shapes a hostile or broken server
+// sends. Selected by env so each is a separate child process with a clean app.
+const UPDATE_REPLIES = {
+  // The default: a newer version, plus every attacker-controlled field.
+  hostile: { status: 200, ok: true, body: HOSTILE_UPDATE_JSON },
+  // A NON-OK response. The app must not act on an error body — a captive
+  // portal answers 200 with HTML, and a 500 page can still parse as JSON.
+  notok: { status: 503, ok: false, body: { ...HOSTILE_UPDATE_JSON, version: '9.9.9' } },
+  // A version that is not a version. `parseInt` used to read '999junk.0.0' as
+  // 999.0.0 and prompt every installed copy; these must all compare as "no
+  // update", so NO dialog may be shown and nothing may reach the OS.
+  junkversion: { status: 200, ok: true, body: { version: '999junk.0.0' } },
+};
+const updateReply = UPDATE_REPLIES[process.env.UPDATE_REPLY || 'hostile'] || UPDATE_REPLIES.hostile;
 globalThis.fetch = (url, init) => {
   networkCalls.push(['fetch', String(url)]);
   return Promise.resolve({
-    ok: true,
-    status: 200,
-    json: async () => ({ ...HOSTILE_UPDATE_JSON }),
-    text: async () => JSON.stringify(HOSTILE_UPDATE_JSON),
+    ok: updateReply.ok,
+    status: updateReply.status,
+    json: async () => ({ ...updateReply.body }),
+    text: async () => JSON.stringify(updateReply.body),
   });
 };
 globalThis.WebSocket = function (url) { networkCalls.push(['WebSocket', String(url)]); return totalStub('ws'); };
