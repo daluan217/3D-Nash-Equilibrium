@@ -94,9 +94,25 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
 {
   const requireIdx = code.search(/require\(['"][^'"]*server\.cjs['"]\)/);
   ok(requireIdx > 0, 'electron-main.cjs must require the compiled server');
-  for (const [name] of required) {
+  // SR-56. This loop covered `required` — the three rung-3 flags — and left out
+  // the variable with the largest blast radius. server.ts gates its DEV branch
+  // on `process.env.NODE_ENV !== "production"`, and that branch calls
+  // createViteServer(). The flags are read per request, so setting one late is
+  // a latent bug; NODE_ENV is read while the module graph loads, so setting it
+  // late is live. MEASURED: moving the NODE_ENV line below the require left
+  // this file 24/24 GREEN while the packaged app booted a Vite dev server in
+  // the user's app and SPAWNED esbuild — electron-behavior.test.mjs caught it
+  // with "the main process made a child_process.spawn call", this file did not.
+  // The dev toolchain really is in the shipped asar (vite, rollup, esbuild,
+  // tailwind, babel — 40 entries under node_modules for vite/esbuild alone,
+  // and the unpacked esbuild binary runs: `--version` -> 0.25.12), so the
+  // branch is not merely wrong, it WORKS.
+  for (const [name] of [...required, ['NODE_ENV'], ['IS_ELECTRON'],
+    ['ELECTRON_USER_DATA_PATH'], ['PORT']] as [string][]) {
     ok(code.indexOf(`process.env.${name}`) < requireIdx,
-      `${name} must be set BEFORE dist/server.cjs is required`);
+      `${name} must be set BEFORE dist/server.cjs is required. For NODE_ENV this is not a `
+      + 'style point: server.ts takes its `NODE_ENV !== "production"` dev branch and calls '
+      + 'createViteServer() in the packaged app, which ships the whole dev toolchain.');
   }
 }
 
