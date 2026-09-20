@@ -257,6 +257,86 @@ if (listing.includes('/dist/index.html')) {
     gateRulesRan = true;
   }
 }
+// SECRETS BAKED INTO THE SHIPPED TEXT.
+//
+// Every FORBIDDEN rule below is a FILENAME pattern. They stop a `.env` from
+// being packaged; they cannot see a credential inlined into a file that
+// legitimately belongs in the archive. Reproduced end to end: put
+//   const OPENAI_API_KEY = "sk-proj-...";
+// at the top of dist/server.cjs and run the real `electron-builder --dir` —
+// the bundle audits 110/110 GREEN with a valid signature and a matching
+// integrity hash, because nothing tampered with it AFTER packaging. The seal
+// answers "was this changed?", never "should this have been here?". esbuild
+// `define`, a committed fallback, a debug constant and a bad merge all produce
+// exactly this, and the DMG is public.
+//
+// Scanned over the files whose text a human never re-reads. MEASURED on the
+// real shipping bundle before being asserted: zero matches across all four
+// (1.5MB of bundled server included), and all four planted leaks caught —
+// so this is not a predicate tuned against its own output.
+const SECRET_PATTERNS = [
+  [/sk-[A-Za-z0-9_-]{24,}/, 'an OpenAI-style API key'],
+  [/AIza[A-Za-z0-9_-]{30,}/, 'a Google API key'],
+  [/-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/, 'a private key'],
+  [/xox[baprs]-[A-Za-z0-9-]{10,}/, 'a Slack token'],
+  [/gh[pousr]_[A-Za-z0-9]{30,}/, 'a GitHub token'],
+  // The credential NAMES this project actually holds (.env), assigned a
+  // non-empty literal. A name alone is fine — server.ts reads process.env.
+  [/\b(?:SMTP_PASS|SMTP_USER|GEMINI_API_KEY|AZURE_FOUNDRY_API_KEY|AGENT_ROUTER_API_KEY|KAGGLE_API_TOKEN|AWS_BEARER_TOKEN_BEDROCK|OPEN_ROUTER_API_KEY)\s*[:=]\s*["'"'"'][^"'"'"']{8,}["'"'"']/,
+    "one of this project's own credentials, inlined with a literal value"],
+];
+let secretScanned = 0;
+let secretChecksRun = 0;
+const SECRET_SCAN_FILES = ['dist/server.cjs', 'dist/index.html', 'electron-main.cjs',
+  'electron-preload.cjs'];
+for (const rel of SECRET_SCAN_FILES) {
+  if (!listing.includes(`/${rel}`)) continue;
+  const outDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nash-audit-sec-'));
+  try {
+    execFileSync('npx', ['asar', 'extract-file', asarPath, rel],
+      { cwd: outDir, maxBuffer: 128 * 1024 * 1024 });
+    const text = fs.readFileSync(path.join(outDir, path.basename(rel)), 'utf8');
+    secretScanned += text.length;
+    for (const [re, what] of SECRET_PATTERNS) {
+      const m = re.exec(text);
+      secretChecksRun++;
+      ok(!m,
+        `the packaged ${rel} contains ${what} (${String(m && m[0]).slice(0, 12)}…). A filename rule `
+        + 'cannot catch this: the file belongs in the archive and only its CONTENT is wrong. The '
+        + 'signature and the integrity hash both pass, because nothing tampered with the bundle — '
+        + 'the secret was built in. This DMG is downloaded from a public URL.');
+    }
+  } catch (e) {
+    ok(false, `could not scan the packaged ${rel} for secrets (${String(e.message).slice(0, 120)}).`);
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+// The rules above pass on an empty read, which is also what a broken extract
+// gives. dist/server.cjs alone is ~1.5MB, so a small total means the scan saw
+// almost nothing and its clean result means nothing either.
+ok(secretScanned > 500000,
+  `the secret scan read only ${secretScanned} bytes out of the archive. dist/server.cjs alone is `
+  + 'over a megabyte, so the scan is not reading what it claims to read.');
+// …and the WORK done, not just the bytes read. Shrinking SECRET_PATTERNS to []
+// or the file list to one entry left the audit GREEN at a lower check count —
+// a scan that silently covers less is indistinguishable from a clean result.
+// Every file present in the archive must have met every pattern.
+// Both counts are LITERAL, not derived from the lists being checked. The first
+// spelling computed its own expectation from SECRET_SCAN_FILES, so cutting that
+// list to one entry changed both sides and the check passed — a check that
+// cannot fail for the reason it states. These four files are the shipped text
+// surface; if one is legitimately added, update the number here on purpose.
+for (const f of SECRET_SCAN_FILES) {
+  ok(listing.includes(`/${f}`),
+    `${f} is not in the archive, so the secret scan skipped it. Every file in SECRET_SCAN_FILES is `
+    + 'one the app needs; a missing one means the scan covered less than it claims.');
+}
+ok(SECRET_PATTERNS.length >= 6 && SECRET_SCAN_FILES.length === 4 && secretChecksRun === 24,
+  `the secret scan ran ${secretChecksRun} checks (${SECRET_SCAN_FILES.length} files x `
+  + `${SECRET_PATTERNS.length} patterns); expected 24 over 4 files and at least 6 patterns. A `
+  + 'shortened pattern or file list narrows the scan silently and still exits 0.');
+
 // THE PACKAGED electron-main.cjs / electron-preload.cjs MUST BE THE AUDITED ONES.
 //
 // Every behavioural guarantee in src/integration/electron-behavior.test.mjs is
