@@ -273,6 +273,37 @@ try {
     JSON.stringify({ keys: iso.bridgeKeys, ownNames: iso.bridgeOwnNames,
       symbols: iso.bridgeSymbols, proto: iso.bridgeProto }));
 
+  // ── 10d. EVERY webContents, not just getAllWindows()[0]. ───────────────
+  // Sweep 37, the same question 11d's blind spot taught me to ask: is one
+  // registry enough? Checks 10/10b/10c all speak to the FIRST window. A
+  // BrowserView, a WebContentsView, a popup or an opened devtools is a
+  // webContents that is not a BrowserWindow, each with its OWN
+  // webPreferences — one of them running nodeIntegration would leave every
+  // isolation check above green. `webContents.getAllWebContents()` is the
+  // registry that sees all of them.
+  //   MEASURED on the packaged app: exactly one, type "window", on the
+  // loopback URL, with nodeIntegration false / contextIsolation true /
+  // sandbox true / webSecurity true / nodeIntegrationInSubFrames false.
+  const wcs = await app.evaluate(({ webContents }) =>
+    webContents.getAllWebContents().map((wc) => {
+      let p = {};
+      try { p = wc.getLastWebPreferences() || {}; } catch { p = { unreadable: true }; }
+      return { type: wc.getType(), url: String(wc.getURL()).slice(0, 60),
+        devtools: wc.isDevToolsOpened(), nodeIntegration: p.nodeIntegration ?? null,
+        contextIsolation: p.contextIsolation ?? null, sandbox: p.sandbox ?? null,
+        webSecurity: p.webSecurity ?? null, subFrames: p.nodeIntegrationInSubFrames ?? null };
+    }));
+  // CONTROL: an empty list would satisfy every `.every()` below for free.
+  rec('10d CONTROL: the webContents registry is non-empty (the checks below have something to read)',
+    wcs.length >= 1, JSON.stringify(wcs));
+  rec('10d. EVERY webContents is locked down, not just the first window',
+    wcs.length === 1 && wcs.every((w) => w.nodeIntegration === false
+      && w.contextIsolation === true && w.sandbox === true && w.webSecurity === true
+      && w.subFrames === false && w.devtools === false
+      && /^http:\/\/127\.0\.0\.1:\d+/.test(w.url)),
+    `${wcs.length} webContents: ${JSON.stringify(wcs)} — a BrowserView or popup carries its own `
+    + 'webPreferences, and checks 10/10b/10c only ever look at the first window');
+
   // ── 11. THE BRIDGE FORWARDS ANYTHING; MAIN IS WHAT MUST VALIDATE. ───────
   // Asserted by EFFECT on the native window, not by the call returning — the
   // renderer cannot see the handler's verdict, so "it did not throw" says
