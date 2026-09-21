@@ -260,11 +260,14 @@ try {
           r.on('end', () => resolve({
             status: r.statusCode,
             acao: r.headers['access-control-allow-origin'],
+            // `location` is how the ordering checks below tell "the guard
+            // refused this" from "an earlier middleware answered it".
+            location: r.headers.location,
             body: d,
           }));
         },
       );
-      req.on('error', (e) => resolve({ status: 'error', acao: undefined, body: String(e.message) }));
+      req.on('error', (e) => resolve({ status: 'error', acao: undefined, location: undefined, body: String(e.message) }));
       if (body) req.write(body);
       req.end();
     });
@@ -370,6 +373,49 @@ try {
     record(`SR-63: Host "${hostHeader}" cannot read the library (${why})`,
       r.status === 403 && !r.body.includes('cors-probe-game'),
       `status=${r.status} body=${r.body.slice(0, 70)}`);
+  }
+
+  // THE GUARD MUST BE THE FIRST MIDDLEWARE, not merely present. It used to be
+  // registered after the `www` -> apex 301 and after express.json(), so a
+  // rebound page still got a real answer out of the desktop app: MEASURED,
+  // `Host: www.nash-equilibrium-simulator.com` returned 301 with
+  // Location: https://nash-equilibrium-simulator.com/api/games?x=1 — path and
+  // query included — and an attacker's request body was parsed before anything
+  // rejected it. No data leaves in that response, which is exactly why the
+  // 403-on-/api/games checks above all passed while the ordering was wrong.
+  //
+  // These cases are generic on purpose: the claim under test is "NOTHING is
+  // registered ahead of the guard", so the assertion is that a non-loopback
+  // Host gets 403 with no Location on any path and any verb, not that one
+  // particular redirect is gone.
+  for (const [hostHeader, p, method, why] of [
+    ['www.nash-equilibrium-simulator.com', '/api/games?x=1', 'GET',
+      'the www->apex 301 answered a rebound Host before the guard ran'],
+    ['www.nash-equilibrium-simulator.com', '/', 'GET', 'same, on the SPA path'],
+    ['WWW.Nash-Equilibrium-Simulator.COM', '/api/games', 'GET',
+      'the redirect matches case-insensitively, so the guard must too'],
+    ['www.nash-equilibrium-simulator.com', '/api/games', 'POST',
+      'a body must not be parsed for a host the app refuses'],
+  ]) {
+    const r = await rawReq(DESKTOP_PORT, hostHeader, {
+      method, p,
+      body: method === 'POST' ? JSON.stringify({ name: 'ORDERING-PROBE', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) : undefined,
+    });
+    record(`SR-63 ORDER: ${method} ${p} with Host "${hostHeader}" is refused by the guard, `
+      + `not answered by an earlier middleware (${why})`,
+      r.status === 403 && r.location === undefined,
+      `status=${r.status} location=${r.location ?? '-'} body=${r.body.slice(0, 70)}`);
+  }
+  // CONTROL: the redirect it used to hit really does exist and really does fire
+  // — on the HOSTED build, where it belongs. Without this, the four checks
+  // above would also pass if the `www` middleware had simply been deleted,
+  // which would be a live regression on the public site.
+  {
+    const r = await rawReq(WEB_PORT, 'www.nash-equilibrium-simulator.com', { p: '/api/health' });
+    record('SR-63 ORDER CONTROL: the hosted build still 301s www -> apex (the middleware the '
+      + 'desktop guard now outranks is still there, and still fires)',
+      r.status === 301 && r.location === 'https://nash-equilibrium-simulator.com/api/health',
+      `status=${r.status} location=${r.location ?? '-'}`);
   }
 
   // REGRESSION CONTROLS: every Host shape a real client sends must still work.

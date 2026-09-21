@@ -3065,6 +3065,54 @@ async function startServer() {
       : trustProxy);
   }
 
+  // SR-63 (DNS rebinding). On the desktop every route answers as `local-owner`
+  // with no credential, so the only thing standing between a web page and the
+  // user's library is that the page cannot reach 127.0.0.1 as a first-party
+  // origin. DNS rebinding defeats exactly that: attacker.example resolves to
+  // its own server, the page loads, then the name re-resolves to 127.0.0.1.
+  // The browser now believes attacker.example:<port> IS the origin, so it
+  // sends NO Origin header at all and CORS never runs.
+  // MEASURED against the real bundle: `Host: evil.example:<port>` with no
+  // Origin returned 200 and the whole saved-game library, and a POST with the
+  // same Host created a game owned by local-owner. With an Origin it was also
+  // echoed back in Access-Control-Allow-Origin, because the same-origin test
+  // below compares Origin against this very Host — the attacker controls both
+  // sides of that comparison.
+  // The fix is to stop trusting the request's own alias: the desktop binds
+  // loopback, so a request whose Host is not a loopback literal did not come
+  // from the app's own origin, whatever it claims.
+  // REGISTERED FIRST, ahead of every other middleware. It used to sit after the
+  // `www` -> apex 301 and the body parser, so a rebound page still got a real
+  // answer out of the app: measured, `Host: www.nash-equilibrium-simulator.com`
+  // returned "301 -> https://nash-equilibrium-simulator.com<path+query>", and
+  // express.json() parsed an attacker's body before anything rejected it. The
+  // 301 leaks nothing by itself, but "rejected before any route" has to be true
+  // of the whole stack or the next middleware added above it repeats this.
+  if (process.env.IS_ELECTRON === "true") {
+    app.use((req, res, next) => {
+      const host = typeof req.headers.host === "string" ? req.headers.host.toLowerCase() : "";
+      // RFC 7230 §5.4: an IPv6 literal MUST be bracketed, so the two forms are
+      // matched separately rather than by stripping a trailing ":<digits>"
+      // from anything. Stripping blindly also ate the tail of an UNBRACKETED
+      // IPv6 address: "::1:14321" (a real, non-loopback address) became "::1"
+      // and was accepted. Not reachable — a browser cannot be made to send an
+      // unbracketed IPv6 Host, and a local process needs no bypass — but an
+      // exact match costs the same as an approximate one.
+      // The bracketed branch requires a colon: brackets are IPv6-only, so
+      // "[127.0.0.1]" is malformed and must not be read as the loopback IPv4
+      // it resembles. No privilege rides on it (that host is allowed
+      // unbracketed anyway), but a guard should mean exactly what it says.
+      const m = /^\[([0-9a-f.]*:[0-9a-f:.]*)\](?::\d+)?$/.exec(host)  // [::1] or [::1]:port
+        ?? /^([a-z0-9.-]+)(?::\d+)?$/.exec(host);                     // 127.0.0.1 / localhost
+      const hostname = m ? m[1] : "";
+      if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1") {
+        next();
+        return;
+      }
+      res.status(403).json({ error: "Invalid Host header." });
+    });
+  }
+
   // `www` is not a canonical host (sitemap/robots/canonical all use the bare
   // apex): 301 it straight to the apex, same shape as the existing http->https
   // redirect at the edge. Case-insensitive host match; preserves path+query.
@@ -3091,48 +3139,6 @@ async function startServer() {
     res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
     next();
   });
-
-  // SR-63 (DNS rebinding). On the desktop every route answers as `local-owner`
-  // with no credential, so the only thing standing between a web page and the
-  // user's library is that the page cannot reach 127.0.0.1 as a first-party
-  // origin. DNS rebinding defeats exactly that: attacker.example resolves to
-  // its own server, the page loads, then the name re-resolves to 127.0.0.1.
-  // The browser now believes attacker.example:<port> IS the origin, so it
-  // sends NO Origin header at all and CORS never runs.
-  // MEASURED against the real bundle: `Host: evil.example:<port>` with no
-  // Origin returned 200 and the whole saved-game library, and a POST with the
-  // same Host created a game owned by local-owner. With an Origin it was also
-  // echoed back in Access-Control-Allow-Origin, because the same-origin test
-  // below compares Origin against this very Host — the attacker controls both
-  // sides of that comparison.
-  // The fix is to stop trusting the request's own alias: the desktop binds
-  // loopback, so a request whose Host is not a loopback literal did not come
-  // from the app's own origin, whatever it claims. Rejected before any route
-  // (and before the CORS block, which is what makes that comparison safe).
-  if (process.env.IS_ELECTRON === "true") {
-    app.use((req, res, next) => {
-      const host = typeof req.headers.host === "string" ? req.headers.host.toLowerCase() : "";
-      // RFC 7230 §5.4: an IPv6 literal MUST be bracketed, so the two forms are
-      // matched separately rather than by stripping a trailing ":<digits>"
-      // from anything. Stripping blindly also ate the tail of an UNBRACKETED
-      // IPv6 address: "::1:14321" (a real, non-loopback address) became "::1"
-      // and was accepted. Not reachable — a browser cannot be made to send an
-      // unbracketed IPv6 Host, and a local process needs no bypass — but an
-      // exact match costs the same as an approximate one.
-      // The bracketed branch requires a colon: brackets are IPv6-only, so
-      // "[127.0.0.1]" is malformed and must not be read as the loopback IPv4
-      // it resembles. No privilege rides on it (that host is allowed
-      // unbracketed anyway), but a guard should mean exactly what it says.
-      const m = /^\[([0-9a-f.]*:[0-9a-f:.]*)\](?::\d+)?$/.exec(host)  // [::1] or [::1]:port
-        ?? /^([a-z0-9.-]+)(?::\d+)?$/.exec(host);                     // 127.0.0.1 / localhost
-      const hostname = m ? m[1] : "";
-      if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1") {
-        next();
-        return;
-      }
-      res.status(403).json({ error: "Invalid Host header." });
-    });
-  }
 
   // CORS for cross-origin API access (e.g. from the local Electron client to the
   // website backend). Set CORS_ALLOWED_ORIGINS (comma-separated) to restrict to
