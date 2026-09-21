@@ -8,12 +8,15 @@
  * SECTION 1 — SHUTDOWN. A desktop app is quit far more violently than a
  * server: Cmd-Q, force quit, logout, battery death. A burst of saves is
  * interrupted mid-flight by each of SIGTERM/SIGINT/SIGHUP/SIGKILL and three
- * things must hold afterwards: db.json still PARSES (a torn write would make
- * the library unreadable, and `loadDBFromFile`'s repair path then decides
- * what the user keeps), no `db.json.tmp-*` scratch file is left behind, and
- * the NEXT launch is not blocked by the dead process's lock. The last one is
- * the user-visible one: a lock that outlives its owner means the app never
- * starts again until someone finds a dotfile.
+ * things must hold afterwards: db.json still PARSES, the NEXT launch is not
+ * blocked by the dead process's lock, and that launch sweeps any scratch file
+ * the killed process could not. The lock one is the user-visible one: a lock
+ * that outlives its owner means the app never starts again until someone
+ * finds a dotfile.
+ *   The parse rows are REGRESSION guards, not proof of atomicity — measured,
+ * they stay green against a deliberately non-atomic save. Section 1a asserts
+ * the mechanism (inode churn) instead; read its comment before trusting a
+ * green parse row to mean anything about torn writes.
  *
  * SECTION 2 — THE DATA DIRECTORY IS A PATH, AND PATHS HAVE SHAPES. Electron
  * hands the app a real directory, but the thing at that path is whatever the
@@ -31,7 +34,7 @@
  */
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  symlinkSync, writeFileSync } from 'node:fs';
+  statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -168,6 +171,61 @@ for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL']) {
     await stop(second);
   }
   await stop(first);
+  rmSync(userData, { recursive: true, force: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 1a. THE MECHANISM, NOT THE SYMPTOM.
+//
+// Gate review #5 (finding 1) said the four "db.json still parses" rows above
+// cannot fail, because renameSync is atomic. MEASURED, and it is worse than
+// that: rewriting writeFileAtomicSync to open db.json directly and write it
+// in 4KB chunks — a genuinely non-atomic save — left all four rows GREEN, and
+// so did the 1b/3 parse checks. Three further probes found no observable
+// tearing either: 19,938 concurrent reads during a burst (0 torn), and 6
+// kill-mid-rewrite trials against a 191,899-byte db.json (0 unparseable).
+// Node's writes are synchronous and win the race every time, so "the file
+// parses" is simply not a predicate that can catch this on a real machine.
+//
+// The INODE is. A rename-based replace makes db.json a different file on
+// every save; an in-place write keeps the same inode forever. Measured on
+// the same 8 saves: clean tree 8 distinct inodes, mutant 1. That separation
+// is the whole point — it is a property of the MECHANISM, which is what the
+// atomic-write contract actually promises, rather than of an outcome the
+// filesystem hides.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-inode-'));
+  const srv = launch(userData, ++port);
+  const bound = await waitBound(srv);
+  record('1a: the fixture server booted', bound !== null,
+    bound === null ? srv.log().slice(-200) : `port ${bound}`);
+  if (bound !== null) {
+    const dbFile = path.join(userData, 'db.json');
+    const save = (n) => fetch(`http://127.0.0.1:${bound}/api/games`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: `ino-${n}`, payoffs: PAYOFFS }),
+    }).catch(() => null);
+    await save(0);
+    await sleep(200);
+    const SAVES = 8;
+    const inodes = new Set();
+    let sawFile = 0;
+    for (let i = 1; i <= SAVES; i++) {
+      await save(i);
+      await sleep(120);
+      if (existsSync(dbFile)) { sawFile++; inodes.add(statSync(dbFile).ino); }
+    }
+    // CONTROL first: if the file never appeared, "distinct inodes" below is
+    // counting nothing and would pass for the wrong reason.
+    record('1a CONTROL: db.json existed after every save (the inode count is counting something)',
+      sawFile === SAVES, `observed the file ${sawFile}/${SAVES} times`);
+    record('1a: every save REPLACES db.json rather than overwriting it in place',
+      inodes.size === SAVES,
+      `${inodes.size} distinct inode(s) over ${SAVES} saves — 1 means an in-place write, `
+      + 'which is the non-atomic shape the four parse checks above cannot see');
+  }
+  await stop(srv);
   rmSync(userData, { recursive: true, force: true });
 }
 
