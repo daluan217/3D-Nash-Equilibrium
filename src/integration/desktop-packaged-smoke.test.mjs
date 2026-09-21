@@ -234,6 +234,13 @@ try {
     exposed: Object.keys(window).filter((k) => /electron|node|ipc|nash/i.test(k)).sort(),
     bridgeKeys: window.nashDesktop ? Object.keys(window.nashDesktop).sort() : null,
     ipcReachable: !!(window.nashDesktop && window.nashDesktop.ipcRenderer),
+    // Object.keys was the SAME single-registry assumption that made 11d blind
+    // to ipcMain.handle, so it was checked rather than trusted: these three
+    // are the enumerations a key could hide from.
+    bridgeOwnNames: window.nashDesktop ? Object.getOwnPropertyNames(window.nashDesktop).sort() : null,
+    bridgeSymbols: window.nashDesktop ? Object.getOwnPropertySymbols(window.nashDesktop).map(String) : null,
+    bridgeProto: window.nashDesktop
+      ? Object.getOwnPropertyNames(Object.getPrototypeOf(window.nashDesktop) || {}).sort() : null,
   }));
   rec('10. the renderer has no Node reachable from inside the page',
     !iso.require && !iso.process && !iso.module && !iso.global && !iso.buffer,
@@ -243,6 +250,28 @@ try {
     && JSON.stringify(iso.bridgeKeys) === JSON.stringify(['setBackgroundColor'])
     && iso.ipcReachable === false,
     JSON.stringify({ exposed: iso.exposed, bridgeKeys: iso.bridgeKeys, ipcReachable: iso.ipcReachable }));
+  // 10c. FACT-PIN, NOT A PROOF — labelled so nobody reads it as coverage.
+  //
+  // 11d's blind spot made me ask whether `Object.keys` is the same mistake on
+  // the bridge. MEASURED, twice, against the packaged binary, because the
+  // answer is a property of contextBridge rather than of JS:
+  //   non-enumerable via defineProperty -> typeof is "undefined", calling it
+  //     throws, the window colour does not move
+  //   carried on the PROTOTYPE          -> identical result
+  // contextBridge clones only ENUMERABLE OWN properties, so a hidden member
+  // does not merely go unlisted, it never reaches the renderer. Object.keys
+  // is therefore SUFFICIENT here, unlike ipcMain.eventNames() in 11d.
+  //   I could not construct a mutation that makes this check red, so it is
+  // not evidence of anything today. It stays because it costs one evaluate
+  // and it fails loudly if a future Electron starts cloning non-enumerables,
+  // at which point 10b silently stops covering the bridge.
+  rec('10c. FACT-PIN: the bridge has nothing behind Object.keys (contextBridge clones own enumerables only)',
+    JSON.stringify(iso.bridgeOwnNames) === JSON.stringify(iso.bridgeKeys)
+    && JSON.stringify(iso.bridgeSymbols) === JSON.stringify([])
+    && JSON.stringify(iso.bridgeProto)
+      === JSON.stringify(Object.getOwnPropertyNames(Object.prototype).sort()),
+    JSON.stringify({ keys: iso.bridgeKeys, ownNames: iso.bridgeOwnNames,
+      symbols: iso.bridgeSymbols, proto: iso.bridgeProto }));
 
   // ── 11. THE BRIDGE FORWARDS ANYTHING; MAIN IS WHAT MUST VALIDATE. ───────
   // Asserted by EFFECT on the native window, not by the call returning — the
