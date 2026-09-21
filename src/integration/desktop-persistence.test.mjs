@@ -31,6 +31,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSy
   chmodSync, statSync, lstatSync, symlinkSync, linkSync, mkdirSync } from 'node:fs';
 import { tmpdir, networkInterfaces } from 'node:os';
 import { connect } from 'node:net';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
@@ -545,6 +546,55 @@ try {
         after === poisoned,
         after === poisoned ? 'unchanged'
           : `key changed under the owner: ${poisoned.slice(0, 12)}... -> ${after.slice(0, 12)}...`);
+
+      // …and the same property for the WHOLE directory, under every starting
+      // state that puts a startup code path on its write branch. The guard
+      // above names one file because one file is what broke; the invariant is
+      // "a process the lock refuses changes NOTHING here", and that is what
+      // has to hold when the next module-level initialiser is added. Checked
+      // as content+mode+mtime over every entry, so a rewrite with identical
+      // bytes still shows up.
+      const dirSnapshot = (d) => JSON.stringify(Object.fromEntries(readdirSync(d).sort().map((n) => {
+        const f = path.join(d, n);
+        const st = statSync(f);
+        return [n, st.isFile()
+          ? `${createHash('sha256').update(readFileSync(f)).digest('hex').slice(0, 12)}:`
+            + `${(st.mode & 0o777).toString(8)}:${st.mtimeMs}`
+          : 'dir'];
+      })));
+      for (const [label, poisonDir] of [
+        ['an invalid auth-secret (forces the replace-the-file branch)',
+          (d) => writeFileSync(path.join(d, 'auth-secret'), 'not-a-key')],
+        ['an auth-secret that is a DIRECTORY (forces the rmSync branch)',
+          (d) => { rmSync(path.join(d, 'auth-secret'), { recursive: true, force: true });
+            mkdirSync(path.join(d, 'auth-secret')); }],
+        ['a stale db.json.tmp-* scratch file (forces the startup sweep, which UNLINKS)',
+          (d) => writeFileSync(path.join(d, 'db.json.tmp-999-1'), 'x')],
+        ['a malformed db.json (forces initDB down its repair path)',
+          (d) => writeFileSync(path.join(d, 'db.json'), '{"users":')],
+      ]) {
+        poisonDir(shared);
+        const snapBefore = dirSnapshot(shared);
+        const proc = spawn('node', [BUNDLE], {
+          cwd: shared,
+          env: {
+            PATH: process.env.PATH, HOME: shared, NODE_ENV: 'production',
+            PORT: String(++port), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: shared,
+            NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let plog = '';
+        proc.stdout.on('data', (d) => { plog += d; });
+        proc.stderr.on('data', (d) => { plog += d; });
+        const pcode = await new Promise((res) => proc.once('exit', res));
+        const snapAfter = dirSnapshot(shared);
+        record(`a refused instance changes NOTHING in the data directory, given ${label}`,
+          pcode !== 0 && snapBefore === snapAfter,
+          pcode === 0 ? `the intruder was NOT refused (exit 0) — ${plog.slice(-120)}`
+            : snapBefore === snapAfter ? 'directory byte-identical'
+              : `mutated:\n    before ${snapBefore}\n    after  ${snapAfter}`);
+      }
 
       // …and the owner is still serving, so "unchanged" is not the reading for
       // an owner that died and took the whole scenario with it.
