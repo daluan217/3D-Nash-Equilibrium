@@ -467,6 +467,62 @@ async function req(base, verb, p, body, token) {
   rmSync(outside, { recursive: true, force: true });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. SR-64 — EVERY cleanPayoffs CALLER REFUSES A NON-NUMBER PAYOFF.
+//
+// `Number()` coerces, so validating the coerced value accepted inputs that
+// were never payoffs (null -> 0, [1] -> 1, "" -> 0, true -> 1). MEASURED
+// against this bundle before the fix: POST /api/report with a11:null answered
+// 200 and the prose asserted "(5 rather than 0)" — a number the user never
+// supplied — while a11:"NaN" was correctly refused.
+//
+// The unit contract (src/desktoppayoffs.contract.test.ts) proves the function;
+// this proves the three CALLERS actually reach it, which is where the
+// regression risk lives — a caller that relied on the old coercion would
+// break here and nowhere else. Each caller gets a rejected shape AND an
+// accepted control, because "everything 400s now" would satisfy the rejection
+// half while breaking the app.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-payoffs-'));
+  // NASH_SCENARIO_REGEN=1: /api/scenario/regenerate answers 404 "Not enabled."
+  // before its handler otherwise, so the flag is what makes that caller
+  // reachable at all. It still needs no key: cleanPayoffs runs before the
+  // no-key branch, so a rejected matrix must 400 rather than fall through.
+  const srv = await boot(userData, { NASH_SCENARIO_REGEN: '1' });
+  record('the payoff-validation fixture boots', !!srv.bound,
+    srv.bound ? '' : srv.log().slice(-300));
+
+  if (srv.bound) {
+    const GOOD = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+    // One rejected shape per caller, each finite under Number() — i.e. each a
+    // real instance of the defect, not a shape the old code already refused.
+    for (const [route, body, bad] of [
+      ['POST /api/report', (p) => ({ payoffs: p }), null],
+      ['POST /api/scenario/regenerate', (p) => ({ payoffs: p }), [1]],
+      ['POST /api/games', (p) => ({ name: 'sr64', payoffs: p }), ''],
+    ]) {
+      const [verb, url] = route.split(' ');
+      const r = await req(srv.base, verb, url, body({ ...GOOD, a11: bad }));
+      record(`SR-64: ${route} refuses a11=${JSON.stringify(bad)} instead of coercing it to a number`,
+        r.status === 400,
+        `status ${r.status} ${r.text.slice(0, 90)} — a 200 here means the response describes a `
+        + 'payoff value the caller never sent');
+      // CONTROL: the same caller still accepts a numeric string, so the check
+      // above is not passing because the route now refuses everything.
+      const ok = await req(srv.base, verb, url, body({ ...GOOD, a11: '5' }));
+      record(`SR-64 CONTROL: ${route} still accepts the numeric string "5"`,
+        ok.status === 200, `status ${ok.status} ${ok.text.slice(0, 90)}`);
+    }
+    // …and the ordinary all-numbers matrix, the shape the real client sends.
+    const plain = await req(srv.base, 'POST', '/api/report', { payoffs: GOOD });
+    record('SR-64 CONTROL: an ordinary numeric matrix still produces a report',
+      plain.status === 200, `status ${plain.status}`);
+  }
+  await stop(srv);
+  rmSync(userData, { recursive: true, force: true });
+}
+
 const failed = results.filter((r) => !r.pass);
 console.log(`\n══════ DESKTOP LOCAL SURFACE: ${results.length - failed.length}/${results.length} checks passed ══════`);
 if (failed.length > 0) {

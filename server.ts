@@ -2532,11 +2532,32 @@ function cleanScenario(value: any, options: { actorNouns?: boolean } = {}): Scen
   return sc;
 }
 
+/**
+ * SR-64. `Number()` COERCES, so validating the coerced value accepted inputs
+ * that were never payoffs: null -> 0, [] -> 0, [1] -> 1, true -> 1, "" -> 0,
+ * " " -> 0 are all finite. MEASURED against the packaged bundle, POST
+ * /api/report with `a11: null` answered 200 and the prose asserted numbers
+ * the user never supplied — "against Request Earlier, A prefers Open Later
+ * (5 rather than 0)", where that 0 is the coerced null — while `a11: "NaN"`
+ * was correctly refused with 400. On the endpoint whose whole job is being
+ * trustworthy about the matrix, a confident wrong number is worse than a
+ * refusal.
+ *
+ * A payoff must therefore ARRIVE as a number, or as a string that spells one
+ * exactly. Numeric strings stay accepted because they are a legitimate JSON
+ * wire shape that round-trips to the number they spell; padded and
+ * whitespace-only strings are refused with everything else, so there is one
+ * rule ("the string IS the number") rather than a coercion to reason about.
+ */
 function cleanPayoffs(value: any): GamePayoffs | null {
   const keys: (keyof GamePayoffs)[] = ["a11", "a12", "a21", "a22", "b11", "b12", "b21", "b22"];
   const out = {} as GamePayoffs;
   for (const key of keys) {
-    const n = Number(value?.[key]);
+    const raw = value?.[key];
+    if (typeof raw !== "number" && typeof raw !== "string") return null;
+    if (typeof raw === "string" && raw !== raw.trim()) return null;
+    if (typeof raw === "string" && raw.trim() === "") return null;
+    const n = Number(raw);
     if (!Number.isFinite(n)) return null;
     out[key] = Math.max(-100, Math.min(100, Math.round(n * 1000) / 1000));
   }
