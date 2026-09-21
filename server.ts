@@ -3119,8 +3119,12 @@ async function startServer() {
       // and was accepted. Not reachable — a browser cannot be made to send an
       // unbracketed IPv6 Host, and a local process needs no bypass — but an
       // exact match costs the same as an approximate one.
-      const m = /^\[([0-9a-f:.]+)\](?::\d+)?$/.exec(host)      // [::1] or [::1]:port
-        ?? /^([a-z0-9.-]+)(?::\d+)?$/.exec(host);              // 127.0.0.1 / localhost
+      // The bracketed branch requires a colon: brackets are IPv6-only, so
+      // "[127.0.0.1]" is malformed and must not be read as the loopback IPv4
+      // it resembles. No privilege rides on it (that host is allowed
+      // unbracketed anyway), but a guard should mean exactly what it says.
+      const m = /^\[([0-9a-f.]*:[0-9a-f:.]*)\](?::\d+)?$/.exec(host)  // [::1] or [::1]:port
+        ?? /^([a-z0-9.-]+)(?::\d+)?$/.exec(host);                     // 127.0.0.1 / localhost
       const hostname = m ? m[1] : "";
       if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1") {
         next();

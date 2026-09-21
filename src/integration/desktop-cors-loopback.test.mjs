@@ -359,7 +359,12 @@ try {
   for (const [hostHeader, why] of [
     ['::1:14321', 'an unbracketed IPv6 address whose tail mimics a port — the blind '
       + '":<digits>" strip turned this real non-loopback address into "::1" and accepted it'],
-    ['[::ffff:127.0.0.1]', 'the IPv4-mapped IPv6 literal, bracketed'],
+    // Brackets are IPv6-only. "[127.0.0.1]" is malformed, and the first
+    // exact-match spelling read it as the loopback IPv4 it resembles. No
+    // privilege rode on it — that host is allowed unbracketed anyway — but a
+    // guard that accepts a shape it cannot name is a guard drifting.
+    ['[127.0.0.1]', 'an IPv4 address inside IPv6 brackets — malformed, not loopback-by-brackets'],
+    ['[localhost]', 'a NAME inside IPv6 brackets'],
   ]) {
     const r = await rawReq(DESKTOP_PORT, hostHeader);
     record(`SR-63: Host "${hostHeader}" cannot read the library (${why})`,
