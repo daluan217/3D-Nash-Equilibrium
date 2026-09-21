@@ -130,12 +130,30 @@ async function req(base, verb, p, body, token) {
 // ═══════════════════════════════════════════════════════════════════════════
 {
   const src = readFileSync(BUNDLE, 'utf8');
-  const routes = [...new Set([...src.matchAll(/app\.(get|post|put|patch|delete)\("(\/api\/[^"]*)"/g)]
-    .map((m) => `${m[1].toUpperCase()} ${m[2]}`))].sort();
+  // Every quote style, plus `all`. The original spelling accepted only
+  // double-quoted paths, so a route added as app.post('/api/…') or with a
+  // template literal would silently not be probed while `routes.length >= 20`
+  // stayed true (reviewer finding, 2026-09-20). esbuild normalises quotes
+  // today, which is exactly why the narrow regex looked fine — it was correct
+  // by coincidence of the bundler's output, not by construction.
+  const routes = [...new Set(
+    [...src.matchAll(/app\.(get|post|put|patch|delete|all)\(\s*['"`](\/api\/[^'"`]*)['"`]/g)]
+      .map((m) => `${m[1].toUpperCase()} ${m[2]}`),
+  )].sort();
   record('CONTROL: the route table was extracted from the bundle at all',
     routes.length >= 20,
     `${routes.length} routes. A broken extraction would make every census check below `
     + 'assert against an empty list and pass for free.');
+
+  // A census that silently under-reports is worse than no census: it reads as
+  // "everything is gated". These two alarms fire when a registration form
+  // appears that this extraction cannot see, instead of quietly skipping it.
+  record('no route is registered through app.route() (this census cannot see those)',
+    !/app\.route\s*\(/.test(src),
+    'app.route(...) chains register verbs the matchAll above never matches');
+  record('no sub-router is mounted (this census only sees app.<verb> registrations)',
+    !/express\.Router\s*\(/.test(src),
+    'a mounted Router registers its paths relative to the mount point, invisible to this regex');
 
   const userData = mkdtempSync(path.join(tmpdir(), 'nash-census-'));
   const srv = await boot(userData);
@@ -143,11 +161,23 @@ async function req(base, verb, p, body, token) {
     srv.bound ? `port ${srv.bound}` : srv.log().slice(-300));
 
   if (srv.bound) {
+    // An empty body is not good enough for routes that validate INPUT before
+    // they check the SESSION: delete-confirm answers 400 "code is required"
+    // to `{}` and never reaches its auth check, so the census scored it
+    // "reached" for a reason that has nothing to do with credentials
+    // (reviewer finding, 2026-09-20). These bodies are well-formed enough to
+    // get past input validation and land on the gate itself.
+    const CENSUS_BODY = {
+      'POST /api/auth/delete-confirm': { code: '123456' },
+      'POST /api/auth/delete-request': { password: 'CorrectHorse9!' },
+      'POST /api/auth/reset-password': { email: 'nobody@example.com', code: '123456', newPassword: 'Attacker1!' },
+    };
     const reached = new Set();
     for (const route of routes) {
       const [verb, p] = route.split(' ');
       const url = p.replace(/:[A-Za-z]+/g, 'probe-id');
-      const r = await req(srv.base, verb, url, verb === 'GET' ? undefined : {});
+      const body = verb === 'GET' ? undefined : (CENSUS_BODY[route] ?? {});
+      const r = await req(srv.base, verb, url, body);
       // 401/403 = a credential is required; 404 = no such thing here. Anything
       // else means a tokenless local caller got INTO the handler.
       if (typeof r.status === 'number' && ![401, 403, 404].includes(r.status)) reached.add(route);
@@ -156,6 +186,7 @@ async function req(base, verb, p, body, token) {
     // These must stay credential-gated for a tokenless caller. Named
     // individually so a failure says WHICH one opened up.
     for (const route of ['GET /api/auth/me', 'POST /api/auth/delete-request',
+      'POST /api/auth/delete-confirm',
       'POST /api/games/adopt-local', 'GET /api/admin/stats']) {
       record(`${route} stays credential-gated for a tokenless local caller`,
         !reached.has(route), `reached=${reached.has(route)}`);
@@ -205,10 +236,21 @@ async function req(base, verb, p, body, token) {
     record('a made-up recovery code cannot reset the victim password',
       r3.status === 400, `status ${r3.status} ${r3.text.slice(0, 80)}`);
 
+    // 401 EXACTLY, not "401 or 400". delete-confirm rejects a MISSING code
+    // with 400 before it ever looks at the session, so accepting 400 here let
+    // an implementation that skips authentication entirely still pass
+    // (reviewer finding, 2026-09-20). A well-formed code reaches the auth
+    // check, and the only correct answer for a tokenless caller is 401.
     const r4 = await req(srv.base, 'POST', '/api/auth/delete-confirm',
       { email: 'victim@example.com', code: '123456' });
     record('a made-up code cannot confirm deletion of the victim account',
-      r4.status === 401 || r4.status === 400, `status ${r4.status}`);
+      r4.status === 401, `status ${r4.status} ${r4.text.slice(0, 80)}`);
+    // CONTROL: the 400 branch really does exist and really is reached by a
+    // missing code — otherwise the check above could be demanding 401 for a
+    // route that answers 401 to everything, including malformed input.
+    const r4b = await req(srv.base, 'POST', '/api/auth/delete-confirm', {});
+    record('CONTROL: delete-confirm answers 400 to a MISSING code (so 401 above is the auth check)',
+      r4b.status === 400, `status ${r4b.status} ${r4b.text.slice(0, 80)}`);
 
     // The cross-owner WRITE: a tokenless local caller editing a game that
     // belongs to a real account.
@@ -216,6 +258,20 @@ async function req(base, verb, p, body, token) {
       { name: 'PWNED', payoffs: { a11: 9, a12: 9, a21: 9, a22: 9, b11: 9, b12: 9, b21: 9, b22: 9 } });
     record("a tokenless caller cannot PATCH another owner's game",
       r5.status === 403, `status ${r5.status} ${r5.text.slice(0, 80)}`);
+
+    // The cross-owner DELETE. Only PATCH was attacked here, so removing the
+    // ownership check from the DELETE route broke nothing in this suite: the
+    // victim's game survived simply because nobody ever tried to delete it
+    // (reviewer finding, 2026-09-20). The census probe cannot cover this — it
+    // uses a nonexistent 'probe-id', which 404s before any ownership check.
+    const r5b = await req(srv.base, 'DELETE', '/api/games/victim-game');
+    record("a tokenless caller cannot DELETE another owner's game",
+      r5b.status === 403, `status ${r5b.status} ${r5b.text.slice(0, 80)}`);
+    // The status is not the claim that matters — the bytes are.
+    const diskAfter = JSON.parse(readFileSync(path.join(userData, 'db.json'), 'utf8'));
+    record("the victim's game is still ON DISK after the refused DELETE",
+      (diskAfter.games ?? []).some((g) => g.id === 'victim-game' && g.name === 'VICTIM DATA'),
+      JSON.stringify((diskAfter.games ?? []).map((g) => `${g.id}:${g.name}`)));
 
     // The victim's games must never appear in a tokenless read.
     const r6 = await req(srv.base, 'GET', '/api/games');
