@@ -483,6 +483,80 @@ try {
   const strays = readdirSync(userData).filter((f) => f.includes('db.json.tmp-'));
   record('no scratch file is left behind after the writes settle', strays.length === 0, strays.join(', '));
   if (leftoverTmp > 0) console.log(`  (note: the temp file was observed mid-write ${leftoverTmp} time(s) — that is the mechanism working)`);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // A REFUSED SECOND INSTANCE MUST NOT TOUCH THE OWNER'S SESSION KEY.
+  //
+  // AUTH_SECRET used to be a module-level const, so `desktopAuthSecret()` — a
+  // function that WRITES — ran at import time, before `startServer()` could
+  // call `acquireDesktopLock()`. The process the lock exists to refuse had
+  // already rewritten the live owner's key by the time it was turned away.
+  //
+  // MEASURED as a live race first: two instances launched together on a fresh
+  // data directory, 1 of 6 trials left the surviving server signing tokens
+  // with a secret that no longer matched the file on disk — every session it
+  // then issued was dead at the next launch, which is the exact defect
+  // persisting the secret was added to fix. A race is not a CI check, so the
+  // guard below forces the same state deterministically: an INVALID key file
+  // puts desktopAuthSecret() on its replace-the-file branch, which is the
+  // write that used to escape the lock, and the second instance is refused.
+  // ─────────────────────────────────────────────────────────────────────────
+  {
+    const shared = mkdtempSync(path.join(tmpdir(), 'nash-lockwrite-'));
+    const ownerPort = ++port;
+    let owner = null;
+    try {
+      owner = await boot(shared, ownerPort);
+      const keyFile = path.join(shared, 'auth-secret');
+      // Put the owner's key on disk in the state that forces the WRITE branch,
+      // then read what the owner is actually holding. The owner is already
+      // running, so its in-memory secret is fixed from here on; anything that
+      // changes this file now is the intruder, not the owner.
+      writeFileSync(keyFile, 'not-a-key');
+      const poisoned = readFileSync(keyFile, 'utf-8');
+
+      // The intruder: a second instance on the SAME data directory. The lock
+      // must refuse it, and it must leave the key alone.
+      const intruder = spawn('node', [BUNDLE], {
+        cwd: shared,
+        env: {
+          PATH: process.env.PATH, HOME: shared, NODE_ENV: 'production',
+          PORT: String(++port), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: shared,
+          NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let ilog = '';
+      intruder.stdout.on('data', (d) => { ilog += d; });
+      intruder.stderr.on('data', (d) => { ilog += d; });
+      const code = await new Promise((res) => intruder.once('exit', res));
+
+      // CONTROL: the intruder really was refused BY THE LOCK. Without this the
+      // key check below would also pass for an intruder that died of a port
+      // clash, a missing bundle, or anything else that never reached the
+      // secret code at all — i.e. for the wrong reason entirely.
+      record('CONTROL: the second instance is refused by the desktop lock',
+        code !== 0 && /another|already|lock/i.test(ilog),
+        `exit ${code}; log: ${ilog.slice(-160).replace(/\s+/g, ' ')}`);
+
+      const after = readFileSync(keyFile, 'utf-8');
+      record('THE DEFECT: a REFUSED second instance does not rewrite the running '
+        + "owner's session key (desktopAuthSecret ran at import, before the lock)",
+        after === poisoned,
+        after === poisoned ? 'unchanged'
+          : `key changed under the owner: ${poisoned.slice(0, 12)}... -> ${after.slice(0, 12)}...`);
+
+      // …and the owner is still serving, so "unchanged" is not the reading for
+      // an owner that died and took the whole scenario with it.
+      const health = await fetch(`http://127.0.0.1:${ownerPort}/api/health`)
+        .then((r) => r.status).catch((e) => String(e.message));
+      record('CONTROL: the owner is still up and holding the directory',
+        health === 200, `health ${health}`);
+    } finally {
+      await stop(owner);
+      try { rmSync(shared, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
 } finally {
   await stop(srv);
   try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effort */ }

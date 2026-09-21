@@ -881,11 +881,37 @@ function desktopAuthSecret(): string | null {
   }
 }
 
-const AUTH_SECRET = process.env.AUTH_SECRET
-  || process.env.SESSION_SECRET
-  || process.env.ADMIN_SECRET
-  || desktopAuthSecret()
-  || crypto.randomBytes(32).toString("hex");
+/**
+ * LAZY, because `desktopAuthSecret()` WRITES to the user-data directory and a
+ * module-level const ran it at IMPORT time — before `startServer()` could call
+ * `acquireDesktopLock()`. So a second instance, the one the lock exists to
+ * refuse, had already rewritten the live owner's key before being turned away.
+ *
+ * MEASURED: two instances launched together on a FRESH data directory, 6
+ * trials. 1/6, the surviving server's tokens did not verify against the
+ * auth-secret left on disk — the loser wrote its own key over the winner's
+ * after the winner had read it. Every session the winner then issues is dead
+ * at the next launch: exactly the "my saved games are gone" defect persisting
+ * the secret was added to fix, reintroduced by a startup race. Forced the same
+ * state deterministically by corrupting the key file and launching a second
+ * instance: refused with exit 1, and the owner's key changed underneath it.
+ *
+ * `authSecret()` is called only from sign/verify, both of which run after
+ * `startServer()` has taken the lock; `primeAuthSecret()` pins it there so the
+ * first HTTP request does not pay for the read.
+ */
+let authSecretCache: string | null = null;
+function authSecret(): string {
+  if (authSecretCache === null) {
+    authSecretCache = process.env.AUTH_SECRET
+      || process.env.SESSION_SECRET
+      || process.env.ADMIN_SECRET
+      || desktopAuthSecret()
+      || crypto.randomBytes(32).toString("hex");
+  }
+  return authSecretCache;
+}
+function primeAuthSecret(): void { authSecret(); }
 
 if (process.env.NODE_ENV === "production" && !process.env.AUTH_SECRET && !process.env.SESSION_SECRET && !process.env.ADMIN_SECRET
     && !process.env.ELECTRON_USER_DATA_PATH) {
@@ -2149,14 +2175,14 @@ function createAuthToken(user: User): string {
     exp: Date.now() + AUTH_TOKEN_TTL_MS,
     nonce: b64url(crypto.randomBytes(12)),
   }));
-  const sig = b64url(crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  const sig = b64url(crypto.createHmac("sha256", authSecret()).update(payload).digest());
   return `${payload}.${sig}`;
 }
 
 function readAuthToken(token: string): { sub: string; ver: number } | null {
   const [payload, sig, extra] = token.split(".");
   if (!payload || !sig || extra) return null;
-  const expected = b64url(crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  const expected = b64url(crypto.createHmac("sha256", authSecret()).update(payload).digest());
   if (!safeEqual(sig, expected)) return null;
   try {
     const parsed = JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
@@ -3036,6 +3062,11 @@ async function startServer() {
   // standalone run's process.exit(1), or the packaged app's dialog hook) —
   // either way this function must stop here: no initDB, no listen.
   if (!acquireDesktopLock()) return;
+  // Only now may the session key be read or created: desktopAuthSecret()
+  // WRITES, and until the line above returned true this process might have
+  // been the second instance whose write would land in another process's
+  // data directory. See authSecret()'s comment for the measured race.
+  primeAuthSecret();
   // RED-DESKTOP-7/001: clean up any db.json.tmp-* scratch file an earlier,
   // interrupted writeFileAtomicSync could not remove itself. Safe exactly
   // here — the lock above already guarantees no other process can be
