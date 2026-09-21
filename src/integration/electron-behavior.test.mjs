@@ -915,6 +915,59 @@ for (const [where, prevented, opened] of ext.inApp) {
     `${where} handed the app's own URL (${ext.appOriginProbed}) to the OS. An in-app route must `
     + 'never be bounced out to a browser.');
 }
+
+// FOUND BY THIS AGENT, sweep 40, reproduced against the unfixed tree first.
+// The app's origin is not a constant: server.ts retries port+1 forever on
+// EADDRINUSE under IS_ELECTRON (another copy of the app, or anything already
+// on 14321) and reports the port it FINALLY bound via `onExpressListening`.
+// If a window already exists — the 800ms slow-boot fallback fired, which is
+// precisely the case where the server was slow BECAUSE it was walking the
+// port range — that handler moves the window to the new port. The navigation
+// allowlist has to move with it.
+//
+// Before the fix the allowlist was assigned ONLY inside createWindow(), so
+// after such a move every one of these was true at once (measured):
+//   - the window was showing 127.0.0.1:<new>, and every in-app navigation
+//     there was preventDefault'd and shipped to shell.openExternal, where the
+//     scheme filter refused it — so in-app links silently did nothing at all;
+//   - 127.0.0.1:<old>, a port this app has LEFT and another process now owns,
+//     was still on the allowlist and still navigable.
+ok(ext.portMoveDriven === true,
+  'CONTROL: onExpressListening must be callable a SECOND time with a new port, the way '
+  + "server.ts's EADDRINUSE retry calls it. If that door does not exist, every assertion below "
+  + 'measures nothing.');
+// THE CONTROL THAT MAKES THIS A TEST OF THE RIGHT ARM. `onExpressListening`
+// creates a window when there is none and MOVES the existing one when there
+// is; only the move is at issue here, and the create arm assigns the origin
+// on any tree. Measured: with the probe placed after the window-event loop
+// (which fires 'closed' and nulls mainWindow) the call took the create arm
+// and all of this passed with the fix reverted.
+ok(ext.windowsAfterMove === ext.windowsBeforeMove,
+  `the port move CREATED a window (${ext.windowsBeforeMove} -> ${ext.windowsAfterMove}) instead `
+  + 'of moving the existing one. That is the other arm of onExpressListening, which assigns the '
+  + 'origin unconditionally — so these checks would pass whether or not the move arm does.');
+ok(ext.loadedUrlsAtMove[ext.loadedUrlsAtMove.length - 1] === `http://127.0.0.1:${ext.movedPort}`,
+  `CONTROL: the window must actually have been pointed at port ${ext.movedPort} by the move `
+  + `(last loadURL was ${JSON.stringify(ext.loadedUrlsAtMove[ext.loadedUrlsAtMove.length - 1])}). `
+  + 'Without that, "the allowlist followed the window" describes a window that never moved.');
+ok(ext.originalPort !== ext.movedPort,
+  `CONTROL: the moved-to port (${ext.movedPort}) must differ from the original (${ext.originalPort}).`);
+ok(ext.inAppAfterMove.length > 0,
+  'CONTROL: the post-move navigation probe must actually run.');
+for (const [where, prevented, opened] of ext.inAppAfterMove) {
+  ok(prevented === false,
+    `after the server moved to port ${ext.movedPort}, ${where} PREVENTED a navigation to the `
+    + "window's own new origin. The allowlist is still naming the port the app has left, so every "
+    + 'in-app link is now treated as external.');
+  ok(opened === false,
+    `after the port move, ${where} handed the app's OWN new-origin URL to the OS.`);
+}
+for (const [where, prevented] of ext.staleAfterMove) {
+  ok(prevented === true,
+    `after the server moved to port ${ext.movedPort}, ${where} still ALLOWED a navigation to the `
+    + `OLD origin (127.0.0.1:${ext.originalPort}). That port belongs to whatever process took it — `
+    + 'the allowlist must follow the window, not accumulate every port the app has ever used.');
+}
 // FOUND BY THIS AGENT, sweep 2. Navigation and window.open are not the only
 // doors to the OS: Electron hands the app URLs through LIFECYCLE events too.
 // `app.on('open-url', (e, u) => shell.openExternal(u))` is the same capability

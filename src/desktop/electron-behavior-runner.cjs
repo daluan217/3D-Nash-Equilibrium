@@ -1464,6 +1464,21 @@ if (mode === 'openexternal') {
     ['will-frame-navigate', willFrameNavigateHandlers, framePrevented,
       ['event.url', '(event, details.url)']],
   ];
+  // Drive one URL through every navigation door, in every argument shape
+  // Electron really sends for that door, recording [where, prevented,
+  // handedToOS]. Used for the in-app control and for the port-move probe.
+  const driveInApp = (url, sink) => {
+    for (const [event, handlers, , documented] of EVENTS) {
+      for (const shape of documented) {
+        for (const cb of handlers) {
+          let prevented = false;
+          const before = openedUrls.length;
+          try { cb(...SHAPES[shape](url, () => { prevented = true; })); } catch { /* ignore */ }
+          sink.push([`${event} [${shape}]`, prevented, openedUrls.length > before]);
+        }
+      }
+    }
+  };
   for (const url of HOSTILE) {
     if (typeof capturedWindowOpenHandler === 'function') {
       let v; try { v = capturedWindowOpenHandler({ url }); } catch { v = 'threw'; }
@@ -1528,6 +1543,48 @@ if (mode === 'openexternal') {
     }
   }
 
+  // THE PORT MOVE — BLUE-LOOP-DESKTOP-22, sweep 40, reproduced before it was
+  // fixed. server.ts retries port+1 forever on EADDRINUSE under IS_ELECTRON
+  // and reports the port it FINALLY bound through `onExpressListening`. That
+  // handler has two arms, and only one of them creates a window:
+  //     if (app.isReady() && !mainWindow) createWindow(port);
+  //     else if (mainWindow)              <move the existing window>
+  // The SECOND arm is the one at issue (the 800ms slow-boot fallback already
+  // opened a window — exactly the case where the server was slow BECAUSE it
+  // was walking the port range), and it is reachable only while `mainWindow`
+  // is still live.
+  //
+  // So this MUST run before the window-event loop below, which fires
+  // 'closed' and sets `mainWindow = null` — with it after, the call took the
+  // createWindow arm instead, which assigns the origin on any tree and the
+  // check passed with the fix reverted. Measured, and the reason this block
+  // sits here rather than beside the other navigation probes.
+  const MOVED_PORT = 14399;
+  const ORIGINAL_PORT = Number(new URL(loadedUrls[0] || 'http://127.0.0.1:14322').port);
+  // `windowOptions` gets one entry per BrowserWindow constructed, so this
+  // counts windows: it is what distinguishes the arm being tested (move an
+  // existing window) from the OTHER arm (create a new one, which assigns the
+  // origin on any tree and would make these checks pass with the fix
+  // reverted — measured, that is exactly what happened at first).
+  const windowsBeforeMove = windowOptions.length;
+  let portMoveDriven = false;
+  if (typeof globalThis.onExpressListening === 'function') {
+    try { globalThis.onExpressListening(MOVED_PORT); portMoveDriven = true; } catch { /* reported by the test */ }
+  }
+  const windowsAfterMove = windowOptions.length;
+  // What the window was actually pointed at by the move — the test asserts it
+  // is the NEW port, or "the allowlist followed the window" would be a claim
+  // about a window that never moved.
+  const loadedUrlsAtMove = [...loadedUrls];
+  const inAppAfterMove = [];
+  const staleAfterMove = [];
+  driveInApp(`http://127.0.0.1:${MOVED_PORT}/some/in-app/route`, inAppAfterMove);
+  driveInApp(`http://127.0.0.1:${ORIGINAL_PORT}/some/in-app/route`, staleAfterMove);
+  // Move it BACK, so the in-app control further down still describes the
+  // origin the app is on (and so the allowlist is shown to follow in both
+  // directions, not merely to have been widened once).
+  if (portMoveDriven) { try { globalThis.onExpressListening(ORIGINAL_PORT); } catch { /* ignore */ } }
+
   // Window events too — the fullscreen handlers call executeJavaScript, which
   // runs code IN THE RENDERER from the main process, to one side of every
   // policy this file checks. Fire them so whatever they inject is recorded.
@@ -1548,16 +1605,7 @@ if (mode === 'openexternal') {
   // failure names the navigation policy instead of the real cause. The loadURL
   // assertion in the test pins the origin itself.
   const IN_APP_URL = `${(loadedUrls[0] || 'http://127.0.0.1:14322').replace(/\/$/, '')}/some/in-app/route`;
-  for (const [event, handlers, , documented] of EVENTS) {
-    for (const shape of documented) {
-      for (const cb of handlers) {
-        let prevented = false;
-        const before = openedUrls.length;
-        try { cb(...SHAPES[shape](IN_APP_URL, () => { prevented = true; })); } catch { /* ignore */ }
-        inApp.push([`${event} [${shape}]`, prevented, openedUrls.length > before]);
-      }
-    }
-  }
+  driveInApp(IN_APP_URL, inApp);
 
   setTimeout(() => out({
     openedUrls,
@@ -1566,6 +1614,14 @@ if (mode === 'openexternal') {
     framePrevented,
     inApp,
     appOriginProbed: IN_APP_URL,
+    portMoveDriven,
+    movedPort: MOVED_PORT,
+    originalPort: ORIGINAL_PORT,
+    windowsBeforeMove,
+    windowsAfterMove,
+    loadedUrlsAtMove,
+    inAppAfterMove,
+    staleAfterMove,
     windowOpenHandlerInstalled: typeof capturedWindowOpenHandler === 'function',
     willNavigateHandlerCount: willNavigateHandlers.length,
     willFrameNavigateHandlerCount: willFrameNavigateHandlers.length,

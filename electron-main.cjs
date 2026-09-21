@@ -67,7 +67,26 @@ function openExternalIfSafe(rawUrl) {
 // window, and with titleBarStyle 'hidden' there is no URL bar to reveal that the
 // full-bleed page became a remote origin. Same policy for every door: stay on the
 // app's own origin, hand anything else to the OS through the scheme filter above.
+//
+// It is assigned through `loadAppOrigin` and NOWHERE else, because the port is
+// not fixed: server.ts retries port+1 on EADDRINUSE (another copy of the app,
+// or anything else already on 14321) and reports the port it finally bound via
+// `onExpressListening`. That arrives AFTER the window exists whenever the
+// 800ms slow-boot fallback has already fired — which is precisely the case
+// where the server was slow because it was walking the port range. Setting
+// appOrigin only inside createWindow() left the policy naming the dead port
+// after such a move: measured, every in-app navigation was preventDefault'd
+// and handed to shell.openExternal (refused there only by the scheme filter,
+// so the click did nothing at all), while the PREVIOUS port — now owned by
+// whatever process took it — stayed on the allowlist.
 let appOrigin = null;
+
+// The window's URL and the navigation allowlist are one decision, so they are
+// one function: the origin can never name a port the window is not on.
+function loadAppOrigin(win, port) {
+  appOrigin = `http://127.0.0.1:${port}`;
+  win.loadURL(appOrigin);
+}
 
 // BLUE-LOOP-DESKTOP-22, angle G. Electron GRANTS most renderer permission
 // requests when no handler is installed, and none was. MEASURED against the
@@ -250,7 +269,8 @@ if (!gotTheLock) {
     if (app.isReady() && !mainWindow) {
       createWindow(port);
     } else if (mainWindow) {
-      mainWindow.loadURL(`http://127.0.0.1:${port}`);
+      // Moves the navigation allowlist with the window — see `appOrigin`.
+      loadAppOrigin(mainWindow, port);
     }
   };
 
@@ -467,8 +487,7 @@ if (!gotTheLock) {
     mainWindow.webContents.setZoomFactor(1.33);
 
     // Load the Express-served application on loopback
-    appOrigin = `http://127.0.0.1:${finalPort}`;
-    mainWindow.loadURL(appOrigin);
+    loadAppOrigin(mainWindow, finalPort);
 
     // Notify renderer of macOS native fullscreen transitions
     const dispatchFullscreen = (value) => {
