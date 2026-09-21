@@ -24,7 +24,8 @@
  *   node src/integration/desktop-packaged-smoke.test.mjs
  */
 import { _electron as electron } from 'playwright';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +43,49 @@ if (!macDir) {
 }
 const APP = join(macDir, 'Nash Equilibrium Simulator.app/Contents/MacOS/Nash Equilibrium Simulator');
 if (!existsSync(APP)) { console.error(`packaged binary missing at ${APP}`); process.exit(1); }
+
+// FRESHNESS, asserted before anything is launched.
+//
+// This suite reads the PACKAGED artifact, which is correct — and means it will
+// happily test a .app left over from an older build and report 10/10.
+// MEASURED: with dist/server.cjs mutated and no repackaging, the suite still
+// passed, because the mutation was never in the artifact. In CI the build step
+// precedes the launch step, but nothing ENFORCES that ordering, and a build
+// that silently no-ops would turn this gate into a green light on stale code.
+// So compare the server bundle INSIDE app.asar against the one just built:
+// same bytes, or this is not a test of the current source.
+{
+  const asarPath = join(macDir, 'Nash Equilibrium Simulator.app/Contents/Resources/app.asar');
+  const built = join(REPO, 'dist/server.cjs');
+  if (!existsSync(asarPath) || !existsSync(built)) {
+    console.error(`cannot verify artifact freshness: missing ${existsSync(asarPath) ? built : asarPath}`);
+    process.exit(1);
+  }
+  // @electron/asar arrives HOISTED from electron-builder, not declared — the
+  // same dependency src/desktop/audit-packaged-asar.cjs documents. If a
+  // lockfile change ever nests it, say so instead of dying on an opaque
+  // MODULE_NOT_FOUND, because a crash here would read as "the smoke test is
+  // broken" rather than "the freshness check stopped running".
+  let extractFile;
+  try { ({ extractFile } = await import('@electron/asar')); }
+  catch (e) {
+    console.error('cannot load @electron/asar, which the artifact-freshness check needs. It '
+      + 'arrives hoisted from electron-builder; if that changed, declare it in devDependencies. '
+      + `(${String(e.message).slice(0, 120)})`);
+    process.exit(1);
+  }
+  const sha = (b) => createHash('sha256').update(b).digest('hex');
+  const inAsar = sha(extractFile(asarPath, 'dist/server.cjs'));
+  const onDisk = sha(readFileSync(built));
+  if (inAsar !== onDisk) {
+    console.error('STALE ARTIFACT: the server bundle inside app.asar is not the one in dist/.\n'
+      + `  app.asar: ${inAsar.slice(0, 16)}\n  dist/:    ${onDisk.slice(0, 16)}\n`
+      + '  Re-run `npm run build && npx electron-builder --mac --dir`. Testing a stale .app '
+      + 'would report a clean result for code that is not in it.');
+    process.exit(1);
+  }
+  console.log(`PASS 0. the packaged artifact contains the bundle just built (${inAsar.slice(0, 16)})`);
+}
 
 const out = [];
 const rec = (n, ok, d) => { out.push({ n, ok }); console.log(`${ok ? 'PASS' : 'FAIL'} ${n}${d ? ' — ' + d : ''}`); };
