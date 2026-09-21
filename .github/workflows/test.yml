@@ -191,6 +191,17 @@ jobs:
           npm run build
           npx electron-builder --publish never
 
+      # LAUNCH the thing we just packaged. The audit above reads what is INSIDE
+      # the .app; nothing in CI ever STARTED it. That is the gap SR-63 went
+      # through — a Host guard can be right in dist/server.cjs and still brick
+      # the real window (or be missing from the artifact) with every other
+      # suite green, because this is the only harness where Chromium writes the
+      # headers and the real main process runs.
+      - name: Launch the packaged app and smoke-test it
+        run: |
+          npx playwright install --with-deps chromium
+          node src/integration/desktop-packaged-smoke.test.mjs
+
       - name: Audit the packaged app.asar
         # Same flag as the release step, so the PR checks what the release
         # checks. Without it a build that produced no .dmg/.zip would audit the
