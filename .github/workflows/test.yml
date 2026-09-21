@@ -505,6 +505,20 @@ jobs:
         env:
           DESKTOP_ADOPT_PORT: '3117'
 
+      # SR-46: the same route's DEAD-SESSION behaviour, in a real renderer.
+      # Everything guarding RED-DESKTOP-19/001 was a source regex, and a
+      # one-character mutation (`localGamesOffer.token + ' '`) kept every
+      # asserted pattern present while clearSession() could never run — the
+      # adopt-local suite above and localowner.test.ts both stayed green while
+      # the header claimed "signed in" for a session the server had killed.
+      # Needs Chromium: App.tsx only renders the offer for an Electron UA.
+      - name: Boot the production server and run the adopt-local dead-session suite
+        run: |
+          npx playwright install --with-deps chromium
+          node src/integration/desktop-adopt-deadsession.test.mjs
+        env:
+          DESKTOP_ADOPT_DEAD_PORT: '3119'
+
       - name: Boot the production server and run the atomic tmp-sweep suite
         run: node src/integration/atomic-tmp-sweep.test.mjs
         env:
