@@ -39,7 +39,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,11 +68,22 @@ function loadFails(file: string): string | null {
   return r.status === 0 ? null : (r.stdout || r.stderr || '').trim() || 'unknown failure';
 }
 
+// Every scratch dir is remembered and removed at exit. Without this the suite
+// left one behind per call, forever: 316 `nash-cjs-*` directories were sitting
+// in this machine's temp dir when it was counted. Harmless per run, unbounded
+// across a few hundred.
+const scratchDirs: string[] = [];
 function scratch(name: string, source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'nash-cjs-'));
+  scratchDirs.push(dir);
   const p = join(dir, name);
   writeFileSync(p, source);
   return p;
+}
+function cleanupScratchDirs(): void {
+  for (const d of scratchDirs.splice(0)) {
+    try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
 }
 
 /** Mutate the real electron-main.cjs, keeping the fixture permanently in sync with the code. */
@@ -181,5 +192,8 @@ try {
 } catch (err: any) {
   console.error('Desktop .cjs contract failure:');
   console.error(err?.message || err);
+  cleanupScratchDirs();
   process.exit(1);
+} finally {
+  cleanupScratchDirs();
 }

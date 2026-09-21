@@ -1094,8 +1094,17 @@ function loadBackend() {
   // into ports this run does not own. Use a dedicated one and a private
   // userData dir so this probe can never collide with a live desktop app.
   process.env.PORT = String(EGRESS_PORT);
-  process.env.ELECTRON_USER_DATA_PATH = require('fs')
+  const egressUserData = require('fs')
     .mkdtempSync(path.join(require('os').tmpdir(), 'nash-egress-probe-'));
+  process.env.ELECTRON_USER_DATA_PATH = egressUserData;
+  // The backend holds this directory for the life of the process, so it can
+  // only be removed on exit — but it MUST be: without this the runner left one
+  // behind on every invocation, and 969 `nash-egress-probe-*` directories had
+  // accumulated in this machine's temp dir by the time they were counted.
+  process.once('exit', () => {
+    try { require('fs').rmSync(egressUserData, { recursive: true, force: true }); }
+    catch { /* best effort at exit */ }
+  });
   try {
     backendLoaded = true;
     return originalLoad.call(Module, bundle, module, false);
