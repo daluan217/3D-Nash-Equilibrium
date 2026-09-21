@@ -189,10 +189,13 @@ for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL']) {
 //
 // The INODE is. A rename-based replace makes db.json a different file on
 // every save; an in-place write keeps the same inode forever. Measured on
-// the same 8 saves: clean tree 8 distinct inodes, mutant 1. That separation
-// is the whole point — it is a property of the MECHANISM, which is what the
-// atomic-write contract actually promises, rather than of an outcome the
-// filesystem hides.
+// the same 8 saves: clean tree 8 distinct inodes, mutant 1 — a property of
+// the MECHANISM, which is what the atomic-write contract actually promises,
+// rather than of an outcome the filesystem hides.
+//   The assertion is CONSECUTIVE inequality, not a distinct count: the first
+// spelling demanded 8 distinct and CI failed it with 2, because the
+// filesystem there reuses the number the previous db.json just freed. That
+// was my assertion being wrong about the world, not a defect.
 {
   const userData = mkdtempSync(path.join(tmpdir(), 'nash-inode-'));
   const srv = launch(userData, ++port);
@@ -209,21 +212,31 @@ for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL']) {
     await save(0);
     await sleep(200);
     const SAVES = 8;
-    const inodes = new Set();
-    let sawFile = 0;
+    const seq = [];
     for (let i = 1; i <= SAVES; i++) {
       await save(i);
       await sleep(120);
-      if (existsSync(dbFile)) { sawFile++; inodes.add(statSync(dbFile).ino); }
+      if (existsSync(dbFile)) seq.push(statSync(dbFile).ino);
     }
-    // CONTROL first: if the file never appeared, "distinct inodes" below is
-    // counting nothing and would pass for the wrong reason.
-    record('1a CONTROL: db.json existed after every save (the inode count is counting something)',
-      sawFile === SAVES, `observed the file ${sawFile}/${SAVES} times`);
+    // CONTROL first: if the file never appeared, the check below is comparing
+    // nothing and would pass for the wrong reason.
+    record('1a CONTROL: db.json existed after every save (the inode check has something to read)',
+      seq.length === SAVES, `observed the file ${seq.length}/${SAVES} times`);
+    // CONSECUTIVE, not distinct. "8 distinct inodes" is what this laptop
+    // shows, but it is NOT a property of the product: CI reported 2 distinct
+    // over 8 saves and failed this check, because a filesystem is free to
+    // REUSE the inode number the previous db.json just freed. Renaming a new
+    // file over the old one still cannot leave the SAME inode in place from
+    // one save to the next, which is the invariant that actually distinguishes
+    // rename-then-replace from an in-place write — and it separates the two
+    // cases cleanly: perfect alternating reuse (2 distinct) passes here and
+    // the non-atomic mutant (1 distinct, every pair identical) fails.
+    const repeated = seq.filter((ino, i) => i > 0 && ino === seq[i - 1]).length;
     record('1a: every save REPLACES db.json rather than overwriting it in place',
-      inodes.size === SAVES,
-      `${inodes.size} distinct inode(s) over ${SAVES} saves — 1 means an in-place write, `
-      + 'which is the non-atomic shape the four parse checks above cannot see');
+      seq.length === SAVES && repeated === 0,
+      `${repeated} of ${Math.max(seq.length - 1, 0)} consecutive save(s) kept the SAME inode `
+      + `(sequence ${JSON.stringify(seq)}) — an unchanged inode is an in-place write, the `
+      + 'non-atomic shape the four parse checks above cannot see');
   }
   await stop(srv);
   rmSync(userData, { recursive: true, force: true });
