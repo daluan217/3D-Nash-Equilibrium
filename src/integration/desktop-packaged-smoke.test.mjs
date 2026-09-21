@@ -208,6 +208,62 @@ try {
   });
   rec('9. the lazy session key works end-to-end in the packaged app (sign in, /api/auth/me 200)',
     authed.ok === true, JSON.stringify(authed));
+  // ── 10. RENDERER ISOLATION, asserted from INSIDE the page. ──────────────
+  // webPreferences reports what was REQUESTED; this reports what the page can
+  // actually reach. Only the real binary can answer it.
+  const iso = await win.evaluate(() => ({
+    require: typeof require !== 'undefined', process: typeof process !== 'undefined',
+    module: typeof module !== 'undefined', global: typeof global !== 'undefined',
+    buffer: typeof Buffer !== 'undefined',
+    exposed: Object.keys(window).filter((k) => /electron|node|ipc|nash/i.test(k)).sort(),
+    bridgeKeys: window.nashDesktop ? Object.keys(window.nashDesktop).sort() : null,
+    ipcReachable: !!(window.nashDesktop && window.nashDesktop.ipcRenderer),
+  }));
+  rec('10. the renderer has no Node reachable from inside the page',
+    !iso.require && !iso.process && !iso.module && !iso.global && !iso.buffer,
+    JSON.stringify(iso));
+  rec('10b. exactly one bridge key, with exactly one method, and no ipcRenderer behind it',
+    JSON.stringify(iso.exposed) === JSON.stringify(['nashDesktop'])
+    && JSON.stringify(iso.bridgeKeys) === JSON.stringify(['setBackgroundColor'])
+    && iso.ipcReachable === false,
+    JSON.stringify({ exposed: iso.exposed, bridgeKeys: iso.bridgeKeys, ipcReachable: iso.ipcReachable }));
+
+  // ── 11. THE BRIDGE FORWARDS ANYTHING; MAIN IS WHAT MUST VALIDATE. ───────
+  // Asserted by EFFECT on the native window, not by the call returning — the
+  // renderer cannot see the handler's verdict, so "it did not throw" says
+  // nothing at all.
+  const colour = () => app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()[0].getBackgroundColor());
+  const sendColour = (value, extra) => win.evaluate(([v, e]) => {
+    try {
+      if (e === undefined) window.nashDesktop.setBackgroundColor(v);
+      else window.nashDesktop.setBackgroundColor(v, e);
+      return 'sent';
+    } catch { return 'threw'; }
+  }, [value, extra]);
+
+  const baseline = await colour();
+  const accepted = [];
+  for (const bad of ['red', '#00', 'javascript:alert(1)', null, 123, '#12345g', '#1234567', '  #ffffff  ']) {
+    await sendColour(bad);
+    await win.waitForTimeout(120);
+    if ((await colour()) !== baseline) accepted.push(bad);
+  }
+  rec('11. main REJECTS every non-hex background colour the renderer can send',
+    accepted.length === 0, `the window changed for: ${JSON.stringify(accepted)}`);
+  // CONTROL: a valid colour must actually change the window, or every
+  // "unchanged" above is the reading for a bridge that does nothing at all.
+  await sendColour('#123456');
+  await win.waitForTimeout(250);
+  const changed = await colour();
+  rec('11b. CONTROL: a VALID hex colour does change the window (the bridge is not inert)',
+    changed.toLowerCase() === '#123456', `window colour is ${changed}`);
+  // An extra argument must not be usable to pick a different IPC channel.
+  await sendColour('#abcdef', 'set-background-color-evil');
+  await win.waitForTimeout(250);
+  rec('11c. an extra argument cannot select a different IPC channel',
+    (await colour()).toLowerCase() === '#abcdef',
+    'the call still routes to the one channel the preload hard-codes');
 } finally {
   if (app) await app.close().catch(() => {});
   rmSync(userDataDir, { recursive: true, force: true });
