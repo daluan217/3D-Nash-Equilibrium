@@ -28,7 +28,8 @@
  *   node src/integration/desktop-packaged-smoke.test.mjs
  */
 import { _electron as electron } from 'playwright';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
+  writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -353,6 +354,70 @@ try {
   });
   rec('12b. no app-owned file stores the account password in the clear',
     plaintext.length === 0, `contains it: ${JSON.stringify(plaintext.map((f) => f.p))}`);
+
+  // ── 13. THE USER DOUBLE-CLICKS THE ICON AGAIN. ─────────────────────────
+  // desktop-concurrent-lock covers two `dist/server.cjs` PROCESSES; this is
+  // the packaged .app launched a second time against the user-data directory
+  // the running one owns.
+  //   WHICH LAYER EACH CHECK PROVES — measured, because the first spelling of
+  // 13 was mis-attributed. Removing the SERVER lock (`if (!acquireDesktopLock())
+  // return;` -> `acquireDesktopLock();`) left all of 13/13b/13c GREEN: the
+  // second app never reaches the server, because electron-main.cjs:177 quits
+  // it at `app.requestSingleInstanceLock()` first. So 13 is a guard on
+  // ELECTRON's lock, not the server's. Confirmed from the other side:
+  // stubbing `gotTheLock = true` makes 13 FAIL with "still running" — and
+  // 13b/13c stay green, which is the server lock doing its job with Electron's
+  // removed. That is a defence in depth worth stating rather than a
+  // redundancy: each check names a different layer.
+  //   The invariant is that a refused instance changes NOTHING: the running
+  // app keeps serving, and the two files that carry state are byte-identical
+  // (sha + size + mtime) across the second launch.
+  //   13b/13c ARE OBSERVATIONS, NOT PROOFS, and say so rather than pretending.
+  // I could not construct a mutation that makes either fail, and tried:
+  // removing the server lock (green), removing Electron's lock (13 fails,
+  // 13b/13c green), removing BOTH (13 fails, 13b/13c green), and poisoning
+  // auth-secret first so a second instance that ran through would have to
+  // WRITE (still green). The reason is a third layer: with both locks gone the
+  // second server dies on EADDRINUSE binding 14321 before it touches the
+  // directory. Three independent defences, so no single-edit mutant reaches
+  // the write. They stay because they cost one stat each and would catch a
+  // future instance that DOES get through — but they are not evidence that
+  // anything is guarded; check 13 is.
+  writeFileSync(join(userDataDir, 'auth-secret'), 'not-a-key');
+  const stateFiles = ['db.json', 'auth-secret'];
+  const fingerprint = () => JSON.stringify(stateFiles.map((n) => {
+    const f = join(userDataDir, n);
+    if (!existsSync(f)) return [n, null];
+    const st = statSync(f);
+    return [n, createHash('sha256').update(readFileSync(f)).digest('hex').slice(0, 12), st.size, st.mtimeMs];
+  }));
+  const beforeSecond = fingerprint();
+  // CONTROL: the fingerprint must be reading real files, or "unchanged" below
+  // is the reading for two nulls.
+  rec('13 CONTROL: both state files exist before the second launch',
+    !beforeSecond.includes('null'), beforeSecond);
+
+  const { spawn } = await import('node:child_process');
+  const second = spawn(APP, [`--user-data-dir=${userDataDir}`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const secondExit = await Promise.race([
+    new Promise((r) => second.once('exit', (code) => r(code))),
+    new Promise((r) => setTimeout(() => r('still running'), 12000)),
+  ]);
+  if (secondExit === 'still running') second.kill('SIGKILL');
+  rec('13. a second launch of the packaged app does not take over (it exits)',
+    secondExit !== 'still running', `second instance: ${secondExit}`);
+  rec('13b. OBSERVATION: the refused second launch changed nothing on disk',
+    fingerprint() === beforeSecond, `before ${beforeSecond} after ${fingerprint()}`);
+  // …and the first window is still the live one, serving its own library.
+  const survived = await win.evaluate(async () => {
+    try {
+      const r = await fetch('/api/games');
+      return { status: r.status, names: (await r.json()).map((g) => g.name) };
+    } catch (e) { return { error: String(e).slice(0, 100) }; }
+  });
+  rec('13c. OBSERVATION: the FIRST window still serves its library afterwards',
+    survived.status === 200 && survived.names?.includes('SR63 REAL APP SAVE'),
+    JSON.stringify(survived));
 } finally {
   if (app) await app.close().catch(() => {});
   rmSync(userDataDir, { recursive: true, force: true });
