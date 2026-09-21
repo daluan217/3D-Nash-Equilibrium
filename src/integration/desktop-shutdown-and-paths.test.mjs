@@ -23,10 +23,14 @@
  * to boot with something in the log — never boot and silently write nowhere,
  * which is the shape that loses data without an error.
  *
+ * SECTION 3 — THE DISK STOPS ACCEPTING WRITES. A laptop fills up, and saveDB
+ * rewrites the WHOLE database, so the first casualty is a save that used to
+ * work. The failure that matters is a 200 for a write that did not land.
+ *
  *   node src/integration/desktop-shutdown-and-paths.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -274,6 +278,97 @@ for (const [label, mustBoot, build, why] of SHAPES) {
   }
   await stop(srv);
   rmSync(root, { recursive: true, force: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. THE DISK STOPS ACCEPTING WRITES MID-USE.
+// ═══════════════════════════════════════════════════════════════════════════
+// A laptop fills up. `saveDB` rewrites the WHOLE database through
+// writeFileAtomicSync, so the first casualty is a save that used to work, and
+// the failure mode that matters is a 200 for a write that did not land —
+// "Game saved successfully!" over a library that silently did not change.
+//
+// Simulated with RLIMIT_FSIZE rather than a real volume: capping file size
+// makes the rewrite fail at exactly the same call, needs no root, and works
+// on macOS and Linux alike (a real small volume needs `hdiutil`/`mount`, so
+// it could never run in the ubuntu integration job). The errno differs —
+// EFBIG rather than ENOSPC — but the branch under test is `writeFileSync`
+// throwing, which is the same one either way.
+//
+// MEASURED on a real 3MB HFS+ volume first, to be sure this is not an
+// artefact of the simulation: with the library large enough that the atomic
+// rewrite could not fit, the app answered 500 "Could not save your changes",
+// the refused game was absent from disk, db.json still parsed, and a save
+// after freeing space succeeded.
+{
+  const capScript = path.join(tmpdir(), `nash-fsize-cap-${process.pid}.sh`);
+  // 150 * 512B blocks ~= 75KB; the suite below grows db.json past that.
+  writeFileSync(capScript, `#!/bin/bash\nulimit -f 150\nexec node "$@"\n`);
+  chmodSync(capScript, 0o755);
+
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-fsize-'));
+  const thePort = ++port;
+  const child = spawn(capScript, [BUNDLE], {
+    cwd: tmpdir(),
+    env: {
+      PATH: process.env.PATH, HOME: userData, NODE_ENV: 'production', IS_ELECTRON: 'true',
+      PORT: String(thePort), ELECTRON_USER_DATA_PATH: userData,
+      NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let flog = '';
+  child.stdout.on('data', (d) => { flog += d; });
+  child.stderr.on('data', (d) => { flog += d; });
+  const srv = { child, log: () => flog };
+  const bound = await waitBound(srv);
+  record('the write-limit fixture booted', bound !== null,
+    bound === null ? flog.slice(-200) : `port ${bound}`);
+
+  if (bound !== null) {
+    const save = (name) => fetch(`http://127.0.0.1:${bound}/api/games`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, payoffs: PAYOFFS }),
+    }).then(async (r) => ({ status: r.status, text: (await r.text()).slice(0, 80) }))
+      .catch((e) => ({ status: 'threw', text: e.message }));
+
+    let succeeded = 0;
+    let refusal = null;
+    for (let i = 0; i < 500 && refusal === null; i++) {
+      const r = await save(`G-${i}`);
+      if (r.status === 200) succeeded++;
+      else refusal = { i, ...r };
+    }
+    // CONTROL FIRST: saves must work until the cap actually bites. Without
+    // this, "the first failure was honest" would also pass on a server that
+    // refused the very first save for an unrelated reason.
+    record('CONTROL: saves succeed until the write limit is actually reached',
+      succeeded > 10 && refusal !== null,
+      `${succeeded} succeeded, then ${refusal ? `#${refusal.i} -> ${refusal.status}` : 'NEVER failed — the cap never bit'}`);
+
+    if (refusal) {
+      record('a save that cannot be written is REFUSED, not reported as saved',
+        refusal.status >= 500,
+        `status ${refusal.status} ${refusal.text} — a 200 here is the "my games vanished" defect`);
+      const disk = existsSync(path.join(userData, 'db.json'))
+        ? readFileSync(path.join(userData, 'db.json'), 'utf8') : '';
+      let parses = false;
+      try { JSON.parse(disk); parses = true; } catch { /* torn */ }
+      record('db.json still parses after a write that could not complete',
+        parses, `${disk.length} bytes`);
+      record('the refused save is absent from disk (no half-written record)',
+        !disk.includes(`"G-${refusal.i}"`), `looking for G-${refusal.i}`);
+      const list = await fetch(`http://127.0.0.1:${bound}/api/games`)
+        .then((r) => r.json()).catch(() => null);
+      record('the library is still served after the failed write',
+        Array.isArray(list) && list.length === succeeded,
+        `served ${list?.length} of ${succeeded} saved`);
+    }
+  }
+  await stop(srv);
+  rmSync(userData, { recursive: true, force: true });
+  rmSync(capScript, { force: true });
 }
 
 const failed = results.filter((r) => !r.pass);
