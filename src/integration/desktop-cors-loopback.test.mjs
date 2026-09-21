@@ -43,7 +43,9 @@ import http from 'node:http';
 const repo = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(repo, 'dist/server.cjs');
 const DESKTOP_PORT = process.env.DESKTOP_CORS_PORT || '3201';
-const WEB_PORT = process.env.DESKTOP_CORS_WEB_PORT || '3202';
+// 3209, not 3202: DESKTOP_PORT+1 is where the EADDRINUSE walk lands, and
+// the walked-instance checks below must not hit the web server instead.
+const WEB_PORT = process.env.DESKTOP_CORS_WEB_PORT || '3209';
 const HOSTILE = 'https://evil.example';
 
 const results = [];
@@ -360,6 +362,61 @@ try {
     const r = await rawReq(WEB_PORT, hostHeader, { p: '/api/health' });
     record(`SR-63 CONTROL: the hosted build still serves Host "${hostHeader}"`,
       r.status === 200, `status=${r.status} — a leak here would 403 the whole public site`);
+  }
+  // SR-63 vs the EADDRINUSE PORT WALK. The app does not always land on its
+  // configured port: a second instance walks to the next one. The guard
+  // strips ":<port>" and compares only the hostname, so a WALKED instance
+  // must still serve its own renderer — a guard that had compared the whole
+  // host:port against the configured value would 403 exactly the second
+  // window, the case nobody tests by hand. Nothing in this repo asserted the
+  // walked port is served at all.
+  {
+    // NOT `boot()`: that helper polls the CONFIGURED port for a matching pid,
+    // which a walked instance never answers — it would spin its full retry
+    // budget and then report "not up" on a perfectly healthy server. Wait on
+    // the bind line instead, which names the port actually taken.
+    const walkedUserData = mkdtempSync(path.join(tmpdir(), 'nash-cors-walk-'));
+    const walkedChild = spawn(process.execPath, [BUNDLE], {
+      cwd: tmpdir(),
+      env: {
+        PATH: process.env.PATH, HOME: walkedUserData, NODE_ENV: 'production',
+        PORT: DESKTOP_PORT, ELECTRON_USER_DATA_PATH: walkedUserData, IS_ELECTRON: 'true',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let walkedLog = '';
+    walkedChild.stdout.on('data', (d) => { walkedLog += d; });
+    walkedChild.stderr.on('data', (d) => { walkedLog += d; });
+    const walked = { child: walkedChild, userData: walkedUserData, log: () => walkedLog };
+    try {
+      let walkedPort = null;
+      for (let i = 0; i < 120 && walkedPort === null; i++) {
+        const mm = /Express server running on http:\/\/127\.0\.0\.1:(\d+)/.exec(walkedLog);
+        if (mm) { walkedPort = mm[1]; break; }
+        if (walkedChild.exitCode !== null) break;
+        await sleep(250);
+      }
+      // The walk lands on DESKTOP_PORT+1. If that is the WEB server's port the
+      // walk continues past it and the checks below would be talking to the
+      // hosted-condition server instead — which answers 401, not 403, and
+      // reads as a product failure. Caught exactly that way while writing
+      // this. Refuse to report rather than measure the wrong process.
+      record('SR-63 setup: the walked port is not the web server\'s port',
+        walkedPort !== String(WEB_PORT),
+        `walked=${walkedPort} web=${WEB_PORT} — set DESKTOP_CORS_WEB_PORT away from DESKTOP_CORS_PORT+1`);
+      if (walkedPort === String(WEB_PORT)) walkedPort = null;
+      record('SR-63 setup: a second instance really WALKED to a different port',
+        !!walkedPort && walkedPort !== String(DESKTOP_PORT),
+        `configured=${DESKTOP_PORT} bound=${walkedPort} — without a real walk the checks below measure nothing`);
+      if (walkedPort && walkedPort !== String(DESKTOP_PORT)) {
+        const own = await rawReq(walkedPort, `127.0.0.1:${walkedPort}`);
+        record('SR-63: the WALKED instance still serves its own renderer',
+          own.status === 200, `status=${own.status} on port ${walkedPort}`);
+        const foreignOnWalked = await rawReq(walkedPort, `evil.example:${walkedPort}`);
+        record('SR-63: the WALKED instance is no more permissive than the first',
+          foreignOnWalked.status === 403, `status=${foreignOnWalked.status}`);
+      }
+    } finally { await stop(walked); }
   }
 } catch (err) {
   record('suite ran to completion', false, String(err && err.message));

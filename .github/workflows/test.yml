@@ -528,7 +528,11 @@ jobs:
         run: node src/integration/desktop-cors-loopback.test.mjs
         env:
           DESKTOP_CORS_PORT: '3201'
-          DESKTOP_CORS_WEB_PORT: '3202'
+          # NOT 3202: the suite boots a second desktop instance to prove the
+          # EADDRINUSE walk still serves its own renderer, and that walk lands
+          # on DESKTOP_CORS_PORT+1. With the web server there, the walked
+          # instance's checks would talk to the hosted-condition server.
+          DESKTOP_CORS_WEB_PORT: '3209'
 
       # What a TOKENLESS LOCAL CALLER can do to the desktop app. The desktop
       # authenticates nothing by design, so these are the properties holding
