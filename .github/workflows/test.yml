@@ -239,10 +239,14 @@ jobs:
       # found in the real .app: a per-launch session secret that signed the user
       # out on every restart, and a truncating db.json write that turned an
       # unreadable database into a deleted one.
+      # 3300, not 3104: this suite walks its port forward once per scenario and
+      # MEASURED it now spans base..base+19 (instrumented run: 4870 -> 4889).
+      # From 3104 that reached 3123 and sat on scenario-parity's 3106 and eight
+      # other steps' ports. 3300..3319 is free of every other port in this file.
       - name: Boot the production server and run the desktop persistence suite
         run: node src/integration/desktop-persistence.test.mjs
         env:
-          DESKTOP_PERSIST_PORT: '3104'
+          DESKTOP_PERSIST_PORT: '3300'
 
       # Every scenario-invention path draws, screens and REROLLS the same way.
       # Counts PROVIDER CALLS against a mock, because a missing retry is

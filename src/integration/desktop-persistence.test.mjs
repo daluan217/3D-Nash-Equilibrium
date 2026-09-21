@@ -36,7 +36,9 @@ import path from 'node:path';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
-let port = Number(process.env.DESKTOP_PERSIST_PORT || 3104);
+// The suite walks this forward once per scenario and spans base..base+19
+// (measured). Reserve a 20-wide window, not a single port.
+let port = Number(process.env.DESKTOP_PERSIST_PORT || 3300);
 
 const results = [];
 function record(name, pass, detail) {
