@@ -299,6 +299,31 @@ try {
     (await rawReq(DESKTOP_PORT, `127.0.0.1:${DESKTOP_PORT}`, { origin: `https://127.0.0.1:${DESKTOP_PORT}` })).acao === undefined,
     'only .host was compared, so the https origin matched');
 
+  // SR-63 BYPASS SWEEP. Every Host-based defence that has ever failed in the
+  // wild failed to a parsing difference between the checker and the consumer,
+  // so the guard is attacked with the shapes that exploit one. Each of these
+  // is a FOREIGN name to a browser; a 200 that returns the library is SR-63
+  // reopened. An allowlist of three literals is what makes them all fail —
+  // verified by running the normaliser directly on each: none of them
+  // normalise to 127.0.0.1/localhost/::1.
+  for (const [hostHeader, why] of [
+    ['127.0.0.1.evil.example', 'loopback as a PREFIX of a real domain'],
+    ['localhost.evil.example', 'localhost as a subdomain label'],
+    ['user@127.0.0.1', 'userinfo in front of the loopback literal'],
+    ['127.0.0.1@evil.example', 'userinfo the other way — the real host is evil.example'],
+    ['0x7f000001', 'hex-encoded loopback (some resolvers accept it)'],
+    ['2130706433', 'decimal-encoded loopback'],
+    ['127.1', 'short-form loopback (curl accepts it)'],
+    ['017700000001', 'octal-encoded loopback'],
+    ['[::ffff:127.0.0.1]', 'IPv4-mapped IPv6 loopback'],
+    ['localhost.', 'fully-qualified trailing dot'],
+  ]) {
+    const r = await rawReq(DESKTOP_PORT, `${hostHeader}:${DESKTOP_PORT}`);
+    record(`SR-63: Host "${hostHeader}" cannot read the library (${why})`,
+      r.status === 403 && !r.body.includes('cors-probe-game'),
+      `status=${r.status} body=${r.body.slice(0, 70)}`);
+  }
+
   // REGRESSION CONTROLS: every Host shape a real client sends must still work.
   // A guard that 403s the renderer is worse than the defect it fixes.
   for (const [hostHeader, why] of [
