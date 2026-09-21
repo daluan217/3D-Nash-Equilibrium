@@ -673,6 +673,47 @@ try {
         afterUnlock.status === 200 && has('J-after-unlock'),
         `status=${afterUnlock.status} onDisk=${has('J-after-unlock')}`);
     }
+
+    // F. CONCURRENCY (BLUE-LOOP-DESKTOP-22, sweep 24). Everything above is
+    // sequential. desktop-concurrent-lock covers two PROCESSES fighting over
+    // the lock file; nothing covered many in-flight requests inside ONE
+    // process, which is the ordinary desktop case — a user mashing Save, an
+    // autosave firing during a rename, the renderer retrying a slow response.
+    // The write path is a read-modify-write of one shared inMemoryDb.games
+    // array, so the shapes that matter are a LOST UPDATE and a POISONED
+    // QUEUE: one write fails while others are queued behind it.
+    const names = Array.from({ length: 24 }, (_, i) => `J-conc-${i}`);
+    const burst = await Promise.all(names.map((n) =>
+      call5('POST', '/api/games', { name: n, description: 'rugpull', payoffs: MP })));
+    const claimed = burst.filter((r) => r.status === 200 && r.json?.success === true).length;
+    const landed = names.filter(has).length;
+    record('concurrency: every concurrent save that CLAIMED success is on disk',
+      claimed === landed, `claimed=${claimed} onDisk=${landed} — a shortfall is silently lost work`);
+    record('concurrency CONTROL: the burst really did save (not all refused)',
+      claimed === names.length, `${claimed}/${names.length} claimed success`);
+    const dAll = dbOnDisk();
+    const ids = (dAll && dAll !== 'unparseable' ? dAll.games : []).map((g) => g.id);
+    record('concurrency: no duplicate game ids were produced',
+      new Set(ids).size === ids.length, `${ids.length} games, ${new Set(ids).size} unique ids`);
+
+    // POISONED QUEUE: fire a burst, pull writability out from under it
+    // mid-flight, give it back. Nothing may claim a success it did not get.
+    // MUTATION-PROVEN: making saveDB swallow its error and return true leaves
+    // 8 of 12 claimed-but-absent and fails this check by name.
+    const poisonNames = Array.from({ length: 12 }, (_, i) => `J-poison-${i}`);
+    const poisonBurst = poisonNames.map((n) =>
+      call5('POST', '/api/games', { name: n, description: 'rugpull', payoffs: MP }));
+    await new Promise((r) => setTimeout(r, 40));
+    chmodSync(userData5, 0o555);
+    const poisonResults = await Promise.all(poisonBurst);
+    chmodSync(userData5, 0o755);
+    const phantom = poisonNames.filter((n, i) =>
+      poisonResults[i].status === 200 && poisonResults[i].json?.success === true && !has(n));
+    record('concurrency: no queued save claimed success while the directory was unwritable',
+      phantom.length === 0, `phantom saves: ${JSON.stringify(phantom)}`);
+    const postPoison = await call5('POST', '/api/games', { name: 'J-post-poison', description: 'rugpull', payoffs: MP });
+    record('concurrency CONTROL: the app recovers after the mid-burst outage',
+      postPoison.status === 200 && has('J-post-poison'), `status=${postPoison.status}`);
   } finally {
     server5.kill('SIGKILL');
     await reaped(server5);
