@@ -178,9 +178,12 @@ async function req(base, verb, p, body, token) {
       const url = p.replace(/:[A-Za-z]+/g, 'probe-id');
       const body = verb === 'GET' ? undefined : (CENSUS_BODY[route] ?? {});
       const r = await req(srv.base, verb, url, body);
-      // 401/403 = a credential is required; 404 = no such thing here. Anything
-      // else means a tokenless local caller got INTO the handler.
-      if (typeof r.status === 'number' && ![401, 403, 404].includes(r.status)) reached.add(route);
+      // 401/403 ONLY. 404 used to count as gated, but every 404 on this surface
+      // comes from a handler that already RAN: reset-password 404s after its
+      // db.users lookup (the same call with an email that EXISTS answers 400),
+      // DELETE /api/games/:id after its game lookup, regenerate after its flag
+      // check. A missing data row is not a credential check (measured 2026-09-20).
+      if (typeof r.status === 'number' && ![401, 403].includes(r.status)) reached.add(route);
     }
 
     // These must stay credential-gated for a tokenless caller. Named
