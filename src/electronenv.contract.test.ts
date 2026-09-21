@@ -147,15 +147,32 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
   // which is what made the SR-56 check compare against the wrong offset.
   // Offsets are preserved by codeOnly, so an AST position is comparable to an
   // index into `code`. Lowest call wins: a later one cannot launder an early
-  // require. EXECUTED calls only — a nested `require` inside a function that is
-  // never invoked is not what boots the server, but we have none, and
-  // `requireCalls === 1` below fails loudly if that ever changes.
+  // require.
+  //   REACHABILITY IS CHECKED, not assumed (gate review #6, finding 3 —
+  // reproduced). This comment used to claim "EXECUTED calls only"; it did not
+  // check that, and wrapping the real call in a never-invoked function left
+  // this file 35/35 GREEN while the packaged app would never boot its server.
+  // `enclosingFunctions` counts the function-like ancestors of the call, and
+  // the require must sit at statement level (inside the top-level `else`
+  // block, which is not a function) so "before the require" describes
+  // module-load order rather than the text order of a dead branch.
   const sf = ts.createSourceFile('m.js', main, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const requirePositions: number[] = [];
+  const nested: string[] = [];
   const findRequires = (n: ts.Node): void => {
     if (ts.isCallExpression(n) && n.expression.getText(sf) === 'require'
       && n.arguments.length === 1 && ts.isStringLiteralLike(n.arguments[0])
-      && /server\.cjs$/.test(n.arguments[0].text)) requirePositions.push(n.getStart(sf));
+      && /server\.cjs$/.test(n.arguments[0].text)) {
+      requirePositions.push(n.getStart(sf));
+      for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+        if (ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p)
+          || ts.isArrowFunction(p) || ts.isMethodDeclaration(p)) {
+          nested.push(`${ts.isFunctionDeclaration(p) && p.name ? p.name.text : '<anonymous>'}`
+            + ` at line ${main.slice(0, p.getStart(sf)).split('\n').length}`);
+          break;
+        }
+      }
+    }
     n.forEachChild(findRequires);
   };
   findRequires(sf);
@@ -163,6 +180,12 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
     `electron-main.cjs must require the compiled server exactly once; found `
     + `${requirePositions.length}. With more than one, "before the require" is ambiguous `
     + 'and this section must be rewritten rather than silently picking the first.');
+  ok(nested.length === 0,
+    `the require of dist/server.cjs must run at module load, not inside a function `
+    + `(found inside: ${nested.join(', ')}). A require that is only REACHED when something `
+    + 'calls it makes every "set before the require" check below meaningless — measured: '
+    + 'wrapping it in a never-invoked function left this file 35/35 green while the packaged '
+    + 'app would never start its server.');
   const requireIdx = requirePositions[0];
   ok(requireIdx > 0, 'electron-main.cjs must require the compiled server');
   // CONTROL: the anchor must be the CALL, not the prose that mentions it. The

@@ -261,9 +261,13 @@ ok(/if\s*\(!isVersion\(a\)\s*\|\|\s*!isVersion\(b\)\)\s*return 0;/.test(code),
 // classes below are a CORRECT-looking version wrapped in something else, or
 // written in another digit system, and none of them appeared in this file.
 // They matter because `/^\d+\.\d+\.\d+$/` has two properties worth pinning:
-// `$` matches before a FINAL NEWLINE in JavaScript (so "0.0.226\n" is the one
-// shape a reader must not have to guess about), and `\d` is ASCII-only
-// without the `u` flag.
+// `\d` is ASCII-only without the `u` flag, and `$` without `/m` does NOT
+// match before a final newline — MEASURED, correcting what this comment said
+// first: /^\d+\.\d+\.\d+$/.test('0.0.226\\n') is FALSE, and only the /m
+// variant returns true (gate review #6, finding 4). So the trailing-newline
+// row is not a live exposure today either; it is the guard against someone
+// adding /m, and against the trim()-tolerant validator below, which IS a
+// plausible refactor and does accept it.
 //   HONESTY ABOUT THE UNICODE ROWS: they are DEFENCE IN DEPTH, not live
 // exposure. Measured against a `/^[\p{Nd}]+\.[\p{Nd}]+\.[\p{Nd}]+$/u` variant,
 // "١.٠.٢٢٦" and "１.０.２２６" pass isVersion but parseInt returns NaN, `|| 0`
@@ -275,8 +279,13 @@ ok(/if\s*\(!isVersion\(a\)\s*\|\|\s*!isVersion\(b\)\)\s*return 0;/.test(code),
 // under a plausible refactor are the whitespace ones — see the trim() mutant
 // recorded below.
 //
-// The build/prerelease-tag classes here overlap the list above by intent:
-// these are the `+build` and bare-exponent spellings, not the `-rc1` ones.
+// DROPPED after gate review #6 (finding 5, verified): '0x0.0x0.0xFFFF',
+// '<maj>.<min>.<pat>e0', 'Infinity.0.0' and '1e400.0.0' fail for the IDENTICAL
+// reason as CHECK 3's existing '0x10.0.0' and '0.0.1e3' — a non-ASCII-digit
+// character breaking `\d+` in a component. They exercised no path CHECK 3 did
+// not already cover, so they were decorative volume. What is left is the part
+// CHECK 3 genuinely never had: SURROUNDINGS (whitespace, CRLF, NUL, RTL) and
+// other DIGIT ALPHABETS.
 const SURROUNDED = [
   [`${MAJ}.${MIN}.${PAT + 1}\n`, 'trailing newline — `$` matches before it'],
   [`${MAJ}.${MIN}.${PAT + 1}\r\nX-Injected: 1`, 'CRLF and a second line'],
@@ -289,11 +298,7 @@ const SURROUNDED = [
   ['１.０.２２６', 'fullwidth digits'],
   ['①.0.0', 'circled digit one'],
   [`${MAJ}.${MIN}.+${PAT + 1}`, 'unary plus on a component'],
-  [`${MAJ}.${MIN}.${PAT + 1}e0`, 'exponent notation'],
   [`${MAJ}.${MIN}.${PAT + 1}+build`, 'build metadata'],
-  ['0x0.0x0.0xFFFF', 'hex components'],
-  ['Infinity.0.0', 'Infinity as a component'],
-  ['1e400.0.0', 'a component that overflows to Infinity'],
   ['<img src=x onerror=alert(1)>', 'HTML — this string reaches a dialog'],
   ['../../../etc/passwd', 'a path, not a version'],
 ];

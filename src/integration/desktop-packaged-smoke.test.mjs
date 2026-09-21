@@ -306,20 +306,42 @@ try {
   // shell with no Playwright involved. It is an EventEmitter 'error' sink
   // (a `()=>{}`), so it is subtracted BY NAME rather than the assertion being
   // relaxed to a subset check, which would stop counting anything.
-  const ELECTRON_OWN = ['error'];
-  const channels = await app.evaluate(({ ipcMain }) =>
-    ipcMain.eventNames().map(String).sort());
-  const ours = channels.filter((c) => !ELECTRON_OWN.includes(c));
-  rec('11d. the packaged main process registers EXACTLY the one IPC channel',
-    JSON.stringify(ours) === JSON.stringify(['set-background-color']),
-    `registered: ${JSON.stringify(channels)}, ours: ${JSON.stringify(ours)} — each one is a `
-    + 'capability any script in the page can invoke');
-  // CONTROL: the subtraction above must not be able to hide a real channel —
-  // if Electron ever stops registering `error`, this fails and the list is
-  // re-derived rather than silently carrying a name that subtracts nothing.
-  rec('11d CONTROL: the subtracted name is actually present (the filter is not a no-op)',
-    ELECTRON_OWN.every((c) => channels.includes(c)),
-    `expected ${JSON.stringify(ELECTRON_OWN)} among ${JSON.stringify(channels)}`);
+  //   THREE REGISTRIES, not one (gate review #6, finding 1 — reproduced).
+  // `eventNames()` is ONLY the EventEmitter side: `ipcMain.handle()` stores
+  // its handler in a separate `_invokeHandlers` map and never registers a
+  // listener. MEASURED on the packaged app with
+  // `ipcMain.handle('exfil-data', ...)` added to electron-main.cjs: 11d
+  // reported "EXACTLY the one IPC channel" and the suite passed 24/24 while a
+  // whole invoke-style capability shipped. `handle()` is the officially
+  // recommended pattern for anything that returns a value, so this is the
+  // likely shape of the next channel, not an exotic one.
+  //   COUNTS, not just names: `eventNames()` collapses duplicates, so a second
+  // real `.on('error', …)` would hide behind Electron's own sink. Verified on a
+  // plain EventEmitter — eventNames stays ['error'] while listenerCount goes
+  // 1 -> 2. The budget below is per-name, so that cannot hide either.
+  const ELECTRON_OWN = { error: 1 };   // name -> listeners Electron itself adds
+  const reg = await app.evaluate(({ ipcMain }) => ({
+    on: ipcMain.eventNames().map(String).sort()
+      .map((n) => [n, ipcMain.listenerCount(n)]),
+    // `_invokeHandlers` is Electron-internal. If a future version renames it
+    // this reads null and the check below FAILS rather than silently passing.
+    invoke: ipcMain._invokeHandlers ? [...ipcMain._invokeHandlers.keys()].map(String).sort() : null,
+  }));
+  const ours = reg.on.filter(([n, c]) => c > (ELECTRON_OWN[n] ?? 0)).map(([n]) => n);
+  const extraOnElectronsNames = reg.on
+    .filter(([n, c]) => ELECTRON_OWN[n] !== undefined && c > ELECTRON_OWN[n]);
+  rec('11d. the packaged main process registers EXACTLY the one IPC channel, on BOTH registries',
+    JSON.stringify(ours) === JSON.stringify(['set-background-color'])
+    && Array.isArray(reg.invoke) && reg.invoke.length === 0,
+    `on=${JSON.stringify(reg.on)} invoke=${JSON.stringify(reg.invoke)} ours=${JSON.stringify(ours)} `
+    + `— invoke must be [] (ipcMain.handle is invisible to eventNames), and null means the internal `
+    + 'registry moved and this check can no longer see invoke handlers at all');
+  rec('11d CONTROL: the subtracted name is present with exactly the expected listener count',
+    Object.entries(ELECTRON_OWN).every(([n, c]) =>
+      reg.on.some(([rn, rc]) => rn === n && rc === c)) && extraOnElectronsNames.length === 0,
+    `expected ${JSON.stringify(ELECTRON_OWN)}, saw ${JSON.stringify(reg.on)} — a mismatch means `
+    + 'either Electron changed what it registers (re-derive the budget) or something added a '
+    + 'listener under one of its names');
 
   // ── 12. WHAT THE SESSION LEFT ON DISK. ─────────────────────────────────
   // Sweep 34. Everything above asks what the app ANSWERS; this asks what it
@@ -329,7 +351,30 @@ try {
   //   Scoped to the files the APP owns — Chromium's caches are Chromium's
   // business and their names churn between versions, so asserting on them
   // would be a rot factory. The control below keeps the scoping honest.
-  const CHROMIUM = /^(Cache|Code Cache|Dawn\w*Cache|GPUCache|Local Storage|Session Storage|blob_storage|Network|Shared Dictionary|Trust Tokens|Cookies|Singleton|DevToolsActivePort|component_crx_cache|extensions_crx_cache)/;
+  //   ANCHORED AT A PATH SEPARATOR, not a bare prefix (gate review #6,
+  // finding 2 — reproduced: the unanchored form excluded 'Cookies-backup.json',
+  // 'Network-debug.log' and 'Singleton-user-token.txt', so any future app-owned
+  // file starting with one of these words would silently escape BOTH the mode
+  // audit and the password grep). A name must match the segment exactly, or be
+  // a directory prefix followed by `/`. `Cookies-journal` and the two
+  // `Trust Tokens-journal` files are Chromium's own, so they are listed.
+  const CHROMIUM = /^(Cache|Code Cache|Dawn\w*Cache|GPUCache|Local Storage|Session Storage|blob_storage|Network|Shared Dictionary|Trust Tokens|Trust Tokens-journal|Cookies|Cookies-journal|SingletonCookie|SingletonLock|SingletonSocket|DevToolsActivePort|component_crx_cache|extensions_crx_cache)(\/|$)/;
+  // CONTROL: the boundary must actually bite, or this is the prefix match again.
+  for (const [name, shouldExclude] of [
+    ['Cookies', true], ['Cookies/data_0', true], ['Cookies-backup.json', false],
+    ['Network-debug.log', false], ['Singleton-user-token.txt', false],
+    ['db.json', false], ['auth-secret', false],
+  ]) {
+    if (CHROMIUM.test(name) !== shouldExclude) {
+      rec(`12 CONTROL: the Chromium filter treats ${JSON.stringify(name)} correctly`, false,
+        `excluded=${CHROMIUM.test(name)} expected=${shouldExclude} — a bare-prefix filter hides `
+        + 'app-owned files from the mode and password checks below');
+    }
+  }
+  rec('12 CONTROL: the Chromium filter matches whole path segments, not prefixes',
+    !CHROMIUM.test('Cookies-backup.json') && !CHROMIUM.test('Network-debug.log')
+    && CHROMIUM.test('Cookies') && CHROMIUM.test('Cache/index'),
+    'a prefix match would exempt any app file whose name starts with a Chromium directory name');
   const walk = (d, base = d, acc = []) => {
     for (const n of readdirSync(d)) {
       const f = join(d, n);

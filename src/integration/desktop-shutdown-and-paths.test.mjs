@@ -213,11 +213,24 @@ for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL']) {
     await sleep(200);
     const SAVES = 8;
     const seq = [];
+    // Each save's STATUS is recorded, not discarded (gate review #6, finding
+    // 6). A dropped or refused POST leaves db.json untouched, the next
+    // statSync reads the SAME inode, and the consecutive check would report a
+    // false "in-place write" — a product accusation caused by a flaky
+    // request. The control below turns that into an honest infrastructure
+    // failure instead. (This is the second time a reading on this check was
+    // about the machine rather than the product; the first was inode reuse.)
+    let saved = 0;
     for (let i = 1; i <= SAVES; i++) {
-      await save(i);
+      const r = await save(i);
+      if (r && r.status === 200) saved++;
       await sleep(120);
       if (existsSync(dbFile)) seq.push(statSync(dbFile).ino);
     }
+    record('1a CONTROL: every save in the inode loop actually succeeded',
+      saved === SAVES,
+      `${saved}/${SAVES} returned 200 — a save that did not happen leaves the inode unchanged, `
+      + 'which the check below would otherwise report as a non-atomic write');
     // CONTROL first: if the file never appeared, the check below is comparing
     // nothing and would pass for the wrong reason.
     record('1a CONTROL: db.json existed after every save (the inode check has something to read)',
