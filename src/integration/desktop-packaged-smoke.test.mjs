@@ -28,7 +28,7 @@
  *   node src/integration/desktop-packaged-smoke.test.mjs
  */
 import { _electron as electron } from 'playwright';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,6 +91,7 @@ if (!existsSync(APP)) { console.error(`packaged binary missing at ${APP}`); proc
   console.log(`PASS 0. the packaged artifact contains the bundle just built (${inAsar.slice(0, 16)})`);
 }
 
+const SMOKE_PASSWORD = 'CorrectHorse9!';
 const out = [];
 const rec = (n, ok, d) => { out.push({ n, ok }); console.log(`${ok ? 'PASS' : 'FAIL'} ${n}${d ? ' — ' + d : ''}`); };
 
@@ -200,16 +201,19 @@ try {
   // 9. THE LAZY SESSION KEY, end to end in the artifact: register + sign in,
   //    and the auth-secret on disk must be the one the running app signs with
   //    (it is written only after the lock is taken).
-  const authed = await win.evaluate(async () => {
+  // Check 12b greps the on-disk files for this exact string, so it lives in
+  // one place: a second literal there could drift and make 12b search for a
+  // password nobody ever sent.
+  const authed = await win.evaluate(async (pw) => {
     await fetch('/api/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'sweep29', email: 'sweep29@example.com', password: 'CorrectHorse9!' }) });
+      body: JSON.stringify({ username: 'sweep29', email: 'sweep29@example.com', password: pw }) });
     const li = await fetch('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: 'sweep29@example.com', password: 'CorrectHorse9!' }) });
+      body: JSON.stringify({ email: 'sweep29@example.com', password: pw }) });
     const j = await li.json();
     if (!j.token) return { ok: false, why: 'no token' };
     const me = await fetch('/api/auth/me', { headers: { authorization: `Bearer ${j.token}` } });
     return { ok: me.status === 200, status: me.status };
-  });
+  }, SMOKE_PASSWORD);
   rec('9. the lazy session key works end-to-end in the packaged app (sign in, /api/auth/me 200)',
     authed.ok === true, JSON.stringify(authed));
   // ── 10. RENDERER ISOLATION, asserted from INSIDE the page. ──────────────
@@ -308,6 +312,47 @@ try {
   rec('11d CONTROL: the subtracted name is actually present (the filter is not a no-op)',
     ELECTRON_OWN.every((c) => channels.includes(c)),
     `expected ${JSON.stringify(ELECTRON_OWN)} among ${JSON.stringify(channels)}`);
+
+  // ── 12. WHAT THE SESSION LEFT ON DISK. ─────────────────────────────────
+  // Sweep 34. Everything above asks what the app ANSWERS; this asks what it
+  // WROTE. The app's own files hold a session key and the whole library, and
+  // this is the only harness that can see them after a real signed-in session
+  // through the real binary.
+  //   Scoped to the files the APP owns — Chromium's caches are Chromium's
+  // business and their names churn between versions, so asserting on them
+  // would be a rot factory. The control below keeps the scoping honest.
+  const CHROMIUM = /^(Cache|Code Cache|Dawn\w*Cache|GPUCache|Local Storage|Session Storage|blob_storage|Network|Shared Dictionary|Trust Tokens|Cookies|Singleton|DevToolsActivePort|component_crx_cache|extensions_crx_cache)/;
+  const walk = (d, base = d, acc = []) => {
+    for (const n of readdirSync(d)) {
+      const f = join(d, n);
+      let st;
+      try { st = statSync(f); } catch { continue; }
+      if (st.isDirectory()) walk(f, base, acc);
+      else acc.push({ p: f.slice(base.length + 1), mode: (st.mode & 0o777).toString(8) });
+    }
+    return acc;
+  };
+  const disk = walk(userDataDir);
+  const appOwned = disk.filter((f) => !CHROMIUM.test(f.p));
+  // CONTROL first: if the filter ate everything, every check below is vacuous.
+  rec('12 CONTROL: the app-owned file set is non-empty after a signed-in session',
+    appOwned.length >= 3 && appOwned.some((f) => f.p === 'db.json')
+      && appOwned.some((f) => f.p === 'auth-secret'),
+    `app-owned: ${JSON.stringify(appOwned.map((f) => `${f.p}:${f.mode}`))}`);
+  // The session key and the library are 0600. Not "the app chmods them" —
+  // what the mode IS after the real app has run.
+  const notPrivate = appOwned.filter((f) => f.mode !== '600');
+  rec('12. every file the packaged app writes is 0600 (owner-only)',
+    notPrivate.length === 0,
+    `group/other-readable: ${JSON.stringify(notPrivate.map((f) => `${f.p}:${f.mode}`))}`);
+  // And no file the app owns contains the password in the clear. MEASURED as
+  // part of this sweep across all 64 files including Chromium's: zero hits.
+  const plaintext = appOwned.filter((f) => {
+    try { return readFileSync(join(userDataDir, f.p), 'latin1').includes(SMOKE_PASSWORD); }
+    catch { return false; }
+  });
+  rec('12b. no app-owned file stores the account password in the clear',
+    plaintext.length === 0, `contains it: ${JSON.stringify(plaintext.map((f) => f.p))}`);
 } finally {
   if (app) await app.close().catch(() => {});
   rmSync(userDataDir, { recursive: true, force: true });
