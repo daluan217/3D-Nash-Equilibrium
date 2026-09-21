@@ -144,7 +144,7 @@ try {
   record('a GET right after the failed POST does not show the phantom game (no rollback needed — nothing was ever committed)',
     afterFailedPost.status === 200 && Array.isArray(afterFailedPost.json)
       && !afterFailedPost.json.some((g) => g.name === 'Unwritable dir test'),
-    `status=${afterFailedPost.status} names=${JSON.stringify((afterFailedPost.json ?? []).map((g) => g.name))}`);
+    `status=${afterFailedPost.status} body=${JSON.stringify(afterFailedPost.json).slice(0, 120)}`);
 
   // ══ 3. the SAME failure mode on update/delete of a game that already
   //      exists in memory (created before the directory went read-only, the
@@ -221,7 +221,8 @@ try {
   // ORIGINAL name in place, visible to the very next GET — not silently
   // applied in memory while the write itself failed.
   const afterFailedPatch = await call2('GET', '/api/games');
-  const stillOriginal = (afterFailedPatch.json ?? []).find((g) => g.id === gid);
+  const stillOriginal = Array.isArray(afterFailedPatch.json)
+    ? afterFailedPatch.json.find((g) => g.id === gid) : undefined;
   record('a GET right after the failed PATCH still shows the ORIGINAL name, not the rejected rename',
     afterFailedPatch.status === 200 && stillOriginal?.name === 'Will go read-only',
     `status=${afterFailedPatch.status} name=${JSON.stringify(stillOriginal?.name)}`);
@@ -240,8 +241,9 @@ try {
   const afterFailedDelete = await call2('GET', '/api/games');
   record('a GET right after the failed DELETE still shows the game (nothing was actually removed)',
     afterFailedDelete.status === 200
-      && (afterFailedDelete.json ?? []).some((g) => g.id === gid),
-    `status=${afterFailedDelete.status} ids=${JSON.stringify((afterFailedDelete.json ?? []).map((g) => g.id))}`);
+      && Array.isArray(afterFailedDelete.json)
+      && afterFailedDelete.json.some((g) => g.id === gid),
+    `status=${afterFailedDelete.status} body=${JSON.stringify(afterFailedDelete.json).slice(0, 120)}`);
 } finally {
   server2.kill('SIGKILL');
   await reaped(server2);
@@ -340,9 +342,16 @@ try {
   record('the session still works right after the refused deletion (nothing was committed in memory)',
     meAfter.status === 200 && meAfter.json?.email === email, `status=${meAfter.status} body=${JSON.stringify(meAfter.json).slice(0, 120)}`);
   const gamesAfter = await call3('GET', '/api/games', undefined, token);
+  // `?? []` guards a MISSING body, not a non-array one: when the session is
+  // gone the body is `{error: 'Invalid session.'}` and `.map` threw, killing
+  // the whole suite mid-run. MEASURED — with saveDB mutated to swallow its
+  // write error, this line crashed the process at check 17 of 55 and every
+  // later block, including case K, silently never ran. A test file must
+  // REPORT a failure, not die of one.
+  const listAfter = Array.isArray(gamesAfter.json) ? gamesAfter.json : null;
   record('the account\'s saved game is still listed after the refused deletion',
-    gamesAfter.status === 200 && (gamesAfter.json ?? []).some((g) => g.name === 'Keepsake'),
-    `status=${gamesAfter.status} names=${JSON.stringify((gamesAfter.json ?? []).map((g) => g.name))}`);
+    gamesAfter.status === 200 && !!listAfter && listAfter.some((g) => g.name === 'Keepsake'),
+    `status=${gamesAfter.status} body=${JSON.stringify(gamesAfter.json).slice(0, 120)}`);
 
   // CONTROL: the route can still really delete. Without this, every check
   // above would also pass on a build where deletion never works at all.
@@ -749,6 +758,42 @@ try {
     const postPoison = await call5('POST', '/api/games', { name: 'J-post-poison', description: 'rugpull', payoffs: MP });
     record('concurrency CONTROL: the app recovers after the mid-burst outage',
       postPoison.status === 200 && has('J-post-poison'), `status=${postPoison.status}`);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CASE K (sweep 35) — the FILE is swapped by an OUTSIDE WRITER mid-session.
+    //
+    // Everything above moves or locks the DIRECTORY. A sync client (iCloud
+    // hosts this very repo), a backup restore or a cleanup script rewrites
+    // db.json UNDER the running app, which is holding `inMemoryDb` and will
+    // overwrite the whole file on its next save. Same invariant, new cause:
+    // a save either lands or reports failure.
+    //
+    // NOTE WHAT IS *NOT* ASSERTED: that the outside writer's content is
+    // preserved. It is not, and that is the documented single-owner design —
+    // asserting it would be inventing a requirement. The check is honesty.
+    for (const [label, sabotage] of [
+      ['truncated to zero bytes', () => writeFileSync(path.join(userData5, 'db.json'), '')],
+      ['replaced with foreign JSON', () => writeFileSync(path.join(userData5, 'db.json'),
+        JSON.stringify({ hello: 'world' }))],
+      ['replaced with a DIRECTORY', () => {
+        rmSync(path.join(userData5, 'db.json'), { force: true });
+        mkdirSync(path.join(userData5, 'db.json'));
+      }],
+    ]) {
+      sabotage();
+      const name = `K-${label.replace(/\W+/g, '-')}`;
+      const res = await call5('POST', '/api/games', { name, description: 'outside-writer', payoffs: MP });
+      honest(`case K (${label})`, res, name);
+      // Repair for the next iteration: the directory case leaves a directory
+      // where db.json belongs, which every later case would trip over.
+      try { rmSync(path.join(userData5, 'db.json'), { recursive: true, force: true }); } catch { /* gone */ }
+    }
+    // CONTROL: saving must work again once the outside writer stops, or every
+    // "honest" verdict above is the reading for an app that can no longer
+    // save at all.
+    const postK = await call5('POST', '/api/games', { name: 'K-control', description: 'outside-writer', payoffs: MP });
+    record('case K CONTROL: the app saves again once the file is left alone',
+      postK.status === 200 && has('K-control'), `status=${postK.status} onDisk=${has('K-control')}`);
   } finally {
     server5.kill('SIGKILL');
     await reaped(server5);
