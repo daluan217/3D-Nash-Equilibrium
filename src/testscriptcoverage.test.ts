@@ -123,14 +123,13 @@ const ciIntegrationRuns = workflowJobRuns(ciWorkflow, 'integration').join('\n');
 // desktop-packaged-smoke runs in `package-audit`, the macOS job that builds
 // the artifact.
 //
-// HONEST ABOUT THE STRENGTH OF THAT: `package-audit` is NOT one of main's
-// required status checks. VERIFIED against the repo's branch protection, the
-// required set is exactly unit, build, e2e, integration, container, mobile,
-// and package-audit is a top-level job with no dependents — so a failure
-// there is VISIBLE on the PR but does not block a merge. Adding it to the
-// required set is a repo-protection change only the repo owner can make.
-// Until that lands, this suite is a loud signal rather than a gate, and the
-// exemption below should be revisited (not widened) if that changes.
+// AND THAT JOB IS A GATE: `package-audit` is one of main's required status
+// checks. VERIFIED against branch protection —
+//   unit, build, e2e, integration, container, mobile, package-audit
+// so a red result there blocks a merge exactly as the integration job does,
+// and the exemption below costs no enforcement. (It was NOT required when
+// this exemption was first written; that earlier claim was wrong, which is
+// why the set is quoted here rather than assumed.)
 //
 // The allowance is deliberately narrow: only that one file, and only in that
 // one job, so it cannot become a general escape hatch for a suite that simply

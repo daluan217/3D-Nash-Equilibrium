@@ -16,11 +16,10 @@
  *        read) end to end
  *
  * Needs a packaged app: `npm run build && npx electron-builder --mac --dir`.
- * Runs in CI's `package-audit` job (the only macOS runner that builds a .app).
- * NOTE: package-audit is NOT in main's required status checks — verified, the
- * required set is unit/build/e2e/integration/container/mobile — so a failure
- * here is visible on the PR but does not block a merge until the repo owner
- * adds it. Read a red result here as real, not advisory.
+ * Runs in CI's `package-audit` job (the only macOS runner that builds a .app),
+ * which is one of main's REQUIRED status checks — verified against branch
+ * protection: unit, build, e2e, integration, container, mobile, package-audit.
+ * A failure here blocks a merge.
  *
  *   node src/integration/desktop-packaged-smoke.test.mjs
  */
