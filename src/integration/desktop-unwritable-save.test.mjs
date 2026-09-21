@@ -700,30 +700,52 @@ try {
     // mid-flight, give it back. Nothing may claim a success it did not get.
     // MUTATION-PROVEN: making saveDB swallow its error and return true leaves
     // 8 of 12 claimed-but-absent and fails this check by name.
-    const poisonNames = Array.from({ length: 12 }, (_, i) => `J-poison-${i}`);
-    const poisonBurst = poisonNames.map((n) =>
-      call5('POST', '/api/games', { name: n, description: 'rugpull', payoffs: MP }));
-    await new Promise((r) => setTimeout(r, 40));
-    chmodSync(userData5, 0o555);
-    const poisonResults = await Promise.all(poisonBurst);
-    chmodSync(userData5, 0o755);
-    const phantom = poisonNames.filter((n, i) =>
-      poisonResults[i].status === 200 && poisonResults[i].json?.success === true && !has(n));
+    //
+    // THE WINDOW IS RETRIED UNTIL IT BITES, not timed and hoped for. A fixed
+    // "fire 12, sleep 40ms, chmod" is a race by construction, and CI ran it on
+    // a faster disk than this laptop: all 12 saves completed before the chmod
+    // landed, the poison window never opened, and the control below caught it
+    // (0/12 refused) exactly as designed — a red CI check for a vacuous
+    // fixture, which is the control doing its job rather than a product
+    // defect. Escalating attempts make the window real instead of likely: more
+    // in-flight saves take longer to drain, and a shorter delay chmods earlier.
+    // The no-phantom property is asserted over EVERY attempt, so a save that
+    // lies about success in an attempt that did not bite still fails the suite.
+    const poisonAttempt = async (count, delayMs) => {
+      const names = Array.from({ length: count }, (_, i) => `J-poison-${delayMs}-${i}`);
+      const burst = names.map((n) =>
+        call5('POST', '/api/games', { name: n, description: 'rugpull', payoffs: MP }));
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      chmodSync(userData5, 0o555);
+      const res = await Promise.all(burst);
+      chmodSync(userData5, 0o755);
+      return { names, res };
+    };
+    const phantom = [];
+    let poisonResults = [];
+    let poisonTried = 0;
+    for (const [count, delayMs] of [[12, 40], [48, 5], [200, 0]]) {
+      const { names, res } = await poisonAttempt(count, delayMs);
+      poisonTried++;
+      poisonResults = res;
+      phantom.push(...names.filter((n, i) =>
+        res[i].status === 200 && res[i].json?.success === true && !has(n)));
+      if (res.filter((r) => r.status >= 500).length > 0) break;
+    }
     record('concurrency: no queued save claimed success while the directory was unwritable',
       phantom.length === 0, `phantom saves: ${JSON.stringify(phantom)}`);
     // THE CONTROL THAT MAKES THE CHECK ABOVE MEAN SOMETHING (reviewer finding,
-    // 2026-09-20). The 40ms is a race by construction: on a fast disk under
-    // light load all 12 saves can finish BEFORE the chmod lands, in which case
-    // every one of them legitimately succeeds, `phantom` is empty, and the
-    // check passes without the unwritable window ever having been open. So
-    // assert the window actually bit — at least one save must have been
-    // refused. If this fires, the timing needs widening, not the assertion
-    // above weakening.
+    // 2026-09-20). Without it, a run where every save finished before the
+    // chmod landed legitimately succeeds, `phantom` is empty, and the check
+    // passes with the unwritable window never having been open. It fired for
+    // real on CI at 12-saves/40ms, which is why the attempts above escalate
+    // instead of being timed once. If this ever fires again, widen the
+    // escalation — never weaken the assertion above.
     const refused = poisonResults.filter((r) => r.status >= 500).length;
     record('concurrency CONTROL: the poison window really bit (some save was refused)',
       refused > 0,
-      `${refused}/${poisonResults.length} refused — 0 means every save completed before the chmod `
-      + 'landed, so the phantom check above proved nothing this run');
+      `${refused}/${poisonResults.length} refused after ${poisonTried} attempt(s) — 0 means every `
+      + 'save completed before the chmod landed, so the phantom check above proved nothing this run');
     const postPoison = await call5('POST', '/api/games', { name: 'J-post-poison', description: 'rugpull', payoffs: MP });
     record('concurrency CONTROL: the app recovers after the mid-burst outage',
       postPoison.status === 200 && has('J-post-poison'), `status=${postPoison.status}`);
