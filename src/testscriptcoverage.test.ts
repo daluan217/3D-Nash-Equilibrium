@@ -118,9 +118,22 @@ check('mutation: the command in a different workflow job cannot satisfy the requ
 const integrationFiles = readdirSync('src/integration')
   .filter((f) => f.endsWith('.test.mjs')).sort();
 const ciIntegrationRuns = workflowJobRuns(ciWorkflow, 'integration').join('\n');
-const runsInCi = (file: string): boolean =>
+// A suite that needs a PACKAGED .app cannot run in the ubuntu `integration`
+// job — there is no macOS runner there and no built artifact — so
+// desktop-packaged-smoke runs in `package-audit`, which is a top-level job of
+// this same required workflow and therefore gates a merge identically. The
+// allowance is deliberately narrow: only that one file, and only in that one
+// job, so this cannot become a general escape hatch for a suite that simply
+// was not wired up.
+const PACKAGED_JOB = 'package-audit';
+const PACKAGED_ONLY = new Set(['desktop-packaged-smoke.test.mjs']);
+const ciPackagedRuns = workflowJobRuns(ciWorkflow, PACKAGED_JOB).join('\n');
+const runsInJob = (file: string, runs: string): boolean =>
   new RegExp(`(?:^|&&\\s*|\\n\\s*)node\\s+src/integration/${escapeRegex(file)}(?=\\s|$)`, 'm')
-    .test(ciIntegrationRuns);
+    .test(runs);
+const runsInCi = (file: string): boolean =>
+  runsInJob(file, ciIntegrationRuns)
+  || (PACKAGED_ONLY.has(file) && runsInJob(file, ciPackagedRuns));
 const notInCi = integrationFiles.filter((f) => !runsInCi(f));
 check('every src/integration/*.test.mjs runs in the required GitHub integration job',
   notInCi.length === 0,
@@ -134,6 +147,16 @@ check('SELF-TEST: a suite absent from the integration job is reported',
   !runsInCi('definitely-not-a-real-suite.test.mjs'));
 check('SELF-TEST: a suite the job really runs is recognised',
   runsInCi('api.test.mjs'));
+// The packaged-app allowance must be exactly that — an allowance for a suite
+// that IS wired into package-audit, not a hole any file can fall through.
+for (const file of PACKAGED_ONLY) {
+  check(`SELF-TEST: ${file} really is wired into the ${PACKAGED_JOB} job`,
+    runsInJob(file, ciPackagedRuns),
+    `it is exempt from the integration job, so if it is not in ${PACKAGED_JOB} it runs nowhere`);
+}
+check('SELF-TEST: the packaged-app allowance does not excuse an ordinary suite',
+  !runsInCi('definitely-not-a-real-suite.test.mjs')
+  && !runsInJob('api.test.mjs', ciPackagedRuns));
 
 if (failures > 0) { console.error(`✗ test-script coverage: ${failures} failed`); process.exit(1); }
 console.log(`✓ test-script coverage: ${files.length} unit files wired; dev API fallback wired locally and in CI`);
