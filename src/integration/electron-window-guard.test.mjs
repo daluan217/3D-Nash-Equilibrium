@@ -176,6 +176,18 @@ function run(mode) {
     by['https://mathematics-magazine.example/paper']?.opened === true,
     JSON.stringify(by['https://mathematics-magazine.example/paper']));
 
+  // SR-63 depends on this and nothing asserted it: the server now rejects any
+  // request whose Host is not a loopback literal, and the Host Chromium sends
+  // comes from whatever URL the main process loads. If loadURL ever pointed at
+  // a name (a hostname, an alias, 0.0.0.0), every request the window makes
+  // would 403 and the app would be bricked with an empty error page. The
+  // origin is asserted here, at the place that actually decides it.
+  const loaded = String(parsed?.loadedUrl ?? '');
+  record('SR-63: the window is loaded from a LOOPBACK LITERAL origin over http',
+    /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+$/.test(loaded),
+    `loadURL was ${JSON.stringify(loaded)} — the desktop Host guard only accepts `
+    + '127.0.0.1/localhost/::1, so any other spelling here 403s the whole renderer');
+
   // ── door 2: same-window navigation (<a href>, location.href)
   const nav = Object.fromEntries((parsed?.navigation ?? []).map((x) => [x.url, x]));
   const sameOrigin = `${parsed?.loadedUrl}/library`;
