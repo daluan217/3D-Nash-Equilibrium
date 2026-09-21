@@ -255,6 +255,83 @@ ok(/if\s*\(!isVersion\(a\)\s*\|\|\s*!isVersion\(b\)\)\s*return 0;/.test(code),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CHECK 3c (sweep 36) — SURROUNDINGS AND ALPHABETS, not just junk suffixes.
+//
+// Every entry above is a version with the wrong CHARACTERS in the middle. The
+// classes below are a CORRECT-looking version wrapped in something else, or
+// written in another digit system, and none of them appeared in this file.
+// They matter because `/^\d+\.\d+\.\d+$/` has two properties worth pinning:
+// `$` matches before a FINAL NEWLINE in JavaScript (so "0.0.226\n" is the one
+// shape a reader must not have to guess about), and `\d` is ASCII-only
+// without the `u` flag.
+//   HONESTY ABOUT THE UNICODE ROWS: they are DEFENCE IN DEPTH, not live
+// exposure. Measured against a `/^[\p{Nd}]+\.[\p{Nd}]+\.[\p{Nd}]+$/u` variant,
+// "١.٠.٢٢٦" and "１.０.２２６" pass isVersion but parseInt returns NaN, `|| 0`
+// makes every component 0, and the compare says "not newer" — so that
+// refactor alone would not produce a prompt. They are pinned because the NEXT
+// step (a Unicode-aware parse, or Number() instead of parseInt) would, and
+// because a validator and a parser that disagree about what a digit is should
+// fail loudly rather than by luck. The rows that would GENUINELY prompt today
+// under a plausible refactor are the whitespace ones — see the trim() mutant
+// recorded below.
+//
+// The build/prerelease-tag classes here overlap the list above by intent:
+// these are the `+build` and bare-exponent spellings, not the `-rc1` ones.
+const SURROUNDED = [
+  [`${MAJ}.${MIN}.${PAT + 1}\n`, 'trailing newline — `$` matches before it'],
+  [`${MAJ}.${MIN}.${PAT + 1}\r\nX-Injected: 1`, 'CRLF and a second line'],
+  [`${MAJ}.${MIN}.${PAT + 1}\u0000`, 'NUL terminator'],
+  [` ${MAJ}.${MIN}.${PAT + 1}`, 'leading space'],
+  [`${MAJ}.${MIN}.${PAT + 1} `, 'trailing space'],
+  [`\t${MAJ}.${MIN}.${PAT + 1}`, 'leading tab'],
+  [`${MAJ}.${MIN}.${PAT + 1}‮`, 'RTL override'],
+  ['١.٠.٢٢٦', 'Arabic-Indic digits'],
+  ['１.０.２２６', 'fullwidth digits'],
+  ['①.0.0', 'circled digit one'],
+  [`${MAJ}.${MIN}.+${PAT + 1}`, 'unary plus on a component'],
+  [`${MAJ}.${MIN}.${PAT + 1}e0`, 'exponent notation'],
+  [`${MAJ}.${MIN}.${PAT + 1}+build`, 'build metadata'],
+  ['0x0.0x0.0xFFFF', 'hex components'],
+  ['Infinity.0.0', 'Infinity as a component'],
+  ['1e400.0.0', 'a component that overflows to Infinity'],
+  ['<img src=x onerror=alert(1)>', 'HTML — this string reaches a dialog'],
+  ['../../../etc/passwd', 'a path, not a version'],
+];
+for (const [v, why] of SURROUNDED) {
+  ok(!offersUpdate(v),
+    `a manifest version ${JSON.stringify(v)} (${why}) must NOT be treated as newer than ${CURRENT}. `
+    + 'Whoever controls /api/version controls this string, and it is put straight into a native '
+    + 'dialog whose accept button hands a URL to the operating system.');
+}
+// SELF-TEST, the same discipline the block above learned: at least one entry
+// must be a string the UNANCHORED pattern would have accepted, or this loop
+// only re-tests what CHECK 3's junk list already covers. `\n` is that entry —
+// and so is every ASCII-digit one, under a `u`-less unanchored regex.
+{
+  const unanchored = /\d+\.\d+\.\d+/;
+  const wouldHavePassed = SURROUNDED.filter(([v]) => unanchored.test(v));
+  ok(wouldHavePassed.length >= 3,
+    `SELF-TEST: only ${wouldHavePassed.length} of these shapes match an UNANCHORED version pattern; `
+    + 'fewer than 3 means this loop is not exercising the anchoring it claims to guard.');
+  // And the anchored one must accept a clean version, or "refuses everything"
+  // would satisfy every assertion above.
+  ok(/^\d+\.\d+\.\d+$/.test(`${MAJ}.${MIN}.${PAT + 1}`),
+    'CONTROL: the anchored pattern must still accept an ordinary newer version.');
+  // THE MUTANT THIS BLOCK EXISTS FOR, recorded so the next reader does not
+  // have to rediscover which edit it catches. Unanchoring VERSION_RE is
+  // caught FIRST by CHECK 3's '0.0.226abc', and swapping in \p{Nd} is caught
+  // first by the literal-text assertion — neither proves this loop bites.
+  // `isVersion` trimming its input does: every existing junk entry still
+  // fails it, and only the whitespace rows above turn red.
+  //   MEASURED: `VERSION_RE.test(v.trim())` ->
+  //   AssertionError: a manifest version "0.0.226\n" (trailing newline …)
+  const tolerant = (v: string) => /^\d+\.\d+\.\d+$/.test(v.trim());
+  ok(SURROUNDED.some(([v]) => tolerant(v)),
+    'SELF-TEST: at least one shape here must survive a trim()-tolerant validator, or the mutant '
+    + 'this block is proven against does not discriminate.');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CHECK 4 — a missing/empty version short-circuits before the comparison.
 // Without this, `compareVersions(undefined, current)` decides the outcome by
 // accident of parseInt rather than by intent.
