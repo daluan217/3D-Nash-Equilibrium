@@ -350,6 +350,68 @@ try {
   rec('10e CONTROL: fetch to the app\'s OWN origin still works (the refusals above are a policy, '
     + 'not a dead page)', ownOrigin.ok === true, JSON.stringify(ownOrigin));
 
+  // ── 10f. THE SECURITY HEADERS THE DESKTOP SERVES ITSELF. ───────────────
+  //
+  // BLUE-LOOP-DESKTOP-22, sweep 44. server.ts sets five baseline headers, and
+  // `grep -rln 'Content-Security-Policy' src` found NOTHING — not one guard
+  // in this repo asserted that a single one of them is actually served. They
+  // are load-bearing precisely on the desktop: the window has no URL bar
+  // (titleBarStyle 'hidden') and the page renders model- and user-authored
+  // strings, so `base-uri 'self'` is what stops an injected <base href> from
+  // retargeting every relative URL in the page — including the renderer's own
+  // API calls — and `frame-ancestors 'none'` / X-Frame-Options keep the app
+  // out of a frame.
+  //
+  // Asserted on FOUR paths, not one: the document, two API routes and a
+  // static 404. A middleware registered after a route would cover some and
+  // not others, and a header set only on the document would leave every API
+  // response bare.
+  const HEADER_PATHS = ['/', '/api/health', '/api/games', '/assets/does-not-exist.js'];
+  const REQUIRED_HEADERS = ['content-security-policy', 'x-frame-options',
+    'x-content-type-options', 'referrer-policy', 'permissions-policy'];
+  const headerRows = await win.evaluate(async (paths) => {
+    const out = [];
+    for (const p of paths) {
+      try {
+        const r = await fetch(p, { cache: 'no-store' });
+        const h = {};
+        r.headers.forEach((v, k) => { h[k.toLowerCase()] = v; });
+        out.push([p, r.status, h]);
+      } catch (e) { out.push([p, 'threw: ' + String(e.message).slice(0, 40), {}]); }
+    }
+    return out;
+  }, HEADER_PATHS);
+  rec('10f CONTROL: every header path was actually fetched (an empty list passes the loop below '
+    + 'for free)', headerRows.length === HEADER_PATHS.length
+    && headerRows.every(([, status]) => typeof status === 'number'),
+    JSON.stringify(headerRows.map(([p, s]) => [p, s])));
+  for (const [p, , h] of headerRows) {
+    const missing = REQUIRED_HEADERS.filter((k) => !h[k]);
+    rec(`10f. ${p} is served with every baseline security header`,
+      missing.length === 0, missing.length ? `missing: ${missing.join(', ')}` : 'all present');
+  }
+  // The CSP's three directives by NAME, not just "a CSP header exists": a
+  // header trimmed to one directive would satisfy the presence check above
+  // while dropping the protection that matters.
+  const csp = String(headerRows.find(([p]) => p === '/')?.[2]['content-security-policy'] || '');
+  for (const directive of ["frame-ancestors 'none'", "base-uri 'self'", "object-src 'none'"]) {
+    rec(`10f. the CSP still carries ${directive}`, csp.includes(directive), `csp: ${csp}`);
+  }
+  // …and base-uri ENFORCED, not merely declared. An injected <base> must not
+  // re-resolve the page's relative URLs to another origin.
+  const rebased = await win.evaluate(() => {
+    const b = document.createElement('base');
+    b.href = 'https://evil.example/';
+    document.head.appendChild(b);
+    const a = document.createElement('a');
+    a.href = '/api/games';
+    const resolved = a.href;
+    b.remove();
+    return resolved;
+  });
+  rec('10f. an injected <base href> does NOT retarget the page\'s relative URLs',
+    rebased.startsWith('http://127.0.0.1:'), `/api/games resolved to ${rebased}`);
+
   // ── 11. THE BRIDGE FORWARDS ANYTHING; MAIN IS WHAT MUST VALIDATE. ───────
   // Asserted by EFFECT on the native window, not by the call returning — the
   // renderer cannot see the handler's verdict, so "it did not throw" says
