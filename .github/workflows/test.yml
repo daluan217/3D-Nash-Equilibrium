@@ -239,6 +239,15 @@ jobs:
       # found in the real .app: a per-launch session secret that signed the user
       # out on every restart, and a truncating db.json write that turned an
       # unreadable database into a deleted one.
+      # Two properties a DESKTOP app needs and a server does not: it is killed
+      # constantly (Cmd-Q, force quit, logout), and its data directory is a
+      # path a human can move (so it can be a symlink, a file, a link loop).
+      # 3330..3354: this suite walks its port forward once per scenario.
+      - name: Boot the production server and run the desktop shutdown/path-shape suite
+        run: node src/integration/desktop-shutdown-and-paths.test.mjs
+        env:
+          DESKTOP_SHUTDOWN_PORT: '3330'
+
       # 3300, not 3104: this suite walks its port forward once per scenario and
       # MEASURED it now spans base..base+19 (instrumented run: 4870 -> 4889).
       # From 3104 that reached 3123 and sat on scenario-parity's 3106 and eight
