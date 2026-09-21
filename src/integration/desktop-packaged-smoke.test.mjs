@@ -304,6 +304,52 @@ try {
     `${wcs.length} webContents: ${JSON.stringify(wcs)} — a BrowserView or popup carries its own `
     + 'webPreferences, and checks 10/10b/10c only ever look at the first window');
 
+  // ── 10e. THE PAGE MUST NOT BE ABLE TO READ THE USER'S FILESYSTEM. ──────
+  //
+  // BLUE-LOOP-DESKTOP-22, sweep 43. Check 10d asserts `webSecurity === true`
+  // from `getLastWebPreferences()` — a CONFIGURATION reading. This asserts
+  // the CAPABILITY, which is what actually matters and what a future
+  // Chromium/Electron default, a command-line switch, or a per-request
+  // protocol handler could change underneath an unchanged config.
+  //
+  // Found while running the red's 16-vector navigation suite, whose vector 16
+  // reported FAIL because the app logs no refusal for `file:`. Measured
+  // (_gen/b22-s43-file-scheme.mjs): Chromium blocks file: BEFORE
+  // `will-navigate` fires, so the main process never sees it and has nothing
+  // to refuse — `main saw []` across anchor click, location.href,
+  // location.assign, window.open and iframe src, and the window never left
+  // the app origin. The refusal LOG was the wrong instrument; THIS is the
+  // right one, because a scheme the main process never sees is a scheme its
+  // allowlist cannot protect.
+  const fileRead = await win.evaluate(async () => {
+    const out = {};
+    try {
+      const r = await fetch('file:///etc/passwd');
+      out.fetch = { ok: true, status: r.status, body: (await r.text()).slice(0, 40) };
+    } catch (e) { out.fetch = { ok: false, err: String(e.message).slice(0, 60) }; }
+    try {
+      const x = new XMLHttpRequest();
+      x.open('GET', 'file:///etc/passwd', false);
+      x.send();
+      out.xhr = { ok: true, status: x.status, body: String(x.responseText).slice(0, 40) };
+    } catch (e) { out.xhr = { ok: false, err: String(e.message).slice(0, 60) }; }
+    return out;
+  });
+  rec('10e. the renderer cannot READ a local file (fetch file:///etc/passwd)',
+    fileRead.fetch?.ok === false, JSON.stringify(fileRead.fetch));
+  rec('10e. the renderer cannot READ a local file (synchronous XHR file:///etc/passwd)',
+    fileRead.xhr?.ok === false, JSON.stringify(fileRead.xhr));
+  // CONTROL: the same two APIs must WORK against the app's own origin, or
+  // "both threw" is a page with no network at all rather than a policy.
+  const ownOrigin = await win.evaluate(async () => {
+    try {
+      const r = await fetch('/api/health');
+      return { ok: r.ok, status: r.status };
+    } catch (e) { return { ok: false, err: String(e.message).slice(0, 60) }; }
+  });
+  rec('10e CONTROL: fetch to the app\'s OWN origin still works (the refusals above are a policy, '
+    + 'not a dead page)', ownOrigin.ok === true, JSON.stringify(ownOrigin));
+
   // ── 11. THE BRIDGE FORWARDS ANYTHING; MAIN IS WHAT MUST VALIDATE. ───────
   // Asserted by EFFECT on the native window, not by the call returning — the
   // renderer cannot see the handler's verdict, so "it did not throw" says

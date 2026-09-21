@@ -1082,6 +1082,31 @@ assert.deepStrictEqual(ext.ipcThrew, [],
   `an IPC handler THREW on renderer input: ${JSON.stringify(ext.ipcThrew)}. A page can send `
   + 'anything, so an uncaught throw here is a renderer-triggered main-process error.');
 checks++;
+// SWEEP 43's new angle: the SENDER, not the payload. Every payload fuzzed
+// above is delivered with the same `{ sender: mainContents }`, so the other
+// half of the handler — `BrowserWindow.fromWebContents(event.sender)` and its
+// `if (win)` — had never been driven at all. `event.sender` is
+// attacker-influenced in a way the payload is not: any webContents the app
+// ever creates (an iframe's, a popup's, a devtools contents, one whose window
+// was destroyed between send and receive) arrives on the SAME channel. A
+// sender resolving to no window must be a SILENT no-op — a throw inside an
+// ipcMain listener is an unhandled main-process error, and repainting some
+// other window for an orphan sender is worse.
+ok(Array.isArray(ext.senderProbes) && ext.senderProbes.length >= 6,
+  `the sender probe must run (got ${JSON.stringify(ext.senderProbes)}).`);
+for (const [label, applied, threw, shouldApply] of ext.senderProbes) {
+  ok(!threw,
+    `the IPC handler THREW on ${label}: ${threw}. An ipcMain listener that throws is an `
+    + 'unhandled error in the MAIN process, reachable from any page the app renders.');
+  ok(applied === shouldApply, shouldApply
+    ? `CONTROL: ${label} did NOT repaint its window. With the control failing, every "orphan `
+      + 'sender applied nothing" result below is the handler never being reached.'
+    : `${label} repainted a window. A sender that resolves to no window must change nothing.`);
+}
+// The control must be present, or the whole block is negatives that pass for free.
+ok(ext.senderProbes.some(([, , , shouldApply]) => shouldApply === true),
+  'CONTROL: the sender probe must include one case that IS expected to repaint.');
+
 ok(ext.ipcAccepted.length > 0,
   'CONTROL: the positive payload must be accepted. With only hostile payloads, "nothing was '
   + 'accepted" is indistinguishable from "the handler was never reached" — which is exactly what '

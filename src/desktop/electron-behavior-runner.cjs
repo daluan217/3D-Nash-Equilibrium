@@ -1581,6 +1581,40 @@ if (mode === 'openexternal') {
     }
   }
 
+  // THE SENDER, not the payload — BLUE-LOOP-DESKTOP-22 sweep 43's new angle.
+  // Every payload above is delivered with the SAME event
+  // (`{ sender: mainContents }`), so half the handler had never been driven:
+  //     const win = BrowserWindow.fromWebContents(event.sender);
+  //     if (win) win.setBackgroundColor(color);
+  // `event.sender` is attacker-influenced in a way the payload is not — any
+  // webContents the app ever creates (an iframe's, a popup's, a devtools
+  // contents, one whose window was destroyed between send and receive)
+  // arrives on the SAME channel. A sender that resolves to no window must be
+  // a silent no-op: a throw inside an ipcMain listener is an unhandled
+  // main-process error, and repainting SOME window for an orphan sender is
+  // worse. `fromWebContents` here resolves the owning window exactly as
+  // Electron's does, and returns null when nothing owns the contents.
+  const senderProbes = [];
+  {
+    const fn = (fakeIpcMain._h['set-background-color'] || [])[0];
+    const orphan = new FakeWebContents();  // owned by no window
+    const cases = [
+      ['the main window\'s own sender (CONTROL)', { sender: mainContents }, true],
+      ['an ORPHAN webContents (no owning window)', { sender: orphan }, false],
+      ['sender = null', { sender: null }, false],
+      ['sender = undefined', { sender: undefined }, false],
+      ['no sender key at all', {}, false],
+      ['sender = a plain object', { sender: { nope: true } }, false],
+    ];
+    for (const [label, event, shouldApply] of cases) {
+      const before = windowBackgroundColors.length;
+      let threw = null;
+      try { if (fn) fn(event, '#123456'); }
+      catch (e) { threw = String((e && e.message) || e).slice(0, 100); }
+      senderProbes.push([label, windowBackgroundColors.length > before, threw, shouldApply]);
+    }
+  }
+
   // THE PORT MOVE — BLUE-LOOP-DESKTOP-22, sweep 40, reproduced before it was
   // fixed. server.ts retries port+1 forever on EADDRINUSE under IS_ELECTRON
   // and reports the port it FINALLY bound through `onExpressListening`. That
@@ -1668,6 +1702,7 @@ if (mode === 'openexternal') {
     ipcChannels,
     ipcAccepted,
     ipcThrew,
+    senderProbes,
     windowBackgroundColors,
     injectedScripts,
     injectedCss,
