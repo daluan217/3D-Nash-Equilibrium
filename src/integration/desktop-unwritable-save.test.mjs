@@ -711,6 +711,19 @@ try {
       poisonResults[i].status === 200 && poisonResults[i].json?.success === true && !has(n));
     record('concurrency: no queued save claimed success while the directory was unwritable',
       phantom.length === 0, `phantom saves: ${JSON.stringify(phantom)}`);
+    // THE CONTROL THAT MAKES THE CHECK ABOVE MEAN SOMETHING (reviewer finding,
+    // 2026-09-20). The 40ms is a race by construction: on a fast disk under
+    // light load all 12 saves can finish BEFORE the chmod lands, in which case
+    // every one of them legitimately succeeds, `phantom` is empty, and the
+    // check passes without the unwritable window ever having been open. So
+    // assert the window actually bit — at least one save must have been
+    // refused. If this fires, the timing needs widening, not the assertion
+    // above weakening.
+    const refused = poisonResults.filter((r) => r.status >= 500).length;
+    record('concurrency CONTROL: the poison window really bit (some save was refused)',
+      refused > 0,
+      `${refused}/${poisonResults.length} refused — 0 means every save completed before the chmod `
+      + 'landed, so the phantom check above proved nothing this run');
     const postPoison = await call5('POST', '/api/games', { name: 'J-post-poison', description: 'rugpull', payoffs: MP });
     record('concurrency CONTROL: the app recovers after the mid-burst outage',
       postPoison.status === 200 && has('J-post-poison'), `status=${postPoison.status}`);

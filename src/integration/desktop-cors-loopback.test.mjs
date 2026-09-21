@@ -91,13 +91,22 @@ async function boot(port, extraEnv) {
 }
 
 async function stop(srv) {
-  if (!srv?.child || srv.child.exitCode !== null) return;
-  const ended = new Promise((res) => srv.child.once('exit', res));
-  srv.child.kill('SIGTERM');
-  const timer = setTimeout(() => srv.child.kill('SIGKILL'), 4000);
-  await ended;
-  clearTimeout(timer);
-  rmSync(srv.userData, { recursive: true, force: true });
+  if (!srv) return;
+  // The directory is removed on EVERY path, including the one where the child
+  // is already dead — a server that crashed at startup used to return here
+  // before the rmSync and leave its temp directory behind forever (reviewer
+  // finding, 2026-09-20), which is exactly the case a failing run produces.
+  try {
+    if (srv.child && srv.child.exitCode === null) {
+      const ended = new Promise((res) => srv.child.once('exit', res));
+      srv.child.kill('SIGTERM');
+      const timer = setTimeout(() => srv.child.kill('SIGKILL'), 4000);
+      await ended;
+      clearTimeout(timer);
+    }
+  } finally {
+    if (srv.userData) rmSync(srv.userData, { recursive: true, force: true });
+  }
 }
 
 const acao = (res) => res.headers.get('access-control-allow-origin');
@@ -338,6 +347,22 @@ try {
   {
     const r = await rawReq(DESKTOP_PORT, '');
     record('SR-63: an EMPTY Host header cannot read the library',
+      r.status === 403 && !r.body.includes('cors-probe-game'),
+      `status=${r.status} body=${r.body.slice(0, 70)}`);
+  }
+
+  // Sent VERBATIM, not through the loop above: that loop appends ":<port>" to
+  // every entry, which turns "::1:14321" into "::1:14321:<port>" — a different
+  // string that the old blind-strip normaliser ALSO rejected, so the case
+  // passed while proving nothing. Caught by mutation-testing (restoring the
+  // blind strip left the suite green). These two need the exact bytes.
+  for (const [hostHeader, why] of [
+    ['::1:14321', 'an unbracketed IPv6 address whose tail mimics a port — the blind '
+      + '":<digits>" strip turned this real non-loopback address into "::1" and accepted it'],
+    ['[::ffff:127.0.0.1]', 'the IPv4-mapped IPv6 literal, bracketed'],
+  ]) {
+    const r = await rawReq(DESKTOP_PORT, hostHeader);
+    record(`SR-63: Host "${hostHeader}" cannot read the library (${why})`,
       r.status === 403 && !r.body.includes('cors-probe-game'),
       `status=${r.status} body=${r.body.slice(0, 70)}`);
   }

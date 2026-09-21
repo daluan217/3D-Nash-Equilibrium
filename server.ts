@@ -3111,11 +3111,17 @@ async function startServer() {
   // (and before the CORS block, which is what makes that comparison safe).
   if (process.env.IS_ELECTRON === "true") {
     app.use((req, res, next) => {
-      const host = req.headers.host;
-      // Strip the port; IPv6 literals arrive bracketed ([::1]:14321).
-      const hostname = typeof host === "string"
-        ? host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase()
-        : "";
+      const host = typeof req.headers.host === "string" ? req.headers.host.toLowerCase() : "";
+      // RFC 7230 §5.4: an IPv6 literal MUST be bracketed, so the two forms are
+      // matched separately rather than by stripping a trailing ":<digits>"
+      // from anything. Stripping blindly also ate the tail of an UNBRACKETED
+      // IPv6 address: "::1:14321" (a real, non-loopback address) became "::1"
+      // and was accepted. Not reachable — a browser cannot be made to send an
+      // unbracketed IPv6 Host, and a local process needs no bypass — but an
+      // exact match costs the same as an approximate one.
+      const m = /^\[([0-9a-f:.]+)\](?::\d+)?$/.exec(host)      // [::1] or [::1]:port
+        ?? /^([a-z0-9.-]+)(?::\d+)?$/.exec(host);              // 127.0.0.1 / localhost
+      const hostname = m ? m[1] : "";
       if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1") {
         next();
         return;
