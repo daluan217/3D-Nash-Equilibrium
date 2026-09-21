@@ -140,9 +140,16 @@ try {
   rec('4. a save from inside the real app still succeeds', saved.status === 200,
     `status ${saved.status} ${saved.body}`);
 
-  const reread = await win.evaluate(async () => (await (await fetch('/api/games')).json()).map(g => g.name));
+  // Array-guarded: if the guard ever refuses this request the body is an
+  // error OBJECT, and an unguarded .map would throw inside the try — skipping
+  // every later check and reporting a crash where a FAIL belongs. (The same
+  // shape killed desktop-unwritable-save mid-run under a mutant.)
+  const reread = await win.evaluate(async () => {
+    const j = await (await fetch('/api/games')).json();
+    return Array.isArray(j) ? j.map((g) => g.name) : { notAnArray: j };
+  });
   rec('5. the save round-trips (the library really changed)',
-    reread.includes('SR63 REAL APP SAVE'), JSON.stringify(reread));
+    Array.isArray(reread) && reread.includes('SR63 REAL APP SAVE'), JSON.stringify(reread));
 
   // 6. And the guard is genuinely LIVE in the packaged build: a foreign Host
   // sent from the app's own network stack must still be refused. Uses the
@@ -412,7 +419,8 @@ try {
   const survived = await win.evaluate(async () => {
     try {
       const r = await fetch('/api/games');
-      return { status: r.status, names: (await r.json()).map((g) => g.name) };
+      const j = await r.json();
+      return { status: r.status, names: Array.isArray(j) ? j.map((g) => g.name) : null, body: j };
     } catch (e) { return { error: String(e).slice(0, 100) }; }
   });
   rec('13c. OBSERVATION: the FIRST window still serves its library afterwards',
