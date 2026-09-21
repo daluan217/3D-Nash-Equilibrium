@@ -309,7 +309,17 @@ try {
   // renderer cannot see the handler's verdict, so "it did not throw" says
   // nothing at all.
   const colour = () => app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows()[0].getBackgroundColor());
+    // BY URL, not by index. `getAllWindows()[0]` is whichever window Electron
+    // lists first — when the 10d mutant added a second window, [0] became the
+    // about:blank one and 11b/11c went red for a reason that had nothing to do
+    // with the bridge. An index is not an identity; the app's window is the one
+    // on the loopback origin.
+    {
+      const w = BrowserWindow.getAllWindows()
+        .find((x) => /^http:\/\/127\.0\.0\.1:\d+/.test(x.webContents.getURL()));
+      return w ? w.getBackgroundColor() : `NO LOOPBACK WINDOW among ${BrowserWindow.getAllWindows()
+        .map((x) => x.webContents.getURL()).join(', ')}`;
+    });
   const sendColour = (value, extra) => win.evaluate(([v, e]) => {
     try {
       if (e === undefined) window.nashDesktop.setBackgroundColor(v);
