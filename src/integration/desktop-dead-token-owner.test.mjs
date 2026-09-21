@@ -17,7 +17,8 @@
  *   node src/integration/desktop-dead-token-owner.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -118,6 +119,14 @@ function callTwoAuthHeaders(thePort, method, url, authValues, body) {
   });
 }
 
+const b64 = (x) => Buffer.from(x).toString('base64')
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const claimsOf = (t) => JSON.parse(Buffer.from(
+  t.split('.')[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8'));
+// Rewrite a token's CLAIMS while keeping the signature the server itself
+// produced — the attacker's actual position (they hold a token, not the key).
+const rewritePayload = (t, patch) => `${b64(JSON.stringify({ ...claimsOf(t), ...patch }))}.${t.split('.')[1]}`;
+
 const game = (tag) => ({
   name: `DeadToken-${tag}`, description: 'desktop-dead-token-owner fixture',
   payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 },
@@ -205,6 +214,115 @@ try {
     twoHeaders.status === 401 && twoHeaders.json?.game === undefined,
     `status ${twoHeaders.status} body ${JSON.stringify(twoHeaders.json)}`);
 
+  // ── An EXPIRED token is the third way a token dies, and the one nothing
+  //    on this branch measured ────────────────────────────────────────────
+  //
+  // `readAuthToken` refuses on `parsed.exp < Date.now()`. Every other check
+  // in this file kills a token by breaking its SIGNATURE (garbled) or its
+  // VERSION (password reset); delete the `exp` clause entirely and all of
+  // them stay green, while a stolen desktop token becomes immortal. A
+  // desktop is where that matters most: the token sits in a machine the
+  // user carries, and AUTH_TOKEN_TTL_MS is the only thing that ever retires
+  // it — there is no server-side session list to sweep.
+  //
+  // Waiting out a 7-day TTL is not a test, and moving the clock measures the
+  // harness as much as the product. Instead the token is MINTED HERE with
+  // the app's own key: `auth-secret` is a file in the user-data directory
+  // (that is the whole point of desktop-persistence's section 2), so the
+  // test can sign the exact payload shape the server signs and choose `exp`
+  // freely. The HMAC is therefore genuine — a 401 can only be the expiry
+  // clause, never a signature mismatch, and the +1h CONTROL below proves
+  // the minting itself is accepted.
+  {
+    const secret = readFileSync(path.join(userData, 'auth-secret'), 'utf-8').trim();
+    record('CONTROL: the key this section signs with is the app\'s real 32-byte auth-secret',
+      /^[0-9a-f]{64}$/.test(secret), `${secret.length} chars`);
+    const mint = (claims) => {
+      const pay = b64(JSON.stringify(claims));
+      return `${pay}.${b64(createHmac('sha256', secret).update(pay).digest())}`;
+    };
+    const claims = claimsOf(token);
+
+    // CONTROL FIRST: if hand-minting did not produce an acceptable token, every
+    // 401 below would be free and this whole section would prove nothing.
+    const fresh = await call(port, 'GET', '/api/auth/me', { token: mint({ ...claims, exp: Date.now() + 3_600_000 }) });
+    record('CONTROL: a hand-minted token with exp one hour out is ACCEPTED (the mint is valid)',
+      fresh.status === 200, `status ${fresh.status} body ${JSON.stringify(fresh.json)}`);
+    // …and the same payload under the WRONG key must fail, or "accepted"
+    // above would mean the signature is not being checked at all.
+    const wrongKey = (() => {
+      const pay = b64(JSON.stringify({ ...claims, exp: Date.now() + 3_600_000 }));
+      return `${pay}.${b64(createHmac('sha256', 'f'.repeat(64)).update(pay).digest())}`;
+    })();
+    record('CONTROL: the same payload signed with the WRONG key is refused (the HMAC is load-bearing)',
+      (await call(port, 'GET', '/api/auth/me', { token: wrongKey })).status === 401);
+
+    // THE INVARIANT, over every shape of a stale or absent `exp`.
+    for (const [label, exp] of [
+      ['one second in the past', Date.now() - 1000],
+      ['a year in the past', Date.now() - 31_536_000_000],
+      ['the epoch (0)', 0],
+      // JSON.stringify turns these into `null`, i.e. `typeof exp !== 'number'`
+      // — the other half of the same clause, and the shape a corrupted or
+      // hand-edited token most plausibly takes.
+      ['Infinity (serialises to null)', Infinity],
+      ['NaN (serialises to null)', NaN],
+      // A numeric string passes `>` comparisons in a language that coerces —
+      // `"9999999999999" < Date.now()` is false — so only the typeof check
+      // refuses it. That is precisely the clause a "simplification" drops.
+      ['a far-future NUMERIC STRING', '9999999999999'],
+    ]) {
+      const r = await call(port, 'GET', '/api/auth/me', { token: mint({ ...claims, exp }) });
+      record(`a correctly-signed token whose exp is ${label} is refused (401)`,
+        r.status === 401, `status ${r.status} body ${JSON.stringify(r.json)}`);
+    }
+    const noExp = await call(port, 'GET', '/api/auth/me',
+      { token: mint({ sub: claims.sub, ver: claims.ver, nonce: claims.nonce }) });
+    record('a correctly-signed token with NO exp claim at all is refused (401)',
+      noExp.status === 401, `status ${noExp.status} body ${JSON.stringify(noExp.json)}`);
+
+    // ── The other half: the signature must cover the WHOLE payload ───────
+    //
+    // Minting with the real key above is legitimate by design — whoever can
+    // read `auth-secret` is the server. The attacker's actual position is the
+    // opposite one: they hold a token and NOT the key. So keep the server's
+    // own signature byte-for-byte and rewrite the claims underneath it.
+    //
+    // api.test.mjs flips the last two characters of the SIGNATURE and gets a
+    // 401; an implementation that signed only `sub`, or a constant, would
+    // pass that check unchanged. These rewrite the PAYLOAD instead, one
+    // victim claim each — the sub (takeover) and the exp (immortality) here,
+    // and the `ver` one after the password reset below, where the account's
+    // tokenVersion is genuinely non-zero and forcing it to 0 is therefore a
+    // real downgrade rather than a re-encoding of the same number.
+    const reclaim = (patch) => rewritePayload(token, patch);
+    const other = await call(port, 'POST', '/api/auth/register',
+      { body: { username: 'expvictim', email: 'expvictim@example.test', password: 'Sup3rSecret!23' } });
+    record('CONTROL: a second account exists to be impersonated', other.status === 200,
+      `status ${other.status}`);
+    const victimLogin = await call(port, 'POST', '/api/auth/login',
+      { body: { email: 'expvictim@example.test', password: 'Sup3rSecret!23' } });
+    const victimId = (await call(port, 'GET', '/api/auth/me', { token: victimLogin.json?.token })).json?.id;
+    record('CONTROL: the victim id was resolved and differs from ours (an equal sub would make the swap a no-op)',
+      typeof victimId === 'string' && victimId.length > 0 && victimId !== claims.sub, String(victimId));
+
+    for (const [label, patch] of [
+      ['another user\'s sub (account takeover)', { sub: victimId }],
+      ['exp pushed ten years out (an immortal session)', { exp: Date.now() + 315_360_000_000 }],
+    ]) {
+      const r = await call(port, 'GET', '/api/auth/me', { token: reclaim(patch) });
+      record(`the server's OWN signature over a payload rewritten to ${label} is refused (401)`,
+        r.status === 401, `status ${r.status} body ${JSON.stringify(r.json)}`);
+    }
+    // CONTROL: `reclaim` with NO patch must still be the original token and
+    // still work — otherwise every 401 above is just "re-encoding broke it",
+    // which would pass for a server that ignored the payload entirely.
+    const rebuilt = await call(port, 'GET', '/api/auth/me', { token: reclaim({}) });
+    record('CONTROL: re-encoding the payload UNCHANGED under the same signature still authenticates',
+      rebuilt.status === 200 && rebuilt.json?.id === claims.sub,
+      `status ${rebuilt.status} body ${JSON.stringify(rebuilt.json)}`);
+  }
+
   // Invalidate the REAL token via the real forgot/reset-password routes —
   // exactly what a password reset from another device does server-side
   // (bumps tokenVersion), never a forged header or a db.json edit.
@@ -248,6 +366,46 @@ try {
   const newToken = newLogin.json?.token;
   record('signing back in with the NEW password returns a fresh token', typeof newToken === 'string' && newToken.length > 0,
     `status ${newLogin.status}`);
+
+  // ── The revocation, attacked from the token side ─────────────────────────
+  //
+  // `getAuthUser` refuses when `user.tokenVersion !== claims.ver`. NOW that
+  // the reset has bumped the account's version, the stale token carries the
+  // old number — so rewriting its `ver` forward under the server's own
+  // signature is the whole password reset undone. This is the first moment
+  // in this file where that rewrite is not a no-op: before the reset both
+  // numbers are 0, and a check placed there would pass by re-encoding the
+  // same value (measured — it did, until it was moved here).
+  if (typeof newToken === 'string' && newToken.length > 0) {
+    const stale = claimsOf(token);
+    const fresh = claimsOf(newToken);
+    record('CONTROL: the reset really moved the token version (an unchanged ver makes the rewrite a no-op)',
+      typeof stale.ver === 'number' && typeof fresh.ver === 'number' && fresh.ver !== stale.ver,
+      `before ${stale.ver} after ${fresh.ver}`);
+    const upgraded = await call(port, 'GET', '/api/auth/me',
+      { token: rewritePayload(token, { ver: fresh.ver }) });
+    record('the revoked token\'s ver rewritten FORWARD to the live version is still refused (401)',
+      upgraded.status === 401, `status ${upgraded.status} body ${JSON.stringify(upgraded.json)}`);
+    // A LIVE token whose ver is edited backwards is caught by the HMAC alone
+    // — no mutation isolates it that the FORWARD row above does not already
+    // catch — so it is deliberately not asserted here. What IS worth its own
+    // row is the same downgrade done HONESTLY: a token minted (with the real
+    // key) carrying the pre-reset version, which is exactly the token an
+    // attacker who had stolen the key before the reset would replay.
+    const oldVerMint = (() => {
+      const secret = readFileSync(path.join(userData, 'auth-secret'), 'utf-8').trim();
+      const pay = b64(JSON.stringify({ ...fresh, ver: stale.ver }));
+      return `${pay}.${b64(createHmac('sha256', secret).update(pay).digest())}`;
+    })();
+    const downgraded = await call(port, 'GET', '/api/auth/me', { token: oldVerMint });
+    record('a VALIDLY SIGNED token carrying the pre-reset version is refused (401) — revocation is not a signature check',
+      downgraded.status === 401, `status ${downgraded.status} body ${JSON.stringify(downgraded.json)}`);
+    // CONTROL: the live token itself still works, so the two 401s above are
+    // the rewrite being caught and not the session having died meanwhile.
+    const live = await call(port, 'GET', '/api/auth/me', { token: newToken });
+    record('CONTROL: the untouched post-reset token still authenticates',
+      live.status === 200, `status ${live.status}`);
+  }
 
   const acctGames = await call(port, 'GET', '/api/games', { token: newToken });
   const acctNames = Array.isArray(acctGames.json) ? acctGames.json.map((g) => g.name) : [];
