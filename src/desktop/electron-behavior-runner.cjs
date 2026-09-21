@@ -1467,16 +1467,54 @@ if (mode === 'openexternal') {
   // Drive one URL through every navigation door, in every argument shape
   // Electron really sends for that door, recording [where, prevented,
   // handedToOS]. Used for the in-app control and for the port-move probe.
+  // GATE REVIEW #7 F1, reproduced: swallowing the exception recorded a throwing
+  // handler as `[prevented=false, handedToOS=false]` — byte-identical to a
+  // correct in-app navigation, so `throw` inside keepApp's app-origin branch
+  // passed every control. The throw is now RECORDED and asserted on.
+  // F1 also: a handler that defers its OS call (`queueMicrotask(() =>
+  // shell.openExternal(...))`) lands after the synchronous
+  // `openedUrls.length` snapshot. `drainDeferred` awaits a macrotask so any
+  // microtask- or timer-deferred hand-off is counted, and `handedToOS` is
+  // measured after it rather than inline.
+  // Rows are [where, prevented, handedToOS, threw]. Both of the extra fields
+  // come from gate review #7, each reproduced against a product mutant first:
+  //
+  //  F1 EXCEPTION BLINDNESS. `catch {}` recorded a THROWING handler as
+  //     [prevented=false, handedToOS=false] — byte-identical to a correct
+  //     in-app navigation. `throw` inside keepInApp's app-origin branch
+  //     passed every control. The message is recorded and asserted on.
+  //
+  //  F1 DEFERRED EFFECTS. A handler that defers its OS call
+  //     (`queueMicrotask(() => shell.openExternal(url))`) lands after a
+  //     synchronous openedUrls snapshot. Each row is therefore re-read at
+  //     out() time by `settleInApp`, which attributes anything that arrived
+  //     while THIS row was the most recent one driven.
+  const inAppRows = [];
   const driveInApp = (url, sink) => {
     for (const [event, handlers, , documented] of EVENTS) {
       for (const shape of documented) {
         for (const cb of handlers) {
           let prevented = false;
+          let threw = null;
           const before = openedUrls.length;
-          try { cb(...SHAPES[shape](url, () => { prevented = true; })); } catch { /* ignore */ }
-          sink.push([`${event} [${shape}]`, prevented, openedUrls.length > before]);
+          try { cb(...SHAPES[shape](url, () => { prevented = true; })); }
+          catch (e) { threw = String((e && e.message) || e).slice(0, 120); }
+          const row = [`${event} [${shape}]`, prevented, openedUrls.length > before, threw];
+          row.__before = before;
+          sink.push(row);
+          inAppRows.push(row);
         }
       }
+    }
+  };
+  // Rows are driven in order and openedUrls only grows, so "anything appeared
+  // at or after my snapshot, and before the NEXT row's snapshot" attributes a
+  // late hand-off to the row that caused it. Called once, just before out().
+  const settleInApp = () => {
+    for (let i = 0; i < inAppRows.length; i++) {
+      const start = inAppRows[i].__before;
+      const end = i + 1 < inAppRows.length ? inAppRows[i + 1].__before : openedUrls.length;
+      if (openedUrls.length > start && end > start) inAppRows[i][2] = true;
     }
   };
   for (const url of HOSTILE) {
@@ -1607,7 +1645,7 @@ if (mode === 'openexternal') {
   const IN_APP_URL = `${(loadedUrls[0] || 'http://127.0.0.1:14322').replace(/\/$/, '')}/some/in-app/route`;
   driveInApp(IN_APP_URL, inApp);
 
-  setTimeout(() => out({
+  setTimeout(() => { settleInApp(); return out({
     openedUrls,
     windowOpenVerdicts,
     navigationPrevented,
@@ -1636,5 +1674,5 @@ if (mode === 'openexternal') {
     loadedUrls,
     backendLoaded,
     deferredMs: 300,
-  }), 300);
+  }); }, 300);
 }

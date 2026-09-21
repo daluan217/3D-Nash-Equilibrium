@@ -954,6 +954,19 @@ ok(ext.originalPort !== ext.movedPort,
   `CONTROL: the moved-to port (${ext.movedPort}) must differ from the original (${ext.originalPort}).`);
 ok(ext.inAppAfterMove.length > 0,
   'CONTROL: the post-move navigation probe must actually run.');
+// GATE REVIEW #7 F1, reproduced before it was fixed: the runner swallowed
+// handler exceptions, so a `throw` inside keepInApp's app-origin branch
+// recorded [prevented=false, handedToOS=false] — byte-identical to a correct
+// in-app navigation — and every check here passed. `threw` is now recorded,
+// and asserted on EVERY in-app row including the pre-move control.
+for (const [label, rows] of [['the in-app control', ext.inApp],
+  ['the post-move in-app probe', ext.inAppAfterMove], ['the stale-origin probe', ext.staleAfterMove]]) {
+  for (const [where, , , threw] of rows) {
+    ok(!threw,
+      `${where} in ${label} THREW (${threw}). An exception is not a verdict: a handler that throws `
+      + 'records exactly the same tuple as one that correctly let the navigation through.');
+  }
+}
 for (const [where, prevented, opened] of ext.inAppAfterMove) {
   ok(prevented === false,
     `after the server moved to port ${ext.movedPort}, ${where} PREVENTED a navigation to the `
@@ -962,11 +975,21 @@ for (const [where, prevented, opened] of ext.inAppAfterMove) {
   ok(opened === false,
     `after the port move, ${where} handed the app's OWN new-origin URL to the OS.`);
 }
-for (const [where, prevented] of ext.staleAfterMove) {
+// GATE REVIEW #7 F2, reproduced before it was fixed: this loop read only
+// [where, prevented] and dropped the handedToOS element the runner records.
+// The mutant `openExternalIfSafe(String(url).replace(/^http:/, 'https:'))`
+// therefore passed with 498 checks green — the stale origin was BOTH
+// preventDefault'd (satisfying the check below) and handed to the browser as
+// https, which the global scheme check allows for any host.
+for (const [where, prevented, opened] of ext.staleAfterMove) {
   ok(prevented === true,
     `after the server moved to port ${ext.movedPort}, ${where} still ALLOWED a navigation to the `
     + `OLD origin (127.0.0.1:${ext.originalPort}). That port belongs to whatever process took it — `
     + 'the allowlist must follow the window, not accumulate every port the app has ever used.');
+  ok(opened === false,
+    `after the port move, ${where} handed the app's own OLD-origin URL (127.0.0.1:`
+    + `${ext.originalPort}) to the OS. Refusing to navigate there is right; shipping it to the `
+    + "user's browser is not — that port now belongs to another process.");
 }
 // FOUND BY THIS AGENT, sweep 2. Navigation and window.open are not the only
 // doors to the OS: Electron hands the app URLs through LIFECYCLE events too.
