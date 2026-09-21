@@ -14,6 +14,10 @@
  *   8    a11:null is refused (SR-64) with an ordinary matrix as the control
  *   9    the lazy session key signs a token the app can verify (the post-lock
  *        read) end to end
+ *   10-11 renderer isolation and the IPC bridge, asserted by EFFECT
+ *   11d  the channel set of the RUNNING main process — the capability surface
+ *        as the shipped binary registers it, which is the one thing the
+ *        fake-Electron runner cannot see
  *
  * Needs a packaged app: `npm run build && npx electron-builder --mac --dir`.
  * Runs in CI's `package-audit` job (the only macOS runner that builds a .app),
@@ -259,11 +263,51 @@ try {
   rec('11b. CONTROL: a VALID hex colour does change the window (the bridge is not inert)',
     changed.toLowerCase() === '#123456', `window colour is ${changed}`);
   // An extra argument must not be usable to pick a different IPC channel.
+  // Gate review #5 (finding 2) is right that this cannot fail against today's
+  // one-parameter preload arrow — JS drops the extra argument before
+  // `ipcRenderer.send` is reached. It is WEAKER than that, and the measurement
+  // is worth writing down: giving the preload a real
+  // `(color, channel) => ipcRenderer.send(channel || 'set-background-color', color)`
+  // signature AND registering a second main-process handler for the evil
+  // channel left 11c GREEN — because that handler set the same colour, so the
+  // window changed either way and "it routed to the one channel" was never
+  // what this observed. An effect check cannot tell two channels apart when
+  // both produce the effect. 11d is the assertion; it failed on that mutant by
+  // name. 11c stays only as a cheap canary and must not be read as coverage.
   await sendColour('#abcdef', 'set-background-color-evil');
   await win.waitForTimeout(250);
   rec('11c. an extra argument cannot select a different IPC channel',
     (await colour()).toLowerCase() === '#abcdef',
     'the call still routes to the one channel the preload hard-codes');
+
+  // ── 11d. THE CHANNEL SET OF THE RUNNING MAIN PROCESS. ───────────────────
+  // Every registered channel is reachable from ANY script the page runs, so
+  // the set is the capability surface — and the preload is not the only way
+  // to reach it. electron-behavior.test.mjs asserts this against a fake
+  // Electron; this asserts it against the process that actually shipped,
+  // where a channel added by a dependency's patch or lost in packaging would
+  // differ. Read from ipcMain's own listener registry, not from source text.
+  //   `error` is Electron's OWN listener, not ours, and not the harness's:
+  // MEASURED by logging ipcMain.eventNames() from inside electron-main.cjs
+  // immediately BEFORE its single `ipcMain.on` — ["error"] — and the same
+  // ["error"] appears when the packaged binary is launched straight from the
+  // shell with no Playwright involved. It is an EventEmitter 'error' sink
+  // (a `()=>{}`), so it is subtracted BY NAME rather than the assertion being
+  // relaxed to a subset check, which would stop counting anything.
+  const ELECTRON_OWN = ['error'];
+  const channels = await app.evaluate(({ ipcMain }) =>
+    ipcMain.eventNames().map(String).sort());
+  const ours = channels.filter((c) => !ELECTRON_OWN.includes(c));
+  rec('11d. the packaged main process registers EXACTLY the one IPC channel',
+    JSON.stringify(ours) === JSON.stringify(['set-background-color']),
+    `registered: ${JSON.stringify(channels)}, ours: ${JSON.stringify(ours)} — each one is a `
+    + 'capability any script in the page can invoke');
+  // CONTROL: the subtraction above must not be able to hide a real channel —
+  // if Electron ever stops registering `error`, this fails and the list is
+  // re-derived rather than silently carrying a name that subtracts nothing.
+  rec('11d CONTROL: the subtracted name is actually present (the filter is not a no-op)',
+    ELECTRON_OWN.every((c) => channels.includes(c)),
+    `expected ${JSON.stringify(ELECTRON_OWN)} among ${JSON.stringify(channels)}`);
 } finally {
   if (app) await app.close().catch(() => {});
   rmSync(userDataDir, { recursive: true, force: true });
