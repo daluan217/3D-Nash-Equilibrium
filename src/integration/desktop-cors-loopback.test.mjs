@@ -317,9 +317,25 @@ try {
     ['017700000001', 'octal-encoded loopback'],
     ['[::ffff:127.0.0.1]', 'IPv4-mapped IPv6 loopback'],
     ['localhost.', 'fully-qualified trailing dot'],
+    // 0.0.0.0 is the "all interfaces" wildcard, NOT loopback: it is reachable
+    // from the LAN, so accepting it would undo the boundary entirely.
+    ['0.0.0.0', 'the all-interfaces wildcard, which is not loopback'],
+    // A comma-joined Host is what a misconfigured proxy produces; a parser
+    // that splits on "," and trusts the first element accepts the pair.
+    [`127.0.0.1:${DESKTOP_PORT},evil.example`, 'comma-joined Host (proxy shape) — the second name must not ride in'],
   ]) {
     const r = await rawReq(DESKTOP_PORT, `${hostHeader}:${DESKTOP_PORT}`);
     record(`SR-63: Host "${hostHeader}" cannot read the library (${why})`,
+      r.status === 403 && !r.body.includes('cors-probe-game'),
+      `status=${r.status} body=${r.body.slice(0, 70)}`);
+  }
+
+  // An EMPTY Host is the degenerate case: a guard written as
+  // `host.includes(...)` or one that treats a falsy Host as "no claim, allow"
+  // lets it straight through.
+  {
+    const r = await rawReq(DESKTOP_PORT, '');
+    record('SR-63: an EMPTY Host header cannot read the library',
       r.status === 403 && !r.body.includes('cors-probe-game'),
       `status=${r.status} body=${r.body.slice(0, 70)}`);
   }
