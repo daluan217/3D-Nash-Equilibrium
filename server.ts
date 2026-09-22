@@ -1807,11 +1807,17 @@ function acquireDesktopLock(): boolean {
 // `fetchImplementation` were each measured against an accept-and-never-answer
 // peer and the auth layer's transport ignores all five, so the connection is
 // held until the peer or the OS drops it (measured: still open 75s later).
-// PRE-EXISTING, not introduced here: the same probe leaks identically against
-// the pre-deadline tree (20 polls -> 20 sockets both ways). Capping in-flight
-// calls here does NOT bound it — retries and auth open sockets that never
-// reach this function (measured: 40 sockets for 3 breaches + 37 refusals).
-// The upgrade path is the SDK's own transport (or undici), not this layer.
+// For the REQUEST-DRIVEN sites (/api/version, initDB) this is pre-existing:
+// each request was already its own unbounded await, and the same probe leaks
+// identically against the pre-deadline tree (20 polls -> 20 sockets both
+// ways). For the SAVE PUMP it is a deliberate trade, not pre-existing: the
+// old behaviour leaked one socket and then pinned gcsUploadInFlight forever,
+// so there were no further attempts to leak; freeing the pump means each
+// later save retries and leaks again while an outage lasts. Losing sockets
+// during an outage beats never persisting a save again (gate review #11).
+// Capping in-flight calls here does NOT bound it — retries and auth open
+// sockets that never reach this function (measured: 40 sockets for 3
+// breaches + 37 refusals). The upgrade path is the SDK's own transport.
 const GCS_DEADLINE_MS = (() => {
   const ms = Number(process.env.GCS_DEADLINE_MS || 15_000);
   return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
