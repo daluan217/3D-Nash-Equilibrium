@@ -288,8 +288,10 @@ jobs:
       - name: Boot the production server and run the GCS db-saves suite (fake GCS)
         run: node src/integration/gcs-db-saves.test.mjs
         env:
-          GCS_DB_TEST_PORT: '3131'
-          GCS_DB_TEST_GCS_PORT: '3130'
+          # 3520/3521, not 3131/3130: this suite binds port1+10, +11 and +20,
+          # so it reaches 3151 — scenario-bank-fallback's stub port.
+          GCS_DB_TEST_PORT: '3520'
+          GCS_DB_TEST_GCS_PORT: '3521'
       # /api/download/dmg against a FAKE GCS object (STORAGE_EMULATOR_HOST —
       # no real credentials, no real GCS spend). Guards RED-DESKTOP-3's live
       # finding against production (revision 00194-fxz): the GCS-streamed DMG
@@ -300,8 +302,12 @@ jobs:
       - name: Boot the production server and run the DMG download suite (fake GCS)
         run: node src/integration/dmg-download.test.mjs
         env:
-          DMG_TEST_PORT: '3109'
-          DMG_TEST_GCS_PORT: '3110'
+          # 3460/3461, not 3109/3110: scenario-parity starts at 3106 and walks
+          # its PORT forward three times, landing on 3109. Moving the DMG pair
+          # (this lane's) rather than PARITY_PORT (another lane's) keeps the
+          # edit inside the desktop surface.
+          DMG_TEST_PORT: '3460'
+          DMG_TEST_GCS_PORT: '3461'
 
       # A 2xx whose body is NOT the backend's JSON acknowledgement must never
       # count as a completed write. Desktop cloud mode's API base is
@@ -325,7 +331,12 @@ jobs:
       - name: Boot the production server and run the desktop concurrent-lock suite
         run: node src/integration/desktop-concurrent-lock.test.mjs
         env:
-          LOCK_TEST_PORT: '3113'
+          # 3400, not 3113: this suite binds base, +1, +2, +10, +11, +12, which
+          # sat on desktop-recovery-hint's walk (3113) and unwritable-save's
+          # PORT5 (3123). 3400-3412 is clear of every other port in this job —
+          # src/ciports.contract.test.ts fails the build if that stops being
+          # true.
+          LOCK_TEST_PORT: '3400'
 
       # A lock-acquisition failure used to be a bare process.exit(1) always.
       # Because electron-main.cjs require()s dist/server.cjs IN-PROCESS (not
@@ -355,7 +366,11 @@ jobs:
       - name: Boot the production server and run the desktop lock write-side suite
         run: node src/integration/desktop-lock-write-side.test.mjs
         env:
-          LOCK_WS_PORT: '3150'
+          # 3420, not 3150: this suite binds base, +1, +10, +11, +12, which sat
+          # on scenario-bank-fallback (3150/3151), gcs-db-saves' +20 (3151),
+          # db-shape-refusal's walk (3160-3162) and scenario-regen (3160) —
+          # five collisions from one base. 3420-3432 is clear.
+          LOCK_WS_PORT: '3420'
 
       # An unwritable ELECTRON_USER_DATA_PATH (read-only dir, full disk, ...)
       # used to accept a game save/update/delete, tell the user it worked,
@@ -393,7 +408,8 @@ jobs:
       - name: Boot the production server and run the desktop owner-integrity suite
         run: node src/integration/desktop-owner-integrity.test.mjs
         env:
-          OWNER_INTEGRITY_PORT: '3141'
+          # 3440, not 3141: gcs-db-saves reaches 3141 via port1+10.
+          OWNER_INTEGRITY_PORT: '3440'
 
       # RED-DESKTOP-16/001: a Bearer token that WAS presented but does not
       # resolve (garbled, or invalidated by a REAL forgot/reset-password) must
@@ -481,7 +497,9 @@ jobs:
       - name: Boot the production server and run the db-shape refusal suite
         run: node src/integration/db-shape-refusal.test.mjs
         env:
-          DB_SHAPE_TEST_PORT: '3155'
+          # 3500, not 3155: this suite walks its port forward nine times, so it
+          # really spans 3155-3164 and landed on scenario-regen's 3160.
+          DB_SHAPE_TEST_PORT: '3500'
 
       # RED-DESKTOP-8/001: an iCloud/Finder conflict can leave a valid
       # `db.json 2` beside the primary `db.json`. The desktop must refuse
@@ -517,7 +535,7 @@ jobs:
           npx playwright install --with-deps chromium
           node src/integration/desktop-adopt-deadsession.test.mjs
         env:
-          DESKTOP_ADOPT_DEAD_PORT: '3119'
+          DESKTOP_ADOPT_DEAD_PORT: '3128'
 
       - name: Boot the production server and run the atomic tmp-sweep suite
         run: node src/integration/atomic-tmp-sweep.test.mjs
