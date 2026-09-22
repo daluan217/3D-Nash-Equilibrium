@@ -46,17 +46,24 @@ const isDeadlined = (call: ts.Node): boolean => {
   return false;
 };
 
-// EVERY such call, not only the lexically-awaited ones. Requiring an
-// enclosing `await` would let `for await (… of file.download())`, a detached
-// `const p = file.exists()` awaited later, and `Promise.all([...])` split
-// across statements slip past. Measured on the real server.ts before
-// widening: 13 calls, 0 of them un-awaited, so the wider rule costs 0 false
-// positives today and covers the shapes a future edit could use.
+/**
+ * Receivers that own a same-named method and are NOT GCS. Kept as an explicit
+ * allowlist because the rule below matches on the METHOD NAME ALONE.
+ *
+ * Matching the receiver's source text against /\bfile\b/ was the first
+ * attempt and gate review #9 broke it in one line: `const f2 = file;
+ * await f2.exists()` is a real unbounded GCS await that the contract did not
+ * even count as a site. Any alias, helper parameter or rename defeats a
+ * textual receiver test, so the receiver is no longer trusted to identify
+ * GCS. Measured on the real server.ts before switching: 14 calls to these
+ * four method names on ANY receiver, of which exactly one is not GCS.
+ */
+const NON_GCS_RECEIVERS = new Set(['res']); // express: res.download(path)
+
 const collect = (node: ts.Node, sink: (n: ts.CallExpression) => void): void => {
   if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
     && NETWORK_METHODS.has(node.expression.name.text)
-    // `file`, `file.bucket.file('db.json', {...})`, `storage.bucket(..).file(..)`
-    && /\bfile\b/.test(node.expression.expression.getText(node.getSourceFile()))) sink(node);
+    && !NON_GCS_RECEIVERS.has(node.expression.expression.getText(node.getSourceFile()))) sink(node);
   node.forEachChild((c) => collect(c, sink));
 };
 
@@ -95,6 +102,14 @@ for (const m of NETWORK_METHODS) {
 check('createReadStream is excluded by design, and still present',
   /createReadStream\(/.test(source) && !NETWORK_METHODS.has('createReadStream'));
 
+// The allowlist is the one place this contract can be weakened without
+// touching a single assertion: adding a receiver name silently un-guards
+// every call on it. Keep it tiny and force a re-justification to grow it.
+check('the non-GCS receiver allowlist stays minimal',
+  NON_GCS_RECEIVERS.size <= 2,
+  `${NON_GCS_RECEIVERS.size} exempt receivers — each one un-guards every GCS-named call on it: ${
+    [...NON_GCS_RECEIVERS].join(', ')}`);
+
 // ── SELF-TESTS: the rule must be able to FAIL, on inputs naming the shape ────
 const analyse = (src: string): { total: number; bare: number } => {
   const f = ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -126,6 +141,18 @@ check('SELF-TEST: Promise.all of bare calls reports BOTH',
   analyse('async function f(){ const [a, b] = await Promise.all([file.exists(), file.getMetadata()]); }').bare === 2);
 check('SELF-TEST: a deadlined call inside Promise.all is accepted',
   analyse("async function f(){ const [a] = await Promise.all([withDeadline(file.exists(), 'x')]); }").bare === 0);
+// Gate review #9 finding #1, verbatim: each of these defeated the previous
+// receiver-text rule while being a genuine unbounded GCS await.
+check('SELF-TEST: an ALIASED receiver is REPORTED (review #9 finding 1)',
+  analyse('async function f(){ const gcsFileAlias = file; const [m] = await gcsFileAlias.getMetadata(); }').bare === 1);
+check('SELF-TEST: a short alias `f2` is REPORTED',
+  analyse('async function f(){ const f2 = file; const [e] = await f2.exists(); }').bare === 1);
+check('SELF-TEST: a call on a HELPER PARAMETER is REPORTED',
+  analyse('function doExists(target){ return target.exists(); }').bare === 1);
+check('SELF-TEST: a renamed intermediate (dmgFile) is REPORTED',
+  analyse('async function f(){ const dmgFile = bucket.file(k); const [e] = await dmgFile.exists(); }').bare === 1);
+check('SELF-TEST: an allowlisted non-GCS receiver (res.download) is NOT reported',
+  analyse('function f(req, res){ res.download(p); }').total === 0);
 
 console.log(failures === 0
   ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`
