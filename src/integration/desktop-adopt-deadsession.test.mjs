@@ -38,7 +38,9 @@ const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
   + 'Electron/32.2.7 Safari/537.36';
 
 let failures = 0;
+let total = 0;
 const rec = (name, pass, detail = '') => {
+  total++;
   if (!pass) failures++;
   console.log(`${pass ? '  ✓' : '  ✗'} ${name}${pass || !detail ? '' : ` — ${detail}`}`);
 };
@@ -215,6 +217,15 @@ try {
   rmSync(emptyCwd, { recursive: true, force: true });
 }
 
+// SR-47: the count is DECLARED, not counted — a silently skipped block
+// otherwise prints "N/N passed" and exits 0. Measured: filtering one data
+// array to empty in desktop-dead-token-owner removed six checks and the run
+// said "37/37 checks passed".
+const EXPECTED_CHECKS = 18;
+if (total < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${total} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
+  process.exit(1);
+}
 if (failures) {
   console.log(`\n✗ desktop-adopt-deadsession: ${failures} failed`);
   process.exit(1);

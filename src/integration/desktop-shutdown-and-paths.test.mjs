@@ -455,6 +455,18 @@ for (const [label, mustBoot, build, why] of SHAPES) {
   rmSync(capScript, { force: true });
 }
 
+// SR-47: a suite that SILENTLY SKIPS a block still prints "N/N checks passed"
+// and exits 0, because N is counted, not expected. Measured on this file's own
+// ancestor: filtering one data array to empty removed six checks and the run
+// said "37/37 checks passed". The red probe that had aborted for three sweeps
+// was the same shape. So the count is DECLARED: fewer means a block did not
+// run, which is a failure even when every check that did run passed.
+const EXPECTED_CHECKS = 43;
+if (results.length < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — `
+    + 'a block was skipped. Raise EXPECTED_CHECKS deliberately when adding checks.');
+  process.exit(1);
+}
 const failed = results.filter((r) => !r.pass);
 console.log(`\n══════ DESKTOP SHUTDOWN & PATH SHAPES: ${results.length - failed.length}/${results.length} checks passed ══════`);
 if (failed.length > 0) {

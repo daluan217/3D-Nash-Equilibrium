@@ -1125,4 +1125,13 @@ for (const u of ext.openedUrls) {
     + 'file:// opens Finder on an arbitrary path; javascript:/data: execute.');
 }
 
+// SR-47: the count is DECLARED, not counted — a silently skipped block
+// otherwise prints "N checks passed" and exits 0. Measured: filtering one data
+// array to empty in desktop-dead-token-owner removed six checks and the run
+// said "37/37 checks passed".
+const EXPECTED_CHECKS = 506;
+if (checks < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${checks} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
+  process.exit(1);
+}
 console.log(`electron-behavior.test.mjs: ${checks} checks passed`);

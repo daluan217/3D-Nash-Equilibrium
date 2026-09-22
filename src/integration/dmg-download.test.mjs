@@ -609,6 +609,15 @@ try {
   rmSync(userData, { recursive: true, force: true });
 }
 
+// SR-47: the count is DECLARED, not counted — a silently skipped block
+// otherwise prints "N/N checks passed" and exits 0. Measured: filtering one
+// data array to empty in desktop-dead-token-owner removed six checks and the
+// run said "37/37 checks passed".
+const EXPECTED_CHECKS = 47;
+if (results.length < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
+  process.exit(1);
+}
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length > 0) {

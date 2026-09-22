@@ -148,6 +148,30 @@ check('every src/integration/*.test.mjs runs in the required GitHub integration 
   notInCi.length === 0,
   `never executed by CI: ${JSON.stringify(notInCi)}. test.yml's per-file list is the only path — `
   + 'no workflow runs `npm run test:integration`.');
+// SR-47: a suite that silently skips a block still prints "N/N checks passed"
+// and exits 0, because N is counted rather than expected. Measured on
+// desktop-dead-token-owner: filtering one data array to empty removed six
+// checks and the run reported "37/37 checks passed" with rc=0. So every
+// integration suite must DECLARE its floor; this is what stops the next one
+// landing without it.
+// Enforced today for the desktop/electron surface, where the defect was
+// measured and every floor was calibrated by running the suite. The other 15
+// integration suites have the identical footer and the identical exposure;
+// they belong to other owners, so they are NAMED here rather than quietly
+// excluded — widen the prefix list as each surface calibrates its own floor.
+const FLOORED_PREFIXES = ['desktop-', 'electron-', 'atomic-', 'dmg-'];
+const needsFloor = integrationFiles.filter((f) => FLOORED_PREFIXES.some((p) => f.startsWith(p)));
+const missingFloor = needsFloor.filter(
+  (f) => !readFileSync(`src/integration/${f}`, 'utf8').includes('EXPECTED_CHECKS'));
+check('every desktop/electron integration suite declares an EXPECTED_CHECKS floor',
+  missingFloor.length === 0,
+  `no floor, so a skipped block reads as a pass: ${JSON.stringify(missingFloor)}`);
+check('SELF-TEST: the floor rule covers the suites it claims to',
+  needsFloor.length >= 21, `only ${needsFloor.length} suites matched ${JSON.stringify(FLOORED_PREFIXES)}`);
+const stillExposed = integrationFiles.filter((f) => !needsFloor.includes(f));
+console.log(`  note: ${stillExposed.length} integration suites outside the desktop surface still count `
+  + `rather than declare their checks (owners: see SR-47): ${stillExposed.join(', ')}`);
+
 check('the integration-file discovery found the suites it claims to cover',
   integrationFiles.length >= 25, `found only ${integrationFiles.length}`);
 // SELF-TEST: the matcher must fail for a file CI does not run, or the clean
