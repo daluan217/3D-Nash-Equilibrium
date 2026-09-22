@@ -161,11 +161,44 @@ check('every src/integration/*.test.mjs runs in the required GitHub integration 
 // excluded — widen the prefix list as each surface calibrates its own floor.
 const FLOORED_PREFIXES = ['desktop-', 'electron-', 'atomic-', 'dmg-'];
 const needsFloor = integrationFiles.filter((f) => FLOORED_PREFIXES.some((p) => f.startsWith(p)));
-const missingFloor = needsFloor.filter(
-  (f) => !readFileSync(`src/integration/${f}`, 'utf8').includes('EXPECTED_CHECKS'));
-check('every desktop/electron integration suite declares an EXPECTED_CHECKS floor',
-  missingFloor.length === 0,
-  `no floor, so a skipped block reads as a pass: ${JSON.stringify(missingFloor)}`);
+// Gate review #8, finding 2: this was `.includes('EXPECTED_CHECKS')`, so a
+// comment naming the constant satisfied it while the file had no floor —
+// "pattern present, behaviour absent", the very shape this branch closes.
+// Three things are now required: the DECLARATION, a COMPARISON against it,
+// and a process.exit(1) reachable from that comparison. Require executable
+// line-start syntax and the real counter shape: a string/comment/decoy branch
+// is not a floor.
+const floorShape = (source: string): { declares: boolean; compares: boolean; exits: boolean } => {
+  // The declaration is executable only if it begins a line; a comment/string
+  // cannot satisfy this. The comparison must use one of this surface's actual
+  // counters and occur AFTER the declaration, so a decoy branch cannot hide a
+  // missing floor. Its body must contain the non-zero exit.
+  const declaration = source.match(/^\s*const EXPECTED_CHECKS = ([1-9]\d*);/m);
+  if (!declaration) return { declares: false, compares: false, exits: false };
+  const rest = source.slice((declaration.index ?? 0) + declaration[0].length);
+  const cmp = rest.match(
+    /^([ \t]*)if \(((?:results|out)\.length|total|checks) (?:<|!==) EXPECTED_CHECKS\) \{\n([\s\S]{0,400}?)\n\1\}/m);
+  return { declares: true, compares: cmp !== null, exits: cmp !== null && /\bprocess\.exit\(1\)/.test(cmp[3]) };
+};
+const floorBroken = needsFloor
+  .map((f) => [f, floorShape(readFileSync(`src/integration/${f}`, 'utf8'))] as const)
+  .filter(([, s]) => !s.declares || !s.compares || !s.exits);
+check('every desktop/electron integration suite declares an EXPECTED_CHECKS floor AND acts on it',
+  floorBroken.length === 0,
+  'a floor that is only mentioned enforces nothing: '
+  + JSON.stringify(floorBroken.map(([f, s]) => ({ f, ...s }))));
+// SELF-TEST: the three sub-conditions must each be able to fail, or the check
+// above is a regex that matches everything.
+check('SELF-TEST: a file that only MENTIONS EXPECTED_CHECKS is rejected',
+  !floorShape('// EXPECTED_CHECKS is a great idea\nconsole.log("done");').declares);
+check('SELF-TEST: a declaration with no comparison is rejected',
+  floorShape('const EXPECTED_CHECKS = 7;\nconsole.log(EXPECTED_CHECKS);').declares
+  && !floorShape('const EXPECTED_CHECKS = 7;\nconsole.log(EXPECTED_CHECKS);').compares);
+check('SELF-TEST: a comparison that does not exit non-zero is rejected',
+  !floorShape('const EXPECTED_CHECKS = 7;\nif (total < EXPECTED_CHECKS) {\n  console.warn("hm");\n}').exits);
+check('SELF-TEST: a real floor is accepted',
+  Object.values(floorShape('const EXPECTED_CHECKS = 7;\n'
+    + 'if (total !== EXPECTED_CHECKS) {\n  console.error("x");\n  process.exit(1);\n}')).every(Boolean));
 check('SELF-TEST: the floor rule covers the suites it claims to',
   needsFloor.length >= 21, `only ${needsFloor.length} suites matched ${JSON.stringify(FLOORED_PREFIXES)}`);
 const stillExposed = integrationFiles.filter((f) => !needsFloor.includes(f));

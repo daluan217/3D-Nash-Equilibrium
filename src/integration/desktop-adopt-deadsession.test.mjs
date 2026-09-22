@@ -29,7 +29,10 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = process.env.DESKTOP_ADOPT_DEAD_PORT || '3119';
+// 3128, not 3119: UNWRITABLE_SAVE_PORT is 3119 in an earlier step of the SAME
+// CI job (.github/workflows/test.yml), and IS_ELECTRON makes the server walk
+// to the next free port on EADDRINUSE rather than fail (gate review #8, f6).
+const PORT = process.env.DESKTOP_ADOPT_DEAD_PORT || '3128';
 const BASE = `http://localhost:${PORT}`;
 // Electron's UA is what App.tsx reads to decide the offer exists at all
 // (`isElectron`), so a plain chromium UA would skip the whole surface.
@@ -59,12 +62,25 @@ child.stderr.on('data', (d) => { srvLog += d; });
 
 let browser = null;
 try {
+  // Gate review #8, finding 6: `IS_ELECTRON` makes the server WALK to the next
+  // port on EADDRINUSE, while BASE stays fixed — so an `ok` health response
+  // could come from a stray listener (or another suite's server) on this port
+  // while our child quietly served a different one, and the whole run would
+  // measure a foreign process. `/api/health` reports its pid for exactly this;
+  // require it to be OUR child's before believing anything that follows.
   let up = false;
   for (let i = 0; i < 150; i++) {
-    try { if ((await fetch(`${BASE}/api/health`)).ok) { up = true; break; } } catch { /* not yet */ }
+    if (child.exitCode !== null) throw new Error(`server exited ${child.exitCode}: ${srvLog.slice(-400)}`);
+    try {
+      const r = await fetch(`${BASE}/api/health`);
+      if (r.ok && (await r.json())?.pid === child.pid) { up = true; break; }
+    } catch { /* not yet */ }
     await new Promise((r) => setTimeout(r, 200));
   }
-  if (!up) throw new Error(`server never became ready on ${PORT}: ${srvLog.slice(-400)}`);
+  if (!up) {
+    throw new Error(`no server with pid ${child.pid} answered on ${PORT} — it may have walked to `
+      + `another port because something else holds ${PORT}. Log: ${srvLog.slice(-400)}`);
+  }
 
   browser = await chromium.launch();
 
@@ -158,7 +174,7 @@ try {
   }
 
   console.log('── the session is killed between sign-in and the click ──');
-  const dead = await run({ killSession: true, u: null, user: { u: 'deadses', e: 'deadses@desk.local', p: 'TestPass123' } });
+  const dead = await run({ killSession: true, user: { u: 'deadses', e: 'deadses@desk.local', p: 'TestPass123' } });
   rec('precondition: the no-account save landed on the local owner',
     dead.saveBody?.game?.userId === 'local-owner', JSON.stringify(dead.saveBody?.game?.userId));
   rec('precondition: the login response reports 1 game saved on this device',
@@ -221,13 +237,19 @@ try {
 // otherwise prints "N/N passed" and exits 0. Measured: filtering one data
 // array to empty in desktop-dead-token-owner removed six checks and the run
 // said "37/37 checks passed".
-const EXPECTED_CHECKS = 18;
-if (total < EXPECTED_CHECKS) {
-  console.error(`FAILED: only ${total} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
+// Gate review #8, finding 1: this said 18 while 19 checks run, and the banner
+// below printed a hardcoded "18/18" instead of the measured total. Both are
+// the defect this file exists to close, in the file that closes it: deleting
+// one check left `total` at 18, `18 < 18` false, rc=0, banner unchanged. The
+// floor is now EXACT and the banner prints what was counted.
+const EXPECTED_CHECKS = 19;
+if (total !== EXPECTED_CHECKS) {
+  console.error(`FAILED: ${total} checks ran, expected exactly ${EXPECTED_CHECKS} — a block was `
+    + 'skipped (fewer) or double-counted (more). Change EXPECTED_CHECKS deliberately.');
   process.exit(1);
 }
 if (failures) {
-  console.log(`\n✗ desktop-adopt-deadsession: ${failures} failed`);
+  console.log(`\n✗ desktop-adopt-deadsession: ${failures} of ${total} failed`);
   process.exit(1);
 }
-console.log('\n══════ DESKTOP ADOPT DEAD-SESSION: 18/18 checks passed ══════');
+console.log(`\n══════ DESKTOP ADOPT DEAD-SESSION: ${total}/${EXPECTED_CHECKS} checks passed ══════`);

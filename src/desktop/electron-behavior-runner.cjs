@@ -1473,9 +1473,10 @@ if (mode === 'openexternal') {
   // passed every control. The throw is now RECORDED and asserted on.
   // F1 also: a handler that defers its OS call (`queueMicrotask(() =>
   // shell.openExternal(...))`) lands after the synchronous
-  // `openedUrls.length` snapshot. `drainDeferred` awaits a macrotask so any
-  // microtask- or timer-deferred hand-off is counted, and `handedToOS` is
-  // measured after it rather than inline.
+  // `openedUrls.length` snapshot. `settleInApp` re-attributes a hand-off
+  // that has arrived by `out()` to the row that caused it. It does not await:
+  // the runner's async lifetime ends at `out()`, so a timer fired later is a
+  // separate harness limitation, not a counted deferred hand-off.
   // Rows are [where, prevented, handedToOS, threw]. Both of the extra fields
   // come from gate review #7, each reproduced against a product mutant first:
   //

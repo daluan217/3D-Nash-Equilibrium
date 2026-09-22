@@ -180,10 +180,40 @@ function testNoShellInterpolationInRootCjs() {
     'the shell-interpolation pattern flags the SAFE execFileSync spelling — it would block the fix');
 }
 
+/**
+ * The navigation allowlist and the window's URL are ONE decision: `appOrigin`
+ * must have exactly one writer, inside `loadAppOrigin`, and it must be written
+ * only AFTER `loadURL` is CALLED. Gate review #8 finding 7: assigning first
+ * left the allowlist naming a port with no live window when a
+ * destroyed-but-not-yet-nulled window threw in the port-move arm. A guard on
+ * the behaviour lives in src/integration/electron-behavior.test.mjs; this
+ * pins the SHAPE, which is what a later edit would break first.
+ */
+function testAppOriginHasOneWriterAfterTheLoad() {
+  const src = readFileSync(MAIN_CJS, 'utf8');
+  const writes = src.match(/^[ \t]*appOrigin = /gm) ?? [];
+  assert(writes.length === 1,
+    `appOrigin is assigned ${writes.length} times. It must have exactly ONE writer — a second one `
+    + 'is a second decision about which origin the window is on, which is the defect loadAppOrigin '
+    + 'exists to make impossible.');
+  const fn = src.match(/function loadAppOrigin\(win, port\) \{\n([\s\S]*?)\n\}/);
+  assert(fn, 'loadAppOrigin(win, port) is gone — the allowlist and the load have been split apart again.');
+  const body = fn[1];
+  assert(body.indexOf('win.loadURL(') < body.indexOf('appOrigin = '),
+    'loadAppOrigin assigns appOrigin BEFORE calling loadURL. A throwing load then leaves the '
+    + 'allowlist naming a port with no live window on it; load first, allow second, so a failed '
+    + `load keeps the previous origin. Body:\n${body}`);
+  const loads = src.match(/\.loadURL\(/g) ?? [];
+  assert(loads.length === 1,
+    `${loads.length} loadURL call sites. Only loadAppOrigin may load the window, or a caller can `
+    + 'put the window on an origin the allowlist does not know about.');
+}
+
 function runDesktopContractTests() {
   testEveryRootCjsParses();
   testEveryRootCjsLoads();
   testNoShellInterpolationInRootCjs();
+  testAppOriginHasOneWriterAfterTheLoad();
   console.log(`All desktop .cjs contract tests passed (${rootCjsFiles().length} root .cjs files covered).`);
 }
 

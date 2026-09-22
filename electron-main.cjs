@@ -83,9 +83,20 @@ let appOrigin = null;
 
 // The window's URL and the navigation allowlist are one decision, so they are
 // one function: the origin can never name a port the window is not on.
+// Gate review #8, finding 7: the assignment used to come FIRST, so if loadURL
+// threw (a destroyed-but-not-yet-nulled window in the port-move arm — the
+// 'closed' handler that nulls mainWindow runs after the event), the allowlist
+// was left naming a port with no live window on it. Load first, allow second:
+// a failed load leaves the previous origin, which is the only origin a live
+// window is actually on.
 function loadAppOrigin(win, port) {
-  appOrigin = `http://127.0.0.1:${port}`;
-  win.loadURL(appOrigin);
+  const origin = `http://127.0.0.1:${port}`;
+  // Gate review #8 finding 7: do not update the allowlist before calling
+  // loadURL. A destroyed-but-not-yet-nulled window can throw synchronously in
+  // the port-move arm; preserving the previous origin is then safer than
+  // authorising an origin no live window reached.
+  win.loadURL(origin);
+  appOrigin = origin;
 }
 
 // BLUE-LOOP-DESKTOP-22, angle G. Electron GRANTS most renderer permission
