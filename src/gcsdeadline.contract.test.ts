@@ -28,8 +28,22 @@ const check = (name: string, ok: boolean, detail = '') => {
   if (!ok) failures++;
 };
 
-/** Storage methods that perform a network round-trip we could wait forever on. */
-const NETWORK_METHODS = new Set(['exists', 'getMetadata', 'download', 'save']);
+/**
+ * Storage methods that perform a network round-trip we could wait forever on.
+ *
+ * The four the product uses today, PLUS the rest of the blocking File/Bucket
+ * surface. Listing only what is called today would mean the first `delete()`
+ * or `setMetadata()` someone adds is unguarded on arrival — the guard has to
+ * cover the surface, not the current instances. Verified these names are not
+ * already in use on a non-GCS receiver in server.ts (the only `.delete(`
+ * calls are Map.delete and app.delete, both allowlisted below).
+ */
+const NETWORK_METHODS = new Set([
+  'exists', 'getMetadata', 'download', 'save',
+  'delete', 'copy', 'move', 'setMetadata', 'getFiles', 'deleteFiles',
+  'makePublic', 'makePrivate', 'createResumableUpload', 'getSignedUrl',
+  'combine', 'rotateEncryptionKey', 'setStorageClass',
+]);
 
 type Site = { method: string; line: number; deadlined: boolean; text: string };
 
@@ -58,12 +72,31 @@ const isDeadlined = (call: ts.Node): boolean => {
  * GCS. Measured on the real server.ts before switching: 14 calls to these
  * four method names on ANY receiver, of which exactly one is not GCS.
  */
-const NON_GCS_RECEIVERS = new Set(['res']); // express: res.download(path)
+const NON_GCS_RECEIVERS = new Set([
+  'res',          // express: res.download(path)
+  'app',          // express: app.delete(route, ...)
+  'rateBuckets',  // Map.delete
+  'reportCache',  // Map.delete
+]);
 
 const collect = (node: ts.Node, sink: (n: ts.CallExpression) => void): void => {
-  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-    && NETWORK_METHODS.has(node.expression.name.text)
-    && !NON_GCS_RECEIVERS.has(node.expression.expression.getText(node.getSourceFile()))) sink(node);
+  if (ts.isCallExpression(node)
+    && (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression))) {
+    const src = node.getSourceFile();
+    // `file.exists()` and `file['exists']()` alike. A COMPUTED name
+    // (`file[m]()`) cannot be resolved statically, so it is treated as a
+    // match: an un-deadlined dynamic dispatch onto a GCS file is exactly the
+    // shape this guard exists to refuse, and there are none in server.ts
+    // today, so this costs nothing and fails loudly if one appears.
+    const named = ts.isPropertyAccessExpression(node.expression)
+      ? node.expression.name.text
+      : (ts.isStringLiteralLike(node.expression.argumentExpression)
+        ? node.expression.argumentExpression.text
+        : null);
+    const receiver = node.expression.expression.getText(src);
+    const dynamic = named === null && !NON_GCS_RECEIVERS.has(receiver);
+    if ((named !== null && NETWORK_METHODS.has(named) && !NON_GCS_RECEIVERS.has(receiver)) || dynamic) sink(node);
+  }
   node.forEachChild((c) => collect(c, sink));
 };
 
@@ -89,12 +122,18 @@ check('every GCS network call is wrapped in withDeadline',
   `unbounded await(s) — a silent GCS peer hangs boot / pins the save pump:\n    ${
     bare.map((s) => `server.ts:${s.line} ${s.text}`).join('\n    ')}`);
 
-// Each distinct method must be represented, so a future refactor that drops a
-// whole call shape cannot quietly shrink what this contract covers.
-for (const m of NETWORK_METHODS) {
+// The four methods the product actually calls today must each still be seen,
+// so a refactor that drops a whole call shape cannot quietly shrink what this
+// contract covers. The rest of NETWORK_METHODS is forward cover for calls not
+// written yet, so it is deliberately NOT required to appear.
+const IN_USE = ['exists', 'getMetadata', 'download', 'save'] as const;
+for (const m of IN_USE) {
   check(`the scan covers file.${m}() calls`,
     sites.some((s) => s.method === m), `no ${m}() site found`);
 }
+check('the modelled surface is wider than what the product calls today',
+  IN_USE.every((m) => NETWORK_METHODS.has(m)) && NETWORK_METHODS.size > IN_USE.length,
+  `${NETWORK_METHODS.size} modelled vs ${IN_USE.length} in use — a newly added GCS call must be guarded on arrival`);
 
 // `createReadStream` is deliberately NOT deadlined: it is piped to the HTTP
 // response, has its own 'error' handler, and a large DMG download is
@@ -106,9 +145,16 @@ check('createReadStream is excluded by design, and still present',
 // touching a single assertion: adding a receiver name silently un-guards
 // every call on it. Keep it tiny and force a re-justification to grow it.
 check('the non-GCS receiver allowlist stays minimal',
-  NON_GCS_RECEIVERS.size <= 2,
+  NON_GCS_RECEIVERS.size <= 4,
   `${NON_GCS_RECEIVERS.size} exempt receivers — each one un-guards every GCS-named call on it: ${
     [...NON_GCS_RECEIVERS].join(', ')}`);
+
+// A size cap alone can be satisfied by SWAPPING an entry for `file`. Pin the
+// membership too: exempting anything that could be a GCS File must fail here,
+// not silently drop call sites out of the scan.
+check('the allowlist is exactly the four known non-GCS receivers',
+  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,rateBuckets,reportCache,res',
+  `allowlist is now: ${[...NON_GCS_RECEIVERS].sort().join(',')}`);
 
 // ── SELF-TESTS: the rule must be able to FAIL, on inputs naming the shape ────
 const analyse = (src: string): { total: number; bare: number } => {
@@ -153,6 +199,21 @@ check('SELF-TEST: a renamed intermediate (dmgFile) is REPORTED',
   analyse('async function f(){ const dmgFile = bucket.file(k); const [e] = await dmgFile.exists(); }').bare === 1);
 check('SELF-TEST: an allowlisted non-GCS receiver (res.download) is NOT reported',
   analyse('function f(req, res){ res.download(p); }').total === 0);
+// Third-round self-attack: shapes that evaded the method-name rule.
+check('SELF-TEST: computed member file["exists"]() is REPORTED',
+  analyse('async function f(){ const [e] = await file["exists"](); }').bare === 1);
+check('SELF-TEST: dynamic dispatch file[m]() is REPORTED (cannot be resolved, so refused)',
+  analyse('async function f(){ const m = "exists"; const [e] = await file[m](); }').bare === 1);
+check('SELF-TEST: optional chaining file?.exists() is REPORTED',
+  analyse('async function f(){ const [e] = await file?.exists(); }').bare === 1);
+check('SELF-TEST: a not-yet-used blocking method (file.delete) is REPORTED',
+  analyse('async function f(){ await file.delete(); }').bare === 1);
+check('SELF-TEST: file.setMetadata() is REPORTED',
+  analyse('async function f(){ await file.setMetadata(md); }').bare === 1);
+check('SELF-TEST: allowlisted Map.delete is NOT reported',
+  analyse('function f(){ rateBuckets.delete(k); reportCache.delete(k); }').total === 0);
+check('SELF-TEST: allowlisted app.delete route registration is NOT reported',
+  analyse('function f(){ app.delete("/api/games/:id", h); }').total === 0);
 
 console.log(failures === 0
   ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`
