@@ -13,6 +13,7 @@
  * parser rather than a regex because three consecutive reviews defeated
  * source-text regex guards on this branch (comments, strings, regex literals).
  */
+import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,42 +80,71 @@ const NON_GCS_RECEIVERS = new Set([
   'reportCache',  // Map.delete
 ]);
 
+/**
+ * The called method's name, for `file.exists()` and `file['exists']()` alike,
+ * or null when it is computed (`file[m]()`) and cannot be resolved statically.
+ *
+ * ONE resolver, used by both the matcher and the site builder. Gate review #10
+ * found them duplicated and out of step: `collect` handled element access
+ * while the site builder still cast to PropertyAccessExpression, so a real
+ * `file['exists']()` crashed the walk with "Cannot read properties of
+ * undefined" — CI red, but with no line naming the defect, and none of the
+ * self-tests caught it because they never ran the site-building path.
+ */
+const methodName = (call: ts.CallExpression): string | null => {
+  const callee = call.expression;
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+  if (ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression)) {
+    return callee.argumentExpression.text;
+  }
+  return null;
+};
+
 const collect = (node: ts.Node, sink: (n: ts.CallExpression) => void): void => {
   if (ts.isCallExpression(node)
     && (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression))) {
-    const src = node.getSourceFile();
-    // `file.exists()` and `file['exists']()` alike. A COMPUTED name
-    // (`file[m]()`) cannot be resolved statically, so it is treated as a
-    // match: an un-deadlined dynamic dispatch onto a GCS file is exactly the
-    // shape this guard exists to refuse, and there are none in server.ts
+    const named = methodName(node);
+    const receiver = node.expression.expression.getText(node.getSourceFile());
+    const exempt = NON_GCS_RECEIVERS.has(receiver);
+    // A computed name cannot be resolved, so it is REFUSED rather than
+    // ignored: an un-deadlined dynamic dispatch onto a GCS file is exactly
+    // the shape this guard exists to catch. There are none in server.ts
     // today, so this costs nothing and fails loudly if one appears.
-    const named = ts.isPropertyAccessExpression(node.expression)
-      ? node.expression.name.text
-      : (ts.isStringLiteralLike(node.expression.argumentExpression)
-        ? node.expression.argumentExpression.text
-        : null);
-    const receiver = node.expression.expression.getText(src);
-    const dynamic = named === null && !NON_GCS_RECEIVERS.has(receiver);
-    if ((named !== null && NETWORK_METHODS.has(named) && !NON_GCS_RECEIVERS.has(receiver)) || dynamic) sink(node);
+    if (!exempt && (named === null || NETWORK_METHODS.has(named))) sink(node);
   }
   node.forEachChild((c) => collect(c, sink));
 };
 
-const sites: Site[] = [];
-collect(sf, (n) => {
-  const { line } = sf.getLineAndCharacterOfPosition(n.getStart(sf));
-  sites.push({
-    method: (n.expression as ts.PropertyAccessExpression).name.text,
-    line: line + 1,
-    deadlined: isDeadlined(n),
-    text: n.getText(sf).replace(/\s+/g, ' ').slice(0, 80),
-  });
+const buildSite = (n: ts.CallExpression, file: ts.SourceFile): Site => ({
+  method: methodName(n) ?? `[computed] ${n.expression.getText(file)}`,
+  line: file.getLineAndCharacterOfPosition(n.getStart(file)).line + 1,
+  deadlined: isDeadlined(n),
+  text: n.getText(file).replace(/\s+/g, ' ').slice(0, 80),
 });
+
+const sites: Site[] = [];
+collect(sf, (n) => sites.push(buildSite(n, sf)));
 
 // The scan must be LIVE. If the AST walk silently matched nothing, every
 // "all sites deadlined" claim below would be vacuously true.
 check('the AST scan actually found GCS network calls in server.ts',
   sites.length >= 13, `found only ${sites.length}`);
+
+// This contract reads server.ts and nothing else, which is only sufficient
+// while server.ts is the only product file that talks to GCS. Gate review #10
+// flagged that as an unstated boundary, so it is now a CHECKED precondition:
+// the day someone puts GCS I/O in another module, this fails and says so
+// rather than silently covering less than it claims.
+const gcsImporters = execSync(
+  "grep -rl 'google-cloud/storage' --include='*.ts' --include='*.mts' --include='*.cts' "
+  + "--exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-electron "
+  + "--exclude-dir=.git --exclude-dir=_gen . || true",
+  { cwd: root, encoding: 'utf-8' },
+).split('\n').map((f) => f.replace(/^\.\//, '').trim())
+  .filter((f) => f && !/\.test\.|contract\.test/.test(f));
+check('server.ts is still the only product file importing the GCS SDK',
+  gcsImporters.length === 1 && gcsImporters[0] === 'server.ts',
+  `this contract only scans server.ts, but the SDK is imported by: ${gcsImporters.join(', ')}`);
 
 const bare = sites.filter((s) => !s.deadlined);
 check('every GCS network call is wrapped in withDeadline',
@@ -157,11 +187,18 @@ check('the allowlist is exactly the four known non-GCS receivers',
   `allowlist is now: ${[...NON_GCS_RECEIVERS].sort().join(',')}`);
 
 // ── SELF-TESTS: the rule must be able to FAIL, on inputs naming the shape ────
-const analyse = (src: string): { total: number; bare: number } => {
+// Runs the SAME path as the real scan: collect + buildSite. Calling only
+// collect() is what let gate review #10's crash hide — the self-tests passed
+// while the real file threw inside the site builder.
+const analyse = (src: string): { total: number; bare: number; methods: string[] } => {
   const f = ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const found: boolean[] = [];
-  collect(f, (n) => found.push(isDeadlined(n)));
-  return { total: found.length, bare: found.filter((d) => !d).length };
+  const found: Site[] = [];
+  collect(f, (n) => found.push(buildSite(n, f)));
+  return {
+    total: found.length,
+    bare: found.filter((s) => !s.deadlined).length,
+    methods: found.map((s) => s.method),
+  };
 };
 
 check('SELF-TEST: a bare awaited file.exists() is REPORTED',
@@ -214,6 +251,12 @@ check('SELF-TEST: allowlisted Map.delete is NOT reported',
   analyse('function f(){ rateBuckets.delete(k); reportCache.delete(k); }').total === 0);
 check('SELF-TEST: allowlisted app.delete route registration is NOT reported',
   analyse('function f(){ app.delete("/api/games/:id", h); }').total === 0);
+// Gate review #10: the site BUILDER, not just the matcher. These name the
+// resolved method, which is what crashed on an element-access callee.
+check('SELF-TEST: an element-access site reports its resolved method name',
+  analyse('async function f(){ const [e] = await file["exists"](); }').methods.join() === 'exists');
+check('SELF-TEST: a computed site is labelled rather than crashing the walk',
+  analyse('async function f(){ const m = "x"; await file[m](); }').methods.join().startsWith('[computed]'));
 
 console.log(failures === 0
   ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`
