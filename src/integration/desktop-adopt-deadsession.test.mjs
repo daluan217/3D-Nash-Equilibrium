@@ -173,6 +173,87 @@ try {
       status: moveResp.status(), moveBody, after, headerSignedIn, offerStillOpen, pageErrors };
   }
 
+  // Save a game, kill the session out of band, then press Delete. Separate
+  // from run() above: that one drives the adopt OFFER, which appears only at
+  // sign-in, while this one needs a saved row and a live session first.
+  async function runDelete({ user }) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, userAgent: UA });
+    const page = await ctx.newPage();
+    const pageErrors = [];
+    page.on('pageerror', (e) => pageErrors.push(String(e.message)));
+    page.on('dialog', (d) => d.dismiss().catch(() => {}));
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await page.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }).catch(() => {});
+
+    const authDlg = page.locator('[role="dialog"][aria-label="Account"]');
+    await page.locator('header').getByRole('button', { name: /sign in.*sign up/i }).click();
+    await authDlg.waitFor({ state: 'visible' });
+    await authDlg.getByRole('button', { name: /^sign up$/i }).click().catch(() => {});
+    await authDlg.locator('input[placeholder="game_theorist"]').waitFor({ state: 'visible', timeout: 8000 });
+    await authDlg.locator('input[placeholder="game_theorist"]').fill(user.u);
+    await authDlg.locator('input[placeholder="john@example.com"]').fill(user.e);
+    await authDlg.locator('input[placeholder="••••••••"]').first().fill(user.p);
+    await authDlg.locator('input[placeholder="••••••••"]').nth(1).fill(user.p);
+    await authDlg.getByRole('button', { name: /register account/i }).click();
+    await page.waitForTimeout(800);
+    await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 2000 }).catch(() => {});
+    await authDlg.locator('input[placeholder*="example.com or username"]').waitFor({ state: 'visible', timeout: 8000 });
+    await authDlg.locator('input[placeholder*="example.com or username"]').fill(user.e);
+    await authDlg.locator('input[placeholder="••••••••"]').first().fill(user.p);
+    await authDlg.getByRole('button', { name: /^login$/i }).click();
+    await authDlg.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
+    const offer = page.locator('[role="dialog"][aria-label="Games saved on this device"]');
+    if (await offer.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await page.getByRole('button', { name: /leave .* on this device/i })
+        .click({ timeout: 2000 }).catch(() => {});
+    }
+
+    await page.getByRole('button', { name: /save preset/i }).click();
+    const sdlg = page.locator('[role="dialog"][aria-label="Save custom game"]');
+    await sdlg.waitFor({ state: 'visible' });
+    await sdlg.locator('input[type="text"], input:not([type])').first().fill('DeadDeleteGame');
+    await sdlg.getByRole('button', { name: /save game profile/i }).click();
+    await sdlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+    const row = page.locator('[data-saved-game]:not([data-drawer-game])').filter({ hasText: 'DeadDeleteGame' });
+    const savedVisible = await row.isVisible({ timeout: 5000 }).catch(() => false);
+
+    const killed = await page.evaluate(async ({ email, newPassword }) => {
+      const fr = await fetch('/api/auth/forgot-password', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
+      const fb = await fr.json().catch(() => ({}));
+      const rr = await fetch('/api/auth/reset-password', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code: fb.recoveryCode || fb.code, newPassword }) });
+      return { forgot: fr.status, reset: rr.status };
+    }, { email: user.e, newPassword: `${user.p}X9` });
+
+    const delP = page.waitForResponse((r) => r.url().includes('/api/games/')
+      && r.request().method() === 'DELETE');
+    await row.locator('button[title="Delete this saved game"]').click();
+    const status = (await delP).status();
+
+    // Poll, do not sample: token and header settle in different ticks.
+    const trace = [];
+    let tokenAfter = 'unread';
+    let headerSignedIn = true;
+    let settleMs = 0;
+    for (let i = 0; i < 50; i++) {
+      const s = await page.evaluate(() => ({
+        token: localStorage.getItem('nash_sim_token_local'),
+        logout: !!Array.from(document.querySelectorAll('header button'))
+          .find((b) => /log out/i.test(b.textContent || '')),
+      }));
+      tokenAfter = s.token;
+      headerSignedIn = s.logout;
+      settleMs = i * 100;
+      if (trace.length < 6) trace.push(`+${settleMs}ms token=${s.token === null ? 'null' : 'set'} logout=${s.logout}`);
+      if (s.token === null && !s.logout) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await ctx.close();
+    return { savedVisible, killed, status, tokenAfter, headerSignedIn, settleMs, trace, pageErrors };
+  }
+
   console.log('── the session is killed between sign-in and the click ──');
   const dead = await run({ killSession: true, user: { u: 'deadses', e: 'deadses@desk.local', p: 'TestPass123' } });
   rec('precondition: the no-account save landed on the local owner',
@@ -224,6 +305,32 @@ try {
     && !/session ended before the move/i.test(live.after.logText),
     live.after.logText.split('\n').filter((l) => /Moved|session/i.test(l)).slice(-3).join(' | ').slice(0, 200));
   rec('CONTROL: the renderer threw nothing', live.pageErrors.length === 0, live.pageErrors.join(' | ').slice(0, 200));
+  // ── THE DELETE PATH, same dead session ──────────────────────────────────
+  // Why here: the adopt path above is guarded in a renderer BECAUSE source
+  // text missed its defect. handleDeleteGame's dead-session behaviour is
+  // still pinned only by source text (localowner.test.ts) — the identical
+  // exposure — and the one thing that pressed the button lived under _gen/.
+  //
+  // Timing, measured rather than assumed: the token and the header do not
+  // clear in the same tick. The header follows the token by ~200ms, so a
+  // single read at a fixed offset reports "still signed in" purely by luck
+  // (reproduced deterministically at offset 0: 3/3 runs). This polls to a
+  // deadline instead, which is what makes the row below a claim about the
+  // product rather than about the runner's speed.
+  console.log('── the session is killed, then the user presses Delete ──');
+  const del = await runDelete({ user: { u: 'deldead', e: 'deldead@desk.local', p: 'TestPass123' } });
+  rec('precondition: the game was saved and shown before the delete',
+    del.savedVisible === true);
+  rec('precondition: the out-of-band password reset succeeded',
+    del.killed?.forgot === 200 && del.killed?.reset === 200, JSON.stringify(del.killed));
+  rec('the server refuses the delete with 401', del.status === 401, `status ${del.status}`);
+  rec('FIX: the dead token is cleared from storage', del.tokenAfter === null,
+    String(del.tokenAfter).slice(0, 30));
+  rec('FIX: the header stops offering "Log out" for a session the server killed',
+    del.headerSignedIn === false,
+    `still signed-in after ${del.settleMs}ms of polling — trace ${JSON.stringify(del.trace)}`);
+  rec('the renderer threw nothing', del.pageErrors.length === 0,
+    del.pageErrors.join(' | ').slice(0, 200));
 } catch (e) {
   rec('test script completed without an exception', false, String(e).slice(0, 400));
 } finally {
@@ -242,7 +349,7 @@ try {
 // the defect this file exists to close, in the file that closes it: deleting
 // one check left `total` at 18, `18 < 18` false, rc=0, banner unchanged. The
 // floor is now EXACT and the banner prints what was counted.
-const EXPECTED_CHECKS = 19;
+const EXPECTED_CHECKS = 25;
 if (total !== EXPECTED_CHECKS) {
   console.error(`FAILED: ${total} checks ran, expected exactly ${EXPECTED_CHECKS} — a block was `
     + 'skipped (fewer) or double-counted (more). Change EXPECTED_CHECKS deliberately.');
