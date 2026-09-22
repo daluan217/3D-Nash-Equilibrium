@@ -54,7 +54,7 @@
  *   node src/integration/desktop-lock-write-side.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -162,7 +162,15 @@ await runPart('PART 1', async () => {
     record('P1: real alive first instance boots and holds the lock', existsSync(lockFile));
 
     chmodSync(lockFile, 0o000);
-    record('fixture: the lock file is now unreadable (chmod 000) while P1 is still alive', true);
+    // Was `true`: a fixture row that cannot fail. If chmod silently did
+    // nothing (a filesystem that ignores modes, or root), the lock stays
+    // READABLE and the refusal below would be proving something else
+    // entirely. Assert the premise the next three checks depend on.
+    let lockReadable = true;
+    try { readFileSync(lockFile, 'utf8'); } catch { lockReadable = false; }
+    record('fixture: the lock file is now unreadable (chmod 000) while P1 is still alive',
+      lockReadable === false && existsSync(lockFile),
+      lockReadable ? 'chmod 000 did not make it unreadable — the refusal below proves nothing' : '');
 
     const port2 = port1 + 1;
     p2 = spawnServer(userData, port2);
