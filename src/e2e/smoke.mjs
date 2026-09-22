@@ -11529,6 +11529,70 @@ const suggestedScenario = {
   // MUTANTS (verified): dropping the key comparison in regenResponseIsCurrent
   // fails the cross-dialog rows; rendering the Keep note without role="status"
   // fails the announcement row.
+  // §104 BLUE-LOOP-DESKTOP-22 sweep 56. RED-DESKTOP-20/002 is guarded three
+  // ways today — the guard EXPRESSION's text, the verdict helper in isolation,
+  // and a real 200+HTML parse — and none of them presses the button. I found
+  // the gap repairing the red probe that claims to cover this: it pointed the
+  // app at a mock on 127.0.0.1:4999 and never started one, so the app saw
+  // ERR_CONNECTION_REFUSED (the ordinary offline path) and the probe reported
+  // PASS for a condition it never created. Three sweeps had counted it.
+  // So: a real captive portal, in the real UI, through the real buttons.
+  // MUTANT (measured on the built bundle): deleting the dataParsed/success
+  // clause from handleDeleteGame makes the row VANISH on a 200+HTML answer —
+  // the user is told the game is gone while it is still on the server.
+  section('104', 'a captive portal answering 200+HTML never convinces the app that a write succeeded', async () => {
+    const p104 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(p104, 'e2e104portal');
+    await p104.getByRole('button', { name: /save preset/i }).click();
+    await p104.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const name104 = `Portal ${Date.now()}`;
+    await p104.locator('[role="dialog"][aria-label="Save custom game"] input[type="text"]')
+      .first().fill(name104);
+    await p104.getByRole('button', { name: /save game profile/i }).click();
+    await p104.waitForSelector('[role="dialog"][aria-label="Save custom game"]',
+      { state: 'hidden', timeout: 8000 });
+    const row104 = p104.getByRole('button', { name: new RegExp(`^${name104}`, 'i') }).first();
+    record('§104 fixture guard: the game is saved and on screen, so the delete below is a real one',
+      await row104.isVisible().catch(() => false), name104);
+
+    // THE PORTAL. 200, so `res.ok` is true; text/html, so the body is not the
+    // JSON acknowledgement the call site requires. Only the mutation is
+    // intercepted: a portal that swallowed the reads too would empty the
+    // library and leave nothing to press (measured — that is exactly why the
+    // red probe could never find its game card).
+    let deletesIntercepted = 0;
+    await p104.route('**/api/games/*', async (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback();
+      deletesIntercepted++;
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
+        body: '<!doctype html><html><body><h1>Network sign-in required</h1></body></html>' });
+    });
+    let alerted = '';
+    p104.on('dialog', async (d) => { alerted = d.message(); await d.dismiss().catch(() => {}); });
+
+    const delBtn = p104.locator('button[title*="Delete" i]').first();
+    await delBtn.scrollIntoViewIfNeeded().catch(() => {});
+    await delBtn.click({ timeout: 5000, force: true }).catch(() => {});
+    await p104.waitForTimeout(1500);
+
+    record('§104 fixture guard: the DELETE really was answered by the portal, not by the server',
+      deletesIntercepted >= 1, `intercepted=${deletesIntercepted}`);
+    record('§104: the row STAYS — a 200 with an HTML body is not proof the delete happened',
+      await row104.isVisible().catch(() => false),
+      `the game vanished from the list while the server never processed the delete (alert: ${alerted})`);
+    record('§104: and the user is TOLD it failed rather than being shown a silent success',
+      /failed to delete/i.test(alerted), JSON.stringify(alerted).slice(0, 160));
+
+    // CONTROL: without the portal the same click must succeed, or the row above
+    // would pass equally for a delete button that simply never works.
+    await p104.unroute('**/api/games/*');
+    await delBtn.click({ timeout: 5000, force: true }).catch(() => {});
+    await p104.waitForTimeout(1500);
+    record('§104 CONTROL: with the portal gone the same click really does delete the row',
+      !(await row104.isVisible().catch(() => false)),
+      'the delete path is broken outright, so the portal row above proves nothing');
+  });
+
   section('97', 'regen staleness, announcement and discard: an abandoned answer never lands, the Keep note is announced, Discard leaves nothing behind', async () => {
     const p97 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     // An ORDERED script, so the interleaving is deterministic rather than timing luck:
