@@ -54,10 +54,11 @@ const BUCKET = 'fake-nash-db-bucket';
 const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
-// 12 pre-existing + 9 deadline checks (section 4). Calibrated by RUNNING the
-// suite, not by counting by eye — the first value here was 22 and the floor
-// caught it at 21, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 21;
+// 12 pre-existing + 9 deadline (section 4) + 2 hung-re-sync (section 5).
+// Calibrated by RUNNING the suite, not by counting by eye — this constant has
+// now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
+// times, which is the whole point of declaring rather than counting.
+const EXPECTED_CHECKS = 23;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -629,6 +630,45 @@ try {
     saveN1.status === 200 && recovered && /GCS deadline exceeded after 1500ms: db\.json save\(\) never answered/.test(slowBoot.log()),
     `status ${saveN1.status}, ${slowFake.stored().slice(-300)}`);
   await stop(slowBoot.child); await slowFake.close();
+
+  // 5. The RE-SYNC read, hung. Section 3 covers re-sync after ECONNREFUSED;
+  // a peer that accepts and never answers is the other half, and it is only
+  // reachable BECAUSE the boot deadline now lets the process serve at all.
+  // Unbounded, this await never returns: gcsUploadInFlight stays pinned and
+  // no save ever persists again, even once GCS is healthy. Offsets +12/+50
+  // dodge this suite's own claimed ports (gcsPortA+10 would be portY).
+  const resyncPort = gcsPortA + 12, resyncAppPort = port1 + 50;
+  const resyncFake = await trackFake(startDeadlineGcs(resyncPort, JSON.stringify({ users: [], games: [] })));
+  resyncFake.hang(OBJECT);
+  const resyncBoot = await waitReady(track(spawnServer(
+    trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-resync-'))), resyncAppPort, resyncPort,
+    { GCS_DEADLINE_MS: '800' },
+  )), resyncAppPort);
+  const readsAfterBoot = resyncFake.reads().length;
+  // Registration is the write trigger for the same reason section 3 uses it:
+  // saveDB() runs before the (no-SMTP) email step, so the outer 500 is expected.
+  const regDuringHang = () => fetch(`http://127.0.0.1:${resyncAppPort}/api/auth/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'resync1', email: 'resync1@example.test', password: 'Sup3rSecret!23' }),
+  }).catch(() => null);
+  await regDuringHang();
+  const resyncReached = await waitUntil(() => resyncFake.reads().length > readsAfterBoot);
+  record('fixture: the re-sync read reached the accepted-but-silent peer after the boot fallback',
+    resyncReached, `${readsAfterBoot} reads at boot, ${resyncFake.reads().length} after the write`);
+  await waitUntil(() => /GCS write skipped/.test(resyncBoot.log()), 4000);
+
+  resyncFake.hang(null); // GCS recovers
+  await fetch(`http://127.0.0.1:${resyncAppPort}/api/auth/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'resync2', email: 'resync2@example.test', password: 'Sup3rSecret!23' }),
+  }).catch(() => null);
+  const persistedAfterRecovery = await waitUntil(() => resyncFake.uploads().length > 0, 8000);
+  record('THE DEFECT: a hung re-sync fails safe and releases the pump, so saves resume once GCS is healthy',
+    persistedAfterRecovery
+      && /GCS write skipped: could not establish the object generation/.test(resyncBoot.log())
+      && /GCS deadline exceeded after 800ms: re-sync exists\(\) never answered/.test(resyncBoot.log()),
+    `${resyncFake.uploads().length} uploads after recovery; log: ${resyncBoot.log().slice(-300)}`);
+  await stop(resyncBoot.child); await resyncFake.close();
 
 } finally {
   for (const c of children) { try { await stop(c); } catch { /* already gone */ } }
