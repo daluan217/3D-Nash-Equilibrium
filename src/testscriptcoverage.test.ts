@@ -154,12 +154,11 @@ check('every src/integration/*.test.mjs runs in the required GitHub integration 
 // checks and the run reported "37/37 checks passed" with rc=0. So every
 // integration suite must DECLARE its floor; this is what stops the next one
 // landing without it.
-// Enforced today for the desktop/electron surface, where the defect was
-// measured and every floor was calibrated by running the suite. The other 15
-// integration suites have the identical footer and the identical exposure;
-// they belong to other owners, so they are NAMED here rather than quietly
-// excluded — widen the prefix list as each surface calibrates its own floor.
-const FLOORED_PREFIXES = ['desktop-', 'electron-', 'atomic-', 'dmg-'];
+// Enforced for desktop/electron plus the GCS suite, where each floor was
+// calibrated by running its real production artifact. Other integration suites
+// have the identical footer/exposure but belong to other owners; name them
+// rather than quietly excluding them — widen this as each surface calibrates.
+const FLOORED_PREFIXES = ['desktop-', 'electron-', 'atomic-', 'dmg-', 'gcs-'];
 const needsFloor = integrationFiles.filter((f) => FLOORED_PREFIXES.some((p) => f.startsWith(p)));
 // Gate review #8, finding 2: this was `.includes('EXPECTED_CHECKS')`, so a
 // comment naming the constant satisfied it while the file had no floor —
@@ -183,7 +182,7 @@ const floorShape = (source: string): { declares: boolean; compares: boolean; exi
 const floorBroken = needsFloor
   .map((f) => [f, floorShape(readFileSync(`src/integration/${f}`, 'utf8'))] as const)
   .filter(([, s]) => !s.declares || !s.compares || !s.exits);
-check('every desktop/electron integration suite declares an EXPECTED_CHECKS floor AND acts on it',
+check('every desktop/electron/GCS integration suite declares an EXPECTED_CHECKS floor AND acts on it',
   floorBroken.length === 0,
   'a floor that is only mentioned enforces nothing: '
   + JSON.stringify(floorBroken.map(([f, s]) => ({ f, ...s }))));

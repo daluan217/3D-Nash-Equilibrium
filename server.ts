@@ -1795,6 +1795,30 @@ function acquireDesktopLock(): boolean {
   return true;
 }
 
+// @google-cloud/storage's `{ timeout }` is sent as a query parameter, not a
+// client deadline (hung-listener reproduction: one request still pending at
+// 150s). Every awaited GCS call goes through this race, or a dead GCS blocks
+// startup / pins the save pump forever. The error text distinguishes deadline
+// breaches from backend errors; unref prevents this timer keeping Node alive.
+const GCS_DEADLINE_MS = (() => {
+  const ms = Number(process.env.GCS_DEADLINE_MS || 15_000);
+  return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
+})();
+
+function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`GCS deadline exceeded after ${ms}ms: ${what} never answered`)),
+      ms,
+    );
+    timer.unref?.();
+    p.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
 // Returns `false` when `loadDBFromFile` refused to load an unrecoverable
 // db.json shape (RED-DESKTOP-6/001) — the failure has already been reported
@@ -1811,15 +1835,22 @@ async function initDB(): Promise<boolean> {
       const { Storage } = await import('@google-cloud/storage');
       const storage = new Storage();
       const file = storage.bucket(GCS_BUCKET).file('db.json');
-      const [exists] = await file.exists();
+      // Deadlines here are what keep a hung GCS from blocking `app.listen`
+      // forever (see `withDeadline`). A breach lands in the same `catch` as
+      // any other GCS failure, so the existing local-file fallback applies
+      // unchanged — the process boots and serves instead of hanging dark.
+      const [exists] = await withDeadline(file.exists(), 'db.json exists()');
       if (exists) {
         // Metadata FIRST, then a download BOUND to that generation:
         // `download()` ignores `preconditionOpts` in @google-cloud/storage 7,
         // so content and a separately fetched generation could straddle a
         // concurrent write, and the next conditional save would overwrite
         // that write without ever seeing a 412 (CodeRabbit, PR #85).
-        const [meta] = await file.getMetadata();
-        const [content] = await file.bucket.file('db.json', { generation: meta.generation }).download();
+        const [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
+        const [content] = await withDeadline(
+          file.bucket.file('db.json', { generation: meta.generation }).download(),
+          'db.json download()',
+        );
         inMemoryDb = JSON.parse(content.toString('utf-8'));
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         // A genuine deep copy, not a reference to `inMemoryDb`: the object
@@ -1970,10 +2001,13 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
   // future saves.
   if (gcsGeneration === null) {
     try {
-      const [exists] = await file.exists();
+      const [exists] = await withDeadline(file.exists(), 're-sync exists()');
       if (exists) {
-        const [meta] = await file.getMetadata(); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await file.bucket.file('db.json', { generation: meta.generation }).download();
+        const [meta] = await withDeadline(file.getMetadata(), 're-sync getMetadata()'); // metadata first, generation-bound download — see initDB
+        const [remoteContent] = await withDeadline(
+          file.bucket.file('db.json', { generation: meta.generation }).download(),
+          're-sync download()',
+        );
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
         db = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
@@ -1992,15 +2026,15 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
     preconditionOpts?: { ifGenerationMatch: string };
   } = {
     contentType: 'application/json', resumable: false, validation: false,
-    // The non-resumable path defaults to timeout 0 (wait forever); a hung
-    // request would pin `gcsUploadInFlight` and starve every later save.
+    // This existing request option becomes a query parameter, not a local
+    // deadline; `withDeadline` is what stops a hung upload pinning this pump.
     timeout: 30_000,
   };
   if (gcsGeneration !== null) {
     saveOpts.preconditionOpts = { ifGenerationMatch: gcsGeneration };
   }
   try {
-    await file.save(bodyStr, saveOpts);
+    await withDeadline(file.save(bodyStr, saveOpts), 'db.json save()');
     // Read the generation OFF THE UPLOAD RESPONSE ITSELF
     // (`@google-cloud/storage` populates `file.metadata` from it), not a
     // separate `getMetadata()` call — CodeRabbit caught the TOCTOU: between
@@ -2016,8 +2050,11 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
       // Someone else wrote first. Re-download, merge OUR pending changes
       // onto their state, and retry with the fresh generation.
       try {
-        const [meta] = await file.getMetadata(); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await file.bucket.file('db.json', { generation: meta.generation }).download();
+        const [meta] = await withDeadline(file.getMetadata(), '412-retry getMetadata()'); // metadata first, generation-bound download — see initDB
+        const [remoteContent] = await withDeadline(
+          file.bucket.file('db.json', { generation: meta.generation }).download(),
+          '412-retry download()',
+        );
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
         const merged = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
@@ -3363,9 +3400,14 @@ async function startServer() {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
         const file = new Storage().bucket(GCS_BUCKET).file('app-version.json');
-        const [exists] = await file.exists();
+        // Deadlined: this is the route the INSTALLED desktop app polls to
+        // decide whether to prompt for an update. Without one, a GCS that
+        // accepts the socket and never answers hangs the request forever
+        // rather than failing it. A breach lands in the catch below, so the
+        // client sees the same 500 it already sees on any GCS failure.
+        const [exists] = await withDeadline(file.exists(), 'app-version.json exists()');
         if (exists) {
-          const [content] = await file.download();
+          const [content] = await withDeadline(file.download(), 'app-version.json download()');
           res.setHeader('Cache-Control', 'no-store');
           return res.type('application/json').send(content.toString('utf-8'));
         }
@@ -3974,7 +4016,12 @@ async function startServer() {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
         const file = new Storage().bucket(GCS_BUCKET).file('Nash Equilibrium Simulator.dmg');
-        const [exists] = await file.exists();
+        // Deadlined for the same reason as every other awaited GCS call (see
+        // `withDeadline`): a backend that accepts the socket and never answers
+        // would otherwise hold this request open forever. The stream below is
+        // NOT deadlined — it is piped, not awaited, and already has its own
+        // 'error' handler; a long download is legitimate, a long await is not.
+        const [exists] = await withDeadline(file.exists(), 'dmg exists()');
         if (exists) {
           // getMetadata() before piping: without it the response carries no
           // Content-Length, so the browser shows an unknown-size download with
@@ -3985,7 +4032,7 @@ async function startServer() {
           // `curl -r 0-0` got a full 200 stream with no Content-Length, no
           // Accept-Ranges, no Content-Range — the range request was silently
           // ignored. `size` comes back as a STRING from the GCS JSON API.
-          const [metadata] = await file.getMetadata();
+          const [metadata] = await withDeadline(file.getMetadata(), 'dmg getMetadata()');
           const size = metadata.size !== undefined && metadata.size !== null
             ? parseInt(String(metadata.size), 10) : null;
 

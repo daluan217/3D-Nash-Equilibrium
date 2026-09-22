@@ -288,8 +288,9 @@ jobs:
       - name: Boot the production server and run the GCS db-saves suite (fake GCS)
         run: node src/integration/gcs-db-saves.test.mjs
         env:
-          # 3520/3521, not 3131/3130: this suite binds port1+10, +11 and +20,
-          # so it reaches 3151 — scenario-bank-fallback's stub port.
+          # 3520/3521, not 3131/3130: this suite binds its app servers through
+          # port1+40 and fake GCS through gcs+8, so it reaches 3560/3529.
+          # That avoids scenario-bank-fallback's 3151 and all nearby lanes.
           GCS_DB_TEST_PORT: '3520'
           GCS_DB_TEST_GCS_PORT: '3521'
       # /api/download/dmg against a FAKE GCS object (STORAGE_EMULATOR_HOST —

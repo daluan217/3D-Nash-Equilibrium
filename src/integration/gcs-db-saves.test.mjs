@@ -52,7 +52,9 @@ const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
 const BUCKET = 'fake-nash-db-bucket';
 const OBJECT = 'db.json';
+const VERSION_OBJECT = 'app-version.json';
 
+const EXPECTED_CHECKS = 22;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -162,6 +164,64 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   return new Promise((resolve) => { server.listen(port, () => resolve(controls)); });
 }
 
+function startDeadlineGcs(port, initialContent) {
+  let stored = initialContent, generation = 1, hungObject = null, delayedObject = null;
+  let readDelayMs = 0, hangUploads = false;
+  const reads = [], uploads = [], sockets = new Set(), timers = new Set();
+  const base = `/b/${BUCKET}/o/`;
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const name = u.pathname.startsWith(base) ? decodeURIComponent(u.pathname.slice(base.length)) : null;
+    const reply = () => {
+      if (req.method === 'GET' && name === OBJECT) {
+        if (u.searchParams.get('alt') === 'media') { res.writeHead(200); res.end(stored); return; }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ name, bucket: BUCKET, generation: String(generation), size: String(stored.length) })); return;
+      }
+      if (req.method === 'GET' && name === VERSION_OBJECT) {
+        if (u.searchParams.get('alt') === 'media') { res.writeHead(200); res.end('{"version":"0.0.225"}'); return; }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ name, bucket: BUCKET, size: '21' })); return;
+      }
+      if (req.method === 'POST' && u.pathname === `/upload/storage/v1/b/${BUCKET}/o`) {
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => {
+          uploads.push(parseMultipart(req.headers['content-type'], body)[1] ?? '');
+          if (hangUploads) return;
+          stored = uploads.at(-1); generation += 1;
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({
+            name: OBJECT, bucket: BUCKET, generation: String(generation), size: String(stored.length),
+          }));
+        });
+        return;
+      }
+      res.writeHead(404); res.end();
+    };
+    if (req.method === 'GET' && name) reads.push({ name, alt: u.searchParams.get('alt') });
+    if (req.method === 'GET' && name === hungObject) return;
+    if (req.method === 'GET' && name === delayedObject && readDelayMs > 0) {
+      const timer = setTimeout(() => { timers.delete(timer); reply(); }, readDelayMs);
+      timers.add(timer); return;
+    }
+    reply();
+  });
+  server.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+  return new Promise((resolve) => server.listen(port, () => resolve({
+    close: () => new Promise((done) => {
+      for (const timer of timers) clearTimeout(timer);
+      for (const socket of sockets) socket.destroy();
+      server.close(done);
+    }),
+    reads: () => reads, uploads: () => uploads,
+    stored: () => stored,
+    hang: (name) => { hungObject = name; },
+    delay: (name, ms) => { delayedObject = name; readDelayMs = ms; },
+    hangUploads: (v) => { hangUploads = v; },
+  })));
+}
+
 function spawnServer(cwd, thePort, gcsPort, extraEnv = {}) {
   return spawn('node', [BUNDLE], {
     cwd,
@@ -208,6 +268,15 @@ async function stop(child) {
   const timer = setTimeout(() => child.kill('SIGKILL'), 4000);
   await ended;
   clearTimeout(timer);
+}
+
+async function waitUntil(predicate, ms = 5000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (predicate()) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return predicate();
 }
 
 // Hosted registration requires real SMTP (500s without it — no auto-verify
@@ -470,6 +539,84 @@ try {
   await stop(childZ);
   await fakeGcsDeferred.close();
 
+  // 4. A GCS peer can accept a socket then never answer. Storage's `timeout`
+  // option is only a query parameter, so these use a purpose-built hung fake:
+  // boot must fall back, /api/version must 500, and save N+1 must escape N.
+  const deadlinePort = gcsPortA + 6, deadlineAppPort = port1 + 30;
+  const deadlineDb = JSON.stringify({
+    users: [seededUser('u_deadline', 'deadlineuser', 'deadline@example.test', 'Sup3rSecret!23')], games: [],
+  });
+  const deadlineFake = await trackFake(startDeadlineGcs(deadlinePort, deadlineDb));
+  deadlineFake.hang(OBJECT);
+  const deadlineBoot = await waitReady(track(spawnServer(
+    trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-deadline-'))), deadlineAppPort, deadlinePort,
+    { GCS_DEADLINE_MS: '500' },
+  )), deadlineAppPort);
+  record('fixture: initDB reached the accepted-but-silent db.json peer',
+    deadlineFake.reads().some((r) => r.name === OBJECT), JSON.stringify(deadlineFake.reads()));
+  record('THE DEFECT: a hung GCS boot falls back and binds instead of hanging dark',
+    /GCS deadline exceeded after 500ms: db\.json exists\(\) never answered/.test(deadlineBoot.log()), deadlineBoot.log().slice(-500));
+  await stop(deadlineBoot.child); await deadlineFake.close();
+
+  const slowPort = gcsPortA + 8, slowAppPort = port1 + 40;
+  const slowFake = await trackFake(startDeadlineGcs(slowPort, deadlineDb));
+  slowFake.delay(OBJECT, 1000);
+  const slowBoot = await waitReady(track(spawnServer(
+    trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-slow-'))), slowAppPort, slowPort,
+    { GCS_DEADLINE_MS: '1500' },
+  )), slowAppPort);
+  record('fixture: slow control delayed every boot db.json read by 1 second',
+    slowFake.reads().filter((r) => r.name === OBJECT).length >= 3, JSON.stringify(slowFake.reads()));
+  const loginSlow = await fetch(`http://127.0.0.1:${slowAppPort}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'deadline@example.test', password: 'Sup3rSecret!23' }),
+  });
+  const slowToken = (await loginSlow.json()).token;
+  record('a 1-second db.json response is a control: seeded data loads, no deadline fires',
+    loginSlow.status === 200 && typeof slowToken === 'string' && !/GCS deadline exceeded/.test(slowBoot.log()),
+    `status ${loginSlow.status}, ${slowBoot.log().slice(-350)}`);
+
+  slowFake.delay(VERSION_OBJECT, 1000);
+  const slowVersion = await fetch(`http://127.0.0.1:${slowAppPort}/api/version`, { signal: AbortSignal.timeout(5000) });
+  const slowVersionBody = await slowVersion.json().catch(() => null);
+  record('the 1-second /api/version control returns the real version payload',
+    slowVersion.status === 200 && slowVersionBody?.version === '0.0.225', `status ${slowVersion.status}, ${JSON.stringify(slowVersionBody)}`);
+  slowFake.hang(VERSION_OBJECT);
+  const versionAt = Date.now();
+  const hungVersion = await fetch(`http://127.0.0.1:${slowAppPort}/api/version`, { signal: AbortSignal.timeout(5000) });
+  const hungVersionBody = await hungVersion.json().catch(() => null);
+  const versionMs = Date.now() - versionAt;
+  record('a hung /api/version read returns the existing finite 500 shape, not a hung desktop update check',
+    hungVersion.status === 500 && hungVersionBody?.error === 'Internal Server Error' && versionMs >= 1400 && versionMs < 4000,
+    `status ${hungVersion.status}, ${versionMs}ms, ${JSON.stringify(hungVersionBody)}`);
+  slowFake.hang(null); slowFake.delay(null, 0);
+
+  const settledLoginUpload = await waitUntil(() => slowFake.uploads().length >= 1);
+  record('fixture: ordinary login rehash upload settled before save N is hung', settledLoginUpload, `${slowFake.uploads().length} uploads`);
+  const postGame = (name) => fetch(`http://127.0.0.1:${slowAppPort}/api/games`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${slowToken}` },
+    body: JSON.stringify({ name, payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }),
+  });
+  const beforeHungUpload = slowFake.uploads().length;
+  slowFake.hangUploads(true);
+  const saveN = await postGame('Hung-save-N');
+  const hungUploadReached = await waitUntil(() => slowFake.uploads().length > beforeHungUpload);
+  record('fixture: save N reaches the silent upload peer after returning 200', saveN.status === 200 && hungUploadReached,
+    `status ${saveN.status}, uploads ${slowFake.uploads().length}`);
+  await new Promise((r) => setTimeout(r, 3200));
+  slowFake.hangUploads(false);
+  const saveN1 = await postGame('Recovered-save-N-plus-1');
+  const recovered = await waitUntil(() => {
+    try {
+      const names = JSON.parse(slowFake.stored()).games.map((g) => g.name).sort();
+      return JSON.stringify(names) === JSON.stringify(['Hung-save-N', 'Recovered-save-N-plus-1']);
+    } catch { return false; }
+  }, 6000);
+  record('THE DEFECT: deadline releases the pump so save N+1 persists the latest shared state',
+    saveN1.status === 200 && recovered && /GCS deadline exceeded after 1500ms: db\.json save\(\) never answered/.test(slowBoot.log()),
+    `status ${saveN1.status}, ${slowFake.stored().slice(-300)}`);
+  await stop(slowBoot.child); await slowFake.close();
+
 } finally {
   for (const c of children) { try { await stop(c); } catch { /* already gone */ } }
   for (const f of fakes) { try { await f.close(); } catch { /* already closed */ } }
@@ -477,6 +624,10 @@ try {
 }
 
 const failed = results.filter((r) => !r.pass);
+if (results.length !== EXPECTED_CHECKS) {
+  console.error(`CHECK FLOOR FAILED: ${results.length} checks ran, expected exactly ${EXPECTED_CHECKS}`);
+  process.exit(1);
+}
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length > 0) {
   console.error(`FAILED: ${failed.map((f) => f.name).join('; ')}`);
