@@ -54,7 +54,10 @@ const BUCKET = 'fake-nash-db-bucket';
 const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
-const EXPECTED_CHECKS = 22;
+// 12 pre-existing + 9 deadline checks (section 4). Calibrated by RUNNING the
+// suite, not by counting by eye — the first value here was 22 and the floor
+// caught it at 21, which is the whole point of declaring rather than counting.
+const EXPECTED_CHECKS = 21;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -583,12 +586,22 @@ try {
     slowVersion.status === 200 && slowVersionBody?.version === '0.0.225', `status ${slowVersion.status}, ${JSON.stringify(slowVersionBody)}`);
   slowFake.hang(VERSION_OBJECT);
   const versionAt = Date.now();
-  const hungVersion = await fetch(`http://127.0.0.1:${slowAppPort}/api/version`, { signal: AbortSignal.timeout(5000) });
-  const hungVersionBody = await hungVersion.json().catch(() => null);
+  // The hang is the defect, so it must be REPORTED, not thrown: without the
+  // catch, an unbounded /api/version aborts this fetch and takes the whole
+  // suite down with an unhandled TimeoutError — rc=1 for a reason no reader
+  // can name. Measured on mutant M2 (deadline reverted at that call site).
+  let hungVersion = null, hungVersionBody = null, hungVersionErr = null;
+  try {
+    hungVersion = await fetch(`http://127.0.0.1:${slowAppPort}/api/version`, { signal: AbortSignal.timeout(5000) });
+    hungVersionBody = await hungVersion.json().catch(() => null);
+  } catch (err) { hungVersionErr = err?.name || String(err); }
   const versionMs = Date.now() - versionAt;
   record('a hung /api/version read returns the existing finite 500 shape, not a hung desktop update check',
-    hungVersion.status === 500 && hungVersionBody?.error === 'Internal Server Error' && versionMs >= 1400 && versionMs < 4000,
-    `status ${hungVersion.status}, ${versionMs}ms, ${JSON.stringify(hungVersionBody)}`);
+    hungVersionErr === null && hungVersion.status === 500
+      && hungVersionBody?.error === 'Internal Server Error' && versionMs >= 1400 && versionMs < 4000,
+    hungVersionErr
+      ? `the request never completed (${hungVersionErr}) after ${versionMs}ms — the update poll hangs`
+      : `status ${hungVersion.status}, ${versionMs}ms, ${JSON.stringify(hungVersionBody)}`);
   slowFake.hang(null); slowFake.delay(null, 0);
 
   const settledLoginUpload = await waitUntil(() => slowFake.uploads().length >= 1);
