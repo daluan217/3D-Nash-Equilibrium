@@ -73,6 +73,33 @@ const isDeadlined = (call: ts.Node): boolean => {
  * GCS. Measured on the real server.ts before switching: 14 calls to these
  * four method names on ANY receiver, of which exactly one is not GCS.
  */
+/**
+ * Function.prototype hops that hide the real method behind an indirection:
+ * `file.exists.call(file)` presents `call` as the outer name. Gate review #11
+ * used exactly this to smuggle a live unbounded GCS call past the contract.
+ */
+const FUNCTION_HOPS = new Set(['call', 'apply', 'bind']);
+
+/**
+ * Names that a GCS method is DESTRUCTURED onto. `const { exists } = file`
+ * strips the receiver entirely, so there is no property access left to match;
+ * the destructuring itself is what has to be refused.
+ */
+const destructuredGcsMethods = (file: ts.SourceFile): string[] => {
+  const found: string[] = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && n.initializer && ts.isObjectBindingPattern(n.name)) {
+      for (const el of n.name.elements) {
+        const source = (el.propertyName ?? el.name).getText(file);
+        if (NETWORK_METHODS.has(source)) found.push(`${source} from ${n.initializer.getText(file).slice(0, 30)}`);
+      }
+    }
+    n.forEachChild(walk);
+  };
+  walk(file);
+  return found;
+};
+
 const NON_GCS_RECEIVERS = new Set([
   'res',          // express: res.download(path)
   'app',          // express: app.delete(route, ...)
@@ -93,7 +120,15 @@ const NON_GCS_RECEIVERS = new Set([
  */
 const methodName = (call: ts.CallExpression): string | null => {
   const callee = call.expression;
-  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
+  if (ts.isPropertyAccessExpression(callee)) {
+    // `file.exists.call(file)` / `.apply` / `.bind` — the OUTER name is
+    // `call`, so resolving only that hides the real method (gate review #11).
+    // Step inward one level when the outer name is a Function.prototype hop.
+    if (FUNCTION_HOPS.has(callee.name.text) && ts.isPropertyAccessExpression(callee.expression)) {
+      return callee.expression.name.text;
+    }
+    return callee.name.text;
+  }
   if (ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression)) {
     return callee.argumentExpression.text;
   }
@@ -185,6 +220,48 @@ check('the non-GCS receiver allowlist stays minimal',
 check('the allowlist is exactly the four known non-GCS receivers',
   [...NON_GCS_RECEIVERS].sort().join(',') === 'app,rateBuckets,reportCache,res',
   `allowlist is now: ${[...NON_GCS_RECEIVERS].sort().join(',')}`);
+
+// SHADOWING is the attack the membership check cannot see: bind a GCS File to
+// a name that is already exempt (`const res = bucket.file(k)`) and every call
+// on it drops out of the scan while the allowlist still reads as expected.
+// So verify what these names are actually BOUND to. `res` is only ever an
+// express handler parameter (never declared), and the other three are pinned
+// to their real initialisers.
+const EXPECTED_BINDING: Record<string, RegExp | null> = {
+  res: null,                       // express parameter only — must never be declared
+  app: /^express\(\)/,
+  rateBuckets: /^new Map\b/,
+  reportCache: /^new Map\b/,
+};
+const shadowed: string[] = [];
+for (const [name, expected] of Object.entries(EXPECTED_BINDING)) {
+  for (const m of source.matchAll(
+    new RegExp(String.raw`(?:const|let|var)\s+${name}\s*=\s*([^;\n]{0,70})`, 'g'),
+  )) {
+    const init = m[1].trim();
+    if (expected === null || !expected.test(init)) shadowed.push(`${name} = ${init.slice(0, 40)}`);
+  }
+}
+check('no allowlisted receiver name is rebound to something else (shadowing)',
+  shadowed.length === 0,
+  `an exempt name bound to a GCS file would silently drop every call on it: ${shadowed.join('; ')}`);
+
+// Gate review #11: `const { exists } = file; await exists()` has no receiver
+// left to match, so the call is invisible. Refuse the destructuring itself.
+const destructured = destructuredGcsMethods(sf);
+check('no GCS network method is destructured off its receiver',
+  destructured.length === 0,
+  `a destructured method loses the receiver and escapes this scan: ${destructured.join('; ')}`);
+
+// Gate review #11: `isDeadlined` matches the IDENTIFIER `withDeadline`, so a
+// local `const withDeadline = (p) => p;` would mark every call in that scope
+// deadlined while doing nothing. Require exactly one top-level definition and
+// no shadowing binding anywhere.
+const deadlineDefs = [...source.matchAll(/^(?:async\s+)?function\s+withDeadline\b/gm)].length;
+const deadlineRebinds = [...source.matchAll(/(?:const|let|var)\s+withDeadline\s*=/g)].length;
+check('withDeadline is a single top-level function, never shadowed',
+  deadlineDefs === 1 && deadlineRebinds === 0,
+  `${deadlineDefs} function definition(s), ${deadlineRebinds} rebinding(s) — a pass-through shadow makes every call "deadlined" while doing nothing`);
 
 // ── SELF-TESTS: the rule must be able to FAIL, on inputs naming the shape ────
 // Runs the SAME path as the real scan: collect + buildSite. Calling only

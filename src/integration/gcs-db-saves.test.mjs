@@ -54,11 +54,11 @@ const BUCKET = 'fake-nash-db-bucket';
 const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
-// 12 pre-existing + 9 deadline (section 4) + 2 hung-re-sync (section 5).
+// 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5).
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 23;
+const EXPECTED_CHECKS = 24;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -657,17 +657,31 @@ try {
     resyncReached, `${readsAfterBoot} reads at boot, ${resyncFake.reads().length} after the write`);
   await waitUntil(() => /GCS write skipped/.test(resyncBoot.log()), 4000);
 
+  // FAIL-SAFE, scoped to the hung window. The log lines alone prove nothing:
+  // the console.error above the `return` prints either way, and an upload made
+  // WHILE hung still counts under an unscoped `uploads().length > 0`. Gate
+  // review #11 deleted the `return` and this section stayed 23/23 green while
+  // the mutant blindly overwrote an object it had never read — the exact
+  // blind-overwrite bug the fail-safe exists to prevent. So assert the
+  // ABSENCE of a write during the hang, separately from the recovery write.
+  const uploadsWhileHung = resyncFake.uploads().length;
+  record('THE DEFECT: a re-sync that never answered writes NOTHING — no blind overwrite of state it never read',
+    uploadsWhileHung === 0
+      && /GCS write skipped: could not establish the object generation/.test(resyncBoot.log())
+      && /GCS deadline exceeded after 800ms: re-sync exists\(\) never answered/.test(resyncBoot.log()),
+    `${uploadsWhileHung} upload(s) during the hang; log: ${resyncBoot.log().slice(-300)}`);
+
   resyncFake.hang(null); // GCS recovers
   await fetch(`http://127.0.0.1:${resyncAppPort}/api/auth/register`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username: 'resync2', email: 'resync2@example.test', password: 'Sup3rSecret!23' }),
   }).catch(() => null);
-  const persistedAfterRecovery = await waitUntil(() => resyncFake.uploads().length > 0, 8000);
-  record('THE DEFECT: a hung re-sync fails safe and releases the pump, so saves resume once GCS is healthy',
-    persistedAfterRecovery
-      && /GCS write skipped: could not establish the object generation/.test(resyncBoot.log())
-      && /GCS deadline exceeded after 800ms: re-sync exists\(\) never answered/.test(resyncBoot.log()),
-    `${resyncFake.uploads().length} uploads after recovery; log: ${resyncBoot.log().slice(-300)}`);
+  const persistedAfterRecovery = await waitUntil(
+    () => resyncFake.uploads().length > uploadsWhileHung, 8000,
+  );
+  record('THE DEFECT: the deadline released the pump, so a save AFTER recovery still reaches GCS',
+    persistedAfterRecovery,
+    `${uploadsWhileHung} upload(s) while hung, ${resyncFake.uploads().length} after recovery`);
   await stop(resyncBoot.child); await resyncFake.close();
 
 } finally {
