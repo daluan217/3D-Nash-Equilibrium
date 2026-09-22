@@ -1800,6 +1800,18 @@ function acquireDesktopLock(): boolean {
 // 150s). Every awaited GCS call goes through this race, or a dead GCS blocks
 // startup / pins the save pump forever. The error text distinguishes deadline
 // breaches from backend errors; unref prevents this timer keeping Node alive.
+//
+// ponytail: this frees the CALLER, not the socket. A breach cannot cancel the
+// underlying request — per-call `signal`, `signal` via StorageOptions, a
+// custom http.Agent, a socket timeout on the global agent, and
+// `fetchImplementation` were each measured against an accept-and-never-answer
+// peer and the auth layer's transport ignores all five, so the connection is
+// held until the peer or the OS drops it (measured: still open 75s later).
+// PRE-EXISTING, not introduced here: the same probe leaks identically against
+// the pre-deadline tree (20 polls -> 20 sockets both ways). Capping in-flight
+// calls here does NOT bound it — retries and auth open sockets that never
+// reach this function (measured: 40 sockets for 3 breaches + 37 refusals).
+// The upgrade path is the SDK's own transport (or undici), not this layer.
 const GCS_DEADLINE_MS = (() => {
   const ms = Number(process.env.GCS_DEADLINE_MS || 15_000);
   return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
