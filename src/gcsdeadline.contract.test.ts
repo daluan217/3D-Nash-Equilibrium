@@ -1,5 +1,5 @@
 /**
- * Every awaited @google-cloud/storage call in server.ts must be deadlined.
+ * Every @google-cloud/storage network call in server.ts must be deadlined.
  *
  * Storage's own `{ timeout }` option is sent as a QUERY PARAMETER, not a
  * client-side deadline (measured: one request still pending at 150s). An
@@ -46,38 +46,38 @@ const isDeadlined = (call: ts.Node): boolean => {
   return false;
 };
 
-const sites: Site[] = [];
-const walk = (node: ts.Node): void => {
-  if (ts.isAwaitExpression(node)) {
-    // Find storage-method calls inside this await.
-    const scan = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
-        const method = n.expression.name.text;
-        const recv = n.expression.expression.getText(sf);
-        // `file`, `file.bucket.file('db.json', {...})`, `storage.bucket(..).file(..)`
-        if (NETWORK_METHODS.has(method) && /\bfile\b/.test(recv)) {
-          const { line } = sf.getLineAndCharacterOfPosition(n.getStart(sf));
-          sites.push({
-            method, line: line + 1, deadlined: isDeadlined(n),
-            text: n.getText(sf).replace(/\s+/g, ' ').slice(0, 80),
-          });
-        }
-      }
-      n.forEachChild(scan);
-    };
-    scan(node.expression);
-  }
-  node.forEachChild(walk);
+// EVERY such call, not only the lexically-awaited ones. Requiring an
+// enclosing `await` would let `for await (… of file.download())`, a detached
+// `const p = file.exists()` awaited later, and `Promise.all([...])` split
+// across statements slip past. Measured on the real server.ts before
+// widening: 13 calls, 0 of them un-awaited, so the wider rule costs 0 false
+// positives today and covers the shapes a future edit could use.
+const collect = (node: ts.Node, sink: (n: ts.CallExpression) => void): void => {
+  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+    && NETWORK_METHODS.has(node.expression.name.text)
+    // `file`, `file.bucket.file('db.json', {...})`, `storage.bucket(..).file(..)`
+    && /\bfile\b/.test(node.expression.expression.getText(node.getSourceFile()))) sink(node);
+  node.forEachChild((c) => collect(c, sink));
 };
-walk(sf);
+
+const sites: Site[] = [];
+collect(sf, (n) => {
+  const { line } = sf.getLineAndCharacterOfPosition(n.getStart(sf));
+  sites.push({
+    method: (n.expression as ts.PropertyAccessExpression).name.text,
+    line: line + 1,
+    deadlined: isDeadlined(n),
+    text: n.getText(sf).replace(/\s+/g, ' ').slice(0, 80),
+  });
+});
 
 // The scan must be LIVE. If the AST walk silently matched nothing, every
 // "all sites deadlined" claim below would be vacuously true.
-check('the AST scan actually found awaited GCS calls in server.ts',
+check('the AST scan actually found GCS network calls in server.ts',
   sites.length >= 13, `found only ${sites.length}`);
 
 const bare = sites.filter((s) => !s.deadlined);
-check('every awaited GCS call is wrapped in withDeadline',
+check('every GCS network call is wrapped in withDeadline',
   bare.length === 0,
   `unbounded await(s) — a silent GCS peer hangs boot / pins the save pump:\n    ${
     bare.map((s) => `server.ts:${s.line} ${s.text}`).join('\n    ')}`);
@@ -85,7 +85,7 @@ check('every awaited GCS call is wrapped in withDeadline',
 // Each distinct method must be represented, so a future refactor that drops a
 // whole call shape cannot quietly shrink what this contract covers.
 for (const m of NETWORK_METHODS) {
-  check(`the scan covers awaited file.${m}() calls`,
+  check(`the scan covers file.${m}() calls`,
     sites.some((s) => s.method === m), `no ${m}() site found`);
 }
 
@@ -99,19 +99,7 @@ check('createReadStream is excluded by design, and still present',
 const analyse = (src: string): { total: number; bare: number } => {
   const f = ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const found: boolean[] = [];
-  const w = (node: ts.Node): void => {
-    if (ts.isAwaitExpression(node)) {
-      const scan = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
-          && NETWORK_METHODS.has(n.expression.name.text)
-          && /\bfile\b/.test(n.expression.expression.getText(f))) found.push(isDeadlined(n));
-        n.forEachChild(scan);
-      };
-      scan(node.expression);
-    }
-    node.forEachChild(w);
-  };
-  w(f);
+  collect(f, (n) => found.push(isDeadlined(n)));
   return { total: found.length, bare: found.filter((d) => !d).length };
 };
 
@@ -128,8 +116,18 @@ check('SELF-TEST: a commented-out bare call does not create a false failure',
   analyse('async function f(){ // const [e] = await file.exists();\n const [e] = await withDeadline(file.exists(), "x"); }').bare === 0);
 check('SELF-TEST: a bare call in a STRING does not create a false failure',
   analyse('async function f(){ const doc = "await file.exists()"; const [e] = await withDeadline(file.exists(), "x"); }').bare === 0);
+// The shapes the await-scoped first draft MISSED. Each is a live way to
+// reintroduce an unbounded GCS wait without writing `await file.x()`.
+check('SELF-TEST: a DETACHED promise awaited later is REPORTED',
+  analyse('async function f(){ const p = file.exists(); const [e] = await p; }').bare === 1);
+check('SELF-TEST: `for await` over an un-deadlined call is REPORTED',
+  analyse('async function f(){ for await (const c of file.download()) { use(c); } }').bare === 1);
+check('SELF-TEST: Promise.all of bare calls reports BOTH',
+  analyse('async function f(){ const [a, b] = await Promise.all([file.exists(), file.getMetadata()]); }').bare === 2);
+check('SELF-TEST: a deadlined call inside Promise.all is accepted',
+  analyse("async function f(){ const [a] = await Promise.all([withDeadline(file.exists(), 'x')]); }").bare === 0);
 
 console.log(failures === 0
-  ? `\n✓ GCS deadline contract: ${sites.length} awaited GCS calls, all deadlined`
+  ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`
   : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
