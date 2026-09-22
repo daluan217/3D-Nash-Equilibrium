@@ -103,8 +103,9 @@ async function waitReady(child, targetPort) {
   for (let i = 0; i < 30; i++) {
     if (child.exitCode !== null) throw new Error(`server exited before readiness: ${log}`);
     try {
+      // S58: the pid check is the point: IS_ELECTRON makes the server WALK to the next port on EADDRINUSE while BASE stays fixed, so a stray listener (another suite's server, or macOS ControlCenter on 5000) answers `ok` and the whole run measures a process it never spawned.
       const health = await fetch(`http://127.0.0.1:${targetPort}/api/health`, { signal: AbortSignal.timeout(500) });
-      if (health.ok) return;
+      if (health.ok && (await health.json())?.pid === child.pid) return;
     } catch { /* wait for the process to listen */ }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

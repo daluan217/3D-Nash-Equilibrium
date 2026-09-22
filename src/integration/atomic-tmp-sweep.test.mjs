@@ -94,8 +94,12 @@ let log = '';
 async function waitReady() {
   for (let i = 0; i < 60; i++) {
     try {
+      // S58: the pid check is the point: IS_ELECTRON makes the server WALK to the next port on EADDRINUSE while BASE stays fixed, so a stray listener (another suite's server, or macOS ControlCenter on 5000) answers `ok` and the whole run measures a process it never spawned. MEASURED on this very file: with a second real app
+      // server on its port it reported "server started" and "healthy and
+      // serving normally" (200) while accusing the product of not sweeping
+      // an orphan the foreign server had never been given.
       const r = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
+      if (r.ok && (await r.json())?.pid === server.pid) return true;
     } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((res) => setTimeout(res, 250));
   }
@@ -136,6 +140,11 @@ try {
 
   const ready = await waitReady();
   record('server started against a directory holding a stale orphan tmp file', ready, log.slice(-500));
+  // S58: every row below describes what THIS server did to THIS directory, so
+  // a failed boot makes them meaningless rather than false. Measured: against
+  // a foreign server on the port they still printed three PASSes and one
+  // product accusation. Stop here instead.
+  if (!ready) throw new Error(`server never became ready (pid-bound) on ${PORT}: ${log.slice(-400)}`);
 
   record('the OLD orphan (past the sweep threshold) is gone after startup',
     !existsSync(oldOrphan), `still present at ${oldOrphan}`);

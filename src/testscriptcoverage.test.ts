@@ -205,6 +205,63 @@ const stillExposed = integrationFiles.filter((f) => !needsFloor.includes(f));
 console.log(`  note: ${stillExposed.length} integration suites outside the desktop surface still count `
   + `rather than declare their checks (owners: see SR-47): ${stillExposed.join(', ')}`);
 
+// S58: a readiness poll that accepts ANY `ok` answer on its port will happily
+// drive a process the suite never spawned. Measured twice on this branch:
+//   - gate review #8 finding 6 (desktop-adopt-deadsession shared 3119 with an
+//     earlier step) — with a second REAL app server on the port the suite ran
+//     19/19 GREEN against the foreign one;
+//   - atomic-tmp-sweep, handed port 5000, which macOS ControlCenter holds:
+//     it reported "server started" and "healthy and serving normally" (200)
+//     while ACCUSING THE PRODUCT of failing to sweep an orphan file the
+//     foreign server had never been given.
+// `/api/health` returns `pid` for exactly this (server.ts says so at the
+// route). So: every desktop-surface suite that polls it must compare that pid
+// against its own child. This is the guard that would have caught both.
+// The shape that matters is a READINESS POLL: `/api/health` fetched on a
+// port the suite chose, in a retry loop. desktop-packaged-smoke also names
+// /api/health, but INSIDE the packaged renderer (`win.evaluate`) as a
+// same-origin control — it launches through Playwright and never polls a
+// port, so there is no foreign listener to confuse it. Requiring a pid there
+// would be a guard widened past its own reason, so the predicate asks for the
+// template-literal-on-a-base form the poll loops actually use.
+// A READINESS POLL is the shape that matters: /api/health fetched inside a
+// RETRY LOOP, which is how a suite decides its server is up. One-shot probes
+// ("is the old instance still listening?") and the same-origin control inside
+// desktop-packaged-smoke's renderer are not readiness decisions — that suite
+// launches through Playwright and polls no port at all, so requiring a pid
+// there would widen the rule past its own reason. Match a `for`/`while` whose
+// body fetches /api/health.
+// A READINESS POLL is the shape that matters: /api/health fetched inside a
+// RETRY LOOP, which is how a suite decides its own server is up. One-shot
+// probes ("is the old instance still listening?") and the same-origin control
+// inside desktop-packaged-smoke's renderer are not readiness decisions — that
+// suite launches through Playwright and polls no port at all, so requiring a
+// pid there would widen this rule past its own reason. A line window beats a
+// brace-matching regex here: the bodies nest objects and template literals,
+// which a regex cannot balance (measured — the nested-brace attempt matched 0).
+const pollsHealth = (source: string): boolean => {
+  const lines = source.split('\n');
+  return lines.some((line, i) => /^\s*(?:for|while)\s*\(/.test(line)
+    && lines.slice(i + 1, i + 12).some((l) => /\/api\/health/.test(l) && !/^\s*\/\//.test(l)));
+};
+const BINDS_PID = /\?\.pid === \w+\.pid|\)\.pid === \w+\.pid/;
+const healthPollers = needsFloor
+  .map((f) => [f, readFileSync(`src/integration/${f}`, 'utf8')] as const)
+  .filter(([, src]) => pollsHealth(src));
+const unboundPollers = healthPollers.filter(([, src]) => !BINDS_PID.test(src));
+check('every desktop-surface suite that polls /api/health binds the answer to its OWN child pid',
+  unboundPollers.length === 0,
+  'a stray listener on the port (another step\'s leaked server, or macOS '
+  + 'ControlCenter on 5000) answers `ok` and the suite measures a process it never '
+  + `spawned: ${JSON.stringify(unboundPollers.map(([f]) => f))}`);
+check('SELF-TEST: the health-poll rule is scanning real suites, not an empty list',
+  healthPollers.length >= 12, `only ${healthPollers.length} suites poll /api/health`);
+check('SELF-TEST: an unbound poll is REJECTED',
+  !BINDS_PID.test('const r = await fetch(`${BASE}/api/health`);\nif (r.ok) return true;'));
+check('SELF-TEST: a pid-bound poll is ACCEPTED',
+  BINDS_PID.test('if (r.ok && (await r.json())?.pid === child.pid) return true;')
+  && BINDS_PID.test('if (health.ok && (await health.json())?.pid === server.pid) return;'));
+
 check('the integration-file discovery found the suites it claims to cover',
   integrationFiles.length >= 25, `found only ${integrationFiles.length}`);
 // SELF-TEST: the matcher must fail for a file CI does not run, or the clean

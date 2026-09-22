@@ -63,9 +63,10 @@ async function boot(userData, thePort, extraEnv = {}) {
     try {
       const ctl = AbortController ? new AbortController() : null;
       const t = setTimeout(() => ctl?.abort(), 1500);
+      // S58: the pid check is the point: IS_ELECTRON makes the server WALK to the next port on EADDRINUSE while BASE stays fixed, so a stray listener (another suite's server, or macOS ControlCenter on 5000) answers `ok` and the whole run measures a process it never spawned.
       const r = await fetch(`http://127.0.0.1:${thePort}/api/health`, { signal: ctl?.signal });
       clearTimeout(t);
-      if (r.ok) return { child, log: () => log };
+      if (r.ok && (await r.json())?.pid === child.pid) return { child, log: () => log };
     } catch { /* not up yet */ }
     await new Promise((r) => setTimeout(r, 250));
   }

@@ -91,8 +91,9 @@ async function waitReady() {
       // never completed the response (CodeRabbit, 2026-09-02 re-review —
       // same shape as the 798s-hang class this repo already guards
       // elsewhere, e.g. dmg-download.test.mjs's own bounded health fetch).
+      // S58: the pid check is the point: IS_ELECTRON makes the server WALK to the next port on EADDRINUSE while BASE stays fixed, so a stray listener (another suite's server, or macOS ControlCenter on 5000) answers `ok` and the whole run measures a process it never spawned.
       const r = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
+      if (r.ok && (await r.json())?.pid === server.pid) return true;
     } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((res) => setTimeout(res, 500));
   }
@@ -178,8 +179,9 @@ async function waitReady2() {
   for (let i = 0; i < 60; i++) {
     try {
       // Bounded — see waitReady's own comment above.
+      // S58: the pid check is the point: IS_ELECTRON makes the server WALK to the next port on EADDRINUSE while BASE stays fixed, so a stray listener (another suite's server, or macOS ControlCenter on 5000) answers `ok` and the whole run measures a process it never spawned.
       const r = await fetch(`${BASE2}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
+      if (r.ok && (await r.json())?.pid === server2.pid) return true;
     } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((res) => setTimeout(res, 500));
   }
