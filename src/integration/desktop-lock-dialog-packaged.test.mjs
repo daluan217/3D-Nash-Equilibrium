@@ -39,6 +39,11 @@ const reapApp = (dir) => { try { execFileSync('/usr/bin/pkill', ['-9', '-f', `^$
 const winDir = mkdtempSync(join(tmpdir(), 'nash-onscreen-'));
 process.on('exit', () => rmSync(winDir, { recursive: true, force: true }));
 const winBin = join(winDir, 'onscreen');
+// Seen = on the current Space; or, while another Space owns the screen (a fullscreen
+// app), present on the desktop Space where macOS puts a background launch's windows.
+const census = (pid) => { const [o, p, d] = execFileSync(winBin, [String(pid)], { encoding: 'utf8' }).trim().split(' ');
+  return { onscreen: Number(o), present: Number(p), desktop: d === 'true' }; };
+const seen = (w) => w.onscreen >= 1 || (!w.desktop && w.present >= 1);
 const udd = mkdtempSync(join(tmpdir(), 'nash-lockdlg-'));
 let holder = null;
 let appPid = null;
@@ -74,18 +79,19 @@ try {
   rec('fixture: the dialog wrap is installed before electron-main.cjs runs', wrap.result?.result?.value === 'wrapped', JSON.stringify(wrap.result?.result ?? wrap.error));
   await send('Debugger.resume');
 
-  let dialogs = []; let onscreen = 0;
+  let dialogs = []; let onscreen = 0; let win = { onscreen: 0, present: 0, desktop: true };
+
   // Measured 0.45-0.7 s; one run saw none within the old 10 s. 30 s bounds it.
   const t0 = Date.now();
   for (let i = 0; i < 120 && !(dialogs.length && onscreen); i++) {
     await new Promise((r) => setTimeout(r, 250));
     dialogs = JSON.parse((await send('Runtime.evaluate', { expression: 'JSON.stringify(globalThis.__dialogs || [])' })).result?.result?.value || '[]');
-    onscreen = Number(execFileSync(winBin, [String(appPid)], { encoding: 'utf8' }).trim());
+    win = census(appPid); onscreen = seen(win) ? 1 : 0;
   }
   const blocked = dialogs.find((d) => /Startup Blocked/.test(d.title));
   rec('THE DEFECT: the Startup Blocked dialog is requested', !!blocked, JSON.stringify(dialogs));
   rec('THE DEFECT: it is requested only after app ready (a pre-ready request never appears)', blocked?.ready === true, JSON.stringify(blocked));
-  rec('THE DEFECT: the app owns an ON-SCREEN native window (the dialog is visible)', onscreen >= 1, `on-screen windows of pid ${appPid}: ${onscreen} after ${Date.now() - t0} ms`);
+  rec('THE DEFECT: the app owns an ON-SCREEN native window (the dialog is visible)', onscreen >= 1, `pid ${appPid}: ${JSON.stringify(win)} after ${Date.now() - t0} ms`);
   rec('the refused app left the lock with its live holder', readFileSync(join(udd, '.server.lock'), 'utf8').trim() === String(holder.pid));
   // A kernel lock ends only when its holder ends: advising a file deletion would mislead.
   rec('the dialog names the holder and does not advise deleting a lock file',
@@ -114,7 +120,7 @@ try {
       await new Promise((r) => setTimeout(r, 250));
       try { pid = Number(execFileSync('/usr/bin/pgrep', ['-f', `^${BIN} --user-data-dir=${udd2}$`], { encoding: 'utf8' }).trim().split('\n')[0]); } catch { continue; }
       lockNow = readFileSync(join(udd2, '.server.lock'), 'utf8').trim();
-      onscreen = Number(execFileSync(winBin, [String(pid)], { encoding: 'utf8' }).trim());
+      onscreen = seen(census(pid)) ? 1 : 0;
     }
     rec('S75-009 (2): a lock naming a live FOREIGN pid is taken over by the packaged app', lockNow === String(pid), `lock holds ${lockNow}, app pid ${pid}, foreign ${foreign.pid}`);
     // Not a window count: the refusal dialog is an on-screen window too. The
