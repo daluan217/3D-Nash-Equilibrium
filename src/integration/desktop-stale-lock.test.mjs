@@ -10,7 +10,7 @@
  *   node src/integration/desktop-stale-lock.test.mjs   (needs dist/server.cjs)
  */
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, utimesSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { waitForOwnServer } from './ownserver.mjs';
@@ -54,7 +54,7 @@ async function attempt(tag, label, port, { mtime, wrap = [], preload, ud = dir(t
   let log = ''; child.stdout.on('data', (d) => { log += d; }); child.stderr.on('data', (d) => { log += d; });
   // sandbox-exec execs node in place, so the pid is the server's either way.
   const started = await waitForOwnServer(child, `http://127.0.0.1:${port}`, { timeoutMs: 20000 }).then(() => true, () => false);
-  const lockNow = existsSync(lock) ? readFileSync(lock, 'utf8').trim() : null;
+  let lockNow = null; try { lockNow = readFileSync(lock, 'utf8').trim(); } catch { /* absent, or not a file */ }
   await stopKid(child);
   return { started, refused: /Refusing to start/.test(log), lockNow, pid: child.pid, log, line: log.split('\n').find((l) => /Refusing/.test(l)) || '' };
 }
@@ -104,6 +104,12 @@ try {
   const sleeper = live('/bin/sleep', ['600']); await sleep(300);
   let r = await attempt('ii', sleeper.pid, BASE + 5);
   rec('(ii) the reboot case: a label naming a live foreign process (/bin/sleep) is taken over', took(r), r.line);
+  // (xviii) the label is a symlink to a file outside: replaced, never written through.
+  const d18 = dir('xviii'); const outside = path.join(dir('outside'), 'keep'); writeFileSync(outside, 'KEEP');
+  symlinkSync(outside, path.join(d18, '.server.lock'));
+  r = await attempt('xviii', null, BASE + 28, { ud: d18 });
+  rec('(xviii) a symlinked label is replaced, and the file it pointed at is untouched',
+    took(r) && readFileSync(outside, 'utf8') === 'KEEP', `outside=${JSON.stringify(readFileSync(outside, 'utf8'))}`);
   const d3 = dir('named'); const link = path.join(d3, 'Nash Equilibrium Simulator'); symlinkSync('/bin/sleep', link);
   const named = live(link, ['600']); await sleep(300);
   r = await attempt('iii-a', named.pid, BASE + 6);
@@ -151,6 +157,14 @@ try {
     blank.every((x) => refusedOnly(x) && !/\(pid/.test(x.line) && /another Nash Equilibrium Simulator server is already using/.test(x.line)),
     blank.map((x) => x.line.slice(0, 90)).join(' | '));
 
+  // (xvii) a label the server cannot replace (a directory squats the name): it still
+  // serves under the flock, and leaves no temp file in the user's folder.
+  const d17 = dir('xvii'); mkdirSync(path.join(d17, '.server.lock'));
+  r = await attempt('xvii', null, BASE + 27, { ud: d17 });
+  const litter = readdirSync(d17).filter((f) => f.startsWith('.server.lock.'));
+  rec('(xvii) an unreplaceable label: the server still starts and leaves no temp file behind',
+    r.started && litter.length === 0, `started=${r.started} litter=${JSON.stringify(litter)}`);
+
   // (xvi) any other flock error fails closed, naming the folder.
   const dx = dir('xvi');
   r = await attempt('xvi', null, BASE + 21, { preload: 'lock-enotsup.cjs', ud: dx });
@@ -185,7 +199,7 @@ try {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 }
 
-const EXPECTED_CHECKS = 20;
+const EXPECTED_CHECKS = 22;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);

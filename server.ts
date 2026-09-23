@@ -1552,11 +1552,12 @@ function acquireDesktopFlock(userDataPath: string, lockFile: string): boolean {
   }
   // We hold the directory: the pid file is ours whatever it says. Written by
   // rename so it is never empty and a planted symlink is replaced, not followed.
+  const tmp = `${lockFile}.${process.pid}.tmp`;
   try {
-    const tmp = `${lockFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, String(process.pid), { mode: 0o600 });
     fs.renameSync(tmp, lockFile);
   } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* never written */ }
     console.error("Could not write the desktop lock's pid label (the directory lock still holds):", err);
   }
   const release = () => {
