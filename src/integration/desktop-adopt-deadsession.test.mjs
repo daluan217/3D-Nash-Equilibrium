@@ -118,8 +118,10 @@ try {
     await authDlg.locator('input[placeholder="john@example.com"]').fill(user.e);
     await authDlg.locator('input[placeholder="••••••••"]').first().fill(user.p);
     await authDlg.locator('input[placeholder="••••••••"]').nth(1).fill(user.p);
+    // State, not time: pbkdf2 registration under a loaded runner outlasted 800 ms + 8 s.
+    const regP = page.waitForResponse((r) => r.url().includes('/api/auth/register'), { timeout: 30000 });
     await authDlg.getByRole('button', { name: /register account/i }).click();
-    await page.waitForTimeout(800);
+    await regP;
     await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 2000 }).catch(() => {});
     await authDlg.locator('input[placeholder*="example.com or username"]').waitFor({ state: 'visible', timeout: 8000 });
     await authDlg.locator('input[placeholder*="example.com or username"]').fill(user.e);
@@ -199,8 +201,10 @@ try {
     await authDlg.locator('input[placeholder="john@example.com"]').fill(user.e);
     await authDlg.locator('input[placeholder="••••••••"]').first().fill(user.p);
     await authDlg.locator('input[placeholder="••••••••"]').nth(1).fill(user.p);
+    // State, not time: pbkdf2 registration under a loaded runner outlasted 800 ms + 8 s.
+    const regP = page.waitForResponse((r) => r.url().includes('/api/auth/register'), { timeout: 30000 });
     await authDlg.getByRole('button', { name: /register account/i }).click();
-    await page.waitForTimeout(800);
+    await regP;
     await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 2000 }).catch(() => {});
     await authDlg.locator('input[placeholder*="example.com or username"]').waitFor({ state: 'visible', timeout: 8000 });
     await authDlg.locator('input[placeholder*="example.com or username"]').fill(user.e);
