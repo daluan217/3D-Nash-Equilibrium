@@ -37,7 +37,8 @@ const udd = mkdtempSync(join(tmpdir(), 'nash-lockdlg-'));
 const holder = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e6)'], { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 500));
 writeFileSync(join(udd, '.server.lock'), String(holder.pid));
-const winBin = join(udd, 'onscreen');
+const winDir = mkdtempSync(join(tmpdir(), 'nash-onscreen-'));
+const winBin = join(winDir, 'onscreen');
 execFileSync('/usr/bin/swiftc', ['-O', '-o', winBin, join(REPO, 'src/desktop/onscreen-windows.swift')]);
 
 let appPid = null;
@@ -87,11 +88,53 @@ try {
   rmSync(udd, { recursive: true, force: true });
 }
 
-const EXPECTED_CHECKS = 5;
+// S75-009 (2) on the SHIPPING binary: the reboot case itself. The lock names a
+// live FOREIGN process (/bin/sleep, like Passwords.app holding pid 672): the app
+// must start, take the lock and put its window on screen, not refuse.
+{
+  const udd2 = mkdtempSync(join(tmpdir(), 'nash-reusedpid-'));
+  const foreign = spawn('/bin/sleep', ['600'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 300));
+  writeFileSync(join(udd2, '.server.lock'), String(foreign.pid));
+  let pid = null;
+  try {
+    execFileSync('/usr/bin/open', ['-g', '-n', BUNDLE, '--args', `--user-data-dir=${udd2}`]);
+    let lockNow = ''; let onscreen = 0;
+    for (let i = 0; i < 60 && !(pid && lockNow === String(pid) && onscreen); i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      try { pid = Number(execFileSync('/usr/bin/pgrep', ['-f', `^${BIN} --user-data-dir=${udd2}$`], { encoding: 'utf8' }).trim().split('\n')[0]); } catch { continue; }
+      lockNow = readFileSync(join(udd2, '.server.lock'), 'utf8').trim();
+      onscreen = Number(execFileSync(winBin, [String(pid)], { encoding: 'utf8' }).trim());
+    }
+    rec('S75-009 (2): a lock naming a live FOREIGN pid is taken over by the packaged app', lockNow === String(pid), `lock holds ${lockNow}, app pid ${pid}, foreign ${foreign.pid}`);
+    // Not a window count: the refusal dialog is an on-screen window too. The
+    // app's OWN server answering with its pid is what "started" means.
+    let health = null;
+    for (let i = 0; i < 40 && health?.pid !== pid; i++) {
+      let listing = ''; // lsof exits 1 when the pid listens on nothing (a refused app)
+      try { listing = execFileSync('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8' }); } catch {}
+      const ports = listing.split('\n').filter((l) => l.startsWith('n')).map((l) => l.split(':').pop());
+      for (const port of ports) {
+        const h = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1000) }).then((r) => r.json()).catch(() => null);
+        if (h?.pid === pid) { health = h; break; }
+      }
+      if (health?.pid !== pid) await new Promise((r) => setTimeout(r, 250));
+    }
+    rec('S75-009 (2): the packaged app\'s own server answers /api/health with its pid, window on screen',
+      health?.pid === pid && onscreen >= 1, `health pid ${health?.pid}, app pid ${pid}, on-screen windows ${onscreen}`);
+  } finally {
+    if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    foreign.kill('SIGKILL');
+    rmSync(udd2, { recursive: true, force: true });
+  }
+}
+
+const EXPECTED_CHECKS = 7;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);
 }
+rmSync(winDir, { recursive: true, force: true });
 const failed = results.filter((p) => !p).length;
 console.log(`\n${results.length - failed}/${results.length} checks passed`);
 if (failed) process.exit(1);
