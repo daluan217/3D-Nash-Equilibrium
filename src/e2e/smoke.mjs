@@ -143,7 +143,12 @@ function trackPage(p) {
   return p;
 }
 async function newTrackedPage(opts) {
-  return trackPage(await browser.newPage(opts));
+  const p = trackPage(await browser.newPage(opts));
+  // E2E_CPU_THROTTLE=<n>: slow the page's CPU n-fold (chromium) to replay a loaded
+  // CI runner locally. Off unless set. S93's race reproduced at 32.
+  const rate = Number(process.env.E2E_CPU_THROTTLE || 0);
+  if (rate > 1) await (await p.context().newCDPSession(p)).send('Emulation.setCPUThrottlingRate', { rate }).catch(() => {});
+  return p;
 }
 
 /**
@@ -10214,6 +10219,14 @@ const suggestedScenario = {
     const matrixSelector = 'input[inputmode="decimal"][class*="text-center"]';
     const matrix = p.locator(matrixSelector);
     const hint = p.locator('[data-testid="payoff-input-hint"]');
+    // S93 (CI flake, measured): a fixed 3 s wait raced the render, and at 20x CPU
+    // throttle the hint takes 2.1-2.4 s. Wait for the PAGE instead: once it has
+    // rendered two frames after the last keystroke, React has committed, so the
+    // hint must be there. A render that never shows it still fails.
+    const hintAfterRender = async () => {
+      await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      return hint.isVisible().catch(() => false);
+    };
     const RANGE_HINT = 'Range: -100 to 100.';
     const COMMA_HINT = 'Use a dot for decimals, not a comma.';
     await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -10247,7 +10260,7 @@ const suggestedScenario = {
       await cell.fill('');
       await p.keyboard.type(typed, { delay: 20 });
       // (a) the hint is up, with role=status, while the field is still focused.
-      const hintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintVisible = await hintAfterRender();
       const hintText = hintVisible ? await hint.textContent().catch(() => null) : null;
       const hintRole = hintVisible ? await hint.getAttribute('role').catch(() => null) : null;
       record(`${label}: (a) the range hint is visible with the exact text while the field is still focused`,
@@ -10305,7 +10318,7 @@ const suggestedScenario = {
     await cell.click();
     await cell.fill('');
     await p.keyboard.type('4,5', { delay: 20 });
-    const commaHintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+    const commaHintVisible = await hintAfterRender();
     const commaHintText = commaHintVisible ? await hint.textContent().catch(() => null) : null;
     record('§93 (e) regression: the comma path still shows ITS OWN message, not the range one',
       commaHintVisible && commaHintText === COMMA_HINT, `text=${JSON.stringify(commaHintText)}`);
