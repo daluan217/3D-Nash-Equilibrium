@@ -114,6 +114,13 @@ export function policyFailures(src: string): string[] {
   if (/user\.passwordHash\s*=/.test(resetPassword)) {
     out.push('POST /api/auth/reset-password must build the updated user as a candidate, not assign passwordHash on the shared record — an in-place change survives a failed write');
   }
+  // Review #14: the same rule for every account write reachable on the desktop.
+  // Each used to mutate the shared record, ignore saveDB's result and answer
+  // 200 — "Local account created" with nothing on disk.
+  for (const route of ['POST /api/auth/register', 'POST /api/auth/verify', 'POST /api/auth/forgot-password', 'POST /api/auth/delete-request']) {
+    const body = bodies.get(route) ?? '';
+    if (!/if \(!saveDB\(/.test(body)) out.push(`${route} must refuse (500) when its write fails, not answer success for a change that never reached disk`);
+  }
   const deleteConfirm = bodies.get('POST /api/auth/delete-confirm') ?? '';
   if (!/if \(!saveDB\(/.test(deleteConfirm)) {
     out.push('POST /api/auth/delete-confirm must refuse (500) when the deletion write fails — it is the one route whose success message asserts that records are gone');
@@ -198,11 +205,22 @@ for (const [what, snippet, expected] of mutants) {
   if (!policyFailures(committedFirst).some((f) => /saveDB must assign inMemoryDb only after/.test(f))) {
     fail('mutant not caught (saveDB committing in memory before the write)');
   }
-  const resetUnchecked = server.replace(
+  // Scoped to reset-password's OWN body: a file-wide first match hit verify's
+  // identical guard once review #14 gave it one, and the mutant went uncaught.
+  const resetBody = routeBodies(server).get('POST /api/auth/reset-password') ?? '';
+  const resetUnchecked = server.replace(resetBody, resetBody.replace(
     /    if \(!saveDB\(\{ users: db\.users\.map[\s\S]*?\n    \}\n/,
-    '    saveDB(db);\n');
+    '    saveDB(db);\n'));
   if (!policyFailures(resetUnchecked).some((f) => /reset-password must refuse \(500\)/.test(f))) {
     fail('mutant not caught (reset-password stops checking its write)');
+  }
+  // Review #14 routes: dropping the checked write from any ONE of them is caught by name.
+  for (const route of ['POST /api/auth/register', 'POST /api/auth/verify', 'POST /api/auth/forgot-password', 'POST /api/auth/delete-request']) {
+    const body = routeBodies(server).get(route) ?? '';
+    const unchecked = server.replace(body, body.replace(/if \(!saveDB\(/g, 'if (!void saveDB('));
+    if (!body || !policyFailures(unchecked).some((f) => f.startsWith(`${route} must refuse (500)`))) {
+      fail(`mutant not caught (${route} stops checking its write)`);
+    }
   }
   const resetInPlace = server.replace('    const updated: User = {', '    user.passwordHash = hashPassword(newPassword);\n    const updated: User = {');
   if (!policyFailures(resetInPlace).some((f) => /reset-password must build the updated user as a candidate/.test(f))) {

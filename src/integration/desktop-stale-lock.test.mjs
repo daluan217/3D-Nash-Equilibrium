@@ -344,8 +344,8 @@ try {
 }
 
 const EXPECTED_CHECKS = 30;
-if (results.length < EXPECTED_CHECKS) {
-  console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
+if (results.length !== EXPECTED_CHECKS) {
+  console.error(`FAILED: ${results.length} checks ran, expected exactly ${EXPECTED_CHECKS} (review #14: a skip and an extra must not cancel out)`);
   process.exit(1);
 }
 const failed = results.filter((p) => !p).length;

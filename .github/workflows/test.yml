@@ -400,6 +400,7 @@ jobs:
           UNWRITABLE_SAVE_PORT3: '3121'
           UNWRITABLE_SAVE_PORT4: '3122'
           UNWRITABLE_SAVE_PORT5: '3123'
+          UNWRITABLE_SAVE_PORT6: '3124'
 
 
       # A pre-local-owner desktop install's real account is invisible to an

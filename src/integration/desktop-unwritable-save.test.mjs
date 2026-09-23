@@ -785,13 +785,82 @@ try {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Review #14: the ACCOUNT routes. register/verify/forgot/delete-request mutated
+// the shared user object, ignored saveDB's result and answered 200. On a
+// read-only data folder a desktop registration said "Local account created"
+// and nothing reached disk. Each route now builds a candidate and commits it
+// only when saveDB lands it; every one is driven here against a read-only
+// folder, each followed by a writable CONTROL, so a route that refuses
+// everything cannot pass.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const PORT6 = process.env.UNWRITABLE_SAVE_PORT6 || '3124';
+  const BASE6 = `http://localhost:${PORT6}`;
+  const userData6 = mkdtempSync(path.join(tmpdir(), 'nash-unwritable-acct-'));
+  const call6 = async (method, url, body, token) => {
+    const headers = {};
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (token) headers.authorization = `Bearer ${token}`;
+    const r = await fetch(`${BASE6}${url}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    let json = null; try { json = await r.json(); } catch { /* non-JSON */ }
+    return { status: r.status, json };
+  };
+  const onDisk = () => { try { return JSON.parse(readFileSync(path.join(userData6, 'db.json'), 'utf8')); } catch { return null; } };
+  const server6 = spawn('node', [BUNDLE], { cwd: userData6, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, HOME: userData6, NODE_ENV: 'production', PORT: PORT6, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: userData6 } });
+  try {
+    await waitForOwnServer(server6, BASE6, { timeoutMs: 20000 });
+    const readOnly = async (fn) => { chmodSync(userData6, 0o555); try { return await fn(); } finally { chmodSync(userData6, 0o755); } };
+    const refused = (r) => r.status >= 500 && r.json?.success !== true && /nothing was saved/i.test(r.json?.error || '');
+
+    // register (new desktop user)
+    const reg = await readOnly(() => call6('POST', '/api/auth/register', { username: 'acct6', email: 'acct6@desk.local', password: 'TestPass123' }));
+    record('account: register on a read-only folder answers 500 and says nothing was saved',
+      refused(reg), `status=${reg.status} body=${JSON.stringify(reg.json)}`);
+    const regLogin = await call6('POST', '/api/auth/login', { email: 'acct6@desk.local', password: 'TestPass123' });
+    record('account: the refused registration left no account behind, in memory or on disk',
+      regLogin.status !== 200 && !(onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local'), `login=${regLogin.status}`);
+    const regOk = await call6('POST', '/api/auth/register', { username: 'acct6', email: 'acct6@desk.local', password: 'TestPass123' });
+    record('account CONTROL: the same registration succeeds once the folder is writable, and lands on disk',
+      regOk.status === 200 && (onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local'), `status=${regOk.status}`);
+
+    // forgot-password: a code the server could not store must not be handed out
+    const forgot = await readOnly(() => call6('POST', '/api/auth/forgot-password', { email: 'acct6@desk.local' }));
+    record('account: forgot-password on a read-only folder answers 500 and hands out no code',
+      refused(forgot) && !forgot.json?.recoveryCode, `status=${forgot.status} body=${JSON.stringify(forgot.json)}`);
+    const forgotOk = await call6('POST', '/api/auth/forgot-password', { email: 'acct6@desk.local' });
+    record('account CONTROL: forgot-password succeeds once writable, and its code is the one on disk',
+      forgotOk.status === 200 && !!forgotOk.json?.recoveryCode
+        && (onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local' && u.recoveryCode === forgotOk.json.recoveryCode),
+      `status=${forgotOk.status}`);
+
+    // delete-request: same rule for the deletion code
+    const token = (await call6('POST', '/api/auth/login', { email: 'acct6@desk.local', password: 'TestPass123' })).json?.token;
+    const delReq = await readOnly(() => call6('POST', '/api/auth/delete-request', undefined, token));
+    record('account: delete-request on a read-only folder answers 500 and hands out no code',
+      !!token && refused(delReq) && !delReq.json?.deleteCode, `status=${delReq.status} body=${JSON.stringify(delReq.json)}`);
+    const delReqOk = await call6('POST', '/api/auth/delete-request', undefined, token);
+    record('account CONTROL: delete-request succeeds once writable, and its code is the one on disk',
+      delReqOk.status === 200 && !!delReqOk.json?.deleteCode
+        && (onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local' && u.deleteCode === delReqOk.json.deleteCode),
+      `status=${delReqOk.status}`);
+  } catch (e) {
+    record('account phase completed without an exception', false, String(e?.stack || e).slice(0, 300));
+  } finally {
+    server6.kill('SIGKILL');
+    try { chmodSync(userData6, 0o755); } catch { /* gone */ }
+    rmSync(userData6, { recursive: true, force: true });
+  }
+}
+
 // SR-47: a suite that SILENTLY SKIPS a block still prints "N/N checks passed"
 // and exits 0, because N is counted, not expected. Measured on this file's own
 // ancestor: filtering one data array to empty removed six checks and the run
 // said "37/37 checks passed". The red probe that had aborted for three sweeps
 // was the same shape. So the count is DECLARED: fewer means a block did not
 // run, which is a failure even when every check that did run passed.
-const EXPECTED_CHECKS = 55;
+const EXPECTED_CHECKS = 62;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — `
     + 'a block was skipped. Raise EXPECTED_CHECKS deliberately when adding checks.');

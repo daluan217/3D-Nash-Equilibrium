@@ -4323,10 +4323,10 @@ async function startServer() {
 
       // If we are in Electron local mode, mark them verified instantly and save
       if (isElectron) {
-        existingUser.isVerified = true;
-        existingUser.username = usernameTrimmed;
-        existingUser.passwordHash = hashPassword(password);
-        saveDB(db);
+        const verified = { ...existingUser, isVerified: true, username: usernameTrimmed, passwordHash: hashPassword(password) };
+        if (!saveDB({ users: db.users.map((u) => (u === existingUser ? verified : u)), games: db.games })) {
+          return res.status(500).json({ error: "Could not create your account: nothing was saved. Please try again." });
+        }
         return res.json({
           success: true,
           message: "Local account created successfully! You are ready to log in.",
@@ -4375,8 +4375,9 @@ async function startServer() {
         verificationCode: "",
         verificationCodeExpires: 0
       };
-      db.users.push(newUser);
-      saveDB(db);
+      if (!saveDB({ users: [...db.users, newUser], games: db.games })) {
+        return res.status(500).json({ error: "Could not create your account: nothing was saved. Please try again." });
+      }
       return res.json({
         success: true,
         message: "Local account created successfully! You are ready to log in.",
@@ -4458,9 +4459,10 @@ async function startServer() {
       });
     }
 
-    // Mark verified
-    user.isVerified = true;
-    saveDB(db);
+    // Mark verified — in memory only once it is on disk (STRUCT-DESKTOP-19's order).
+    if (!saveDB({ users: db.users.map((u) => (u === user ? { ...user, isVerified: true } : u)), games: db.games })) {
+      return res.status(500).json({ error: "Could not verify your account: nothing was saved. Please try again." });
+    }
 
     res.json({
       success: true,
@@ -4557,10 +4559,10 @@ async function startServer() {
     }
 
     const recoveryCode = makeCode();
-    user.recoveryCode = recoveryCode;
-    user.recoveryCodeExpires = Date.now() + 10 * 60 * 1000;
-    user.recoveryCodeAttempts = undefined; // fresh code → fresh attempt budget
-    saveDB(db);
+    const withCode = { ...user, recoveryCode, recoveryCodeExpires: Date.now() + 10 * 60 * 1000, recoveryCodeAttempts: undefined };
+    if (!saveDB({ users: db.users.map((u) => (u === user ? withCode : u)), games: db.games })) {
+      return res.status(500).json({ error: "Could not start the password reset: nothing was saved. Please try again." });
+    }
 
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
     let emailErrorMsg = null;
@@ -4660,11 +4662,10 @@ async function startServer() {
     }
 
     const deleteCode = makeCode();
-    user.deleteCode = deleteCode;
-    user.deleteCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-    user.deleteCodeAttempts = undefined; // fresh code → fresh attempt budget
-
-    saveDB(db);
+    const withCode = { ...user, deleteCode, deleteCodeExpires: Date.now() + 10 * 60 * 1000, deleteCodeAttempts: undefined };
+    if (!saveDB({ users: db.users.map((u) => (u.id === user.id ? withCode : u)), games: db.games })) {
+      return res.status(500).json({ error: "Could not start the account deletion: nothing was saved. Please try again." });
+    }
 
     let emailErrorMsg = null;
     try {
