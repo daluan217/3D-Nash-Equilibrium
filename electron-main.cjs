@@ -367,7 +367,11 @@ if (!gotTheLock) {
       clearTimeout(slowBootFallbackTimer);
       slowBootFallbackTimer = null;
     }
-    dialog.showMessageBox({
+    // S75-009: this hook fires inside require('./dist/server.cjs'), before
+    // 'ready'; a showMessageBox called then never appears (measured: no window,
+    // app headless forever). Queue the dialog until ready; the cancel above
+    // stays synchronous so the fallback window can never race it.
+    app.whenReady().then(() => dialog.showMessageBox({
       type: 'error',
       buttons: ['Quit', 'Show Location'],
       defaultId: 0,
@@ -398,7 +402,7 @@ if (!gotTheLock) {
         : `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
           + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
           + 'start normally while blocked), then relaunch it.',
-    }).then((result) => {
+    })).then((result) => {
       if (result.response === 1) {
         revealLockLocation(lockFile);
         // Leave the (now-informed, still-blocked) app running rather than

@@ -135,7 +135,8 @@ const ciIntegrationRuns = workflowJobRuns(ciWorkflow, 'integration').join('\n');
 // one job, so it cannot become a general escape hatch for a suite that simply
 // was not wired up.
 const PACKAGED_JOB = 'package-audit';
-const PACKAGED_ONLY = new Set(['desktop-packaged-smoke.test.mjs']);
+const PACKAGED_ONLY = new Set(['desktop-packaged-smoke.test.mjs', 'desktop-stale-lock.test.mjs',
+  'desktop-lock-dialog-packaged.test.mjs']);
 const ciPackagedRuns = workflowJobRuns(ciWorkflow, PACKAGED_JOB).join('\n');
 const runsInJob = (file: string, runs: string): boolean =>
   new RegExp(`(?:^|&&\\s*|\\n\\s*)node\\s+src/integration/${escapeRegex(file)}(?=\\s|$)`, 'm')

@@ -7,6 +7,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { execFileSync } from "child_process";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -1516,6 +1517,31 @@ function reportDesktopLockFailure(
   process.exit(1);
 }
 
+// S75-009: a lock pid from a previous boot is routinely reused by an unrelated
+// process, and kill(pid, 0) alone refused to start forever. Recover only when
+// the lock is PROVABLY stale; every unknown (ps missing, EPERM, empty, garbage)
+// fails closed. Not boot time: macOS moves kern.boottime forward by sleep time.
+function staleLockProof(pid: number, lockMtimeMs: number): string | null {
+  const ps = (field: string) => {
+    try {
+      return execFileSync("/bin/ps", ["-ww", "-o", `${field}=`, "-p", String(pid)],
+        { encoding: "utf8", timeout: 2000, env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" } }).trim();
+    } catch { return ""; }
+  };
+  // (a') lstart is the wall clock at fork: a process that started after the
+  // lock was last written cannot have written it. A pre-2020 mtime (zeroed or
+  // backdated by a tool) predates this app, so it proves nothing.
+  const started = Date.parse(`${ps("lstart")} GMT`);
+  if (lockMtimeMs > Date.UTC(2020, 0) && started > lockMtimeMs + 60_000) return "(a') its process started after the lock was written";
+  // (b) ucomm is the real executable; command holds argv[0] (what comm prints)
+  // and catches `bun server.ts`. EITHER looking like us (packaged app, Electron,
+  // node) counts as ours.
+  const names = [ps("ucomm"), ps("command")].map((n) => n.toLowerCase());
+  const ours = (n: string) => /nash|electron|node|server\.(cjs|ts)/.test(n);
+  if (names.every(Boolean) && !names.some(ours)) return "(b) its executable is not ours";
+  return null;
+}
+
 function acquireDesktopLock(): boolean {
   const userDataPath = process.env.ELECTRON_USER_DATA_PATH;
   if (!userDataPath) return true; // hosted service: GCS's own analogous risk is a separate, product-scope question
@@ -1672,8 +1698,16 @@ function acquireDesktopLock(): boolean {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, readRaceDelayMs);
     }
     let rawContent: string;
+    let lockMtimeMs: number;
     try {
-      rawContent = fs.readFileSync(lockFile, "utf-8");
+      // Last-write time from the SAME fd as the content. max(mtime, ctime):
+      // `touch -t` can backdate mtime but APFS ctime follows the clock.
+      const fd = fs.openSync(lockFile, "r");
+      try {
+        const st = fs.fstatSync(fd);
+        lockMtimeMs = Math.max(st.mtimeMs, st.ctimeMs);
+        rawContent = fs.readFileSync(fd, "utf-8");
+      } finally { fs.closeSync(fd); }
     } catch (err: any) {
       if (err && err.code === "ENOENT") {
         // The lock vanished between our EEXIST and this read — someone
@@ -1722,6 +1756,13 @@ function acquireDesktopLock(): boolean {
         alive = true;
       } catch (err: any) {
         alive = err && err.code === "EPERM";
+      }
+    }
+    if (alive) {
+      const proof = staleLockProof(heldBy, lockMtimeMs);
+      if (proof) {
+        console.warn(`Recovering a stale desktop lock: pid ${heldBy} is alive but cannot hold it — ${proof}.`);
+        alive = false;
       }
     }
     if (alive) {

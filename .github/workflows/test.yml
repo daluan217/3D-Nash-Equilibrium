@@ -202,6 +202,19 @@ jobs:
           npx playwright install --with-deps chromium
           node src/integration/desktop-packaged-smoke.test.mjs
 
+      # S75-009: a .server.lock whose pid was reused after a reboot refused to
+      # start forever, and its dialog (requested before 'ready') never showed.
+      # macOS-only: ps(1) columns, sandbox-exec, FAT images, LaunchServices.
+      - name: A stale lock whose pid was reused is recovered only on proof
+        run: node src/integration/desktop-stale-lock.test.mjs
+        env:
+          STALE_LOCK_TEST_PORT: '3480'
+
+      - name: The packaged app's Startup Blocked dialog is actually on screen
+        run: node src/integration/desktop-lock-dialog-packaged.test.mjs
+        env:
+          LOCK_DIALOG_INSPECT_PORT: '3471'
+
       - name: Audit the packaged app.asar
         # Same flag as the release step, so the PR checks what the release
         # checks. Without it a build that produced no .dmg/.zip would audit the
