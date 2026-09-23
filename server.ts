@@ -1522,6 +1522,8 @@ function reportDesktopLockFailure(
 // the lock is PROVABLY stale; every unknown (ps missing, EPERM, empty, garbage)
 // fails closed. Not boot time: macOS moves kern.boottime forward by sleep time.
 function staleLockProof(pid: number, lockMtimeMs: number): string | null {
+  // Our wx create just failed, so a lock naming THIS pid is a previous boot's.
+  if (pid === process.pid) return "it names this very process";
   const ps = (field: string) => {
     try {
       return execFileSync("/bin/ps", ["-ww", "-o", `${field}=`, "-p", String(pid)],

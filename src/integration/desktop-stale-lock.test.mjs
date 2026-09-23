@@ -63,6 +63,20 @@ try {
     // (ix) a zeroed/ancient write time (1990: FAT's floor is 1980) proves nothing: holder is ours ⇒ refuse.
     const r9 = await attempt('ancient', later.pid, BASE + 12, { mtime: Date.UTC(1990, 0) / 1000, ud: mnt });
     rec('(ix) a pre-2020 lock write time is not proof: a live node holder still refuses', r9.refused && !r9.started, `refused=${r9.refused}`);
+    // (x) after a reboot the app can draw the very pid its old lock names (672 then
+    // 678 on Daniel's machine). Written fresh, so (a') cannot fire and (b) says ours.
+    const selfLock = path.join(mnt, '.server.lock');
+    const self = spawn(process.execPath, ['-e', `const fs = require('fs');
+      fs.writeFileSync(${JSON.stringify(selfLock)}, String(process.pid));
+      
+      require(${JSON.stringify(BUNDLE)});`], { cwd: mnt, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH, HOME: mnt, NODE_ENV: 'production', PORT: String(BASE + 13), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: mnt } });
+    kids.push(self);
+    let selfLog = ''; self.stdout.on('data', (b) => { selfLog += b; }); self.stderr.on('data', (b) => { selfLog += b; });
+    const selfUp = await waitForOwnServer(self, `http://127.0.0.1:${BASE + 13}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    rec("(x) a lock from a previous boot naming the app's OWN new pid is recovered, not refused as 'another server'",
+      selfUp && readFileSync(selfLock, 'utf8').trim() === String(self.pid) && /names this very process/.test(selfLog), selfLog.split('\n').find((l) => /Recover|Refus/.test(l)));
+    self.kill('SIGKILL'); await new Promise((r) => (self.exitCode !== null || self.signalCode !== null ? r() : self.once('exit', r)));
   } finally { execFileSync('/usr/bin/hdiutil', ['detach', '-quiet', '-force', mnt]); }
   let r;
 
@@ -119,7 +133,7 @@ try {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 }
 
-const EXPECTED_CHECKS = 12;
+const EXPECTED_CHECKS = 13;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);
