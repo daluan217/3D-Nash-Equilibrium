@@ -44,6 +44,7 @@ const winBin = join(winDir, 'onscreen');
 const census = (pid) => { const [o, p, d] = execFileSync(winBin, [String(pid)], { encoding: 'utf8' }).trim().split(' ');
   return { onscreen: Number(o), present: Number(p), desktop: d === 'true' }; };
 const seen = (w) => w.onscreen >= 1 || (!w.desktop && w.present >= 1);
+let ciDesktopChecked = false;
 // NASH_TEST_FORCE_DESKTOP_HIDDEN: the mutation hook for the CI check below.
 const censusOf = (pid) => ({ ...census(pid), ...(process.env.NASH_TEST_FORCE_DESKTOP_HIDDEN ? { desktop: false } : {}) });
 const udd = mkdtempSync(join(tmpdir(), 'nash-lockdlg-'));
@@ -97,6 +98,7 @@ try {
   // another Space" there: a window created but never shown would pass that fallback.
   if (process.env.CI) {
     rec('CI: the runner\'s desktop Space is visible (no off-Space fallback in CI)', win.desktop === true, JSON.stringify(win));
+    ciDesktopChecked = true;
   }
   rec('THE DEFECT: the app owns an ON-SCREEN native window (the dialog is visible)', onscreen >= 1, `pid ${appPid}: ${JSON.stringify(win)} after ${Date.now() - t0} ms`);
   rec('the refused app left the lock with its live holder', readFileSync(join(udd, '.server.lock'), 'utf8').trim() === String(holder.pid));
@@ -158,7 +160,11 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = process.env.CI ? 10 : 9;
+if (process.env.CI && !ciDesktopChecked) {
+  console.error('FAILED: CI is set but the desktop-visible check never ran');
+  process.exit(1);
+}
+const EXPECTED_CHECKS = 9;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);
