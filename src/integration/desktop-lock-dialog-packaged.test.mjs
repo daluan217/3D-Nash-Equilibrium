@@ -44,6 +44,8 @@ const winBin = join(winDir, 'onscreen');
 const census = (pid) => { const [o, p, d] = execFileSync(winBin, [String(pid)], { encoding: 'utf8' }).trim().split(' ');
   return { onscreen: Number(o), present: Number(p), desktop: d === 'true' }; };
 const seen = (w) => w.onscreen >= 1 || (!w.desktop && w.present >= 1);
+// NASH_TEST_FORCE_DESKTOP_HIDDEN: the mutation hook for the CI check below.
+const censusOf = (pid) => ({ ...census(pid), ...(process.env.NASH_TEST_FORCE_DESKTOP_HIDDEN ? { desktop: false } : {}) });
 const udd = mkdtempSync(join(tmpdir(), 'nash-lockdlg-'));
 let holder = null;
 let appPid = null;
@@ -86,11 +88,16 @@ try {
   for (let i = 0; i < 120 && !(dialogs.length && onscreen); i++) {
     await new Promise((r) => setTimeout(r, 250));
     dialogs = JSON.parse((await send('Runtime.evaluate', { expression: 'JSON.stringify(globalThis.__dialogs || [])' })).result?.result?.value || '[]');
-    win = census(appPid); onscreen = seen(win) ? 1 : 0;
+    win = censusOf(appPid); onscreen = seen(win) ? 1 : 0;
   }
   const blocked = dialogs.find((d) => /Startup Blocked/.test(d.title));
   rec('THE DEFECT: the Startup Blocked dialog is requested', !!blocked, JSON.stringify(dialogs));
   rec('THE DEFECT: it is requested only after app ready (a pre-ready request never appears)', blocked?.ready === true, JSON.stringify(blocked));
+  // In CI the desktop Space must be visible, so `seen` can never fall back to "present on
+  // another Space" there: a window created but never shown would pass that fallback.
+  if (process.env.CI) {
+    rec('CI: the runner\'s desktop Space is visible (no off-Space fallback in CI)', win.desktop === true, JSON.stringify(win));
+  }
   rec('THE DEFECT: the app owns an ON-SCREEN native window (the dialog is visible)', onscreen >= 1, `pid ${appPid}: ${JSON.stringify(win)} after ${Date.now() - t0} ms`);
   rec('the refused app left the lock with its live holder', readFileSync(join(udd, '.server.lock'), 'utf8').trim() === String(holder.pid));
   // A kernel lock ends only when its holder ends: advising a file deletion would mislead.
@@ -120,7 +127,7 @@ try {
       await new Promise((r) => setTimeout(r, 250));
       try { pid = Number(execFileSync('/usr/bin/pgrep', ['-f', `^${BIN} --user-data-dir=${udd2}$`], { encoding: 'utf8' }).trim().split('\n')[0]); } catch { continue; }
       lockNow = readFileSync(join(udd2, '.server.lock'), 'utf8').trim();
-      onscreen = seen(census(pid)) ? 1 : 0;
+      onscreen = seen(censusOf(pid)) ? 1 : 0;
     }
     rec('S75-009 (2): a lock naming a live FOREIGN pid is taken over by the packaged app', lockNow === String(pid), `lock holds ${lockNow}, app pid ${pid}, foreign ${foreign.pid}`);
     // Not a window count: the refusal dialog is an on-screen window too. The
@@ -151,7 +158,7 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = 9;
+const EXPECTED_CHECKS = process.env.CI ? 10 : 9;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);
