@@ -32,18 +32,22 @@ const rec = (n, ok, d) => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL
   if (!same) { console.error('STALE ARTIFACT: app.asar electron-main.cjs differs from the tree; repackage first.'); process.exit(1); }
 }
 
-const udd = mkdtempSync(join(tmpdir(), 'nash-lockdlg-'));
-// A live NODE holder: proof (b) says "ours", so the server must refuse.
-const holder = spawn(process.execPath, ['-e', 'setTimeout(()=>{},120000)'], { stdio: 'ignore' });
-await new Promise((r) => setTimeout(r, 500));
-writeFileSync(join(udd, '.server.lock'), String(holder.pid));
+// Every app this file launches carries its own udd in argv, so cleanup can reap by
+// that argv even when a launch failed before its pid was learned.
+const reapApp = (dir) => { try { execFileSync('/usr/bin/pkill', ['-9', '-f', `^${BIN} .*--user-data-dir=${dir}$`]); } catch { /* none left */ } };
 const winDir = mkdtempSync(join(tmpdir(), 'nash-onscreen-'));
+process.on('exit', () => rmSync(winDir, { recursive: true, force: true }));
 const winBin = join(winDir, 'onscreen');
-execFileSync('/usr/bin/swiftc', ['-O', '-o', winBin, join(REPO, 'src/desktop/onscreen-windows.swift')]);
-
+const udd = mkdtempSync(join(tmpdir(), 'nash-lockdlg-'));
+let holder = null;
 let appPid = null;
 let ws = null;
 try {
+  execFileSync('/usr/bin/swiftc', ['-O', '-o', winBin, join(REPO, 'src/desktop/onscreen-windows.swift')]);
+  // A live NODE holder: proof (b) says "ours", so the server must refuse.
+  holder = spawn(process.execPath, ['-e', 'setTimeout(()=>{},120000)'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 500));
+  writeFileSync(join(udd, '.server.lock'), String(holder.pid));
   execFileSync('/usr/bin/open', ['-g', '-n', BUNDLE, '--args', `--inspect-brk=${INSPECT}`, `--user-data-dir=${udd}`]);
   let target = null;
   for (let i = 0; i < 60 && !target; i++) {
@@ -83,8 +87,8 @@ try {
   rec('the refused app left the lock with its live holder', readFileSync(join(udd, '.server.lock'), 'utf8').trim() === String(holder.pid));
 } finally {
   try { ws?.close(); } catch {}
-  if (appPid) { try { process.kill(appPid, 'SIGKILL'); } catch {} }
-  holder.kill('SIGKILL');
+  reapApp(udd);
+  holder?.kill('SIGKILL');
   rmSync(udd, { recursive: true, force: true });
 }
 
@@ -93,11 +97,12 @@ try {
 // must start, take the lock and put its window on screen, not refuse.
 {
   const udd2 = mkdtempSync(join(tmpdir(), 'nash-reusedpid-'));
-  const foreign = spawn('/bin/sleep', ['600'], { stdio: 'ignore' });
-  await new Promise((r) => setTimeout(r, 300));
-  writeFileSync(join(udd2, '.server.lock'), String(foreign.pid));
+  let foreign = null;
   let pid = null;
   try {
+    foreign = spawn('/bin/sleep', ['600'], { stdio: 'ignore' });
+    await new Promise((r) => setTimeout(r, 300));
+    writeFileSync(join(udd2, '.server.lock'), String(foreign.pid));
     execFileSync('/usr/bin/open', ['-g', '-n', BUNDLE, '--args', `--user-data-dir=${udd2}`]);
     let lockNow = ''; let onscreen = 0;
     for (let i = 0; i < 60 && !(pid && lockNow === String(pid) && onscreen); i++) {
@@ -123,8 +128,8 @@ try {
     rec('S75-009 (2): the packaged app\'s own server answers /api/health with its pid, window on screen',
       health?.pid === pid && onscreen >= 1, `health pid ${health?.pid}, app pid ${pid}, on-screen windows ${onscreen}`);
   } finally {
-    if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} }
-    foreign.kill('SIGKILL');
+    reapApp(udd2);
+    foreign?.kill('SIGKILL');
     rmSync(udd2, { recursive: true, force: true });
   }
 }
@@ -134,7 +139,6 @@ if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);
 }
-rmSync(winDir, { recursive: true, force: true });
 const failed = results.filter((p) => !p).length;
 console.log(`\n${results.length - failed}/${results.length} checks passed`);
 if (failed) process.exit(1);
