@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
 import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 import { closeTour, dismissTourForSetup } from './tour.mjs';
@@ -48,12 +49,12 @@ function section(id, name, run) {
   sections.push({ id: String(id), name, run });
 }
 
-// ── boot the production server (unless one is already listening) ────────────
+// ── boot the production server (reuse only under REUSE_SERVER=1) ────────────
 let server = null;
 const userData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-'));
 // Kill AND await the child's exit: process.exit() right after kill() lets a
 // retry invocation (CI runs `smoke.mjs || smoke.mjs`) race the dying server
-// for the port — waitReady would then see the OLD server still listening.
+// for the port, and a retry would then find the OLD server still listening.
 async function killServer() {
   if (!server) return;
   if (server.exitCode !== null || server.signalCode !== null) return; // already exited
@@ -61,17 +62,12 @@ async function killServer() {
   if (!server.kill('SIGKILL')) return; // couldn't signal (already dead / EPERM)
   await exited; // SIGKILL cannot be ignored
 }
-async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const r = await fetch(`${BASE}/`);
-      if (r.ok) return true;
-    } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
-if (!(await waitReady())) {
+// Reuse an already-listening server ONLY under REUSE_SERVER=1 (local dev); by
+// default and in CI this suite spawns and measures its own build — the old
+// "unless one is already listening" also accepted a stale or leaked server
+// (S73-006). The pid-bound wait below is what keeps a retry from measuring the
+// OLD server killServer() is still reaping.
+if (!(reuseServerAllowed() && await fetch(`${BASE}/`).then((r) => r.ok, () => false))) {
   // cwd = the temp dir, deliberately: dotenv reads .env from the server's cwd,
   // and this suite must exercise the UNKEYED path even on a dev machine whose
   // repo root has real credentials in .env. The server still serves dist/ —
@@ -91,8 +87,8 @@ if (!(await waitReady())) {
   });
   server.stdout.on('data', () => {});
   server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
-  if (!(await waitReady())) {
-    console.error('FAIL server never became ready');
+  try { await waitForOwnServer(server, BASE); } catch (err) {
+    console.error(`FAIL server never became ready: ${err.message}`);
     await killServer();
     process.exit(2);
   }
@@ -3357,7 +3353,7 @@ try {
   //      credentials) and drives the whole CRUD cycle from an Electron-UA page
   //      that never signs in.
   section('45', 'desktop local owner: save, list, edit, delete without an account', async () => {
-    const deskPort = String(Number(PORT) + 1000);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000));
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-desk-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -3373,7 +3369,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
       const dp = await deskCtx.newPage();
       const deskErrors = [];
@@ -3781,7 +3777,7 @@ try {
   // the server's own lists and the request log, never from the dialog alone:
   // a dialog that appears but still moves games unasked would fail here.
   section('50', 'desktop sign-in offers, never silently moves, the no-account games on this device', async () => {
-    const deskPort = String(Number(PORT) + 1001);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 1);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-adopt-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -3796,7 +3792,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
       // Person A saves without an account; person B has a brand-new account.
       const gameName = `Strangers-${Date.now().toString(36)}`;
@@ -5305,7 +5301,7 @@ try {
   //      disabled/aria-busy check fails.
   section('68', 'one SavedGamesList: the sidebar and the drawer agree on names, count, in-flight Delete and empty state', async () => {
     // ── Part A: desktop local-owner server (reuses section 45's boot). ──
-    const deskPort = String(Number(PORT) + 1000);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000));
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-list68-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -5341,7 +5337,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: the desktop local-owner server is up', up);
       const dp = await deskCtx.newPage();
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
@@ -5555,7 +5551,7 @@ try {
   //      installed in every environment).
   section('70', 'the Tab trap never gives up when every control is disabled; opener tracking survives WebKit on a saved-game row', async () => {
     // ── Part A: desktop-shape server, no account, one local game ──────────
-    const deskPort = String(Number(PORT) + 1002);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 2);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-trap-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -5570,7 +5566,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: the desktop-shaped server for section 70 is up', up);
       await fetch(deskBase + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: `Trap-${Date.now().toString(36)}`, description: 'no-account game', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
@@ -7949,7 +7945,7 @@ try {
   //      below fail (see src/localowner.test.ts for the structural guard and
   //      its own mutation test against the same revert).
   section('78', 'desktop: a local owner (no account) never gets a sign-in invitation for a non-auth failure; a real session 401 still does', async () => {
-    const deskPort = String(Number(PORT) + 1004);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 4);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-authpred-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -7964,7 +7960,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
       const dp = await deskCtx.newPage();
       const deskErrors = [];

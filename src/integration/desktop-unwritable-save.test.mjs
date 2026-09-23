@@ -31,6 +31,7 @@ import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const PORT = process.env.UNWRITABLE_SAVE_PORT || '3117';
 const BASE = `http://localhost:${PORT}`;
@@ -285,15 +286,8 @@ async function call3(method, url, body, token) {
   return { status: r.status, json };
 }
 async function waitReady3() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      // Bounded — see waitReady's own comment above.
-      const r = await fetch(`${BASE3}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
-    } catch { /* not up yet, or the health check itself timed out */ }
-    await new Promise((res) => setTimeout(res, 500));
-  }
-  return false;
+  try { await waitForOwnServer(server3, BASE3); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 const server3 = spawn('node', [BUNDLE], {
   cwd: userData3,
@@ -405,15 +399,8 @@ async function call4(method, url, body) {
   return { status: r.status, json };
 }
 async function waitReady4() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      // Bounded — see waitReady's own comment above.
-      const r = await fetch(`${BASE4}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
-    } catch { /* not up yet, or the health check itself timed out */ }
-    await new Promise((res) => setTimeout(res, 500));
-  }
-  return false;
+  try { await waitForOwnServer(server4, BASE4); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 const server4 = spawn('node', [BUNDLE], {
   cwd: userData4,
@@ -539,17 +526,8 @@ try {
   server5.stdout.on('data', (d) => { log5 += d; });
   server5.stderr.on('data', (d) => { log5 += d; });
   try {
-    let ready = false;
-    for (let i = 0; i < 80 && !ready; i++) {
-      // Bounded, like every other health poll in this file: an UNBOUNDED fetch
-      // hangs past this loop's own retry budget if the endpoint accepts the
-      // connection but never completes the response (the 798s-hang class this
-      // repo guards elsewhere). Reviewer finding; the other three phases
-      // already used AbortSignal.timeout and this new one did not.
-      try { ready = (await fetch(`${BASE5}/api/health`, { signal: AbortSignal.timeout(2000) })).ok; }
-      catch { /* not up yet, or the health check itself timed out */ }
-      if (!ready) await new Promise((r) => setTimeout(r, 250));
-    }
+    const ready = await waitForOwnServer(server5, BASE5, { timeoutMs: 20000 })
+      .then(() => true, (err) => { log5 += `\n${err.message}`; return false; });
     record('rug-pull: the server booted', ready, ready ? '' : log5.slice(-300));
 
     const dbOnDisk = () => {

@@ -33,6 +33,7 @@ import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 import { fileURLToPath } from 'node:url';
 
 const PORT = process.env.RSL_TEST_PORT || '3187';
@@ -105,14 +106,8 @@ server.stdout.on('data', (d) => { serverLog += d.toString(); });
 server.stderr.on('data', (d) => { serverLog += d.toString(); });
 
 async function waitForServer() {
-  for (let i = 0; i < 100; i++) {
-    try {
-      const r = await fetch(`${BASE}/`, { signal: AbortSignal.timeout(1000) });
-      if (r.ok || r.status === 404) return true;
-    } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return false;
+  try { await waitForOwnServer(server, BASE, { timeoutMs: 20000 }); return true; }
+  catch (err) { serverLog += `\n${err.message}`; return false; }
 }
 
 try {

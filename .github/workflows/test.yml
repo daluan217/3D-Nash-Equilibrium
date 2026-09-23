@@ -558,6 +558,13 @@ jobs:
         env:
           STATIC_BUNDLE_PORT: '3198'
 
+      # S73-006: every readiness loop now trusts waitForOwnServer(); this checks
+      # the helper itself refuses a foreign pid on the port and a dead child.
+      - name: The own-server readiness helper refuses a foreign listener
+        run: node src/integration/ownserver.test.mjs
+        env:
+          OWNSERVER_TEST_PORT: '3470'
+
       # SR-50: Express routes case-insensitively but the CORS gate's
       # startsWith was case-sensitive, so /api/ADMIN/stats served admin PII
       # with Access-Control-Allow-Origin: *.

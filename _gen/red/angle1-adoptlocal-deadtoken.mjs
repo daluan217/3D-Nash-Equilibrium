@@ -39,11 +39,28 @@ const child = spawn('node', [join(WT, 'dist/server.cjs')], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let srvLog = ''; child.stdout.on('data', (d) => srvLog += d); child.stderr.on('data', (d) => srvLog += d);
+// Reap on ANY exit path. Killing only on the success path is what leaked a
+// server onto 4812 for 15 minutes in S71; the next probe then met a stale
+// holder and its own child walked to port+1.
+for (const sig of ['exit', 'SIGINT', 'SIGTERM', 'uncaughtException']) {
+  process.on(sig, () => { try { child.kill('SIGKILL'); } catch {} if (sig !== 'exit') process.exit(1); });
+}
 
 const BASE = `http://localhost:${PORT}`;
+// pid-bound, not `if (r.ok)`: in IS_ELECTRON mode the server WALKS to port+1
+// on EADDRINUSE (server.ts:5115), so a leaked or displaced server can answer
+// here while our child serves somewhere else — measured in S71.
 async function waitReady() {
-  for (let i = 0; i < 100; i++) { try { const r = await fetch(BASE + '/api/health'); if (r.ok) return; } catch {} await new Promise((r) => setTimeout(r, 200)); }
-  throw new Error('server never ready');
+  for (let i = 0; i < 150; i++) {
+    if (child.exitCode !== null) throw new Error(`server exited ${child.exitCode}: ${srvLog.slice(-400)}`);
+    try {
+      const r = await fetch(BASE + '/api/health');
+      if (r.ok && (await r.json())?.pid === child.pid) return;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`no server with pid ${child.pid} answered on ${PORT} — it may have walked to `
+    + `another port because something else holds ${PORT}. Log: ${srvLog.slice(-400)}`);
 }
 await waitReady();
 

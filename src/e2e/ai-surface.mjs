@@ -30,6 +30,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
 import { chromium } from 'playwright';
 import { dismissTourForSetup } from './tour.mjs';
 
@@ -67,20 +68,15 @@ async function killServer() {
   if (!server.kill('SIGKILL')) return;
   await exited;
 }
-async function waitReady(ms = 90000) {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    try { if ((await fetch(`${BASE}/api/health`)).ok) return true; } catch { /* not up */ }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
-if (!(await fetch(`${BASE}/api/health`).then((r) => r.ok).catch(() => false))) {
+// Reuse an already-listening server ONLY under REUSE_SERVER=1 (local dev); by
+// default and in CI this suite spawns and measures its own build (S73-006).
+if (!(reuseServerAllowed() && await fetch(`${BASE}/api/health`).then((r) => r.ok).catch(() => false))) {
   server = spawn(process.execPath, ['dist/server.cjs'], {
     env: { ...process.env, PORT, NODE_ENV: 'production', ELECTRON_USER_DATA_PATH: userData },
     stdio: 'ignore',
   });
-  if (!(await waitReady())) { console.error('server never became ready'); process.exit(1); }
+  try { await waitForOwnServer(server, BASE, { timeoutMs: 90000 }); }
+  catch (err) { console.error(`server never became ready: ${err.message}`); await killServer(); process.exit(1); }
 }
 
 const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });

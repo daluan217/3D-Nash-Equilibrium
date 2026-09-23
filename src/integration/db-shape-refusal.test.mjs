@@ -73,6 +73,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
@@ -123,18 +124,13 @@ async function waitReady(child, thePort) {
   let log = '';
   child.stdout.on('data', (d) => { log += d; });
   child.stderr.on('data', (d) => { log += d; });
-  for (let i = 0; i < 40; i++) {
-    if (child.exitCode !== null) {
-      throw new Error(`server exited before becoming ready on ${thePort} (code ${child.exitCode})\n${log}`);
-    }
-    try {
-      const r = await fetch(`http://127.0.0.1:${thePort}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return { log: () => log };
-    } catch { /* not up yet, or the health check itself timed out */ }
-    await new Promise((r) => setTimeout(r, 250));
+  try {
+    await waitForOwnServer(child, `http://127.0.0.1:${thePort}`, { timeoutMs: 10000 });
+  } catch (err) {
+    child.kill('SIGKILL');
+    throw new Error(`${err.message}\n${log}`);
   }
-  child.kill('SIGKILL');
-  throw new Error(`server never became ready on ${thePort}\n${log}`);
+  return { log: () => log };
 }
 
 /** Wait for a child expected to EXIT rather than become ready. */
