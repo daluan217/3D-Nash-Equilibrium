@@ -89,7 +89,8 @@ setInterval(() => { page.evaluate(() => ({
   header: (document.querySelector('header')?.textContent || '').replace(/\s+/g, ' ').slice(0, 100),
 })).then((u) => { uiState = JSON.stringify(u); if (process.env.CTL_SHOT) page.screenshot({ path: process.env.CTL_SHOT }).catch(() => {}); }).catch(() => {}); }, 1000).unref();
 await page.goto(BASE, { waitUntil: 'networkidle' });
-try { await page.locator('[aria-label="Exit tour"]').click({ timeout: 4000 }); } catch {}
+const { dismissTourForSetup } = await import(pathToFileURL(join(WT, 'src/e2e/tour.mjs')).href);
+await dismissTourForSetup(page, 'clear the first-run tour before signing in');
 
 const authDlg = page.locator('[role="dialog"][aria-label="Account"]');
 async function registerAndLogin(username, email, password) {
@@ -101,10 +102,16 @@ async function registerAndLogin(username, email, password) {
   await authDlg.locator('input[placeholder="john@example.com"]').fill(email);
   await authDlg.locator('input[placeholder="••••••••"]').first().fill(password);
   await authDlg.locator('input[placeholder="••••••••"]').nth(1).fill(password);
+  // State, not time (S94): wait for the register response, then for the dialog's
+  // own switch to Sign In; press "Log In" only if it did not switch.
+  const regP = page.waitForResponse((r) => r.url().includes('/api/auth/register'), { timeout: 30000 });
   await authDlg.getByRole('button', { name: /register account/i }).click();
-  await page.waitForTimeout(600);
-  await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 1500 }).catch(() => {});
-  await authDlg.locator('input[placeholder*="example.com or username"]').waitFor({ state: 'visible', timeout: 5000 });
+  await regP;
+  const loginField = authDlg.locator('input[placeholder*="example.com or username"]');
+  if (!(await loginField.waitFor({ state: 'visible', timeout: 15000 }).then(() => true, () => false))) {
+    await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 5000 }).catch(() => {});
+  }
+  await loginField.waitFor({ state: 'visible', timeout: 8000 });
   await authDlg.locator('input[placeholder*="example.com or username"]').fill(email);
   await authDlg.locator('input[placeholder="••••••••"]').first().fill(password);
   await authDlg.getByRole('button', { name: /^login$/i }).click();

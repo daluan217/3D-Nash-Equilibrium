@@ -28,6 +28,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deleteFate, deleteAccess } from '../desktop/delete-fate.mjs';
+import { dismissTourForSetup } from '../e2e/tour.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // 3128, not 3119: UNWRITABLE_SAVE_PORT is 3119 in an earlier step of the SAME
@@ -93,10 +94,14 @@ try {
   async function run({ killSession, user }) {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, userAgent: UA });
     const page = await ctx.newPage();
+    // ADOPT_DEAD_CPU_THROTTLE=<n>: replay a loaded runner (chromium CDP). Off unless set.
+    if (Number(process.env.ADOPT_DEAD_CPU_THROTTLE) > 1) await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.ADOPT_DEAD_CPU_THROTTLE) });
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(String(e.message)));
     await page.goto(BASE, { waitUntil: 'networkidle' });
-    await page.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }).catch(() => {});
+    // The tour's only exit is its card X; the old "Exit tour" selector matched
+    // nothing, so on a slow runner the tour opened over the Account dialog.
+    await dismissTourForSetup(page, 'clear the first-run tour before signing in');
 
     // 1. Save a game with no account: it lands on the local owner, which is
     //    what makes the offer appear at the next sign-in.
@@ -121,9 +126,18 @@ try {
     // State, not time: pbkdf2 registration under a loaded runner outlasted 800 ms + 8 s.
     const regP = page.waitForResponse((r) => r.url().includes('/api/auth/register'), { timeout: 30000 });
     await authDlg.getByRole('button', { name: /register account/i }).click();
-    await regP;
-    await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 2000 }).catch(() => {});
-    await authDlg.locator('input[placeholder*="example.com or username"]').waitFor({ state: 'visible', timeout: 8000 });
+    const regResp = await regP;
+    if (!regResp.ok()) throw new Error(`register answered ${regResp.status()}: ${(await regResp.text().catch(() => '')).slice(0, 160)}`);
+    // A local account is auto-verified: the dialog switches ITSELF to Sign In
+    // once React commits the register response. Wait for that state; press the
+    // footer's "Log In" only if the dialog is still on Create Account after it
+    // (measured at 6x CPU: the old 2 s click ran first and matched nothing).
+    const loginField = authDlg.locator('input[placeholder*="example.com or username"]');
+    if (!(await loginField.waitFor({ state: 'visible', timeout: 15000 }).then(() => true, () => false))) {
+      await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 5000 }).catch(() => {});
+    }
+    await loginField.waitFor({ state: 'visible', timeout: 8000 })
+      .catch(async (e) => { throw new Error(`login form never showed; Account dialog: ${(await authDlg.textContent().catch(() => '(gone)'))?.replace(/\s+/g, ' ').slice(0, 240)} | ${e.message.split('\n')[0]}`); });
     await authDlg.locator('input[placeholder*="example.com or username"]').fill(user.e);
     await authDlg.locator('input[placeholder="••••••••"]').first().fill(user.p);
     const loginP = page.waitForResponse((r) => r.url().includes('/api/auth/login') && r.request().method() === 'POST');
@@ -186,11 +200,15 @@ try {
   async function runDelete({ user, inFlight = false }) {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, userAgent: UA });
     const page = await ctx.newPage();
+    // ADOPT_DEAD_CPU_THROTTLE=<n>: replay a loaded runner (chromium CDP). Off unless set.
+    if (Number(process.env.ADOPT_DEAD_CPU_THROTTLE) > 1) await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.ADOPT_DEAD_CPU_THROTTLE) });
     const pageErrors = [];
     page.on('pageerror', (e) => pageErrors.push(String(e.message)));
     page.on('dialog', (d) => d.dismiss().catch(() => {}));
     await page.goto(BASE, { waitUntil: 'networkidle' });
-    await page.locator('[aria-label="Exit tour"]').click({ timeout: 5000 }).catch(() => {});
+    // The tour's only exit is its card X; the old "Exit tour" selector matched
+    // nothing, so on a slow runner the tour opened over the Account dialog.
+    await dismissTourForSetup(page, 'clear the first-run tour before signing in');
 
     const authDlg = page.locator('[role="dialog"][aria-label="Account"]');
     await page.locator('header').getByRole('button', { name: /sign in.*sign up/i }).click();
@@ -204,9 +222,18 @@ try {
     // State, not time: pbkdf2 registration under a loaded runner outlasted 800 ms + 8 s.
     const regP = page.waitForResponse((r) => r.url().includes('/api/auth/register'), { timeout: 30000 });
     await authDlg.getByRole('button', { name: /register account/i }).click();
-    await regP;
-    await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 2000 }).catch(() => {});
-    await authDlg.locator('input[placeholder*="example.com or username"]').waitFor({ state: 'visible', timeout: 8000 });
+    const regResp = await regP;
+    if (!regResp.ok()) throw new Error(`register answered ${regResp.status()}: ${(await regResp.text().catch(() => '')).slice(0, 160)}`);
+    // A local account is auto-verified: the dialog switches ITSELF to Sign In
+    // once React commits the register response. Wait for that state; press the
+    // footer's "Log In" only if the dialog is still on Create Account after it
+    // (measured at 6x CPU: the old 2 s click ran first and matched nothing).
+    const loginField = authDlg.locator('input[placeholder*="example.com or username"]');
+    if (!(await loginField.waitFor({ state: 'visible', timeout: 15000 }).then(() => true, () => false))) {
+      await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 5000 }).catch(() => {});
+    }
+    await loginField.waitFor({ state: 'visible', timeout: 8000 })
+      .catch(async (e) => { throw new Error(`login form never showed; Account dialog: ${(await authDlg.textContent().catch(() => '(gone)'))?.replace(/\s+/g, ' ').slice(0, 240)} | ${e.message.split('\n')[0]}`); });
     await authDlg.locator('input[placeholder*="example.com or username"]').fill(user.e);
     await authDlg.locator('input[placeholder="••••••••"]').first().fill(user.p);
     await authDlg.getByRole('button', { name: /^login$/i }).click();
@@ -389,7 +416,7 @@ try {
   rec('deleteFate: a DELETE that arrived and was never answered is (c)', c.startsWith('(c) '), c.slice(0, 120));
   rec('deleteFate: a DELETE the server answered but the page lost is (b), not (c)', ok.startsWith('(b) '), ok.slice(0, 120));
 } catch (e) {
-  rec('test script completed without an exception', false, String(e).slice(0, 400));
+  rec('test script completed without an exception', false, String(e.stack || e).split('\n').filter((l) => !l.includes('node_modules')).slice(0, 4).join(' | ').slice(0, 600));
 } finally {
   if (browser) await browser.close().catch(() => {});
   child.kill();

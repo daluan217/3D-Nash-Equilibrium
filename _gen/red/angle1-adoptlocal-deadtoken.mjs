@@ -26,6 +26,7 @@ import { chromium } from 'playwright';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const WT = process.argv[2];
 const PORT = process.argv[3] || '4801';
@@ -95,7 +96,8 @@ const bundleMatch = html.match(/assets\/index-[^."]+\.js/);
 console.log(`[${LABEL}] served bundle:`, bundleMatch?.[0]);
 
 await page.goto(BASE, { waitUntil: 'networkidle' });
-try { await page.locator('[aria-label="Exit tour"]').click({ timeout: 4000 }); } catch {}
+const { dismissTourForSetup } = await import(pathToFileURL(join(WT, 'src/e2e/tour.mjs')).href);
+await dismissTourForSetup(page, 'clear the first-run tour before signing in');
 
 const authDlg = page.locator('[role="dialog"][aria-label="Account"]');
 async function registerAndLogin(username, email, password, { dismissOffer = true } = {}) {
@@ -107,10 +109,16 @@ async function registerAndLogin(username, email, password, { dismissOffer = true
   await authDlg.locator('input[placeholder="john@example.com"]').fill(email);
   await authDlg.locator('input[placeholder="••••••••"]').first().fill(password);
   await authDlg.locator('input[placeholder="••••••••"]').nth(1).fill(password);
+  // State, not time (S94): wait for the register response, then for the dialog's
+  // own switch to Sign In; press "Log In" only if it did not switch.
+  const regP = page.waitForResponse((r) => r.url().includes('/api/auth/register'), { timeout: 30000 });
   await authDlg.getByRole('button', { name: /register account/i }).click();
-  await page.waitForTimeout(600);
-  await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 1500 }).catch(() => {});
-  await authDlg.locator('input[placeholder*="example.com or username"]').waitFor({ state: 'visible', timeout: 5000 });
+  await regP;
+  const loginField = authDlg.locator('input[placeholder*="example.com or username"]');
+  if (!(await loginField.waitFor({ state: 'visible', timeout: 15000 }).then(() => true, () => false))) {
+    await authDlg.getByRole('button', { name: /^log in$/i }).click({ timeout: 5000 }).catch(() => {});
+  }
+  await loginField.waitFor({ state: 'visible', timeout: 8000 });
   await authDlg.locator('input[placeholder*="example.com or username"]').fill(email);
   await authDlg.locator('input[placeholder="••••••••"]').first().fill(password);
   const respP = page.waitForResponse((r) => r.url().includes('/api/auth/login') && r.request().method() === 'POST');
