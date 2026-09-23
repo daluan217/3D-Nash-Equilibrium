@@ -58,7 +58,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 24;
+const EXPECTED_CHECKS = 25;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -449,6 +449,13 @@ try {
   // otherwise Y's could race ahead of X's arriving at all, which would
   // test nothing about the conflict path this section exists to exercise.
   await new Promise((r) => setTimeout(r, 250));
+  // A second X save lands WHILE X's first upload is held. The 412 merge used
+  // the snapshot that upload started with and wrote it over the current
+  // state, so this game vanished from memory and from GCS.
+  const resX2 = await fetch(`http://127.0.0.1:${portX}/api/games`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenX}` },
+    body: JSON.stringify({ name: 'Game-X2', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }),
+  });
   fakeGcs.setUploadDelayMs(0);
   const resY = await fetch(`http://127.0.0.1:${portY}/api/games`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenY}` },
@@ -465,8 +472,13 @@ try {
     finalMultiNames = finalMulti.games.map((g) => g.name).sort();
   } catch { /* unfixed code may use the resumable protocol this fake doesn't implement */ }
   record('THE DEFECT: BOTH instances\' games survive after the conflict (union merge), not just the last writer',
-    JSON.stringify(finalMultiNames) === JSON.stringify(['Game-X', 'Game-Y']),
-    JSON.stringify(finalMultiNames));
+    ['Game-X', 'Game-Y'].every((n) => finalMultiNames?.includes(n)), JSON.stringify(finalMultiNames));
+  const listX = await fetch(`http://127.0.0.1:${portX}/api/games`, { headers: { authorization: `Bearer ${tokenX}` } })
+    .then((r) => r.json()).catch(() => null);
+  record('a save committed DURING the conflicted upload survives the 412 merge, on GCS and in memory',
+    resX2.status === 200 && JSON.stringify(finalMultiNames) === JSON.stringify(['Game-X', 'Game-X2', 'Game-Y'])
+      && Array.isArray(listX) && listX.some((g) => g.name === 'Game-X2'),
+    `X2=${resX2.status} stored=${JSON.stringify(finalMultiNames)} listX=${JSON.stringify(Array.isArray(listX) ? listX.map((g) => g.name) : listX)}`);
 
   await stop(childX);
   await stop(childY);

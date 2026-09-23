@@ -2159,7 +2159,11 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
         );
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        db = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
+        // Merge the CURRENT state, not `db`: `db` is the snapshot this upload
+        // started with, and routes commit new snapshots meanwhile. Merging `db`
+        // wrote it back over them (a game saved or a rollback committed during
+        // the upload was lost). Same at the 412 merge below.
+        db = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
       } else {
         gcsGeneration = '0'; // GCS's own "must not exist yet" convention, matching initDB
       }
@@ -2206,7 +2210,7 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
         );
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        const merged = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
+        const merged = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // CURRENT state, see the re-sync above
         await uploadDbToGcs(merged, attempt + 1);
       } catch (mergeErr) {
         console.error('GCS write conflict: re-download/merge failed:', mergeErr);
