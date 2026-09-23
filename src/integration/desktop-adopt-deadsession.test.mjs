@@ -27,6 +27,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deleteFate, deleteAccess } from '../desktop/delete-fate.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 // 3128, not 3119: UNWRITABLE_SAVE_PORT is 3119 in an earlier step of the SAME
@@ -50,7 +51,9 @@ const rec = (name, pass, detail = '') => {
 
 const userData = mkdtempSync(join(tmpdir(), 'nash-adopt-dead-'));
 const emptyCwd = mkdtempSync(join(tmpdir(), 'nash-adopt-dead-cwd-'));
-const child = spawn(process.execPath, [join(ROOT, 'dist', 'server.cjs')], {
+// access-log.cjs only prints each write's arrival/finish; deleteFate reads it.
+const child = spawn(process.execPath, ['--require', join(ROOT, 'src', 'desktop', 'access-log.cjs'),
+  join(ROOT, 'dist', 'server.cjs')], {
   cwd: emptyCwd,
   env: { PATH: process.env.PATH, HOME: userData, NODE_ENV: 'production', PORT,
     IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: userData },
@@ -176,7 +179,9 @@ try {
   // Save a game, kill the session out of band, then press Delete. Separate
   // from run() above: that one drives the adopt OFFER, which appears only at
   // sign-in, while this one needs a saved row and a live session first.
-  async function runDelete({ user }) {
+  // inFlight: the DELETE is held in the page until the session is killed, so
+  // the token is live at the click and dead on arrival (S84's condition).
+  async function runDelete({ user, inFlight = false }) {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, userAgent: UA });
     const page = await ctx.newPage();
     const pageErrors = [];
@@ -212,11 +217,25 @@ try {
     const sdlg = page.locator('[role="dialog"][aria-label="Save custom game"]');
     await sdlg.waitFor({ state: 'visible' });
     await sdlg.locator('input[type="text"], input:not([type])').first().fill('DeadDeleteGame');
+    const saveP = page.waitForResponse((r) => r.url().includes('/api/games') && r.request().method() === 'POST');
     await sdlg.getByRole('button', { name: /save game profile/i }).click();
+    const gameId = (await (await saveP).json().catch(() => null))?.game?.id;
     await sdlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
     const row = page.locator('[data-saved-game]:not([data-drawer-game])').filter({ hasText: 'DeadDeleteGame' });
     const savedVisible = await row.isVisible({ timeout: 5000 }).catch(() => false);
 
+    let releaseHold = () => {};
+    const held = new Promise((r) => { releaseHold = r; });
+    if (inFlight) {
+      await page.route('**/api/games/**', async (route) => {
+        if (route.request().method() === 'DELETE') await held;
+        await route.continue().catch(() => {});
+      });
+    }
+    const reqP = page.waitForRequest((r) => r.url().includes(`/api/games/${gameId}`)
+      && r.method() === 'DELETE', { timeout: 10000 }).catch(() => null);
+    if (inFlight) await row.locator('button[title="Delete this saved game"]').click();
+    const req = inFlight ? await reqP : null;
     const killed = await page.evaluate(async ({ email, newPassword }) => {
       const fr = await fetch('/api/auth/forgot-password', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
@@ -227,10 +246,12 @@ try {
       return { forgot: fr.status, reset: rr.status };
     }, { email: user.e, newPassword: `${user.p}X9` });
 
-    const delP = page.waitForResponse((r) => r.url().includes('/api/games/')
-      && r.request().method() === 'DELETE');
-    await row.locator('button[title="Delete this saved game"]').click();
-    const status = (await delP).status();
+    // S84: wait for the REQUEST, then let deleteFate name why no response came.
+    if (!inFlight) await row.locator('button[title="Delete this saved game"]').click();
+    releaseHold();
+    const status = (await deleteFate(inFlight ? req : await reqP, { page, gameId,
+      srvLog: () => srvLog, dbFile: join(userData, 'db.json') })).status();
+    const access = deleteAccess(srvLog, gameId);
 
     // Poll, do not sample: token and header settle in different ticks.
     const trace = [];
@@ -251,7 +272,7 @@ try {
       await new Promise((r) => setTimeout(r, 100));
     }
     await ctx.close();
-    return { savedVisible, killed, status, tokenAfter, headerSignedIn, settleMs, trace, pageErrors };
+    return { savedVisible, killed, status, tokenAfter, headerSignedIn, settleMs, trace, pageErrors, access };
   }
 
   console.log('── the session is killed between sign-in and the click ──');
@@ -331,6 +352,34 @@ try {
     `still signed-in after ${del.settleMs}ms of polling — trace ${JSON.stringify(del.trace)}`);
   rec('the renderer threw nothing', del.pageErrors.length === 0,
     del.pageErrors.join(' | ').slice(0, 200));
+  // deleteFate tells (b) from (c) by these lines; if their format drifts, (c) reads as (b).
+  rec('the access log saw the DELETE arrive and be answered (deleteFate can classify)',
+    del.access.arrived && del.access.answered, del.access.lines.join(' | ') || '(no access lines)');
+
+  // ── THE SAME DELETE, killed while it is in flight (S84's control probe) ──
+  console.log('── the user presses Delete, then the session dies before it arrives ──');
+  const fly = await runDelete({ inFlight: true, user: { u: 'delfly', e: 'delfly@desk.local', p: 'TestPass123' } });
+  rec('in flight: precondition — saved, and the reset succeeded while the DELETE was held',
+    fly.savedVisible === true && fly.killed?.forgot === 200 && fly.killed?.reset === 200, JSON.stringify(fly.killed));
+  rec('in flight: the server refuses the delete with 401', fly.status === 401, `status ${fly.status}`);
+  rec('in flight: the dead token is cleared and the header stops offering "Log out"',
+    fly.tokenAfter === null && fly.headerSignedIn === false, `token ${String(fly.tokenAfter).slice(0, 20)}, trace ${JSON.stringify(fly.trace)}`);
+  rec('in flight: the renderer threw nothing', fly.pageErrors.length === 0, fly.pageErrors.join(' | ').slice(0, 200));
+
+  // ── deleteFate names each cause (fakes: a real (a)/(b)/(c) cannot be staged on demand) ──
+  const fakePage = { evaluate: async () => '{"rows":[]}' };
+  const fate = (req, log) => deleteFate(req, { page: fakePage, gameId: 'g1', srvLog: () => log,
+    dbFile: join(userData, 'no-such.json'), ms: 50 }).then(() => 'resolved', (e) => e.message);
+  const noResp = { response: async () => null, failure: () => ({ errorText: 'net::ERR_ABORTED' }) };
+  const a = await fate(null, '');
+  const b = await fate(noResp, '');
+  const c = await fate(noResp, 'ACCESS in DELETE /api/games/g1\n');
+  const ok = await fate(noResp, 'ACCESS in DELETE /api/games/g1\nACCESS out DELETE /api/games/g1 200 3ms\n');
+  rec('deleteFate: no request is (a)', a.startsWith('(a) '), a.slice(0, 120));
+  rec('deleteFate: a failed request the server never saw is (b), naming the errorText',
+    b.startsWith('(b) ') && b.includes('net::ERR_ABORTED') && b.includes('never arrived'), b.slice(0, 160));
+  rec('deleteFate: a DELETE that arrived and was never answered is (c)', c.startsWith('(c) '), c.slice(0, 120));
+  rec('deleteFate: a DELETE the server answered but the page lost is (b), not (c)', ok.startsWith('(b) '), ok.slice(0, 120));
 } catch (e) {
   rec('test script completed without an exception', false, String(e).slice(0, 400));
 } finally {
@@ -349,7 +398,7 @@ try {
 // the defect this file exists to close, in the file that closes it: deleting
 // one check left `total` at 18, `18 < 18` false, rc=0, banner unchanged. The
 // floor is now EXACT and the banner prints what was counted.
-const EXPECTED_CHECKS = 25;
+const EXPECTED_CHECKS = 34;
 if (total !== EXPECTED_CHECKS) {
   console.error(`FAILED: ${total} checks ran, expected exactly ${EXPECTED_CHECKS} — a block was `
     + 'skipped (fewer) or double-counted (more). Change EXPECTED_CHECKS deliberately.');
