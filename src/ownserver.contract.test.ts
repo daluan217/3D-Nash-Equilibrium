@@ -26,6 +26,9 @@ const RETRIES = /setTimeout|\bsleep\(|waitForTimeout\(/;
 // The recognised bound forms: the shared helper; a direct or destructured pid
 // comparison against the spawned child; an assert on the same.
 const BOUND = /\bpid\s*===\s*[\w.]+\.pid\b|assert\.(?:strict)?[Ee]qual\(\s*[\w.]+\.pid\s*,\s*[\w.]+\.pid/;
+// Or the child's OWN listen line in its log AND the child still alive, both in
+// the gate (api-dev-fallback's isOwnReady): a foreign listener prints neither.
+const MARKER_BOUND = (t: string) => /Express server running on/.test(t) && /\.exitCode\s*===\s*null/.test(t);
 // Any spelling of the path: `join(ROOT, 'dist', 'server.cjs')` evaded a
 // `dist/server.cjs` match and hid desktop-adopt-deadsession's loop.
 const SPAWNS = /['"`/]server\.(?:cjs|ts)['"`]|\bBUNDLE\b/;
@@ -39,13 +42,50 @@ export interface Loop { line: number; bound: boolean; }
 export const readinessLoops = (source: string): Loop[] => {
   const sf = ts.createSourceFile('x.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const out: Loop[] = [];
+  // The printer drops EVERY comment, trailing ones included; a line regex
+  // missed `{ // pid === child.pid` and let a comment bind the loop.
+  const print = (n: ts.Node) => printer.printNode(ts.EmitHint.Unspecified, n, sf);
+  // File-level helpers, so a loop that probes through `fetchHealth(BASE)` and
+  // gates through `isOwnReady(...)` is seen (review #12 F6: it was invisible).
+  const helpers = new Map<string, ts.Node>();
+  for (const st of sf.statements) {
+    if (ts.isFunctionDeclaration(st) && st.name) helpers.set(st.name.text, st);
+    if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.initializer
+          && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) helpers.set(d.name.text, d.initializer);
+      }
+    }
+  }
+  const calls = (n: ts.Node): string[] => {
+    const names: string[] = [];
+    const walk = (x: ts.Node) => { if (ts.isCallExpression(x) && ts.isIdentifier(x.expression)) names.push(x.expression.text); ts.forEachChild(x, walk); };
+    walk(n);
+    return names;
+  };
+  // The loop plus the helpers it calls, two levels deep (isOwnReady -> hasOwnListenMarker).
+  const resolved = (n: ts.Node): string => {
+    let text = print(n);
+    const seen = new Set<string>();
+    let frontier = [n];
+    for (let depth = 0; depth < 2; depth++) {
+      const next: ts.Node[] = [];
+      for (const f of frontier) {
+        for (const name of calls(f)) {
+          const h = helpers.get(name);
+          if (h && !seen.has(name)) { seen.add(name); text += `\n${print(h)}`; next.push(h); }
+        }
+      }
+      frontier = next;
+    }
+    return text;
+  };
   const visit = (n: ts.Node) => {
     if (ts.isIterationStatement(n, false)) {
-      // The printer drops EVERY comment, trailing ones included; a line regex
-      // missed `{ // pid === child.pid` and let a comment bind the loop.
-      const t = printer.printNode(ts.EmitHint.Unspecified, n, sf);
-      if (PROBE.test(t) && RETRIES.test(t)) {
-        out.push({ line: sf.getLineAndCharacterOfPosition(n.getStart()).line + 1, bound: BOUND.test(t) });
+      const own = print(n);
+      const t = resolved(n);
+      if (PROBE.test(t) && RETRIES.test(own)) {
+        out.push({ line: sf.getLineAndCharacterOfPosition(n.getStart()).line + 1, bound: BOUND.test(t) || MARKER_BOUND(t) });
       }
     }
     ts.forEachChild(n, visit);
@@ -80,7 +120,7 @@ check('a suite reuses an already-listening server only under REUSE_SERVER=1',
 
 check('SELF-TEST: a path built with join() is still recognised as spawning the server',
   SPAWNS.test("spawn(process.execPath, [join(ROOT, 'dist', 'server.cjs')])"));
-check('SELF-TEST: the census is scanning real suites', suites.length >= 30 && loops.length >= 21,
+check('SELF-TEST: the census is scanning real suites', suites.length >= 30 && loops.length >= 23,
   `${suites.length} spawning suites, ${loops.length} readiness loops`);
 check('SELF-TEST: the helper is actually in use', helperCalls.length >= 13, `${helperCalls.length} files`);
 
@@ -112,6 +152,24 @@ check('SELF-TEST: a reuse probe without REUSE_SERVER is reported',
   unguardedReuse('// unless one is already listening\nif (!(await fetch(`${BASE}/`).then((r) => r.ok))) { spawn(); }'));
 check('SELF-TEST: the same reuse behind reuseServerAllowed() is accepted',
   !unguardedReuse('// reuse only under REUSE_SERVER=1\nif (!(reuseServerAllowed() && await fetch(`${BASE}/`).then((r) => r.ok))) { spawn(); }'));
+
+check('SELF-TEST: a loop that probes only through a helper is found',
+  loop('const probe = (b) => fetch(`${b}/api/health`);\nfor (;;) { if ((await probe(B)).ok) break; await sleep(9); }').length === 1);
+check('SELF-TEST: the listen-marker + live-child gate binds a loop',
+  loop("const own = (log, c) => log.includes('Express server running on') && c.exitCode === null;\n"
+    + 'for (;;) { const ok = (await fetch(`${B}/api/health`)).ok; if (ok && own(log, child)) break; await sleep(9); }')
+    .every((l) => l.bound));
+// The real indirect loop (api-dev-fallback, read-only here), and its mutant in
+// memory: gate on `healthOk` alone and any listener on the port counts.
+const devFallback = readFileSync('src/integration/api-dev-fallback.test.mjs', 'utf8');
+const gate = 'if (isOwnReady({ log: serverLog, port: PORT, childProcess: child, healthOk })) {';
+const realLoops = readinessLoops(devFallback);
+check('SELF-TEST: api-dev-fallback\'s indirect readiness loop is seen and bound',
+  realLoops.length >= 1 && realLoops.every((l) => l.bound), JSON.stringify(realLoops));
+const mutated = devFallback.replace(gate, 'if (healthOk) {');
+check('SELF-TEST: api-dev-fallback with the gate reduced to `healthOk` fails as unbound',
+  mutated !== devFallback && readinessLoops(mutated).some((l) => !l.bound),
+  mutated === devFallback ? 'the gate line moved: re-anchor this mutant' : JSON.stringify(readinessLoops(mutated)));
 
 if (failures > 0) { console.error(`✗ own-server readiness: ${failures} failed`); process.exit(1); }
 console.log(`✓ own-server readiness: ${loops.length} readiness loops in ${suites.length} server-spawning suites, all pid-bound; no unguarded reuse`);
