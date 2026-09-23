@@ -21,7 +21,7 @@
 // response, no client-side account switch at all), invalidate A's session
 // out-of-band via forgot-password/reset-password (same mechanism as
 // round17/001 and getAuthUser's tokenVersion check), then release.
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,11 +39,27 @@ const child = spawn('node', [join(WT, 'dist/server.cjs')], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let srvLog = ''; child.stdout.on('data', (d) => srvLog += d); child.stderr.on('data', (d) => srvLog += d);
+let lastHealth = '(none yet)';
 // Reap on ANY exit path. Killing only on the success path is what leaked a
 // server onto 4812 for 15 minutes in S71; the next probe then met a stale
 // holder and its own child walked to port+1.
-for (const sig of ['exit', 'SIGINT', 'SIGTERM', 'uncaughtException']) {
-  process.on(sig, () => { try { child.kill('SIGKILL'); } catch {} if (sig !== 'exit') process.exit(1); });
+// It must also REPORT: a bare process.exit(1) on uncaughtException swallowed
+// the error, and S74's control-delete failure left no trace in its log.
+for (const sig of ['exit', 'SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledRejection']) {
+  process.on(sig, (err) => {
+    try { child.kill('SIGKILL'); } catch {}
+    if (sig === 'exit') return;
+    console.error(`PROBE ABORTED (${sig}):`, err?.stack ?? err);
+    // S74-008: make a recurrence diagnosable in ONE run — who held the port,
+    // and the last health body this probe saw from it.
+    try {
+      const holders = execSync(`lsof -nP -iTCP:${PORT} -sTCP:LISTEN -t 2>/dev/null || true`).toString().trim().split('\n').filter(Boolean);
+      for (const h of holders) console.error(`  port ${PORT} held by pid ${h}: ${execSync(`ps -o command= -p ${h} 2>/dev/null || true`).toString().trim()}`);
+      if (!holders.length) console.error(`  port ${PORT}: no listener at abort`);
+    } catch (e) { console.error('  port holder lookup failed:', e.message); }
+    console.error(`  our child pid ${child.pid}, exitCode ${child.exitCode}; last /api/health seen: ${lastHealth}`);
+    process.exit(1);
+  });
 }
 
 const BASE = `http://localhost:${PORT}`;
@@ -55,7 +71,9 @@ async function waitReady() {
     if (child.exitCode !== null) throw new Error(`server exited ${child.exitCode}: ${srvLog.slice(-400)}`);
     try {
       const r = await fetch(BASE + '/api/health');
-      if (r.ok && (await r.json())?.pid === child.pid) return;
+      const body = r.ok ? await r.json() : null;
+      lastHealth = JSON.stringify(body);
+      if (body?.pid === child.pid) return;
     } catch {}
     await new Promise((r) => setTimeout(r, 200));
   }
