@@ -807,12 +807,32 @@ try {
     return { status: r.status, json };
   };
   const onDisk = () => { try { return JSON.parse(readFileSync(path.join(userData6, 'db.json'), 'utf8')); } catch { return null; } };
+  // verify: desktop registration auto-verifies, so the pending user is seeded
+  // (legacy base64 password hash, which login still accepts).
+  writeFileSync(path.join(userData6, 'db.json'), JSON.stringify({ games: [], users: [{ id: 'u_pending6', username: 'pending6',
+    email: 'pending6@desk.local', passwordHash: Buffer.from('TestPass123').toString('base64'), isVerified: false,
+    verificationCode: '246810', verificationCodeExpires: Date.now() + 10 * 60 * 1000 }] }));
   const server6 = spawn('node', [BUNDLE], { cwd: userData6, stdio: ['ignore', 'pipe', 'pipe'],
     env: { PATH: process.env.PATH, HOME: userData6, NODE_ENV: 'production', PORT: PORT6, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: userData6 } });
   try {
     await waitForOwnServer(server6, BASE6, { timeoutMs: 20000 });
     const readOnly = async (fn) => { chmodSync(userData6, 0o555); try { return await fn(); } finally { chmodSync(userData6, 0o755); } };
     const refused = (r) => r.status >= 500 && r.json?.success !== true && /nothing was saved/i.test(r.json?.error || '');
+
+    // verify: a verification the server could not store must not unlock login
+    const pending = { email: 'pending6@desk.local', password: 'TestPass123' };
+    const ver = await readOnly(() => call6('POST', '/api/auth/verify', { email: pending.email, code: '246810' }));
+    const verLogin = await call6('POST', '/api/auth/login', pending);
+    record('account: verify on a read-only folder answers 500, and login still asks for verification (memory and disk agree)',
+      refused(ver) && verLogin.status === 403 && verLogin.json?.needVerification === true
+        && (onDisk()?.users ?? []).some((u) => u.email === pending.email && u.isVerified === false),
+      `verify=${ver.status} ${JSON.stringify(ver.json)} login=${verLogin.status}`);
+    const verOk = await call6('POST', '/api/auth/verify', { email: pending.email, code: '246810' });
+    const verOkLogin = await call6('POST', '/api/auth/login', pending);
+    record('account CONTROL: the same code verifies once writable, lands on disk, and login then works',
+      verOk.status === 200 && verOkLogin.status === 200
+        && (onDisk()?.users ?? []).some((u) => u.email === pending.email && u.isVerified === true),
+      `verify=${verOk.status} login=${verOkLogin.status}`);
 
     // register (new desktop user)
     const reg = await readOnly(() => call6('POST', '/api/auth/register', { username: 'acct6', email: 'acct6@desk.local', password: 'TestPass123' }));
@@ -860,7 +880,7 @@ try {
 // said "37/37 checks passed". The red probe that had aborted for three sweeps
 // was the same shape. So the count is DECLARED: fewer means a block did not
 // run, which is a failure even when every check that did run passed.
-const EXPECTED_CHECKS = 62;
+const EXPECTED_CHECKS = 64;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — `
     + 'a block was skipped. Raise EXPECTED_CHECKS deliberately when adding checks.');

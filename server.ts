@@ -4416,8 +4416,12 @@ async function startServer() {
     if (emailErrorMsg) {
       // Discard the unverified registration if SMTP is failing completely,
       // so we do not block subsequent attempts when SMTP config is updated.
-      db.users = db.users.filter(u => u.email.trim().toLowerCase() !== emailTrimmed);
-      saveDB(db);
+      // Review #15: re-read AFTER the await. `db` predates the SMTP send and other
+      // routes commit NEW snapshots, so writing it back undid their changes (e.g. a
+      // recovery code issued meanwhile). A retry that re-sent a code in the
+      // meantime owns the account now, so remove it only if the code is still ours.
+      const now = loadDB();
+      saveDB({ users: now.users.filter((u) => !(u.id === newUser.id && u.verificationCode === verificationCode)), games: now.games });
       return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
     }
 
