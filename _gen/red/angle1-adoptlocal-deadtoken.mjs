@@ -125,7 +125,7 @@ async function registerAndLogin(username, email, password, { dismissOffer = true
   await authDlg.getByRole('button', { name: /^login$/i }).click();
   const loginResp = await respP;
   const loginBody = await loginResp.json().catch(() => null);
-  await authDlg.waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+  await authDlg.waitFor({ state: 'hidden', timeout: 30000 }).catch(() => {}); // S90: a bound, not a sleep
   await page.waitForTimeout(300);
   if (dismissOffer) {
     const offer = page.locator('[role="dialog"][aria-label="Games saved on this device"]');

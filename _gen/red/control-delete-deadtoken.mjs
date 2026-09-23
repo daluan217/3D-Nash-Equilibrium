@@ -114,8 +114,14 @@ async function registerAndLogin(username, email, password) {
   await loginField.waitFor({ state: 'visible', timeout: 8000 });
   await authDlg.locator('input[placeholder*="example.com or username"]').fill(email);
   await authDlg.locator('input[placeholder="••••••••"]').first().fill(password);
+  // S90: the dialog closed ~8 s after a 200 login under load. Wait for the
+  // response, then for the close, and name the cause if it never comes.
+  const loginP = page.waitForResponse((r) => r.url().includes('/api/auth/login'), { timeout: 30000 });
   await authDlg.getByRole('button', { name: /^login$/i }).click();
-  await authDlg.waitFor({ state: 'hidden', timeout: 8000 });
+  const loginResp = await loginP;
+  await authDlg.waitFor({ state: 'hidden', timeout: 30000 }).catch(async () => {
+    throw new Error(`login answered ${loginResp.status()} but the Account dialog never closed: ${(await authDlg.textContent().catch(() => '(gone)'))?.replace(/\s+/g, ' ').slice(0, 200)}`);
+  });
   await page.waitForTimeout(400);
   const offer = page.locator('[role="dialog"][aria-label="Games saved on this device"]');
   if (await offer.isVisible({ timeout: 800 }).catch(() => false)) {

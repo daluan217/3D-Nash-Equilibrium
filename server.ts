@@ -2289,6 +2289,12 @@ const CODE_FIELDS = {
 // space (the per-IP rate limit alone is bypassable via IP rotation). Mutates
 // `user`; the caller must persist with saveDB(). `locked` means this attempt
 // tripped the limit and the code is now cleared.
+// Review #14 family note: verify/reset/delete-confirm persist the attempt count with a
+// bare saveDB after a WRONG code and answer 400 (honest). If that save fails, the count
+// is ahead in memory only, so a relaunch forgets it. That needs a folder that already
+// refuses every save; accepted, not a defect. ensureLocalOwner (idempotent), the login
+// rehash (the old hash still verifies) and the hosted-only register/email paths
+// (GCS saveDB returns true) are the other bare calls, each left deliberately.
 function verifyOneTimeCode(user: User, kind: keyof typeof CODE_FIELDS, submitted: string): { ok: boolean; locked: boolean } {
   const f = CODE_FIELDS[kind];
   const u = user as unknown as Record<string, unknown>;

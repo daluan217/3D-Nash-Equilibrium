@@ -143,7 +143,7 @@ try {
     const loginP = page.waitForResponse((r) => r.url().includes('/api/auth/login') && r.request().method() === 'POST');
     await authDlg.getByRole('button', { name: /^login$/i }).click();
     const loginBody = await (await loginP).json().catch(() => null);
-    await authDlg.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
+    await authDlg.waitFor({ state: 'hidden', timeout: 30000 }).catch(() => {}); // S90: a bound, not a sleep
 
     // 3. The offer. `text=/saved on this device/i` matches BOTH the heading and
     //    the body copy — a strict-mode violation that reads as "not visible"
@@ -237,7 +237,7 @@ try {
     await authDlg.locator('input[placeholder*="example.com or username"]').fill(user.e);
     await authDlg.locator('input[placeholder="••••••••"]').first().fill(user.p);
     await authDlg.getByRole('button', { name: /^login$/i }).click();
-    await authDlg.waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
+    await authDlg.waitFor({ state: 'hidden', timeout: 30000 }).catch(() => {}); // S90: a bound, not a sleep
     const offer = page.locator('[role="dialog"][aria-label="Games saved on this device"]');
     if (await offer.isVisible({ timeout: 1500 }).catch(() => false)) {
       await page.getByRole('button', { name: /leave .* on this device/i })
