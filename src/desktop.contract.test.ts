@@ -209,7 +209,23 @@ function testAppOriginHasOneWriterAfterTheLoad() {
     + 'put the window on an origin the allowlist does not know about.');
 }
 
+// The desktop data-directory lock is a darwin flock (server.ts acquireDesktopFlock);
+// other platforms fall back to a pid file that a reused pid defeats (S75-009,
+// review #12). Shipping any other desktop target needs its own kernel lock first.
+export const nonMacTargets = (build: Record<string, unknown>): string[] =>
+  ['win', 'linux', 'nsis', 'appx', 'snap', 'deb', 'rpm', 'AppImage'].filter((k) => k in build);
+function testDesktopShipsOnlyToMac() {
+  const build = JSON.parse(readFileSync('package.json', 'utf8')).build ?? {};
+  const extra = nonMacTargets(build);
+  assert(extra.length === 0, `package.json build targets ${extra.join(', ')}: the desktop lock is only `
+    + 'sound on darwin (flock on the data directory). Give that platform a kernel lock in '
+    + 'acquireDesktopLock before shipping it.');
+  assert(nonMacTargets({ mac: {}, win: {} }).join() === 'win' && nonMacTargets({ mac: {}, linux: {} }).join() === 'linux',
+    'SELF-TEST: the non-mac target detector no longer sees win/linux');
+}
+
 function runDesktopContractTests() {
+  testDesktopShipsOnlyToMac();
   testEveryRootCjsParses();
   testEveryRootCjsLoads();
   testNoShellInterpolationInRootCjs();

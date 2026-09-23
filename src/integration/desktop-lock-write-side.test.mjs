@@ -177,8 +177,12 @@ await runPart('PART 1', async () => {
     const { code, log } = await waitExit(p2);
     record('THE FIX: a second process refuses to start against an unreadable-but-existing lock (exits non-zero)',
       code !== 0, `exit code ${code}`);
+    // On darwin the kernel refuses first (P1 holds the directory flock), so the
+    // message names the running server; the unreadable label cannot change that.
     record('the refusal names the real problem (unreadable/EACCES), not a generic message',
-      /could not.*be read|EACCES|permission/i.test(log), log.slice(0, 400));
+      process.platform === 'darwin'
+        ? /already using this data directory/.test(log) && !/\(pid /.test(log)
+        : /could not.*be read|EACCES|permission/i.test(log), log.slice(0, 400));
 
     let p2Answered = false;
     try {

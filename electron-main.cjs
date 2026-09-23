@@ -399,9 +399,15 @@ if (!gotTheLock) {
           : `${message}\n\n"Show Location" reveals the detected conflict copy. Back up both database files before resolving the conflict. `
             + 'This app will not choose, merge, rename, or delete either copy. When you\'re done, quit this app (it will not '
             + 'start normally while blocked), then relaunch it.'
-        : `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
-          + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
-          + 'start normally while blocked), then relaunch it.',
+        : kind === 'flock'
+          // macOS holds this lock in the kernel: it ends when the other process
+          // ends, so deleting a file can never unblock it and is not suggested.
+          ? `${message}\n\n"Show Location" reveals the data folder. Quit the other copy (or whatever `
+            + 'is holding the folder), then quit this app (it will not start normally while blocked) '
+            + 'and relaunch it.'
+          : `${message}\n\nIf you're sure no other copy is running, "Show Location" reveals it `
+            + 'so you can inspect/delete it yourself. When you\'re done, quit this app (it will not '
+            + 'start normally while blocked), then relaunch it.',
     })).then((result) => {
       if (result.response === 1) {
         revealLockLocation(lockFile);

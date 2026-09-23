@@ -5,10 +5,11 @@
  * a user or login item does (LaunchServices `open -g`), with the dialog wrap
  * installed at --inspect-brk before electron-main.cjs runs, so an early call
  * is recorded, not missed. Needs a fresh `electron-builder --dir` build.
+ * Also proves the shipped app HOLDS the data-directory flock (review #12).
  *   node src/integration/desktop-lock-dialog-packaged.test.mjs
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, constants as fsConstants, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,10 +45,9 @@ let appPid = null;
 let ws = null;
 try {
   execFileSync('/usr/bin/swiftc', ['-O', '-o', winBin, join(REPO, 'src/desktop/onscreen-windows.swift')]);
-  // A live NODE holder: proof (b) says "ours", so the server must refuse.
-  holder = spawn(process.execPath, ['-e', 'setTimeout(()=>{},120000)'], { stdio: 'ignore' });
-  await new Promise((r) => setTimeout(r, 500));
-  writeFileSync(join(udd, '.server.lock'), String(holder.pid));
+  // A live holder of the data-directory flock, as a running server holds it.
+  holder = spawn(process.execPath, [join(REPO, 'src/desktop/flock-holder.cjs'), udd], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise((res, rej) => { holder.stdout.once('data', res); holder.once('exit', () => rej(new Error('flock holder exited'))); });
   execFileSync('/usr/bin/open', ['-g', '-n', BUNDLE, '--args', `--inspect-brk=${INSPECT}`, `--user-data-dir=${udd}`]);
   let target = null;
   for (let i = 0; i < 60 && !target; i++) {
@@ -69,13 +69,15 @@ try {
   const wrap = await send('Debugger.evaluateOnCallFrame', { callFrameId: paused, expression: `(() => {
     const { dialog, app } = require('electron'); globalThis.__dialogs = [];
     const orig = dialog.showMessageBox.bind(dialog);
-    dialog.showMessageBox = (...a) => { globalThis.__dialogs.push({ title: a[a.length - 1].title, ready: app.isReady() }); return orig(...a); };
+    dialog.showMessageBox = (...a) => { const o = a[a.length - 1]; globalThis.__dialogs.push({ title: o.title, detail: o.detail, ready: app.isReady() }); return orig(...a); };
     return 'wrapped'; })()` });
   rec('fixture: the dialog wrap is installed before electron-main.cjs runs', wrap.result?.result?.value === 'wrapped', JSON.stringify(wrap.result?.result ?? wrap.error));
   await send('Debugger.resume');
 
   let dialogs = []; let onscreen = 0;
-  for (let i = 0; i < 40 && !(dialogs.length && onscreen); i++) {
+  // Measured 0.45-0.7 s; one run saw none within the old 10 s. 30 s bounds it.
+  const t0 = Date.now();
+  for (let i = 0; i < 120 && !(dialogs.length && onscreen); i++) {
     await new Promise((r) => setTimeout(r, 250));
     dialogs = JSON.parse((await send('Runtime.evaluate', { expression: 'JSON.stringify(globalThis.__dialogs || [])' })).result?.result?.value || '[]');
     onscreen = Number(execFileSync(winBin, [String(appPid)], { encoding: 'utf8' }).trim());
@@ -83,8 +85,11 @@ try {
   const blocked = dialogs.find((d) => /Startup Blocked/.test(d.title));
   rec('THE DEFECT: the Startup Blocked dialog is requested', !!blocked, JSON.stringify(dialogs));
   rec('THE DEFECT: it is requested only after app ready (a pre-ready request never appears)', blocked?.ready === true, JSON.stringify(blocked));
-  rec('THE DEFECT: the app owns an ON-SCREEN native window (the dialog is visible)', onscreen >= 1, `on-screen windows of pid ${appPid}: ${onscreen}`);
+  rec('THE DEFECT: the app owns an ON-SCREEN native window (the dialog is visible)', onscreen >= 1, `on-screen windows of pid ${appPid}: ${onscreen} after ${Date.now() - t0} ms`);
   rec('the refused app left the lock with its live holder', readFileSync(join(udd, '.server.lock'), 'utf8').trim() === String(holder.pid));
+  // A kernel lock ends only when its holder ends: advising a file deletion would mislead.
+  rec('the dialog names the holder and does not advise deleting a lock file',
+    blocked?.detail?.includes(`(pid ${holder.pid})`) && !/delete/i.test(blocked?.detail ?? ''), (blocked?.detail ?? '').slice(0, 160));
 } finally {
   try { ws?.close(); } catch {}
   reapApp(udd);
@@ -127,6 +132,12 @@ try {
     }
     rec('S75-009 (2): the packaged app\'s own server answers /api/health with its pid, window on screen',
       health?.pid === pid && onscreen >= 1, `health pid ${health?.pid}, app pid ${pid}, on-screen windows ${onscreen}`);
+    // Participation, not presence: the SHIPPED app holds the kernel lock. A second
+    // opener of its data directory is refused while it runs.
+    let second = 'acquired';
+    try { closeSync(openSync(udd2, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | 0x20 | fsConstants.O_NONBLOCK)); }
+    catch (err) { second = err.code; }
+    rec('the running packaged app holds the data-directory flock (a second opener gets EAGAIN)', second === 'EAGAIN', `second opener: ${second}`);
   } finally {
     reapApp(udd2);
     foreign?.kill('SIGKILL');
@@ -134,7 +145,7 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = 7;
+const EXPECTED_CHECKS = 9;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);

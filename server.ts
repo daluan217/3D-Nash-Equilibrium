@@ -7,7 +7,6 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import { execFileSync } from "child_process";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -1487,7 +1486,7 @@ let gcsBaselineDb: DB | null = null;
 function reportDesktopLockFailure(
   message: string,
   lockFile: string,
-  kind: "lock" | "data-conflict" = "lock",
+  kind: "lock" | "flock" | "data-conflict" = "lock",
   candidateCount?: number,
 ): boolean {
   console.error(message);
@@ -1517,31 +1516,58 @@ function reportDesktopLockFailure(
   process.exit(1);
 }
 
-// S75-009: a lock pid from a previous boot is routinely reused by an unrelated
-// process, and kill(pid, 0) alone refused to start forever. Recover only when
-// the lock is PROVABLY stale; every unknown (ps missing, EPERM, empty, garbage)
-// fails closed. Not boot time: macOS moves kern.boottime forward by sleep time.
-function staleLockProof(pid: number, lockMtimeMs: number): string | null {
-  // Our wx create just failed, so a lock naming THIS pid is a previous boot's.
-  if (pid === process.pid) return "it names this very process";
-  const ps = (field: string) => {
+// S75-009 + review #12: on macOS the KERNEL arbitrates. A pid file cannot: a
+// pid is reused after a reboot (672 became Passwords.app), and unlinking a
+// "stale" lock races a second recoverer into two writers. flock on the data
+// directory is released by the kernel when its holder dies, however it dies.
+// The pid file is only a label for the dialog. Mac is the only shipping target.
+const O_EXLOCK = 0x20; // <sys/fcntl.h>; node exports no constant for it
+let desktopFlockFd: number | null = null; // held for the process lifetime
+
+function acquireDesktopFlock(userDataPath: string, lockFile: string): boolean {
+  try {
+    desktopFlockFd = fs.openSync(userDataPath,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | O_EXLOCK | fs.constants.O_NONBLOCK);
+  } catch (err: any) {
+    if (err && err.code === "EAGAIN") {
+      // The holder may be between its flock and its pid write: no pid is fine.
+      let pid = "";
+      try { pid = fs.readFileSync(lockFile, "utf-8").trim(); } catch { /* unreadable: say nothing */ }
+      const who = /^\d{1,10}$/.test(pid) ? ` (pid ${pid})` : "";
+      return reportDesktopLockFailure(
+        `Refusing to start: another Nash Equilibrium Simulator server${who} is already using this data `
+        + `directory (${userDataPath}). Starting a second one would silently overwrite its saved games. `
+        + `Quit the other instance first, then try again.`,
+        lockFile, "flock",
+      );
+    }
+    // Any other error: we cannot know whether another process holds it. Fail closed.
+    return reportDesktopLockFailure(
+      `Refusing to start: the desktop data directory at ${userDataPath} cannot be locked `
+      + `(${err && err.code ? err.code : "unknown error"}), so it could not determine whether another `
+      + `Nash Equilibrium Simulator process is using it. Starting anyway could silently overwrite its `
+      + `saved games. Check that the folder exists, is a folder and is accessible, then try again.`,
+      userDataPath, "flock",
+    );
+  }
+  // We hold the directory: the pid file is ours whatever it says. Written by
+  // rename so it is never empty and a planted symlink is replaced, not followed.
+  try {
+    const tmp = `${lockFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, String(process.pid), { mode: 0o600 });
+    fs.renameSync(tmp, lockFile);
+  } catch (err) {
+    console.error("Could not write the desktop lock's pid label (the directory lock still holds):", err);
+  }
+  const release = () => {
     try {
-      return execFileSync("/bin/ps", ["-ww", "-o", `${field}=`, "-p", String(pid)],
-        { encoding: "utf8", timeout: 2000, env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" } }).trim();
-    } catch { return ""; }
+      if (fs.readFileSync(lockFile, "utf-8").trim() === String(process.pid)) fs.unlinkSync(lockFile);
+    } catch { /* best effort: a leftover label is harmless under the flock */ }
   };
-  // (a') lstart is the wall clock at fork: a process that started after the
-  // lock was last written cannot have written it. A pre-2020 mtime (zeroed or
-  // backdated by a tool) predates this app, so it proves nothing.
-  const started = Date.parse(`${ps("lstart")} GMT`);
-  if (lockMtimeMs > Date.UTC(2020, 0) && started > lockMtimeMs + 60_000) return "(a') its process started after the lock was written";
-  // (b) ucomm is the real executable; command holds argv[0] (what comm prints)
-  // and catches `bun server.ts`. EITHER looking like us (packaged app, Electron,
-  // node) counts as ours.
-  const names = [ps("ucomm"), ps("command")].map((n) => n.toLowerCase());
-  const ours = (n: string) => /nash|electron|node|server\.(cjs|ts)/.test(n);
-  if (names.every(Boolean) && !names.some(ours)) return "(b) its executable is not ours";
-  return null;
+  process.on("exit", release);
+  process.on("SIGINT", () => { release(); process.exit(0); });
+  process.on("SIGTERM", () => { release(); process.exit(0); });
+  return true;
 }
 
 function acquireDesktopLock(): boolean {
@@ -1575,6 +1601,7 @@ function acquireDesktopLock(): boolean {
     );
   }
   const lockFile = path.join(userDataPath, ".server.lock");
+  if (process.platform === "darwin") return acquireDesktopFlock(userDataPath, lockFile);
 
   // ATOMIC on purpose. An earlier version checked `fs.existsSync(lockFile)`
   // and then `fs.writeFileSync`'d it as two separate steps — a real
@@ -1700,16 +1727,8 @@ function acquireDesktopLock(): boolean {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, readRaceDelayMs);
     }
     let rawContent: string;
-    let lockMtimeMs: number;
     try {
-      // Last-write time from the SAME fd as the content. max(mtime, ctime):
-      // `touch -t` can backdate mtime but APFS ctime follows the clock.
-      const fd = fs.openSync(lockFile, "r");
-      try {
-        const st = fs.fstatSync(fd);
-        lockMtimeMs = Math.max(st.mtimeMs, st.ctimeMs);
-        rawContent = fs.readFileSync(fd, "utf-8");
-      } finally { fs.closeSync(fd); }
+      rawContent = fs.readFileSync(lockFile, "utf-8");
     } catch (err: any) {
       if (err && err.code === "ENOENT") {
         // The lock vanished between our EEXIST and this read — someone
@@ -1758,13 +1777,6 @@ function acquireDesktopLock(): boolean {
         alive = true;
       } catch (err: any) {
         alive = err && err.code === "EPERM";
-      }
-    }
-    if (alive) {
-      const proof = staleLockProof(heldBy, lockMtimeMs);
-      if (proof) {
-        console.warn(`Recovering a stale desktop lock: pid ${heldBy} is alive but cannot hold it — ${proof}.`);
-        alive = false;
       }
     }
     if (alive) {

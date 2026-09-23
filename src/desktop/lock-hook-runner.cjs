@@ -45,12 +45,12 @@ if (!bundlePath || !userDataDir) {
 
 fs.mkdirSync(userDataDir, { recursive: true });
 const lockFile = path.join(userDataDir, '.server.lock');
-// A LIVE node holder, not this process: since S75-010 a lock naming this very
-// pid is provably a previous boot's and is recovered, so it no longer reaches
-// the refusal. A second node process is "ours" to proof (b): refuse.
-const holder = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{},120000)'], { stdio: 'ignore' });
+// A live holder of the data directory, the way a running server holds it
+// (flock-holder.cjs: flock on darwin, a live pid elsewhere). The bundle is
+// required only once it is READY, so the refusal is deterministic.
+const holder = require('child_process').spawn(process.execPath,
+  [path.join(__dirname, 'flock-holder.cjs'), userDataDir], { stdio: ['ignore', 'pipe', 'inherit'] });
 process.on('exit', () => { try { holder.kill('SIGKILL'); } catch {} });
-fs.writeFileSync(lockFile, String(holder.pid));
 
 process.env.NODE_ENV = 'production';
 process.env.IS_ELECTRON = 'true';
@@ -86,6 +86,7 @@ net.Server.prototype.listen = function patchedListen(...args) {
   return originalListen.apply(this, args);
 };
 
+holder.stdout.once('data', () => {
 require(path.resolve(bundlePath));
 
 // If acquireDesktopLock took the process.exit(1) path, execution never
@@ -100,3 +101,4 @@ setTimeout(() => {
   })}`);
   process.exit(0);
 }, 300);
+});
