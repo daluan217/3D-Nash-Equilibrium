@@ -232,10 +232,14 @@ try {
         await route.continue().catch(() => {});
       });
     }
-    const reqP = page.waitForRequest((r) => r.url().includes(`/api/games/${gameId}`)
-      && r.method() === 'DELETE', { timeout: 10000 }).catch(() => null);
-    if (inFlight) await row.locator('button[title="Delete this saved game"]').click();
-    const req = inFlight ? await reqP : null;
+    // The 10 s watch starts at each click, never before the reset (a slow reset read as (a)).
+    const clickDelete = async () => {
+      const reqP = page.waitForRequest((r) => r.url().includes(`/api/games/${gameId}`)
+        && r.method() === 'DELETE', { timeout: 10000 }).catch(() => null);
+      await row.locator('button[title="Delete this saved game"]').click();
+      return reqP;
+    };
+    const req = inFlight ? await clickDelete() : null;
     const killed = await page.evaluate(async ({ email, newPassword }) => {
       const fr = await fetch('/api/auth/forgot-password', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
@@ -247,9 +251,9 @@ try {
     }, { email: user.e, newPassword: `${user.p}X9` });
 
     // S84: wait for the REQUEST, then let deleteFate name why no response came.
-    if (!inFlight) await row.locator('button[title="Delete this saved game"]').click();
+    const delReq = inFlight ? req : await clickDelete();
     releaseHold();
-    const status = (await deleteFate(inFlight ? req : await reqP, { page, gameId,
+    const status = (await deleteFate(delReq, { page, gameId,
       srvLog: () => srvLog, dbFile: join(userData, 'db.json') })).status();
     const access = deleteAccess(srvLog, gameId);
 

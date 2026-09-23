@@ -137,7 +137,6 @@ await page.route('**/api/games/**', async (route, request) => {
 });
 const tokenBefore = await page.evaluate(() => localStorage.getItem('nash_sim_token_local'));
 // Classify a missing DELETE (director): (a) never issued, (b) aborted by the page, (c) no answer.
-const delReqP = page.waitForRequest((r) => r.url().includes(`/api/games/${gid}`) && r.method() === 'DELETE', { timeout: 10000 }).catch(() => null);
 page.on('framenavigated', (f) => { if (f === page.mainFrame()) netLog.push(`${ts()} framenavigated ${f.url().replace(BASE, '')}`); });
 // Wait on STATE, not time: the save dialog must be gone before the row is clicked.
 await sdlg.waitFor({ state: 'hidden', timeout: 10000 });
@@ -146,6 +145,8 @@ const rowsAtClick = await page.evaluate(() => Array.from(document.querySelectorA
   del: !!r.querySelector('button[title="Delete this saved game"]'), disabled: !!r.querySelector('button[title="Delete this saved game"]')?.disabled })));
 const tokenAtClick = await page.evaluate(() => !!localStorage.getItem('nash_sim_token_local'));
 netLog.push(`${ts()} rows at click: ${JSON.stringify(rowsAtClick)} | token present: ${tokenAtClick}`);
+// The 10 s watch starts at the click, not before the dialog wait above.
+const delReqP = page.waitForRequest((r) => r.url().includes(`/api/games/${gid}`) && r.method() === 'DELETE', { timeout: 10000 }).catch(() => null);
 await page.locator('[data-saved-game]:not([data-drawer-game])').filter({ hasText: 'CtlGame' }).locator('button[title="Delete this saved game"]').click();
 netLog.push(`${ts()} clicked Delete`);
 await page.waitForTimeout(300);
