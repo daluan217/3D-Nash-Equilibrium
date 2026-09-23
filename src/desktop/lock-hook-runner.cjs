@@ -16,10 +16,10 @@
  * the same cached exports, and skip startServer()'s top-level side effects
  * entirely, on a second in-process require of the same path).
  *
- * Writes its OWN pid into the lock file before requiring the bundle, which
- * deterministically exercises the "alive" branch of acquireDesktopLock: a
- * process can always signal itself, so `process.kill(process.pid, 0)` always
- * succeeds. This is also exactly the shape of the false-positive class the
+ * Writes a live node CHILD's pid into the lock file before requiring the
+ * bundle, which deterministically exercises the "alive" branch of
+ * acquireDesktopLock and survives both stale proofs (the child started after
+ * nothing; it is a node, i.e. ours). This is also exactly the shape of the false-positive class the
  * finding is about — PID aliveness alone cannot tell "the same server" apart
  * from "any live process," which is why the packaged app needs a real dialog
  * and a way to clear a misidentified lock rather than a silent kill.
@@ -45,7 +45,12 @@ if (!bundlePath || !userDataDir) {
 
 fs.mkdirSync(userDataDir, { recursive: true });
 const lockFile = path.join(userDataDir, '.server.lock');
-fs.writeFileSync(lockFile, String(process.pid));
+// A LIVE node holder, not this process: since S75-010 a lock naming this very
+// pid is provably a previous boot's and is recovered, so it no longer reaches
+// the refusal. A second node process is "ours" to proof (b): refuse.
+const holder = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(()=>{},120000)'], { stdio: 'ignore' });
+process.on('exit', () => { try { holder.kill('SIGKILL'); } catch {} });
+fs.writeFileSync(lockFile, String(holder.pid));
 
 process.env.NODE_ENV = 'production';
 process.env.IS_ELECTRON = 'true';

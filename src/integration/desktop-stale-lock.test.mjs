@@ -56,7 +56,7 @@ try {
   execFileSync('/usr/bin/hdiutil', ['create', '-quiet', '-size', '16m', '-fs', 'MS-DOS', '-volname', 'NASHLOCK', path.join(img, 'v')]);
   execFileSync('/usr/bin/hdiutil', ['attach', '-quiet', '-nobrowse', '-mountpoint', mnt, path.join(img, 'v.dmg')]);
   try {
-    const later = live(process.execPath, ['-e', 'setInterval(()=>{},1e6)']); await sleep(300);
+    const later = live(process.execPath, ['-e', 'setTimeout(()=>{},120000)']); await sleep(300);
     const r1 = await attempt('a-prime', later.pid, BASE, { mtime: ageOf(later.pid) - 86400, ud: mnt });
     rec("(i) proof (a'): a lock last written before its pid's process started is recovered, even when that process is a node",
       r1.started && r1.lockNow === String(r1.pid) && /\(a'\)/.test(r1.log), r1.log.split('\n').find((l) => /Recover|Refus/.test(l)));
@@ -89,7 +89,7 @@ try {
   const named = live(link, ['600']); await sleep(300);
   r = await attempt('ours-named', named.pid, BASE + 2);
   rec('(iii-a) a live process whose argv[0] is the app name refuses', r.refused && !r.started && r.lockNow === String(named.pid), `refused=${r.refused} started=${r.started}`);
-  const nodeHolder = live(process.execPath, ['-e', 'setInterval(()=>{},1e6)']); await sleep(300);
+  const nodeHolder = live(process.execPath, ['-e', 'setTimeout(()=>{},120000)']); await sleep(300);
   r = await attempt('ours-node', nodeHolder.pid, BASE + 3);
   rec('(iii-b) a live node process (a dev server.cjs) refuses', r.refused && !r.started && r.lockNow === String(nodeHolder.pid), `refused=${r.refused} started=${r.started}`);
   const spoof = live('/bin/sh', ['-c', 'exec -a server.ts /bin/sleep 600']); await sleep(300);

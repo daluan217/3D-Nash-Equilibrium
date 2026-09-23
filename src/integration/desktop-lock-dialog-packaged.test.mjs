@@ -34,7 +34,7 @@ const rec = (n, ok, d) => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL
 
 const udd = mkdtempSync(join(tmpdir(), 'nash-lockdlg-'));
 // A live NODE holder: proof (b) says "ours", so the server must refuse.
-const holder = spawn(process.execPath, ['-e', 'setInterval(()=>{},1e6)'], { stdio: 'ignore' });
+const holder = spawn(process.execPath, ['-e', 'setTimeout(()=>{},120000)'], { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 500));
 writeFileSync(join(udd, '.server.lock'), String(holder.pid));
 const winDir = mkdtempSync(join(tmpdir(), 'nash-onscreen-'));
