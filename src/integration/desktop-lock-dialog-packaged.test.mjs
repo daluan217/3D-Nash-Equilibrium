@@ -116,7 +116,7 @@ try {
       const ports = listing.split('\n').filter((l) => l.startsWith('n')).map((l) => l.split(':').pop());
       for (const port of ports) {
         const h = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(1000) }).then((r) => r.json()).catch(() => null);
-        if (h?.pid === pid) { health = h; break; }
+        if (h && pid === h.pid) { health = h; break; }
       }
       if (health?.pid !== pid) await new Promise((r) => setTimeout(r, 250));
     }
