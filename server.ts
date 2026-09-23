@@ -811,6 +811,7 @@ function desktopAuthSecret(): string | null {
   if (!dir) return null;
   const file = path.join(dir, "auth-secret");
   try {
+    assertDesktopDirStillLocked();
     // A SYMLINK here is not a secret file, it is a redirect. `writeFileSync`
     // follows it, so `auth-secret -> ~/.ssh/authorized_keys` (or any path the
     // user can write) had this function OVERWRITE that file with a fresh
@@ -940,11 +941,26 @@ const DB_FILE = process.env.ELECTRON_USER_DATA_PATH
  * whole old file or the whole new one, never a partial. The fsync is what makes
  * that hold after a power loss rather than only after a process crash.
  */
+/**
+ * Review #13 F2: a temp name is predictable, so a planted symlink there made "w"
+ * write through it. O_EXCL ("wx") never follows a link; a squatted name is
+ * unlinked (unlink never follows either) and opened exclusively once more.
+ */
+function openTempExclusive(tmp: string): number {
+  try { return fs.openSync(tmp, "wx", 0o600); } catch (err: any) {
+    if (err?.code !== "EEXIST") throw err;
+    fs.unlinkSync(tmp);
+    return fs.openSync(tmp, "wx", 0o600);
+  }
+}
+
 function writeFileAtomicSync(file: string, data: string): void {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   let fd: number | null = null;
   try {
-    fd = fs.openSync(tmp, "w", 0o600);
+    // Before the temp exists. A swap after this fails the rename (ENOENT): the temp is in the old folder.
+    assertDesktopDirStillLocked();
+    fd = openTempExclusive(tmp);
     fs.writeFileSync(fd, data, "utf-8");
     fs.fsyncSync(fd);
     fs.closeSync(fd);
@@ -1004,6 +1020,7 @@ function writeFileAtomicSync(file: string, data: string): void {
  * young enough to be left alone out of caution.
  */
 function sweepStaleAtomicTmpFiles(file: string, maxAgeMs = 5000): void {
+  if (!ensureDesktopDirOurs()) return;
   const dir = path.dirname(file);
   const prefix = `${path.basename(file)}.tmp-`;
   let entries: string[];
@@ -1296,6 +1313,7 @@ function loadDBFromFile(): DB | null {
     const aside = `${DB_FILE}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let preserved = false;
     try {
+      assertDesktopDirStillLocked();
       fs.renameSync(DB_FILE, aside);
       preserved = true;
     } catch (renameErr) {
@@ -1341,6 +1359,7 @@ function loadDBFromFile(): DB | null {
     // and the next save lands on a clean path.
     const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     try {
+      assertDesktopDirStillLocked();
       fs.renameSync(DB_FILE, aside);
       console.error(`Error reading db.json, resetting database. The unreadable file has been kept at ${aside}:`, err);
     } catch (renameErr) {
@@ -1361,6 +1380,7 @@ function loadDBFromFile(): DB | null {
     const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let preserved = false;
     try {
+      assertDesktopDirStillLocked();
       fs.renameSync(DB_FILE, aside);
       preserved = true;
     } catch (renameErr) {
@@ -1523,11 +1543,73 @@ function reportDesktopLockFailure(
 // The pid file is only a label for the dialog. Mac is the only shipping target.
 const O_EXLOCK = 0x20; // <sys/fcntl.h>; node exports no constant for it
 let desktopFlockFd: number | null = null; // held for the process lifetime
+let desktopFlockPath = "";
+
+/**
+ * Review #13 F1: the flock holds an INODE, but every write here goes by PATH. If
+ * the folder is moved or replaced while we run, a second server can lock the new
+ * one and both would write one db.json. So each path write first checks the path
+ * still names the folder we lock. If not, we take the folder now at the path only
+ * when nobody else can own it: we can lock it and it holds no db.json (the user
+ * deleted or emptied it). Otherwise every write refuses (500), logged once.
+ * macOS cannot write through a held directory fd (/dev/fd/N/x is ENOENT, measured),
+ * so the few microseconds between this check and the open are the floor.
+ */
+let desktopDirLostLogged = false;
+function desktopDirIsOurs(): boolean {
+  if (desktopFlockFd === null) return true;
+  try {
+    const held = fs.fstatSync(desktopFlockFd), now = fs.statSync(desktopFlockPath);
+    return held.dev === now.dev && held.ino === now.ino;
+  } catch { return false; /* the path is gone */ }
+}
+function ensureDesktopDirOurs(): boolean {
+  if (desktopDirIsOurs()) return true;
+  let fd: number | null = null;
+  try {
+    fs.mkdirSync(desktopFlockPath, { recursive: true });
+    fd = fs.openSync(desktopFlockPath,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | O_EXLOCK | fs.constants.O_NONBLOCK);
+    if (fs.existsSync(path.join(desktopFlockPath, "db.json"))) throw new Error("it holds a db.json this process did not write");
+  } catch (err: any) {
+    if (fd !== null) fs.closeSync(fd);
+    if (!desktopDirLostLogged) {
+      desktopDirLostLogged = true;
+      console.error(`Not saving: the data folder ${desktopFlockPath} was moved or replaced while the app was running, and the `
+        + `folder now at that path is not this process's to write (${err?.code === "EAGAIN" ? "another copy of the app holds it"
+        : err?.code || err?.message}). Quit and reopen the app.`);
+    }
+    return false;
+  }
+  fs.closeSync(desktopFlockFd as number);
+  desktopFlockFd = fd;
+  desktopDirLostLogged = false;
+  console.error(`The data folder ${desktopFlockPath} was recreated while the app was running; it is locked again and saves go there.`);
+  writeDesktopLockLabel(path.join(desktopFlockPath, ".server.lock"));
+  return true;
+}
+function assertDesktopDirStillLocked(): void {
+  if (!ensureDesktopDirOurs()) throw new Error(`Refusing to write: the data folder ${desktopFlockPath} is not this process's any more.`);
+}
+/** The pid file is only a label for the dialog. Temp + rename: never empty, and a link at either name is replaced. */
+function writeDesktopLockLabel(lockFile: string): void {
+  const tmp = `${lockFile}.${process.pid}.tmp`;
+  try {
+    assertDesktopDirStillLocked();
+    const fd = openTempExclusive(tmp);
+    try { fs.writeFileSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, lockFile);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* never written */ }
+    console.error("Could not write the desktop lock's pid label (the directory lock still holds):", err);
+  }
+}
 
 function acquireDesktopFlock(userDataPath: string, lockFile: string): boolean {
   try {
     desktopFlockFd = fs.openSync(userDataPath,
       fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | O_EXLOCK | fs.constants.O_NONBLOCK);
+    desktopFlockPath = userDataPath;
   } catch (err: any) {
     if (err && err.code === "EAGAIN") {
       // The holder may be between its flock and its pid write: no pid is fine.
@@ -1550,18 +1632,11 @@ function acquireDesktopFlock(userDataPath: string, lockFile: string): boolean {
       userDataPath, "flock",
     );
   }
-  // We hold the directory: the pid file is ours whatever it says. Written by
-  // rename so it is never empty and a planted symlink is replaced, not followed.
-  const tmp = `${lockFile}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(tmp, String(process.pid), { mode: 0o600 });
-    fs.renameSync(tmp, lockFile);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* never written */ }
-    console.error("Could not write the desktop lock's pid label (the directory lock still holds):", err);
-  }
+  // We hold the directory: the pid file is ours whatever it says.
+  writeDesktopLockLabel(lockFile);
   const release = () => {
     try {
+      if (!desktopDirIsOurs()) return; // never touch a label in a folder we no longer hold
       if (fs.readFileSync(lockFile, "utf-8").trim() === String(process.pid)) fs.unlinkSync(lockFile);
     } catch { /* best effort: a leftover label is harmless under the flock */ }
   };
@@ -3290,6 +3365,13 @@ async function startServer() {
 
   // Parse JSON bodies
   app.use(express.json());
+  // Review #13 F1: several account routes mutate memory and ignore saveDB's
+  // result. While the data folder is not ours, no write claims success.
+  app.use(["/api/auth", "/api/games"], (req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD" || ensureDesktopDirOurs()) return next();
+    res.status(500).json({ error: "Could not save your changes: the app's data folder was moved or replaced while it "
+      + "was running. Quit and reopen the app, then try again." });
+  });
 
   // Baseline security headers. A full content CSP is intentionally omitted here
   // because the app loads Google Analytics + inline scripts and Plotly may use

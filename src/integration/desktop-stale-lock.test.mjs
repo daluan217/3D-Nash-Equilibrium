@@ -165,6 +165,150 @@ try {
   rec('(xvii) an unreplaceable label: the server still starts and leaves no temp file behind',
     r.started && litter.length === 0, `started=${r.started} litter=${JSON.stringify(litter)}`);
 
+  // (xix) review #13 F1: the folder is replaced while A runs, and B locks the new
+  // one. A must stop writing (500), never land in B's db.json. mv and rm shapes.
+  for (const [k, shape] of ['mv', 'rm'].entries()) {
+    const root = dir(`xix${k}`); const ud = path.join(root, 'ud'); mkdirSync(ud);
+    let aLog = '';
+    const run = (port) => { const c = spawn(process.execPath, [BUNDLE], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: env(ud, port) }); kids.push(c); return c; };
+    const save = (port, name) => fetch(`http://127.0.0.1:${port}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 1, b12: 2, b21: 3, b22: 4 } }) }).then((r) => r.status, () => 0);
+    const A = run(BASE + 29 + k * 2); A.stdout.on('data', (d) => { aLog += d; }); A.stderr.on('data', (d) => { aLog += d; });
+    const aUp = await waitForOwnServer(A, `http://127.0.0.1:${BASE + 29 + k * 2}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    const aBefore = await save(BASE + 29 + k * 2, 'A-before');
+    if (shape === 'mv') execFileSync('/bin/mv', [ud, `${ud}.old`]); else rmSync(ud, { recursive: true, force: true });
+    mkdirSync(ud);
+    const B = run(BASE + 30 + k * 2);
+    const bUp = await waitForOwnServer(B, `http://127.0.0.1:${BASE + 30 + k * 2}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    const aAfter = await save(BASE + 29 + k * 2, 'A-after'); const bSave = await save(BASE + 30 + k * 2, 'B');
+    // Account routes too: register mutates memory and used to ignore saveDB's result.
+    const aReg = await fetch(`http://127.0.0.1:${BASE + 29 + k * 2}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: `xix${k}`, email: `xix${k}@desk.local`, password: 'TestPass123' }) }).then((r) => r.status, () => 0);
+    let names = []; try { names = JSON.parse(readFileSync(path.join(ud, 'db.json'), 'utf8')).games.map((g) => g.name); } catch { /* none */ }
+    await stopKid(A); await stopKid(B);
+    const said = aLog.split('\n').filter((l) => l.includes(`data folder ${ud} was moved or replaced`)).length;
+    rec(`(xix-${shape}) data folder ${shape === 'mv' ? 'moved aside' : 'deleted'} and recreated under a running server: its game and account writes answer 500, the log names the folder once, and the new owner's db.json holds only its own game`,
+      aUp && bUp && aBefore === 200 && aAfter === 500 && aReg === 500 && said === 1 && bSave === 200 && JSON.stringify(names) === '["B"]',
+      `aUp=${aUp} bUp=${bUp} A before=${aBefore} after=${aAfter} register=${aReg} logged=${said} B=${bSave} db=${JSON.stringify(names)}`);
+  }
+
+  // (xix-first) the first request after the swap is a GET: the route gate lets it
+  // through, and its lazy owner provisioning writes. B holds the new folder, so
+  // only the write path's own check stands between A and B's db.json.
+  {
+    const root = dir('xixf'); const ud = path.join(root, 'ud'); mkdirSync(ud);
+    const run = (port) => { const c = spawn(process.execPath, [BUNDLE], { cwd: root, stdio: 'ignore', env: env(ud, port) }); kids.push(c); return c; };
+    const A = run(BASE + 37);
+    const aUp = await waitForOwnServer(A, `http://127.0.0.1:${BASE + 37}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    rmSync(ud, { recursive: true, force: true }); mkdirSync(ud);
+    const B = run(BASE + 38);
+    const bUp = await waitForOwnServer(B, `http://127.0.0.1:${BASE + 38}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    const before = readFileSync(path.join(ud, 'db.json'), 'utf8');
+    const g = await fetch(`http://127.0.0.1:${BASE + 37}/api/games`).then((r) => r.status, () => 0);
+    const after = readFileSync(path.join(ud, 'db.json'), 'utf8');
+    await stopKid(A); await stopKid(B);
+    rec("(xix-first) a GET as A's first request after the swap does not write into the folder B now holds",
+      aUp && bUp && g === 200 && after === before, `aUp=${aUp} bUp=${bUp} GET=${g} B's db.json ${after === before ? 'untouched' : 'CHANGED: ' + after.slice(0, 80)}`);
+  }
+
+  // (xix-deleted) the user deletes the folder and nobody else takes it: A may
+  // recreate it (desktop-unwritable-save's rug-pull A), but only LOCKED again, so a
+  // server started afterwards on that path still refuses. One writer either way.
+  {
+    const root = dir('xixd'); const ud = path.join(root, 'ud'); mkdirSync(ud);
+    const A = spawn(process.execPath, [BUNDLE], { cwd: root, stdio: 'ignore', env: env(ud, BASE + 39) }); kids.push(A);
+    const aUp = await waitForOwnServer(A, `http://127.0.0.1:${BASE + 39}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    rmSync(ud, { recursive: true, force: true });
+    const st = await fetch(`http://127.0.0.1:${BASE + 39}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Recreated', payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 1, b12: 2, b21: 3, b22: 4 } }) }).then((r) => r.status, () => 0);
+    let names = []; try { names = JSON.parse(readFileSync(path.join(ud, 'db.json'), 'utf8')).games.map((x) => x.name); } catch { /* none */ }
+    const label = existsSync(path.join(ud, '.server.lock')) ? readFileSync(path.join(ud, '.server.lock'), 'utf8').trim() : null;
+    const r2 = await attempt('xixd2', null, BASE + 40, { ud });
+    await stopKid(A);
+    rec('(xix-deleted) a deleted folder is recreated with the save in it, locked again (a later server refuses), and labelled with our pid',
+      aUp && st === 200 && JSON.stringify(names) === '["Recreated"]' && refusedOnly(r2) && label === String(A.pid),
+      `aUp=${aUp} save=${st} db=${JSON.stringify(names)} later=${r2.started ? 'STARTED' : r2.refused ? 'refused' : 'neither'} label=${label} pid=${A.pid}`);
+  }
+
+  // (xix-vol) the check needs dev as well as ino: on FAT the first folder on every
+  // volume is inode 2 (measured), so the same-named folder on ANOTHER volume
+  // matches by ino alone. A's data path is a link; the swap retargets it (m1 -> m2).
+  {
+    const root = dir('xixv'); const mnt = (v) => path.join(root, `m${v}`); const link = path.join(root, 'data');
+    for (const v of ['1', '2']) {
+      execFileSync('/usr/bin/hdiutil', ['create', '-quiet', '-size', '16m', '-fs', 'MS-DOS', '-volname', `NASHV${v}`, path.join(root, `v${v}`)]);
+      execFileSync('/usr/bin/hdiutil', ['attach', '-quiet', '-nobrowse', '-mountpoint', mnt(v), path.join(root, `v${v}.dmg`)]);
+      mkdirSync(path.join(mnt(v), 'ud'));
+    }
+    const restored = JSON.stringify({ users: [], games: [{ id: 'g_restored', name: 'Restored' }] });
+    writeFileSync(path.join(mnt('2'), 'ud', 'db.json'), restored);
+    let A = null; let ok = false; let detail = '';
+    try {
+      symlinkSync(path.join(mnt('1'), 'ud'), link);
+      A = spawn(process.execPath, [BUNDLE], { cwd: root, stdio: 'ignore', env: env(link, BASE + 36) }); kids.push(A);
+      const up = await waitForOwnServer(A, `http://127.0.0.1:${BASE + 36}`, { timeoutMs: 20000 }).then(() => true, () => false);
+      rmSync(link); symlinkSync(path.join(mnt('2'), 'ud'), link);
+      const inos = ['1', '2'].map((v) => execFileSync('/usr/bin/stat', ['-f', '%i', path.join(mnt(v), 'ud')], { encoding: 'utf8' }).trim());
+      const st = await fetch(`http://127.0.0.1:${BASE + 36}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Vol', payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 1, b12: 2, b21: 3, b22: 4 } }) }).then((r) => r.status, () => 0);
+      const now = readFileSync(path.join(mnt('2'), 'ud', 'db.json'), 'utf8');
+      ok = up && inos[0] === inos[1] && st === 500 && now === restored;
+      detail = `up=${up} inodes=${inos.join('/')} save=${st} restored db.json ${now === restored ? 'untouched' : 'OVERWRITTEN'}`;
+    } finally {
+      if (A) await stopKid(A);
+      for (const v of ['1', '2']) { try { execFileSync('/usr/bin/hdiutil', ['detach', '-quiet', '-force', mnt(v)]); } catch { /* not mounted */ } }
+    }
+    rec('(xix-vol) a folder holding a db.json we did not write, on ANOTHER volume with the same inode number, is never written: 500, bytes untouched', ok, detail);
+  }
+
+  // (xix-link) what that check could regress: a data folder reached through a
+  // symlink (Application Support moved to another drive) must still save.
+  {
+    const root = dir('xixl'); mkdirSync(path.join(root, 'real')); symlinkSync(path.join(root, 'real'), path.join(root, 'link'));
+    const c = spawn(process.execPath, [BUNDLE], { cwd: root, stdio: 'ignore', env: env(path.join(root, 'link'), BASE + 35) }); kids.push(c);
+    const up = await waitForOwnServer(c, `http://127.0.0.1:${BASE + 35}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    const st = await fetch(`http://127.0.0.1:${BASE + 35}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'ViaLink', payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 1, b12: 2, b21: 3, b22: 4 } }) }).then((r) => r.status, () => 0);
+    await stopKid(c);
+    let names = []; try { names = JSON.parse(readFileSync(path.join(root, 'real', 'db.json'), 'utf8')).games.map((g) => g.name); } catch { /* none */ }
+    rec('(xix-link) a data folder reached through a symlink still saves (the identity check follows the link like the lock does)',
+      up && st === 200 && JSON.stringify(names) === '["ViaLink"]', `up=${up} save=${st} db=${JSON.stringify(names)}`);
+  }
+
+  // (xx) review #13 F2, the reviewer's shape: the label temp name is predictable
+  // (.server.lock.<pid>.tmp), so a wrapper that knows $$ plants it before exec.
+  {
+    const root = dir('xx'); const ud = path.join(root, 'ud'); mkdirSync(ud);
+    const target = path.join(root, 'target'); writeFileSync(target, 'PRECIOUS');
+    const c = spawn('/bin/sh', ['-c', 'ln -s "$2" "$1/.server.lock.$$.tmp"; exec "$3" "$4"', 'sh', ud, target, process.execPath, BUNDLE],
+      { cwd: root, stdio: 'ignore', env: env(ud, BASE + 33) }); kids.push(c);
+    const up = await waitForOwnServer(c, `http://127.0.0.1:${BASE + 33}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    let label = null; try { label = readFileSync(path.join(ud, '.server.lock'), 'utf8').trim(); } catch { /* none */ }
+    await stopKid(c);
+    rec('(xx) a symlink planted at the label temp name is removed, never written through; the label is our pid',
+      up && readFileSync(target, 'utf8') === 'PRECIOUS' && label === String(c.pid), `up=${up} target=${JSON.stringify(readFileSync(target, 'utf8'))} label=${label} pid=${c.pid}`);
+  }
+
+  // (xxi) the same class on db.json's own temp files: tmp-squat.cjs plants a symlink
+  // at each temp path the instant before the server opens it (fresh db + a save).
+  {
+    const root = dir('xxi'); const ud = path.join(root, 'ud'); mkdirSync(ud);
+    const target = path.join(root, 'target'); writeFileSync(target, 'PRECIOUS');
+    const c = spawn(process.execPath, ['--require', PRELOAD('tmp-squat.cjs'), BUNDLE], { cwd: root, stdio: ['ignore', 'ignore', 'pipe'],
+      env: env(ud, BASE + 34, { SQUAT_RE: '(db\\.json\\.tmp-|\\.server\\.lock\\.\\d+\\.tmp$)', SQUAT_TARGET: target }) }); kids.push(c);
+    let err = ''; c.stderr.on('data', (d) => { err += d; });
+    const up = await waitForOwnServer(c, `http://127.0.0.1:${BASE + 34}`, { timeoutMs: 20000 }).then(() => true, () => false);
+    const saved = await fetch(`http://127.0.0.1:${BASE + 34}/api/games`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Squat', payoffs: { a11: 1, a12: 2, a21: 3, a22: 4, b11: 1, b12: 2, b21: 3, b22: 4 } }) }).then((r) => r.status, () => 0);
+    await stopKid(c);
+    const squats = err.split('\n').filter((l) => l.startsWith('SQUATTED'));
+    let names = []; try { names = JSON.parse(readFileSync(path.join(ud, 'db.json'), 'utf8')).games.map((g) => g.name); } catch { /* none */ }
+    rec('(xxi) symlinks planted at db.json and label temp paths at open time are never written through; the save lands in db.json',
+      up && saved === 200 && squats.filter((l) => l.includes('db.json.tmp-')).length >= 2 && squats.some((l) => l.includes('.server.lock.'))
+        && readFileSync(target, 'utf8') === 'PRECIOUS' && JSON.stringify(names) === '["Squat"]',
+      `up=${up} save=${saved} squats=${squats.length} target=${JSON.stringify(readFileSync(target, 'utf8').slice(0, 20))} db=${JSON.stringify(names)}`);
+  }
+
   // (xvi) any other flock error fails closed, naming the folder.
   const dx = dir('xvi');
   r = await attempt('xvi', null, BASE + 21, { preload: 'lock-enotsup.cjs', ud: dx });
@@ -199,7 +343,7 @@ try {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 }
 
-const EXPECTED_CHECKS = 22;
+const EXPECTED_CHECKS = 30;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);
