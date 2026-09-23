@@ -30,7 +30,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { waitForOwnServer } from './ownserver.mjs';
@@ -200,15 +200,18 @@ try {
 // it removes the user and saves. Routes now commit NEW snapshots, so saving the
 // held one undid whatever landed meanwhile. Here: a recovery code issued during
 // the slow failure must survive it, and so must a retry of the same address whose
-// fresh code DID go out. SMTP: the FIRST message to a SLOW address is refused
-// after 3 s; every other message is accepted and its code captured.
+// fresh code DID go out (every code is pinned to one value, so a retry's code
+// always equals the first attempt's: review #16), and so must an account verified
+// from a mail that was delivered before the send failed. SMTP: every code is
+// captured; the FIRST message to a SLOW address is refused 3 s after DATA.
 {
   const PORT2 = String(Number(PORT) + 2);
   const SMTP2 = String(Number(SMTP_PORT) + 2);
   const BASE2 = `http://127.0.0.1:${PORT2}`;
   const SLOW = 'slowfail@example.invalid';
   const RETRY = 'retry@example.invalid';
-  const slowOnce = new Set([SLOW, RETRY]);
+  const LATE = 'deliveredthenfailed@example.invalid';
+  const slowOnce = new Set([SLOW, RETRY, LATE]);
   const codes = {};
   const smtp2 = createServer((sock) => {
     let inData = false; let rcpt = ''; let body = '';
@@ -219,8 +222,9 @@ try {
           if (line === '.') {
             inData = false;
             const code = (body.replace(/=\r?\n/g, '').match(/\b\d{6}\b/) || [])[0];
+            codes[rcpt] = code;
             if (slowOnce.delete(rcpt)) setTimeout(() => sock.write('451 4.3.0 try later\r\n'), 3000);
-            else { codes[rcpt] = code; sock.write('250 2.0.0 Ok: queued\r\n'); }
+            else sock.write('250 2.0.0 Ok: queued\r\n');
           } else body += line + '\n';
           continue;
         }
@@ -239,7 +243,9 @@ try {
   });
   await new Promise((r) => smtp2.listen(Number(SMTP2), '127.0.0.1', r));
   const userData2 = mkdtempSync(path.join(tmpdir(), 'nash-rsl2-'));
-  const server2 = spawn('node', [path.join(serverDir, 'dist/server.cjs')], { cwd: userData2, stdio: ['ignore', 'pipe', 'pipe'],
+  const pinCodes = path.join(userData2, 'pin-codes.cjs'); // makeCode is the only randomInt caller
+  writeFileSync(pinCodes, "require('crypto').randomInt = () => 135790;\n");
+  const server2 = spawn('node', ['--require', pinCodes, path.join(serverDir, 'dist/server.cjs')], { cwd: userData2, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, NODE_ENV: 'production', PORT: PORT2, SMTP_HOST: '127.0.0.1', SMTP_PORT: SMTP2, SMTP_USER: 'u', SMTP_PASS: 'p',
       SMTP_FROM: 'rsl2@example.invalid', ELECTRON_USER_DATA_PATH: undefined, IS_ELECTRON: undefined, GCS_BUCKET_NAME: undefined } });
   const post = (url, body) => fetch(`${BASE2}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -270,6 +276,15 @@ try {
     record("a retry whose code went out survives the first attempt's rollback: that code verifies",
       retry.status === 200 && firstDone.status === 500 && !!codes[RETRY] && retryVer.status === 200,
       `retry=${retry.status} first=${firstDone.status} verify=${retryVer.status} ${JSON.stringify(retryVer.json).slice(0, 100)}`);
+
+    const late = post('/api/auth/register', { username: 'late', email: LATE, password: 'TestPass123' });
+    await new Promise((r) => setTimeout(r, 800));
+    const lateVer = await post('/api/auth/verify', { email: LATE, code: codes[LATE] });
+    const lateDone = await late;
+    const lateLogin = await post('/api/auth/login', { email: LATE, password: 'TestPass123' });
+    record('an account verified from a mail delivered before the send failed is not rolled back: login works',
+      lateVer.status === 200 && lateDone.status === 500 && lateLogin.status === 200,
+      `verify=${lateVer.status} register=${lateDone.status} login=${lateLogin.status}`);
   } catch (e) {
     record('rollback phase completed without an exception', false, String(e?.stack || e).slice(0, 300));
   } finally {
@@ -278,7 +293,7 @@ try {
   }
 }
 
-const EXPECTED_CHECKS = 22;
+const EXPECTED_CHECKS = 23;
 if (results.length !== EXPECTED_CHECKS) {
   console.error(`FAILED: ${results.length} checks ran, expected exactly ${EXPECTED_CHECKS}`);
   process.exit(1);

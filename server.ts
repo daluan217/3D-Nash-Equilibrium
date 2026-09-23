@@ -4396,11 +4396,12 @@ async function startServer() {
     }
 
     const verificationCode = makeCode();
+    const passwordHash = hashPassword(password); // freshly salted: identifies THIS request's row (rollback below)
     const newUser: User = {
       id: makeId("u"),
       username: usernameTrimmed,
       email: emailTrimmed,
-      passwordHash: hashPassword(password),
+      passwordHash,
       isVerified: false,
       verificationCode,
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
@@ -4420,12 +4421,12 @@ async function startServer() {
     if (emailErrorMsg) {
       // Discard the unverified registration if SMTP is failing completely,
       // so we do not block subsequent attempts when SMTP config is updated.
-      // Review #15: re-read AFTER the await. `db` predates the SMTP send and other
-      // routes commit NEW snapshots, so writing it back undid their changes (e.g. a
-      // recovery code issued meanwhile). A retry that re-sent a code in the
-      // meantime owns the account now, so remove it only if the code is still ours.
+      // Review #15: re-read AFTER the await; writing the pre-send `db` back undid
+      // other routes' commits. Remove the row only while it is still ours: a retry
+      // re-hashes (new salt; a 6-digit code can repeat, review #16) and owns it, and
+      // a mail that was delivered before the error may already have verified it.
       const now = loadDB();
-      saveDB({ users: now.users.filter((u) => !(u.id === newUser.id && u.verificationCode === verificationCode)), games: now.games });
+      saveDB({ users: now.users.filter((u) => !(u.id === newUser.id && u.passwordHash === passwordHash && !u.isVerified)), games: now.games });
       return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
     }
 
