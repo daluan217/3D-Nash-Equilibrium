@@ -108,6 +108,19 @@ try {
   r = await attempt('backdated-ours', nodeHolder.pid, BASE + 7, { mtime: ageOf(nodeHolder.pid) - 86400 });
   rec('(vii) a backdated mtime on a live Nash holder still refuses (ctime is the last write)', r.refused && !r.started, `refused=${r.refused}`);
 
+  // (xi) lock text is parsed leniently (parseInt): `<pid>abc`, `+<pid>`, `000<pid>` naming a
+  // live node must still refuse. A strict parse would read them as garbage and take over.
+  const shapes = [`${nodeHolder.pid}abc`, `+${nodeHolder.pid}`, `000${nodeHolder.pid}`];
+  const shaped = [];
+  for (const [k, text] of shapes.entries()) { const ud = dir(`shape${k}`); shaped.push(await attempt(`shape${k}`, text, BASE + 14 + k, { ud })); }
+  rec('(xi) a lock whose text only STARTS with a live node pid (junk, +, zero-padded) still refuses',
+    shaped.every((x) => x.refused && !x.started), shaped.map((x) => `refused=${x.refused}`).join(' '));
+  // (xii) "-1" and "0" name no process: kill(-1, 0) would probe EVERY process, so they must
+  // be taken over without any liveness test, never refused.
+  const nonPos = [await attempt('neg1', '-1', BASE + 17), await attempt('zero', '0', BASE + 18)];
+  rec('(xii) a lock naming -1 or 0 is taken over (no process-group liveness probe)',
+    nonPos.every((x) => x.started && x.lockNow === String(x.pid)), nonPos.map((x) => `started=${x.started} refused=${x.refused}`).join(' '));
+
   // (viii) pid 1 is readable and foreign on macOS (kill(1,0) = EPERM) ⇒ recover by (b).
   r = await attempt('pid1', 1, BASE + 8);
   rec('(viii) pid 1 (launchd: EPERM to signal, readable to ps) is a foreign holder and is recovered', r.started && r.lockNow === String(r.pid), r.log.split('\n').find((l) => /Recover|Refus/.test(l)));
@@ -133,7 +146,7 @@ try {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 }
 
-const EXPECTED_CHECKS = 13;
+const EXPECTED_CHECKS = 15;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected ${EXPECTED_CHECKS}`);
   process.exit(1);
