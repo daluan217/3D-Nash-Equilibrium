@@ -1338,13 +1338,15 @@ try {
   // their ordinary 4xx, so a 400 below cannot come from a broken route.
   {
     const vGcs = gcsPortA + 42, vApp = port1 + 46;
-    const fake = await trackFake(startFakeGcsDb({ port: vGcs, initialContent: JSON.stringify({ users: [{ ...seededUser('u_v', 'valid', 'v@example.test', 'Sup3rSecret!23'), deleteCode: '123456', deleteCodeExpires: Date.now() + 600000 }], games: [] }) }));
+    const fake = await trackFake(startFakeGcsDb({ port: vGcs, initialContent: JSON.stringify({ users: [{ ...seededUser('u_v', 'valid', 'v@example.test', 'Sup3rSecret!23'), deleteCode: '123456', deleteCodeExpires: Date.now() + 600000 }, { ...seededUser('u_tp', 'tpend', 'tp@example.test', 'Sup3rSecret!23'), isVerified: false, verificationCode: '123456', verificationCodeExpires: Date.now() + 600000 }], games: [] }) }));
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-types-'))), vApp, vGcs)), vApp);
     const tok = (await (await fetch(`http://127.0.0.1:${vApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'v@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     const cases = [
       ['/api/auth/login', { email: 5, password: 'x' }], ['/api/auth/login', { email: 'v@example.test', password: { a: 1 } }],
       ['/api/auth/register', { username: 'nn', email: ['x'], password: 'Sup3rSecretX' }], ['/api/auth/register', { username: 'nn', email: 'n@example.test', password: 7 }],
       ['/api/auth/verify', { email: true, code: '1' }], ['/api/auth/forgot-password', { email: { $ne: 1 } }],
+      // verify's own password/username (sweep 8): a PENDING row, so the password reaches verifyPassword
+      ['/api/auth/verify', { email: 'tp@example.test', code: '000000', password: { a: 1 }, username: 'nn' }], ['/api/auth/verify', { email: 'tp@example.test', code: '000000', password: 'N3wOwner!pass', username: 5 }], ['/api/auth/register', { username: 5, email: 'n@example.test', password: 'Sup3rSecretX' }],
       ['/api/auth/reset-password', { email: 'v@example.test', code: 123456, newPassword: 'Sup3rSecretX' }],
       ['/api/auth/delete-confirm', { code: 123456 }, true], ['/api/auth/login', []],
     ];
