@@ -44,6 +44,10 @@ const NETWORK_METHODS = new Set([
   'delete', 'copy', 'move', 'setMetadata', 'getFiles', 'deleteFiles',
   'makePublic', 'makePrivate', 'createResumableUpload', 'getSignedUrl',
   'combine', 'rotateEncryptionKey', 'setStorageClass',
+  // Not GCS, same class: a mail server that accepts and goes quiet held four
+  // routes open past the client's 22s (BLUE-LOOP-CLOUD-22). Matched by name
+  // like the rest, so a new send is guarded on arrival.
+  'sendMail',
 ]);
 
 type Site = { method: string; line: number; deadlined: boolean; text: string };
@@ -162,8 +166,10 @@ collect(sf, (n) => sites.push(buildSite(n, sf)));
 
 // The scan must be LIVE. If the AST walk silently matched nothing, every
 // "all sites deadlined" claim below would be vacuously true.
+// 8 GCS sites since BLUE-LOOP-CLOUD-22 folded three copies of the db.json read
+// into readGcsDb (was 13), plus the 4 SMTP sends. A floor, not an exact count.
 check('the AST scan actually found GCS network calls in server.ts',
-  sites.length >= 13, `found only ${sites.length}`);
+  sites.length >= 12, `found only ${sites.length}`);
 
 // This contract reads server.ts and nothing else, which is only sufficient
 // while server.ts is the only product file that talks to GCS. Gate review #10
@@ -191,7 +197,7 @@ check('every GCS network call is wrapped in withDeadline',
 // so a refactor that drops a whole call shape cannot quietly shrink what this
 // contract covers. The rest of NETWORK_METHODS is forward cover for calls not
 // written yet, so it is deliberately NOT required to appear.
-const IN_USE = ['exists', 'getMetadata', 'download', 'save'] as const;
+const IN_USE = ['exists', 'getMetadata', 'download', 'save', 'sendMail'] as const;
 for (const m of IN_USE) {
   check(`the scan covers file.${m}() calls`,
     sites.some((s) => s.method === m), `no ${m}() site found`);

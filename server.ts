@@ -1971,10 +1971,10 @@ const GCS_DEADLINE_MS = (() => {
   return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
 })();
 
-function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS): Promise<T> {
+function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS, peer = 'GCS'): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`GCS deadline exceeded after ${ms}ms: ${what} never answered`)),
+      () => reject(new Error(`${peer} deadline exceeded after ${ms}ms: ${what} never answered`)),
       ms,
     );
     timer.unref?.();
@@ -3135,6 +3135,17 @@ async function saveDBOrFail(games: SavedGame[], res: express.Response): Promise<
   return false;
 }
 
+// A mail server that accepts and then goes quiet held register, forgot-password,
+// delete-request and feedback open for nodemailer's defaults (2 min to connect,
+// 10 min idle) — measured >90s, while the client gives up at 22s. The socket
+// options close the connection; the whole-send deadline is what answers the
+// request, since a slow drip resets an idle timer on every line.
+const SMTP_DEADLINE_MS = (() => {
+  const ms = Number(process.env.SMTP_DEADLINE_MS || 15_000);
+  return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
+})();
+const SMTP_SOCKET_TIMEOUTS = { connectionTimeout: SMTP_DEADLINE_MS, greetingTimeout: SMTP_DEADLINE_MS, socketTimeout: SMTP_DEADLINE_MS };
+
 // Helper to get NodeMailer transporter
 function getTransporter() {
   const host = process.env.SMTP_HOST ?? "";
@@ -3153,6 +3164,7 @@ function getTransporter() {
           user,
           pass,
         },
+        ...SMTP_SOCKET_TIMEOUTS,
       });
     }
 
@@ -3171,6 +3183,7 @@ function getTransporter() {
       ...(process.env.SMTP_ALLOW_INSECURE_TLS === "true"
         ? { tls: { rejectUnauthorized: false } }
         : {}),
+      ...SMTP_SOCKET_TIMEOUTS,
     });
   }
   return null;
@@ -3218,13 +3231,13 @@ async function sendVerificationEmail(email: string, code: string, username: stri
   }
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: email,
       subject: `Your Nash Sim Verification Code: ${code}`,
       text: `Your Nash Sim verification code is: ${code}. It expires in 10 minutes.`,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Verification email sent successfully using custom SMTP:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
@@ -3263,13 +3276,13 @@ async function sendDeleteEmail(email: string, code: string, username: string): P
   }
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: email,
       subject: `Confirm Account Deletion Request: ${code}`,
       text: `Your account deletion security code is: ${code}. It expires in 10 minutes.`,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Account Deletion confirmation email sent successfully:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
@@ -3308,13 +3321,13 @@ async function sendRecoveryEmail(email: string, code: string): Promise<{ success
   }
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: email,
       subject: `Your Nash Sim Password Recovery Code: ${code}`,
       text: `Your Nash Sim password recovery code is: ${code}. It expires in 10 minutes.`,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Password recovery email sent successfully:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
@@ -3375,14 +3388,14 @@ async function sendFeedbackEmail(
     `Rating: ${stars}\nFrom: ${senderLabel}\n\n${message}`;
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: FEEDBACK_INBOX,
       ...(fromEmail ? { replyTo: fromEmail } : {}),
       subject: `New Feedback${rating ? ` (${rating}★)` : ""} — Nash Equilibrium Simulator`,
       text: textContent,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Feedback email sent successfully:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {

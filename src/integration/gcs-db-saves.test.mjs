@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 11 merge (7, 7b, 7c, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 11 merge (7, 7b, 7c, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 60;
+const EXPECTED_CHECKS = 62;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1163,6 +1163,60 @@ try {
       first.status === 200 && queued.status === 200 && JSON.stringify(names) === JSON.stringify(['First', 'Peer-Game', 'Queued']),
       `stored ${JSON.stringify(names)}; preconditions ${JSON.stringify(fake.uploadLog().slice(-3).map((u) => u.ifGenerationMatch))}`);
     await stop(boot.child); await fake.close();
+  }
+
+  // 11. A MAIL SERVER THAT ACCEPTS AND GOES QUIET (at DATA). Every mail route
+  // waited on nodemailer's defaults (10 min idle): measured >90s for
+  // register, forgot-password and feedback, while the client gives up at 22s.
+  // CONTROL: the same routes against a mail server that answers are fast and
+  // 200, so a 500 below cannot come from a broken fixture.
+  {
+    const qGcs = gcsPortA + 36, qApp = port1 + 38, qSmtp = gcsPortA + 38;
+    let silent = true;
+    const smtp = net.createServer((sock) => {
+      sock.write('220 t ESMTP\r\n');
+      sock.on('data', (c) => {
+        for (const line of c.toString().split(/\r?\n/)) {
+          const v = line.split(' ')[0].toUpperCase();
+          if (!v) continue;
+          if (v === 'EHLO' || v === 'HELO') sock.write('250-t\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (v === 'AUTH') sock.write('235 ok\r\n');
+          else if (v === 'DATA') { if (!silent) sock.write('354 go\r\n'); }
+          else if (line === '.') sock.write('250 queued\r\n');
+          else if (v === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); }
+          else if (/^(MAIL|RCPT|RSET|NOOP)$/.test(v)) sock.write('250 ok\r\n');
+        }
+      });
+      sock.on('error', () => {});
+    });
+    await new Promise((r) => smtp.listen(qSmtp, '127.0.0.1', r));
+    const fake = await trackFake(startFakeGcsDb({ port: qGcs, initialContent: JSON.stringify({ users: [seededUser('u_q', 'quiet', 'q@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-smtp-'))), qApp, qGcs,
+      { SMTP_HOST: '127.0.0.1', SMTP_PORT: String(qSmtp), SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'x@example.invalid', SMTP_DEADLINE_MS: '1500' })), qApp);
+    const timed = async (route, body) => {
+      const t = Date.now();
+      try {
+        const r = await fetch(`http://127.0.0.1:${qApp}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+        return { status: r.status, ms: Date.now() - t };
+      } catch (err) { return { status: err?.name ?? 'error', ms: Date.now() - t }; }
+    };
+    const routes = [
+      ['/api/auth/register', () => ({ username: `q${Math.random().toString(36).slice(2, 7)}`, email: `q${Math.random().toString(36).slice(2, 7)}@example.test`, password: 'Sup3rSecret!23' })],
+      ['/api/auth/forgot-password', () => ({ email: 'q@example.test' })],
+      ['/api/feedback', () => ({ message: 'a quiet mail server test message' })],
+    ];
+    silent = false;
+    const ok = [];
+    for (const [route, body] of routes) ok.push(await timed(route, body()));
+    silent = true;
+    const hung = [];
+    for (const [route, body] of routes) hung.push(await timed(route, body()));
+    record('CONTROL: against an answering mail server, register / forgot-password / feedback are 200 and fast',
+      ok.every((r) => r.status === 200 && r.ms < 5000), JSON.stringify(ok));
+    record('THE DEFECT: a silent mail server gets an honest 500 inside the client\'s 22s, on every mail route',
+      hung.every((r) => r.status === 500 && r.ms >= 1400 && r.ms < 8000) && /SMTP deadline exceeded after 1500ms/.test(boot.log()),
+      JSON.stringify(hung));
+    await stop(boot.child); await fake.close(); smtp.close();
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',
