@@ -690,6 +690,23 @@ for (const neg of NEGATIVES) {
     !vIdenticalPunctuation.ok && /row labels are not distinct/.test(vIdenticalPunctuation.reason ?? ''),
     vIdenticalPunctuation.ok ? 'SERVED' : `${vIdenticalPunctuation.screen}: ${vIdenticalPunctuation.reason}`);
 
+  // RED-CLOUD-20/006: labels whose every character folds away under BOTH
+  // comparators ("(!)" -> '' for base and colorTermKey) passed as distinct when
+  // identical. Its fix (literal equality on the trimmed label) had no CI check:
+  // reverting it served this scenario with every test green (sweep 3).
+  const allFold = { ...emptyFoldRows, row1: '(!)', row2: '(!)',
+    description: 'A dispatcher raises (!) while a receiver chooses an Open Window or Closed Window.' } as SuggestedScenario;
+  const v006d = screenScenario({ ...allFold, row2: '(?)', description: 'A dispatcher raises (!) or (?) while a receiver chooses an Open Window or Closed Window.' } as SuggestedScenario, G, opts());
+  check('006 control: "(!)" folds to an empty renderer key, and the DISTINCT pair (!)/(?) is served',
+    colorTermKey('(!)') === '' && v006d.ok, `key=${JSON.stringify(colorTermKey('(!)'))} ${v006d.ok ? '' : `${v006d.screen}: ${v006d.reason}`}`);
+  const v006 = screenScenario(allFold, G, opts());
+  check('006: identical all-fold labels "(!)" / "(!)" are refused as not distinct',
+    !v006.ok && /row labels are not distinct/.test(v006.reason ?? ''), v006.ok ? 'SERVED' : `${v006.screen}: ${v006.reason}`);
+  const v006c = screenScenario({ ...allFold, col1: '(!)', col2: '(!)' , row1: 'Open Door', row2: 'Shut Door',
+    description: 'A dispatcher picks an Open Door or Shut Door while a receiver raises (!) at the dock.' } as SuggestedScenario, G, opts());
+  check('006: the same pair in the COLUMN labels is refused too',
+    !v006c.ok && /column labels are not distinct/.test(v006c.reason ?? ''), v006c.ok ? 'SERVED' : `${v006c.screen}: ${v006c.reason}`);
+
   /**
    * WHAT THE ADDED HALF COSTS on output this project already judged good: the
    * rows where the two comparators disagree. Zero means the union rejects
