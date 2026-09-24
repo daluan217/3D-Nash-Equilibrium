@@ -7,9 +7,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
-import { throttleEveryPage } from './throttle.mjs';
+import { STANDARD_CPU_THROTTLE, STRESS_CPU_THROTTLE, throttleEveryPage } from './throttle.mjs';
 
-const RATE = 11;
+const RATE = STRESS_CPU_THROTTLE;
 const MIN_RATIO = 3;
 // ~20 ms unthrottled: long enough to span the throttler's suspend slices (a 3 ms loop can land
 // in an unsuspended slice), and the MEDIAN of 5 so one lucky or unlucky run decides nothing.
@@ -41,6 +41,7 @@ try {
     assert.ok(r >= MIN_RATIO, `${path} runs throttled (${r.toFixed(1)}x slower than an unwrapped page, need >= ${MIN_RATIO}x at rate ${RATE})`);
   }
   assert.equal(throttleEveryPage(plain, 0), plain, 'rate 0 leaves the browser untouched');
+  assert.equal(STANDARD_CPU_THROTTLE, 4, 'the standard tier is the calibrated 4x (SWEEPS.md sweep 8)');
   console.log(`✓ CPU throttle reaches every page-creation path (${Object.keys(paths).length} paths, rate ${RATE}, base ${base.toFixed(1)} ms)`);
 } finally {
   await plain.close();

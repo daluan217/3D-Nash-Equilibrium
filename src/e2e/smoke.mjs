@@ -153,6 +153,7 @@ function trackPage(p) {
     if (m.type() === 'error') {
       consoleErrors.push({
         text: m.text().slice(0, 200),
+        url: m.location()?.url ?? '',
         sectionId: activeSection?.id ?? null,
         attempt: activeAttempt,
       });
@@ -12169,9 +12170,14 @@ const EXPECTED_STATUS_NOISE = {
   // TASK-18 H18: these pages were untracked, so their deliberate statuses never reached this
   // check. Measured at 1x (h18-noise): §50 a real refused write (chmod 0500) and a mocked 500
   // on adopt-local; §70 one mocked 500 on adopt-local; §78 four mocked 401s (Save x2, N1, Edit).
-  '50': [500, 500],
-  '70': [500],
-  '78': [401, 401, 401, 401],
+  // Bound to the request that causes each, so an unplanned status elsewhere is never absorbed.
+  '50': [{ status: 500, url: /\/api\/games\/adopt-local$/, why: 'FIX: the refusal says the games are still on this device (chmod 0500)' },
+    { status: 500, url: /\/api\/games\/adopt-local$/, why: 'client appends the reassurance to a mocked 500' }],
+  '70': [{ status: 500, url: /\/api\/games\/adopt-local$/, why: 'held adopt-local answered with a mocked 500' }],
+  '78': [{ status: 401, url: /\/api\/games$/, why: 'RED-DESKTOP-17/002 Save gate: first mocked 401' },
+    { status: 401, url: /\/api\/games$/, why: 'RED-DESKTOP-17/002 Save gate: resumed save meets the mocked 401' },
+    { status: 401, url: /\/api\/games$/, why: 'N1: the close+reopen gate after a mocked 401' },
+    { status: 401, url: /\/api\/games\/[^/]+$/, why: 'N3: Edit PATCH meets the mocked 401' }],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),
@@ -12185,7 +12191,9 @@ const relevantErrors = consoleErrors
     const m = STATUS_NOISE_RE.exec(error.text);
     if (!m) return true;
     const budget = remainingStatusNoise.get(error.sectionId);
-    const idx = budget ? budget.indexOf(Number(m[1])) : -1;
+    const path = (() => { try { return new URL(error.url).pathname; } catch { return ''; } })();
+    const idx = budget ? budget.findIndex((b) => (typeof b === 'number' ? b === Number(m[1])
+      : b.status === Number(m[1]) && b.url.test(path))) : -1;
     if (idx === -1) return true; // not a declared/budgeted diagnostic for this section — a real signal
     budget.splice(idx, 1); // consume exactly one; a surplus repeat is no longer expected
     return false;

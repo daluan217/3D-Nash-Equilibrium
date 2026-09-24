@@ -311,6 +311,21 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
     && !/^\s*(\/\/|\*)/.test(l as string) && !/trackPage\(await \w+\.newPage\(|browser\.newPage\(opts\)/.test(l as string));
   assert.deepEqual(untracked.map(([l, n]) => `${n}: ${(l as string).trim()}`), [], 'every page smoke.mjs creates goes through trackPage');
 }
+// TASK-18 H18 (director condition 5): a status budget names the request that causes it. The
+// legacy bare-number entries are frozen; any new entry must carry a url pattern and a reason.
+{
+  const table = smoke.slice(smoke.indexOf('const EXPECTED_STATUS_NOISE = {'), smoke.indexOf('const remainingStatusNoise'));
+  // An entry is `'id': [` up to the `],` that closes it; a trailing // comment may follow on one line.
+  const entries = [...table.matchAll(/^  '([0-9a-z]+)': \[([\s\S]*?)\],?(?:\s*\/\/[^\n]*)?$/gm)].map((m) => ({ id: m[1], body: m[2] }));
+  const bare = entries.filter(({ body }) => /^\s*\d/.test(body)).map(({ id }) => id).sort();
+  assert.deepEqual(bare, ['31', '33', '38', '60', '66b', '76', '91c', '95', '96', '97'], 'no new bare-number status budget');
+  for (const id of ['50', '70', '78']) {
+    const body = entries.find((e) => e.id === id)?.body ?? '';
+    const n = (body.match(/\{ status: \d+, url: \/.+?\/, why: '[^']+' \}/g) ?? []).length;
+    assert.ok(n > 0 && n === (body.match(/status:/g) ?? []).length, `§${id}'s budget names the request behind every status`);
+  }
+  assert.match(smoke, /url: m\.location\(\)\?\.url \?\? '',/, 'console errors keep the failing request URL');
+}
 assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
   'CI runs the CPU-throttle reach guard in a job that has chromium');
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
