@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 67;
+const EXPECTED_CHECKS = 69;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -98,7 +98,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   let stored = initialContent; // null = object does not exist
   let generation = initialGeneration;
   const uploadLog = []; // { atMs, ifGenerationMatch, body }
-  let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, afterStoreOnce = null;
+  let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, afterStoreOnce = null, n412 = 0;
   const startedAt = Date.now();
 
   const server = http.createServer((req, res) => {
@@ -141,6 +141,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
           const have = stored === null ? null : String(generation);
           const matches = ifGenerationMatch === '0' ? stored === null : ifGenerationMatch === have;
           if (!matches) {
+            n412 += 1;
             res.writeHead(412, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: { code: 412, message: 'Precondition Failed' } }));
             return;
@@ -173,6 +174,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     dropUploads: (v) => { dropUploads = v; }, // accept, never store, never answer
     peerWrite: (content) => { stored = content; generation += 1; },
     afterStoreOnce: (f) => { afterStoreOnce = f; },
+    count412: () => n412,
     // For the "GCS was unreachable at boot, comes back later" case: the
     // server object exists (so a spawned process pointed at `port` gets
     // ECONNREFUSED, not a slow timeout) but does not accept connections
@@ -1288,6 +1290,53 @@ try {
     record('CONTROL: a string field on the same route gets its ordinary 4xx (wrong code -> 400)', control.status === 400, `status ${control.status}`);
     record('THE DEFECT: every non-string auth field is a 400, never a 500', got.every(([, st]) => st === 400), JSON.stringify(got));
     await stop(boot.child); await fake.close();
+  }
+
+  // 14. A 412 STORM. Three instances on one bucket, each user saving 8 games
+  // concurrently and deleting every third, uploads slowed so they collide.
+  // Every acknowledged save must end on GCS exactly once and every
+  // acknowledged delete stay gone. FIXTURE: real 412s happened, so the
+  // re-read + 3-way merge path ran, not three serial writers.
+  {
+    const sGcs = gcsPortA + 44, ports = [port1 + 48, port1 + 50, port1 + 52];
+    const us = [0, 1, 2].map((i) => seededUser(`u_s${i}`, `storm${i}`, `s${i}@example.test`, 'Sup3rSecret!23'));
+    const fake = await trackFake(startFakeGcsDb({ port: sGcs, initialContent: JSON.stringify({ users: us, games: [] }) }));
+    const kids = [];
+    for (const p of ports) kids.push((await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-storm-'))), p, sGcs)), p)).child);
+    const tok = [];
+    for (const [i, p] of ports.entries()) {
+      tok.push((await (await fetch(`http://127.0.0.1:${p}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: `s${i}@example.test`, password: 'Sup3rSecret!23' }) })).json()).token);
+      await waitUntil(() => fake.uploadCount() >= i + 1, 5000);
+    }
+    fake.setUploadDelayMs(150);
+    const acked = [], deleted = [];
+    await Promise.all(ports.map(async (p, i) => {
+      const mine = [];
+      for (let k = 0; k < 8; k++) {
+        const r = await fetch(`http://127.0.0.1:${p}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok[i]}` },
+          body: JSON.stringify({ name: `S${i}-G${k}`, payoffs: { a11: k, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 200 && j.game?.id) { mine.push({ name: `S${i}-G${k}`, id: j.game.id }); acked.push(`S${i}-G${k}`); }
+        if (k % 3 === 2 && mine.length >= 2) {
+          const v = mine.at(-2);
+          const d = await fetch(`http://127.0.0.1:${p}/api/games/${v.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${tok[i]}` } });
+          if (d.status === 200) deleted.push(v.name);
+        }
+      }
+    }));
+    fake.setUploadDelayMs(0);
+    const names = () => { try { return JSON.parse(fake.getStored()).games.map((g) => g.name); } catch { return []; } };
+    const settled = () => { const n = new Set(names()); return acked.every((a) => deleted.includes(a) || n.has(a)) && deleted.every((d) => !n.has(d)); };
+    await waitUntil(settled, 20000);
+    const final = names(), set = new Set(final);
+    const lost = acked.filter((a) => !deleted.includes(a) && !set.has(a)), back = deleted.filter((d) => set.has(d));
+    record('fixture: 24 saves and 6 deletes acknowledged, and GCS answered real 412s (the merge path ran)',
+      acked.length === 24 && deleted.length === 6 && fake.count412() > 0, `acked ${acked.length} deleted ${deleted.length} 412s ${fake.count412()}`);
+    record('THE DEFECT: no acknowledged save lost, no acknowledged delete resurrected, no game twice, no user lost',
+      lost.length === 0 && back.length === 0 && final.length === set.size && JSON.parse(fake.getStored()).users.length === 3,
+      `lost ${JSON.stringify(lost)} back ${JSON.stringify(back)} dupes ${final.length - set.size}`);
+    for (const c of kids) await stop(c);
+    await fake.close();
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',
