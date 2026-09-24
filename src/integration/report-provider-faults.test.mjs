@@ -8,13 +8,14 @@
  *
  * Mutation-proven: M54 (no scenario deadline), M55 (no bank fallback), M56c
  * (provider logs the upstream error, key included), M57 (regenerate refuses
- * the bank fallback) each fail a check below.
+ * the bank fallback), M58 (trust every X-Forwarded-For hop), M59 (proxy not
+ * trusted: every client shares one bucket) each fail a check below.
  *
  *   node src/integration/report-provider-faults.test.mjs
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { waitForOwnServer } from './ownserver.mjs';
@@ -22,6 +23,8 @@ import { waitForOwnServer } from './ownserver.mjs';
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const PORT = Number(process.env.RPF_TEST_PORT || 3182);
 const STUB_PORT = Number(process.env.RPF_STUB_PORT || 3183);
+const TRUST_PROXY = /_TRUST_PROXY: '([^']+)'/.exec(readFileSync(path.join(serverDir, 'cloudbuild.yaml'), 'utf8'))?.[1];
+if (!TRUST_PROXY) throw new Error('cloudbuild.yaml has no _TRUST_PROXY substitution');
 const BASE = `http://127.0.0.1:${PORT}`;
 const CANARY = 'sk-RPF-CANARY-7f3a91';
 const results = [];
@@ -57,7 +60,7 @@ const stop = (child) => new Promise((resolve) => {
 await new Promise((r) => stub.listen(STUB_PORT, '127.0.0.1', r));
 const cwd = mkdtempSync(path.join(tmpdir(), 'nash-rpf-'));
 const child = spawn('node', [path.join(serverDir, 'dist/server.cjs')], { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: {
-  PATH: process.env.PATH, HOME: cwd, NODE_ENV: 'production', PORT: String(PORT), REPORT_MODEL: 'gpt-5.6-luna',
+  PATH: process.env.PATH, HOME: cwd, NODE_ENV: 'production', PORT: String(PORT), TRUST_PROXY, REPORT_MODEL: 'gpt-5.6-luna',
   NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1', NASH_SCENARIO_REGEN: '0', NASH_SCENARIO_TIMEOUT_MS: '3000',
   AZURE_FOUNDRY_ENDPOINT: `http://127.0.0.1:${STUB_PORT}/v1`, AZURE_FOUNDRY_API_KEY: CANARY } });
 let log = ''; child.stdout.on('data', (d) => { log += d; }); child.stderr.on('data', (d) => { log += d; });
@@ -100,10 +103,19 @@ try {
     seen[1].ms < 15000 && seen[1].status === 200, `hang ${seen[1].ms}ms`);
   record('THE DEFECT: "New AI scenario" under a failing provider answers a bank scenario, never provider text',
     only.every((o) => o.status === 200 && !o.leak && o.scenario && o.sc === 'bank-fallback' && o.failure === null), JSON.stringify(only));
+  // Google's front end APPENDS the real client to X-Forwarded-For; a client can
+  // prepend anything. Rotating the prepended hop must not buy a fresh report
+  // budget (live 2026-09-24: #21 of 24 spoofed POSTs was 429).
+  const post = (xff) => fetch(`${BASE}/api/report`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: '{"payoffs":{"a11":"x"}}' }).then((r) => r.status);
+  const spoofed = [];
+  for (let i = 1; i <= 21; i++) spoofed.push(await post(`203.0.113.${i}, 198.51.100.7`));
+  const other = await post('203.0.113.1, 198.51.100.8');
+  record(`THE DEFECT: a rotated spoofed X-Forwarded-For hop does not reset the report limit (TRUST_PROXY=${TRUST_PROXY} from cloudbuild)`,
+    spoofed.slice(0, 20).every((s) => s === 400) && spoofed[20] === 429 && other === 400, `spoofed=${spoofed.join(',')} otherClient=${other}`);
   record('CONTROL: an answering provider is fast (the fault timings are the faults, not the harness)', ok.ms < 5000, `ok ${ok.ms}ms`);
 } finally {
   await stop(child); await new Promise((r) => stub.close(r)); rmSync(cwd, { recursive: true, force: true });
 }
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-if (failed.length || results.length !== 6) process.exit(1);
+if (failed.length || results.length !== 7) process.exit(1);
