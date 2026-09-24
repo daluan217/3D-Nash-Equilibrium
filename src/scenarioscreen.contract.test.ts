@@ -34,6 +34,7 @@ import { SCENARIO_SCREENS, screenScenario, type ScreenOptions } from './utils/sc
 import { allBankRows } from './utils/bankSource';
 import { colorTermKey } from './utils/colorTerms';
 import { stripUnsafeText } from './utils/textSafety';
+import { scenarioIsClaimFree } from './utils/nashValidator';
 import { SERVE_PROBES } from './utils/scenarioBank';
 import type { GamePayoffs, SuggestedScenario } from './types';
 
@@ -746,6 +747,26 @@ for (const neg of NEGATIVES) {
     const v = screenScenario({ ...dock, description: innocent } as SuggestedScenario, PD, opts());
     check(`control: "more"/"beat"/"superior" with no comparison between options is served: "${innocent.slice(0, 50)}…"`, v.ok, v.ok ? '' : `${v.screen}: ${v.reason}`);
   }
+  // The SUPERLATIVE form served in every spelling but "better off" (sweep 7,
+  // constructed; 0 real): each names Open Window, dominated here, as the
+  // payoff-maximiser. Idioms stay legal: the label-bound arms need a label.
+  for (const phrase of ['Open Window pays the most for the dispatcher', 'For the dispatcher, Open Window brings the most gain',
+    'Open Window is the most profitable choice for the dispatcher', "Open Window maximizes the dispatcher's income",
+    'Nothing beats Open Window for the dispatcher', 'Open Window always wins for the dispatcher', 'Open Window is the smart move for the dispatcher',
+    "Open Window is the dispatcher's top earner", 'Open Window leaves the dispatcher ahead whatever the receiver does']) {
+    const v = screenScenario({ ...dock, description: `${phrase} while a receiver chooses Ship or Hold.` } as SuggestedScenario, PD, opts());
+    check(`a superlative payoff claim is refused: "${phrase}"`, !v.ok && v.screen === 'claim-free' && /superlative/.test(v.reason ?? ''),
+      v.ok ? 'SERVED' : `${v.screen}: ${v.reason}`);
+  }
+  for (const innocent of ['The dispatcher makes the most of a quiet morning and picks Open Window or Closed Window while a receiver chooses Ship or Hold.',
+    'Nothing beats a calm sea, but a dispatcher still picks Open Window or Closed Window while a receiver chooses Ship or Hold.',
+    'A dispatcher who always wins praise picks Open Window or Closed Window while the most northern receiver chooses Ship or Hold.']) {
+    const v = screenScenario({ ...dock, description: innocent } as SuggestedScenario, PD, opts());
+    check(`control: "the most"/"nothing beats"/"always wins" as an idiom is served: "${innocent.slice(0, 50)}…"`, v.ok, v.ok ? '' : `${v.screen}: ${v.reason}`);
+  }
+  let superlativeRows = 0;
+  for (const e of allBankRows()) if (scenarioIsClaimFree(e.s as SuggestedScenario).reason === 'a superlative payoff claim') superlativeRows++;
+  check('the superlative rule refuses no shipped bank row', superlativeRows === 0, `${superlativeRows} bank rows refused`);
 
   /**
    * WHAT THE ADDED HALF COSTS on output this project already judged good: the
