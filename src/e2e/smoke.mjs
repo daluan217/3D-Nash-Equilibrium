@@ -10641,13 +10641,16 @@ const suggestedScenario = {
       // unfixed tree settles at 191px and still fails, so this cannot mask it.
       // Swallowed, this turns a slow machine into a width failure with no way to
       // tell them apart; it is returned instead and asserted on its own row.
-      const settled = await p.waitForFunction(() => new Promise((resolve) => {
-        let last = document.documentElement.scrollWidth, stable = 0;
-        const tick = () => { const v = document.documentElement.scrollWidth;
+      // Bounded in FRAMES, not seconds (TASK-18 sweep 6): at 11x CPU (about CI) a frame takes
+      // 0.4-0.7 s, so 30 stable frames took 12.7-22.4 s and a 20 s bound read a slow runner as
+      // "never held". Unsettled now means the width still changed within 600 frames.
+      const settled = await p.evaluate(() => new Promise((resolve) => {
+        let last = document.documentElement.scrollWidth, stable = 0, frames = 0;
+        const tick = () => { const v = document.documentElement.scrollWidth; frames++;
           stable = v === last ? stable + 1 : 0; last = v;
-          if (stable >= 30) resolve(true); else requestAnimationFrame(tick); };
+          if (stable >= 30) resolve(true); else if (frames >= 600) resolve(false); else requestAnimationFrame(tick); };
         requestAnimationFrame(tick);
-      }), null, { timeout: 20000 }).then(() => true).catch(() => false);
+      })).catch(() => false);
       return p.evaluate(() => {
         const de = document.documentElement, vw = de.clientWidth, vh = de.clientHeight;
         window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
@@ -10888,7 +10891,7 @@ const suggestedScenario = {
           Math.abs(m.vw - Math.round(w / z)) <= 2, `measured=${m.vw} expected=${Math.round(w / z)}`);
         record(`§${sid} ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
         record(`§${sid} ${at} fixture guard: the width held still before it was read (a slow runner is not a reflow failure)`,
-          m.settled, 'scrollWidth never held for 30 frames within 20 s');
+          m.settled, 'scrollWidth never held for 30 frames within 600');
         record(`§${sid} ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
           m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
         record(`§${sid} ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));

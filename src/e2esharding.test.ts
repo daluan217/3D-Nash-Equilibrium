@@ -250,6 +250,13 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert.match(sectionBodies.get('100d') ?? '', /await l\.click\(\{ timeout: 60000 \}\)\.then\(\(\) => true\)/, '§100d gives each "can it be pressed" click 60 s');
   assert.match(s105, /const decision = await pt\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
 }
+// TASK-18 sweep 6: §100's width settle is bounded in frames (a 20 s bound failed at 11x, where
+// 30 frames took 12.7-22.4 s; the next combo's viewport row then read 390 as a knock-on).
+{
+  const m100 = smoke.slice(smoke.indexOf('const measure = async (p, cdp, w, z) => {'), smoke.indexOf('const p97 = await newTrackedPage('));
+  assert(m100.length > 0 && !/timeout: 20000 \}\)\.then\(\(\) => true\)/.test(m100), '§100 measure has no 20 s bound on its settle');
+  assert.match(m100, /if \(stable >= 30\) resolve\(true\); else if \(frames >= 600\) resolve\(false\);/, '§100 settle: 30 stable frames, unsettled only after 600 frames');
+}
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
