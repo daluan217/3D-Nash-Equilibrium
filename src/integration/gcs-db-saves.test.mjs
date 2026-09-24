@@ -46,6 +46,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
@@ -55,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 6 merge (7, 7b) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 9 merge (7, 7b, 7c) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 55;
+const EXPECTED_CHECKS = 58;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -898,6 +899,79 @@ try {
       !fin.users.some((u) => u.id === 'u_D2') && !fin.users.some((u) => u.id === 'u_D1'), JSON.stringify(fin.users.map((u) => u.id)));
     record('THE DEFECT: no game is left owned by a deleted account', !fin.games.some((g) => g.userId === 'u_D1'), JSON.stringify(fin.games));
     await stop(X.child); await stop(Y.child); await fake.close();
+  }
+
+  // 7c. ONE EMAIL, TWO ACCOUNTS. In a rollover both instances answer "that
+  // email is free" from their own memory. Measured before the fix: two rows
+  // for one email on GCS, the second account could neither verify nor log in.
+  // Now one account survives and the dropped one's game moves to it; a SECOND
+  // pair shares only a username, which is two people, so one is renamed and
+  // both keep their accounts. CONTROL: both registrations were accepted and
+  // both instances really wrote (4 accounts reached GCS in total).
+  {
+    const eGcs = gcsPortA + 30, eX = port1 + 28, eY = port1 + 32, smtpPort = gcsPortA + 32;
+    const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+    const codes = [];
+    const smtp = net.createServer((sock) => {
+      let inData = false, buf = '';
+      sock.write('220 t ESMTP\r\n');
+      sock.on('data', (c) => {
+        for (const line of c.toString().split(/\r?\n/)) {
+          if (inData) { if (line === '.') { inData = false; codes.push(buf.match(/\b(\d{6})\b/)?.[1]); buf = ''; sock.write('250 ok\r\n'); } else buf += `${line}\n`; continue; }
+          const v = line.split(' ')[0].toUpperCase();
+          if (!v) continue;
+          if (v === 'EHLO' || v === 'HELO') sock.write('250-t\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (v === 'AUTH') sock.write('235 ok\r\n');
+          else if (v === 'DATA') { inData = true; sock.write('354 go\r\n'); }
+          else if (v === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); }
+          else sock.write('250 ok\r\n');
+        }
+      });
+      sock.on('error', () => {});
+    });
+    await new Promise((r) => smtp.listen(smtpPort, '127.0.0.1', r));
+    const mailEnv = { SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtpPort), SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'x@example.invalid' };
+    const fake = await trackFake(startFakeGcsDb({ port: eGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
+    const X = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-dupx-'))), eX, eGcs, mailEnv)), eX);
+    const Y = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-dupy-'))), eY, eGcs, mailEnv)), eY);
+    const call = (p, route, body, token) => fetch(`http://127.0.0.1:${p}${route}`, { method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+    const onGcs = () => { try { return JSON.parse(fake.getStored()); } catch { return { users: [], games: [] }; } };
+    const settle = async () => { let last = null; await waitUntil(() => { const now = fake.getStored(); const same = now === last; last = now; return same; }, 6000); };
+    const signUp = async (p, username, email, password) => {
+      const r = await call(p, '/api/auth/register', { username, email, password });
+      const code = codes.at(-1);
+      const v = await call(p, '/api/auth/verify', { email, code });
+      const t = (await (await call(p, '/api/auth/login', { email, password })).json()).token;
+      return { r: r.status, v: v.status, t };
+    };
+    // Uploads are held so every step below happens on both instances before
+    // either write lands: the rollover race, not "register an email GCS has".
+    // Sequential, not Promise.all: the fake SMTP's last code must be this call's.
+    fake.setUploadDelayMs(6000);
+    const a = await signUp(eX, 'alice', 'same@example.test', 'Sup3rSecretX');
+    const b = await signUp(eY, 'bob', 'SAME@example.test', 'Sup3rSecretY');
+    const c = await signUp(eX, 'carol', 'carol@example.test', 'Sup3rSecretC');
+    const d = await signUp(eY, 'Carol', 'dave@example.test', 'Sup3rSecretD');
+    const ga = await call(eX, '/api/games', { name: 'Alice-Game', payoffs: pay }, a.t);
+    const gb = await call(eY, '/api/games', { name: 'Bob-Game', payoffs: pay }, b.t);
+    const beforeLanding = fake.uploadCount();
+    fake.setUploadDelayMs(0);
+    await waitUntil(() => onGcs().games.length >= 2, 15000); await settle(); await new Promise((r) => setTimeout(r, 1500)); await settle();
+    const seenIds = new Set(fake.uploadLog().flatMap((u) => { try { return JSON.parse(u.body).users.map((x) => x.id); } catch { return []; } }));
+    const fin = onGcs();
+    const same = fin.users.filter((u) => u.email.toLowerCase() === 'same@example.test');
+    const carols = fin.users.filter((u) => u.username.toLowerCase().startsWith('carol'));
+    record('fixture: all four sign-ups and both games were accepted before any upload landed, and 4 accounts reached GCS',
+      [a, b, c, d].every((x) => x.r === 200 && x.v === 200 && typeof x.t === 'string') && ga.status === 200 && gb.status === 200
+        && beforeLanding === 0 && seenIds.size === 4,
+      JSON.stringify([a, b, c, d].map((x) => [x.r, x.v, typeof x.t])) + ` games ${ga.status}/${gb.status}, landed early ${beforeLanding}, ids seen ${seenIds.size}`);
+    record('THE DEFECT: one email ends as ONE account, holding BOTH instances\' games',
+      same.length === 1 && ['Alice-Game', 'Bob-Game'].every((n) => fin.games.some((g) => g.name === n && g.userId === same[0]?.id)),
+      `accounts ${same.length}; games ${JSON.stringify(fin.games.map((g) => [g.name, g.userId === same[0]?.id]))}`);
+    record('THE DEFECT: one username shared by two people ends as two accounts with distinct names',
+      carols.length === 2 && new Set(carols.map((u) => u.username.toLowerCase())).size === 2, JSON.stringify(carols.map((u) => u.username)));
+    await stop(X.child); await stop(Y.child); await fake.close(); smtp.close();
   }
 
   // ───────────────────────────────────────────────────────────────────────────

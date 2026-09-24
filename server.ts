@@ -766,6 +766,8 @@ interface User {
   recoveryCodeExpires?: number;
   recoveryCodeAttempts?: number;
   tokenVersion?: number;
+  /** Ids of duplicate-email accounts folded into this one (see dedupeAccounts). */
+  mergedFrom?: string[];
 }
 
 interface DB {
@@ -1140,6 +1142,10 @@ function normalizeDbShape(parsed: unknown, filePath: string): DB {
       for (const [i, u] of value.entries()) {
         const f = (["id", "username", "email", "passwordHash"] as const).find((k) => typeof u[k] !== "string");
         if (f) throw new Error(`${filePath}: "users[${i}].${f}" is not a string — refusing to guess its contents.`);
+        const m = (u as { mergedFrom?: unknown }).mergedFrom;
+        if (m !== undefined && !(Array.isArray(m) && m.every((x) => typeof x === "string"))) {
+          throw new Error(`${filePath}: "users[${i}].mergedFrom" is not a list of ids — refusing to guess its contents.`);
+        }
       }
     }
     return value;
@@ -2155,11 +2161,62 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
   };
   const users = merge(remote.users, local.users, baseline?.users ?? [], unacked?.users ?? []);
   const kept = new Set(users.map((u) => u.id));
+  // A folded duplicate is not a deleted account: its games follow the alias.
+  const alias = new Map(users.flatMap((u) => (u.mergedFrom ?? []).map((from) => [from, u.id] as const)));
   const known = [...(baseline?.users ?? []), ...(unacked?.users ?? [])].map((u) => u.id);
-  const goneUsers = new Set(known.filter((id) => !kept.has(id)));
+  const goneUsers = new Set(known.filter((id) => !kept.has(id) && !alias.has(id)));
   const games = merge(remote.games, local.games, baseline?.games ?? [], unacked?.games ?? [])
+    .map((g) => (alias.has(g.userId) ? { ...g, userId: alias.get(g.userId)! } : g))
     .filter((g) => !goneUsers.has(g.userId));
-  return { users, games };
+  return dedupeAccounts({ users, games }, remote);
+}
+
+/**
+ * Two instances in a rollover each checked "is this email/username free?"
+ * against their own memory, so a merge could hold two accounts for one email
+ * (the second could neither verify nor log in) or one username. Only pairs
+ * involving an account this process ADDED (absent from `remote`) are touched;
+ * duplicates GCS already held together stay as they are. Same email: one
+ * account survives (verified first, then GCS's) and the other's games move to
+ * it — the mailbox owns both. Same username only: two people, so the added
+ * one is renamed, never merged.
+ */
+function dedupeAccounts(db: DB, remote: DB): DB {
+  const norm = (v: string) => v.trim().toLowerCase();
+  const onGcs = new Set(remote.users.map((u) => u.id));
+  const byEmail = new Map<string, User>();
+  const movedTo = new Map<string, string>();
+  for (const u of [...db.users].sort((a, b) => Number(onGcs.has(b.id)) - Number(onGcs.has(a.id)))) {
+    const held = byEmail.get(norm(u.email));
+    if (!held || (onGcs.has(held.id) && onGcs.has(u.id))) { if (!held) byEmail.set(norm(u.email), u); continue; }
+    const [keep, drop] = !held.isVerified && u.isVerified ? [u, held] : [held, u];
+    movedTo.set(drop.id, keep.id);
+    for (const [from, to] of movedTo) if (to === drop.id) movedTo.set(from, keep.id);
+    byEmail.set(norm(u.email), keep);
+  }
+  // The kept account records what it absorbed, so a game the other instance
+  // saves for the folded id before it learns of the fold still finds a home.
+  const absorbed = new Map<string, string[]>();
+  for (const [from, to] of movedTo) {
+    const was = db.users.find((u) => u.id === from)?.mergedFrom ?? [];
+    absorbed.set(to, [...(absorbed.get(to) ?? []), from, ...was]);
+  }
+  const kept = db.users.filter((u) => !movedTo.has(u.id))
+    .map((u) => (absorbed.has(u.id) ? { ...u, mergedFrom: [...new Set([...(u.mergedFrom ?? []), ...absorbed.get(u.id)!])] } : u));
+  const taken = new Set(kept.filter((u) => onGcs.has(u.id)).map((u) => norm(u.username)));
+  const renamed = new Map<string, string>();
+  for (const u of kept.filter((k) => !onGcs.has(k.id))) {
+    const name = taken.has(norm(u.username)) ? `${clampGraphemeSafe(u.username.trim(), 33)}-${u.id.slice(-6)}` : u.username;
+    taken.add(norm(name));
+    if (name !== u.username) renamed.set(u.id, name);
+  }
+  if (movedTo.size === 0 && renamed.size === 0) return db;
+  console.warn(`Account merge: ${movedTo.size} duplicate-email account(s) folded into the kept one `
+    + `(${[...movedTo].map(([from, to]) => `${from}->${to}`).join(', ')}); ${renamed.size} username(s) made unique.`);
+  return {
+    users: kept.map((u) => (renamed.has(u.id) ? { ...u, username: renamed.get(u.id)! } : u)),
+    games: db.games.map((g) => (movedTo.has(g.userId) ? { ...g, userId: movedTo.get(g.userId)! } : g)),
+  };
 }
 
 /**
