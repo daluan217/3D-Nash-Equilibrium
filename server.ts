@@ -7,6 +7,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { isDeepStrictEqual } from "util";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -1131,6 +1132,16 @@ function normalizeDbShape(parsed: unknown, filePath: string): DB {
         + `not an object — refusing to guess its contents.`
       );
     }
+    // One level further for users: every auth route calls string methods on
+    // these four (`u.email.trim()`, `passwordHash.startsWith`), so `users:[{}]`
+    // 500'd login and register for everyone. `''` stays legal (the desktop
+    // local owner's passwordHash). Games are not checked: no reader crashes.
+    if (name === "users") {
+      for (const [i, u] of value.entries()) {
+        const f = (["id", "username", "email", "passwordHash"] as const).find((k) => typeof u[k] !== "string");
+        if (f) throw new Error(`${filePath}: "users[${i}].${f}" is not a string — refusing to guess its contents.`);
+      }
+    }
     return value;
   };
 
@@ -1968,6 +1979,96 @@ function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS): Pro
   });
 }
 
+/**
+ * The ONE reader of the bucket's db.json, for boot, re-sync and the 412 retry.
+ * Metadata first, then a download BOUND to that generation (`download()`
+ * ignores `preconditionOpts` in @google-cloud/storage 7, so content and a
+ * separate generation could straddle a concurrent write — CodeRabbit, PR #85).
+ * Shape-checked by the same `normalizeDbShape` the local path uses: the boot
+ * branch used to `JSON.parse` straight into `inMemoryDb`, so `users:[null]`
+ * 500'd every auth route, and a legacy `{games:[...]}` threw AFTER the
+ * generation was adopted, so the first save replaced the bucket with an
+ * empty database (BLUE-LOOP-CLOUD-22, hit a).
+ */
+async function readGcsDb(): Promise<{ db: DB; generation: string } | null> {
+  const { Storage } = await import('@google-cloud/storage');
+  const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
+  const [exists] = await withDeadline(file.exists(), 'db.json exists()');
+  if (!exists) return null;
+  const [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
+  const [content] = await withDeadline(
+    file.bucket.file('db.json', { generation: meta.generation }).download(),
+    'db.json download()',
+  );
+  let db: DB;
+  try {
+    db = normalizeDbShape(JSON.parse(content.toString('utf-8')), `gs://${GCS_BUCKET}/db.json`);
+  } catch (err) {
+    blockGcsStore(err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+  if (meta.generation == null) throw new Error('db.json metadata carried no generation');
+  return { db, generation: String(meta.generation) };
+}
+
+/**
+ * Set when the bucket's db.json was READ but is not a database we can trust.
+ * Exiting would crash-loop the whole site (max-instances=1, scale to zero)
+ * for a fault only the DB routes share, so the process keeps serving static,
+ * report and download routes; the DB routes answer 503 and the pump never
+ * writes, so the bytes stay in the bucket for the operator. Cleared only by a
+ * restart after the object is repaired.
+ */
+let gcsStoreBlocked: string | null = null;
+function blockGcsStore(reason: string): void {
+  gcsStoreBlocked = reason;
+  console.error(`GCS store BLOCKED for this process: ${reason.replace(/\.$/, '')}. Account and saved-game routes answer 503 and nothing `
+    + `is written to the bucket; repair or restore gs://${GCS_BUCKET}/db.json, then restart the service.`);
+}
+
+/**
+ * Establish what is on GCS: adopt it as the baseline and fold the process's
+ * own state in (a no-op at boot). Throws on any failure, leaving
+ * `gcsGeneration` null so every writer re-syncs first. `loadDB()` is read
+ * AFTER the awaits: routes commit meanwhile, and merging an older snapshot
+ * wrote it back over them (#208).
+ */
+async function syncFromGcs(): Promise<void> {
+  const remote = await readGcsDb();
+  if (remote === null) {
+    gcsBaselineDb = { users: [], games: [] };
+    gcsGeneration = '0'; // GCS's own "must not exist yet" precondition
+    return;
+  }
+  const baseline = structuredClone(remote.db); // routes mutate records in place; the baseline must not follow
+  // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
+  // without it, a game created in it and deleted since came back (main too).
+  applyMergedDb(unionMergeDb(remote.db, loadDB(), gcsBaselineDb, gcsUnackedDb));
+  gcsBaselineDb = baseline;
+  gcsGeneration = remote.generation;
+}
+
+/**
+ * Hosted DB routes serve only a store this process has READ. After a failed
+ * boot read, `inMemoryDb` is an empty stand-in: a real user got 401 from it
+ * and could register their own email a second time (hit b). One shared sync
+ * attempt per burst; failure is an honest 503, never a guess.
+ */
+let gcsSyncInFlight: Promise<void> | null = null;
+function requireGcsStore(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (process.env.ELECTRON_USER_DATA_PATH || !GCS_BUCKET || (gcsGeneration !== null && !gcsStoreBlocked)) return next();
+  const unavailable = () => {
+    res.setHeader('Retry-After', '30');
+    res.status(503).json({ error: 'Accounts and saved games are temporarily unavailable. Please try again shortly.' });
+  };
+  if (gcsStoreBlocked) return unavailable();
+  gcsSyncInFlight ??= syncFromGcs().finally(() => { gcsSyncInFlight = null; });
+  gcsSyncInFlight.then(
+    () => (gcsGeneration !== null && !gcsStoreBlocked ? next() : unavailable()),
+    (err) => { console.error('GCS read before serving a DB route failed:', err); unavailable(); },
+  );
+}
+
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
 // Returns `false` when `loadDBFromFile` refused to load an unrecoverable
 // db.json shape (RED-DESKTOP-6/001) — the failure has already been reported
@@ -1980,52 +2081,16 @@ async function initDB(): Promise<boolean> {
     if (db === null) return false;
     inMemoryDb = db;
   } else if (GCS_BUCKET) {
+    // A read failure keeps the S60 fallback (boot and serve), but the store is
+    // then UNREAD: `requireGcsStore` makes the DB routes sync or 503 rather
+    // than answer from an empty stand-in (hit b). A MALFORMED object blocks
+    // the store for this process instead of exiting — see `gcsStoreBlocked`.
+    inMemoryDb = { users: [], games: [] }; // the merge target; stays empty (and unread) if the read fails
     try {
-      const { Storage } = await import('@google-cloud/storage');
-      const storage = new Storage();
-      const file = storage.bucket(GCS_BUCKET).file('db.json');
-      // Deadlines here are what keep a hung GCS from blocking `app.listen`
-      // forever (see `withDeadline`). A breach lands in the same `catch` as
-      // any other GCS failure, so the existing local-file fallback applies
-      // unchanged — the process boots and serves instead of hanging dark.
-      const [exists] = await withDeadline(file.exists(), 'db.json exists()');
-      if (exists) {
-        // Metadata FIRST, then a download BOUND to that generation:
-        // `download()` ignores `preconditionOpts` in @google-cloud/storage 7,
-        // so content and a separately fetched generation could straddle a
-        // concurrent write, and the next conditional save would overwrite
-        // that write without ever seeing a 412 (CodeRabbit, PR #85).
-        const [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
-        const [content] = await withDeadline(
-          file.bucket.file('db.json', { generation: meta.generation }).download(),
-          'db.json download()',
-        );
-        inMemoryDb = JSON.parse(content.toString('utf-8'));
-        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
-        // A genuine deep copy, not a reference to `inMemoryDb`: the object
-        // returned here would otherwise be the SAME live object every future
-        // caller mutates in place (every `saveDB` call site does
-        // `const db = loadDB(); db.games.push(...); saveDB(db);` against the
-        // one shared singleton), which would make this "baseline" silently
-        // track every future edit instead of staying pinned to what was
-        // actually on GCS at boot — exactly the state `unionMergeDb` needs to
-        // tell "deleted since we last synced" apart from "never existed."
-        gcsBaselineDb = JSON.parse(JSON.stringify(inMemoryDb));
-      } else {
-        inMemoryDb = { users: [], games: [] };
-        gcsBaselineDb = { users: [], games: [] };
-        // `0` is GCS's own convention for "this object must not exist yet" —
-        // protects the very first save of a brand-new bucket against a race
-        // with another instance's own first save landing in between this
-        // exists() check and that save.
-        gcsGeneration = '0';
-      }
-      console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb!.users.length} users, ${inMemoryDb!.games.length} games`);
+      await syncFromGcs();
+      console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb.users.length} users, ${inMemoryDb.games.length} games`);
     } catch (err) {
-      console.error('Error loading DB from GCS, falling back to local file:', err);
-      const db = loadDBFromFile();
-      if (db === null) return false;
-      inMemoryDb = db;
+      if (!gcsStoreBlocked) console.error('Error loading DB from GCS; DB routes will retry the read before serving:', err);
     }
   } else {
     const db = loadDBFromFile();
@@ -2065,23 +2130,37 @@ function loadDB(): DB {
  * from both sides of the union honors that deletion even though `remote`
  * doesn't know about it yet.
  */
-function unionMergeDb(remote: DB, local: DB, baseline: DB | null): DB {
-  const baseUserIds = new Set((baseline?.users ?? []).map((u) => u.id));
-  const baseGameIds = new Set((baseline?.games ?? []).map((g) => g.id));
-  const localUserIds = new Set(local.users.map((u) => u.id));
-  const localGameIds = new Set(local.games.map((g) => g.id));
-  const deletedUserIds = new Set([...baseUserIds].filter((id) => !localUserIds.has(id)));
-  const deletedGameIds = new Set([...baseGameIds].filter((id) => !localGameIds.has(id)));
-
-  const mergedUsers = new Map<string, User>();
-  for (const u of remote.users) if (!deletedUserIds.has(u.id)) mergedUsers.set(u.id, u);
-  for (const u of local.users) if (!deletedUserIds.has(u.id)) mergedUsers.set(u.id, u); // local wins a same-id collision
-
-  const mergedGames = new Map<string, SavedGame>();
-  for (const g of remote.games) if (!deletedGameIds.has(g.id)) mergedGames.set(g.id, g);
-  for (const g of local.games) if (!deletedGameIds.has(g.id)) mergedGames.set(g.id, g);
-
-  return { users: [...mergedUsers.values()], games: [...mergedGames.values()] };
+function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | null = null): DB {
+  // THREE-way, not two (BLUE-LOOP-CLOUD-22, hit c): a stale instance's
+  // untouched copy of a record another instance DELETED (delete-confirm) or
+  // CHANGED (a reset's hash and tokenVersion) used to overwrite that. `unacked`
+  // is what uploads we gave up on carried: they may have landed, so their
+  // records count as "known remotely" for deletions made HERE, never as proof
+  // of a remote deletion (they may not have landed; losing data is worse).
+  const merge = <T extends { id: string }>(r: T[], l: T[], b: T[], u: T[]): T[] => {
+    const base = new Map(b.map((x) => [x.id, x]));
+    const sent = new Map(u.map((x) => [x.id, x]));
+    const inLocal = new Set(l.map((x) => x.id));
+    const rem = new Map(r.map((x) => [x.id, x]));
+    const same = (x: T, y: T | undefined) => y !== undefined && isDeepStrictEqual(JSON.parse(JSON.stringify(x)), y);
+    const out = new Map<string, T>();
+    for (const x of r) if (inLocal.has(x.id) || !(base.has(x.id) || sent.has(x.id))) out.set(x.id, x);
+    for (const x of l) {
+      const was = base.get(x.id), there = rem.get(x.id);
+      if (was !== undefined && there === undefined) continue; // deleted remotely
+      // Unchanged here since the last known remote state: remote's copy stands.
+      if (there !== undefined && (same(x, was) || (same(x, sent.get(x.id)) && !same(there, was)))) continue;
+      out.set(x.id, x); // new or changed here: local wins a same-id collision
+    }
+    return [...out.values()];
+  };
+  const users = merge(remote.users, local.users, baseline?.users ?? [], unacked?.users ?? []);
+  const kept = new Set(users.map((u) => u.id));
+  const known = [...(baseline?.users ?? []), ...(unacked?.users ?? [])].map((u) => u.id);
+  const goneUsers = new Set(known.filter((id) => !kept.has(id)));
+  const games = merge(remote.games, local.games, baseline?.games ?? [], unacked?.games ?? [])
+    .filter((g) => !goneUsers.has(g.userId));
+  return { users, games };
 }
 
 /**
@@ -2128,101 +2207,52 @@ function applyMergedDb(merged: DB): DB {
  * TCP/TLS already guarantee byte-level integrity end to end, and it is what
  * the fake-GCS integration test also mocks against.
  */
-async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
-  if (attempt > 2) {
-    console.error('GCS write failed after repeated generation conflicts — giving up on this save. A later save will try again with fresh state.');
-    return;
-  }
+async function uploadDbToGcs(): Promise<void> {
+  // Never write over state this process has not read: a failed boot read
+  // leaves `gcsGeneration` null, and an unconditional save would replace the
+  // bucket with the empty stand-in (CodeRabbit). Throws on any failure; the
+  // pump owns retrying.
+  if (gcsGeneration === null) await syncFromGcs();
   const { Storage } = await import('@google-cloud/storage');
-  const storage = new Storage();
-  const file = storage.bucket(GCS_BUCKET!).file('db.json');
-
-  // `gcsGeneration === null` means we have NEVER established what is
-  // actually on GCS — most plausibly `initDB`'s GCS read threw and fell
-  // back to `loadDBFromFile()` (which, in hosted mode, reads a LOCAL file
-  // that does not exist in Cloud Run and returns an empty database).
-  // Uploading unconditionally in that state would be a real, unconditional
-  // write with no precondition at all, which would REPLACE the real remote
-  // object with that empty fallback — CodeRabbit caught this. Re-sync
-  // first rather than either writing blindly or refusing to ever write
-  // again: this makes the process self-healing once GCS is reachable,
-  // instead of a transient load failure at boot permanently disabling all
-  // future saves.
-  if (gcsGeneration === null) {
+  const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
+  for (let attempt = 0; ; attempt++) {
+    if (gcsStoreBlocked) return;
+    // The CURRENT state, serialized at send time: routes commit while this
+    // awaits, and uploading an older snapshot wrote it back over them (#208).
+    const bodyStr = JSON.stringify(loadDB(), null, 2);
     try {
-      const [exists] = await withDeadline(file.exists(), 're-sync exists()');
-      if (exists) {
-        const [meta] = await withDeadline(file.getMetadata(), 're-sync getMetadata()'); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await withDeadline(
-          file.bucket.file('db.json', { generation: meta.generation }).download(),
-          're-sync download()',
-        );
-        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
-        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        // Merge the CURRENT state, not `db`: `db` is the snapshot this upload
-        // started with, and routes commit new snapshots meanwhile. Merging `db`
-        // wrote it back over them (a game saved or a rollback committed during
-        // the upload was lost). Same at the 412 merge below.
-        db = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
-      } else {
-        gcsGeneration = '0'; // GCS's own "must not exist yet" convention, matching initDB
-      }
-    } catch (err) {
-      console.error('GCS write skipped: could not establish the object generation after a previous load failure. A later save will retry:', err);
-      return; // fail SAFE — do not write blindly over state we have never read
-    }
-  }
-
-  const bodyStr = JSON.stringify(db, null, 2);
-  const saveOpts: {
-    contentType: string; resumable: boolean; validation: boolean; timeout: number;
-    preconditionOpts?: { ifGenerationMatch: string };
-  } = {
-    contentType: 'application/json', resumable: false, validation: false,
-    // This existing request option becomes a query parameter, not a local
-    // deadline; `withDeadline` is what stops a hung upload pinning this pump.
-    timeout: 30_000,
-  };
-  if (gcsGeneration !== null) {
-    saveOpts.preconditionOpts = { ifGenerationMatch: gcsGeneration };
-  }
-  try {
-    await withDeadline(file.save(bodyStr, saveOpts), 'db.json save()');
-    // Read the generation OFF THE UPLOAD RESPONSE ITSELF
-    // (`@google-cloud/storage` populates `file.metadata` from it), not a
-    // separate `getMetadata()` call — CodeRabbit caught the TOCTOU: between
-    // our write completing and a follow-up GET landing, a DIFFERENT writer
-    // could have already written again, and we would then silently adopt
-    // THEIR generation as if it were the result of our own write, letting
-    // our next save overwrite theirs without ever seeing a 412.
-    const generation = file.metadata?.generation;
-    gcsGeneration = generation != null ? String(generation) : null;
-    gcsBaselineDb = JSON.parse(bodyStr); // see initDB's comment: a real copy, not a live reference
-  } catch (err: any) {
-    if (err?.code === 412) {
-      // Someone else wrote first. Re-download, merge OUR pending changes
-      // onto their state, and retry with the fresh generation.
-      try {
-        const [meta] = await withDeadline(file.getMetadata(), '412-retry getMetadata()'); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await withDeadline(
-          file.bucket.file('db.json', { generation: meta.generation }).download(),
-          '412-retry download()',
-        );
-        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
-        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        const merged = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // CURRENT state, see the re-sync above
-        await uploadDbToGcs(merged, attempt + 1);
-      } catch (mergeErr) {
-        console.error('GCS write conflict: re-download/merge failed:', mergeErr);
-      }
+      await withDeadline(file.save(bodyStr, {
+        contentType: 'application/json', resumable: false, validation: false,
+        // A query parameter, not a local deadline; `withDeadline` is that.
+        timeout: 30_000,
+        preconditionOpts: { ifGenerationMatch: gcsGeneration! },
+      }), 'db.json save()');
+      // The generation of OUR write, off the upload response itself, never a
+      // follow-up getMetadata() that could adopt another writer's (CodeRabbit).
+      const generation = file.metadata?.generation;
+      gcsGeneration = generation != null ? String(generation) : null;
+      gcsBaselineDb = JSON.parse(bodyStr); // a real copy, not a live reference
+      gcsUnackedDb = null; // an older write can no longer land: its precondition is now stale
       return;
+    } catch (err: any) {
+      // Anything but a definite refusal (a deadline, a reset socket) may still
+      // have landed; `unionMergeDb` needs to know what it carried.
+      if (err?.code !== 412) gcsUnackedDb = overlayDb(gcsUnackedDb ?? { users: [], games: [] }, JSON.parse(bodyStr));
+      if (err?.code !== 412 || attempt >= 2) throw err;
+      await syncFromGcs(); // someone else wrote first: merge their state, retry
     }
-    console.error('GCS write failed:', err);
   }
 }
 
 let gcsUploadInFlight = false;
 let gcsSaveRequested = false;
+let gcsPumpDone: Promise<void> = Promise.resolve();
+let gcsUnackedDb: DB | null = null;
+const overlayDb = (a: DB, b: DB): DB => ({
+  users: [...new Map([...a.users, ...b.users].map((u) => [u.id, u] as const)).values()],
+  games: [...new Map([...a.games, ...b.games].map((g) => [g.id, g] as const)).values()],
+});
+let wakeGcsPump: (() => void) | null = null;
 
 /**
  * Serialize and COALESCE saves to GCS, per process.
@@ -2251,15 +2281,49 @@ function scheduleGcsSave(): void {
   gcsSaveRequested = true;
   if (gcsUploadInFlight) return;
   gcsUploadInFlight = true;
-  (async () => {
-    while (gcsSaveRequested) {
+  gcsPumpDone = (async () => {
+    // A failed upload keeps the request pending and retries with backoff: the
+    // save was already acknowledged, and waiting for the NEXT save to carry it
+    // lost it for good once the instance scaled in (hit d).
+    let backoffMs = 1000;
+    while (gcsSaveRequested && !gcsStoreBlocked) {
       gcsSaveRequested = false;
-      await uploadDbToGcs(inMemoryDb ?? { users: [], games: [] });
+      try {
+        await uploadDbToGcs();
+        backoffMs = 1000;
+      } catch (err) {
+        gcsSaveRequested = true;
+        console.error(`GCS write failed; the pending save stays queued and retries in ${backoffMs}ms:`, err);
+        await new Promise<void>((resolve) => { wakeGcsPump = resolve; setTimeout(resolve, backoffMs).unref?.(); });
+        wakeGcsPump = null;
+        backoffMs = Math.min(backoffMs * 2, 60_000);
+      }
     }
     gcsUploadInFlight = false;
   })().catch((err) => {
     console.error('Unexpected error in the GCS save pump:', err);
     gcsUploadInFlight = false;
+  });
+}
+
+/**
+ * Cloud Run sends SIGTERM before a rollover or scale-in and kills 10s later.
+ * Node's default exits at once, dropping a save still queued behind an
+ * in-flight upload (hit d, measured: gone in 7ms). Drain the pump first,
+ * bounded under the grace period.
+ */
+async function drainGcsSaves(ms: number): Promise<void> {
+  const until = Date.now() + ms;
+  while (!gcsStoreBlocked && (gcsUploadInFlight || gcsSaveRequested) && Date.now() < until) {
+    wakeGcsPump?.();
+    if (!gcsUploadInFlight) scheduleGcsSave();
+    await Promise.race([gcsPumpDone, new Promise((r) => setTimeout(r, Math.max(0, until - Date.now())))]);
+  }
+}
+if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+  process.once('SIGTERM', () => {
+    console.log('SIGTERM: flushing pending saves to GCS before exit');
+    void drainGcsSaves(8_000).finally(() => process.exit(0));
   });
 }
 
@@ -3499,6 +3563,11 @@ async function startServer() {
     }
     next();
   });
+
+  // Hosted: every route that reads or writes accounts/games needs a store this
+  // process has read (see `requireGcsStore`). Mounted after CORS so a 503 is
+  // still readable cross-origin; OPTIONS never reaches here.
+  app.use(["/api/admin", "/api/auth", "/api/games"], requireGcsStore);
 
   // ── Admin Stats API ────────────────────────────────────────────────────────
   app.get("/api/admin/stats", rateLimit("admin", 10, 60_000), (req, res) => {
@@ -5225,13 +5294,6 @@ async function startServer() {
     res.status(500).json({ error: "Internal server error." });
   });
 
-  // Legacy accounts store passwords as reversible base64 (pre-pbkdf2). They're
-  // upgraded on next successful login, but dormant rows stay plaintext-equivalent
-  // if db.json/GCS leaks. Surface the count so operators can force a reset.
-  const legacyPwCount = loadDB().users.filter(u => needsPasswordRehash(u.passwordHash)).length;
-  if (legacyPwCount > 0) {
-    console.warn(`SECURITY: ${legacyPwCount} account(s) still use legacy (reversible) password hashes. Consider forcing a password reset for these users.`);
-  }
 
   // Dynamic port assignment with automatic fallback in case of port collisions
   const startListening = (port: number) => {
@@ -5285,6 +5347,14 @@ async function startServer() {
   // failure (see their own comments) — stop here: never call `app.listen`
   // on a DB we refused to trust.
   if (!(await initDB())) return;
+  // Legacy accounts store passwords as reversible base64 (pre-pbkdf2). They're
+  // upgraded on next successful login, but dormant rows stay plaintext-equivalent
+  // if db.json/GCS leaks. Counted AFTER initDB: it used to run before the load,
+  // on an empty database, so it could never fire.
+  const legacyPwCount = loadDB().users.filter(u => needsPasswordRehash(u.passwordHash)).length;
+  if (legacyPwCount > 0) {
+    console.warn(`SECURITY: ${legacyPwCount} account(s) still use legacy (reversible) password hashes. Consider forcing a password reset for these users.`);
+  }
   startListening(initialPort);
 }
 
