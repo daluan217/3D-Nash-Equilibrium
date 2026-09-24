@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 69;
+const EXPECTED_CHECKS = 71;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1337,6 +1337,34 @@ try {
       `lost ${JSON.stringify(lost)} back ${JSON.stringify(back)} dupes ${final.length - set.size}`);
     for (const c of kids) await stop(c);
     await fake.close();
+  }
+
+  // 15. A PROVIDER THAT NEVER ANSWERS CANNOT HOLD /api/report. With the rung-3
+  // flags off, the full-report path awaited generateReport with no signal: 11
+  // body shapes stayed open past 60s (sweep 1). CONTROL: the same hang with the
+  // shipping flags on answers every shape by the scenario budget (template).
+  {
+    const hGcs = gcsPortA + 46, onApp = port1 + 54, offApp = port1 + 56, provPort = gcsPortA + 48;
+    const provider = http.createServer((req) => { req.resume(); }); // accepts, never answers
+    await new Promise((r) => provider.listen(provPort, '127.0.0.1', r));
+    trackFake({ close: () => new Promise((r) => { provider.closeAllConnections?.(); provider.close(() => r()); }) });
+    const fake = await trackFake(startFakeGcsDb({ port: hGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
+    const llm = { REPORT_MODEL: 'gpt-5.6-luna', AZURE_FOUNDRY_ENDPOINT: `http://127.0.0.1:${provPort}/v1`, AZURE_FOUNDRY_API_KEY: 'loopback-test-only',
+      NASH_SCENARIO_TIMEOUT_MS: '1500', NASH_SCENARIO_REQUEST_BUDGET_MS: '3000' };
+    const on = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-hangon-'))), onApp, hGcs,
+      { ...llm, NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template' })), onApp);
+    const off = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-hangoff-'))), offApp, hGcs, llm)), offApp);
+    const G = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+    const SC = { name: 'Harbour Pilots', row1: 'Wait', row2: 'Sail', col1: 'Hold', col2: 'Go', description: 'Two pilots choose whether to take a narrow channel first on a foggy morning.' };
+    const shapes = [{ payoffs: G }, { payoffs: G, bypassCache: true }, { payoffs: G, scenario: SC }, { payoffs: { ...G, a21: 3 } }];
+    const ask = (p, body) => { const t = Date.now(); return fetch(`http://127.0.0.1:${p}/api/report`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) })
+      .then(async (r) => ({ status: r.status, source: (await r.json()).source, ms: Date.now() - t }), (e) => ({ status: e.name, ms: Date.now() - t })); };
+    const [onRes, offRes] = await Promise.all([Promise.all(shapes.map((b) => ask(onApp, b))), Promise.all(shapes.map((b) => ask(offApp, b)))]);
+    record('CONTROL: with the shipping flags on, every shape answers 200 template within 8s under the same hang',
+      onRes.every((r) => r.status === 200 && r.source === 'template' && r.ms < 8000), JSON.stringify(onRes));
+    record('THE DEFECT: with the flags off, every shape answers 200 within 8s (deterministic), not held open',
+      offRes.every((r) => r.status === 200 && r.ms < 8000), JSON.stringify(offRes));
+    await stop(on.child); await stop(off.child); await fake.close();
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',

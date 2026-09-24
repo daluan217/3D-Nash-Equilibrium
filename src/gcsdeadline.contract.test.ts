@@ -389,6 +389,32 @@ check('SELF-TEST: a route reaching the DB through a helper (getAuthUser) is REPO
 check('SELF-TEST: a prefix match needs a path boundary ("/api/gamesX" is not "/api/games")',
   gateOf(`${GATE} app.get("/api/gamesX", (q, r) => loadDB());`) === '/api/gamesX');
 
+// Every model call carries an AbortSignal: generateReport/generateScenario
+// have no deadline of their own, and a provider that accepts and never answers
+// held a flags-off /api/report past the client's give-up (sweep 1, 60s+).
+const unsignalled = (file: ts.SourceFile): string[] => {
+  const out: string[] = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && ['generateReport', 'generateScenario'].includes(n.expression.text)) {
+      const opts = n.arguments[1];
+      const has = !!opts && ts.isObjectLiteralExpression(opts) && opts.properties.some((p) =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && p.name.getText(file) === 'signal');
+      if (!has) out.push(`${n.expression.text}@${file.getLineAndCharacterOfPosition(n.getStart()).line + 1}`);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(file);
+  return out;
+};
+const modelCalls = [...source.matchAll(/\b(?:generateReport|generateScenario)\(/g)].length;
+check('the model-call scan found the report and scenario calls', modelCalls >= 4, `found ${modelCalls}`);
+check('every generateReport/generateScenario call passes a signal', unsignalled(sf).length === 0, unsignalled(sf).join(', '));
+const sig = (src: string) => unsignalled(ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)).length;
+check('SELF-TEST: a call without a signal is REPORTED', sig('async function f(){ await generateReport(p, { model: m }); }') === 1);
+check('SELF-TEST: a call with no options object is REPORTED', sig('async function f(){ await generateScenario(p); }') === 1);
+check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
+  sig('async function f(){ await generateReport(p, { signal: s }); await generateScenario(p, { model, signal }); }') === 0);
+
 console.log(failures === 0
   ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`
   : `\n${failures} check(s) failed`);

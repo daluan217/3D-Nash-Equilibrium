@@ -4097,7 +4097,11 @@ async function startServer() {
     // Model is server-controlled on purpose — a client-supplied model would let
     // anyone bill the expensive one. The eval sweep calls generateReport
     // directly, so it varies the model without this route needing to accept it.
-    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT });
+    // Flags-off only (production never reaches here): a provider that never
+    // answered held this request past the client's own give-up. Same budget
+    // and client-gone abort as the scenario draws; both calls share it.
+    const reportSignal = AbortSignal.any([clientGoneSignal(res), AbortSignal.timeout(SCENARIO_REQUEST_BUDGET_MS)]);
+    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT, signal: reportSignal });
 
     // The prompt already forbids inventing a story for a game that has one,
     // but that is an instruction, not a guarantee — models drift. Enforce it:
@@ -4155,7 +4159,7 @@ async function startServer() {
       let gates = assess(report);
       if (gates.rank < 3) {
         console.warn(`[report] declared-claims gate failed (scenarioOk=${gates.scenarioOk}, proseOk=${gates.proseOk}) — retrying once`);
-        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT });
+        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT, signal: reportSignal });
         if (second.report) {
           // Same enforcement as the first attempt: never offer a replacement
           // scenario the user didn't ask for.
@@ -4193,10 +4197,8 @@ async function startServer() {
         report: null,
         validation: null,
         groundTruth,
-        // This branch's `generateReport` call never passes `signal` (dead
-        // code below the production-flags note above), so `failure` can never
-        // actually be 'aborted' here — narrowed only to satisfy the envelope's
-        // pre-existing fallbackReason union, unchanged by BLUE-CANCEL-12.
+        // 'aborted' (budget spent or client gone) is reported as 'error': the
+        // envelope's fallbackReason union has no 'aborted'.
         fallbackReason: (failure === "aborted" ? "error" : failure) ?? "error",
       };
       return res.json(envelope);
