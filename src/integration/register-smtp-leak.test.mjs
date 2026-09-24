@@ -254,7 +254,7 @@ try {
     await waitForOwnServer(server2, BASE2, { timeoutMs: 20000 });
     const V = 'victim@example.invalid';
     const reg = await post('/api/auth/register', { username: 'victim', email: V, password: 'TestPass123' });
-    const ver = await post('/api/auth/verify', { email: V, code: codes[V] });
+    const ver = await post('/api/auth/verify', { email: V, code: codes[V], password: 'TestPass123' });
     record('rollback setup: a verified hosted account exists (code read from the mail)', reg.status === 200 && ver.status === 200,
       `register=${reg.status} verify=${ver.status} code=${codes[V] ? 'captured' : 'none'}`);
     delete codes[V];
@@ -272,14 +272,14 @@ try {
     await new Promise((r) => setTimeout(r, 800));
     const retry = await post('/api/auth/register', { username: 'retry', email: RETRY, password: 'TestPass123' });
     const firstDone = await first;
-    const retryVer = await post('/api/auth/verify', { email: RETRY, code: codes[RETRY] });
+    const retryVer = await post('/api/auth/verify', { email: RETRY, code: codes[RETRY], password: 'TestPass123' });
     record("a retry whose code went out survives the first attempt's rollback: that code verifies",
       retry.status === 200 && firstDone.status === 500 && !!codes[RETRY] && retryVer.status === 200,
       `retry=${retry.status} first=${firstDone.status} verify=${retryVer.status} ${JSON.stringify(retryVer.json).slice(0, 100)}`);
 
     const late = post('/api/auth/register', { username: 'late', email: LATE, password: 'TestPass123' });
     await new Promise((r) => setTimeout(r, 800));
-    const lateVer = await post('/api/auth/verify', { email: LATE, code: codes[LATE] });
+    const lateVer = await post('/api/auth/verify', { email: LATE, code: codes[LATE], password: 'TestPass123' });
     const lateDone = await late;
     const lateLogin = await post('/api/auth/login', { email: LATE, password: 'TestPass123' });
     record('an account verified from a mail delivered before the send failed is not rolled back: login works',

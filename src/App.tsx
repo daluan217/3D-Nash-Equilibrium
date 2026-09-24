@@ -3944,7 +3944,7 @@ export default function App() {
       const authRequest = beginAuthRequest();
       try {
         const res = await api.request('/api/auth/verify', {
-          method: 'POST', token: null, json: { email: authEmail, code: authCode },
+          method: 'POST', token: null, json: { email: authEmail, code: authCode, password: authPassword },
           isStale: authRequest.isStale,
         });
         const data = res.data;

@@ -2188,17 +2188,27 @@ function loadDB(): DB {
  * password (owner verified on X, attacker re-registered on Y); plain local-wins
  * reverted a peer's acked password reset (sweep 4). A credential rotation
  * wins; two rotations keep the one GCS already holds (first landed, as on one
- * instance); then verified; then local. A code used up on either side stays
- * so, and failed attempts on one code add up to the lockout.
+ * instance); then verified; then re-registered; then local. A code used up on
+ * either side stays so; failed attempts on one code add up to the lockout.
  */
 function pickAccount(mine: User, theirs: User, was: User): User {
   const tv = (u: User) => u.tokenVersion ?? 0;
-  const theirsWins = tv(theirs) > tv(mine) || (tv(theirs) === tv(mine)
-    && ((tv(mine) > tv(was)) || (theirs.isVerified && !mine.isVerified)));
+  // Rank: a reset, then verified, then a re-register (new hash, new code
+  // mailed) over a side that only counted a wrong code (sweep 5).
+  const rank = (u: User) => [tv(u), u.isVerified ? 1 : 0, u.passwordHash !== was.passwordHash ? 1 : 0];
+  const d = rank(theirs).map((v, i) => v - rank(mine)[i]).find((v) => v !== 0) ?? 0;
+  const theirsWins = (tv(theirs) === tv(mine) && tv(mine) > tv(was)) || d > 0; // two resets: first landed
   const win = (theirsWins ? theirs : mine) as unknown as Record<string, unknown>;
   const lose = (theirsWins ? mine : theirs) as unknown as Record<string, unknown>, base = was as unknown as Record<string, unknown>;
   const out: Record<string, unknown> = { ...win };
   for (const f of Object.values(CODE_FIELDS)) {
+    // A code the loser issued (and mailed) while the winner issued none stays
+    // usable, as if issued after the winner's change (sweep 4).
+    const fresh = (u: Record<string, unknown>) => !!u[f.code] && u[f.code] !== base[f.code];
+    if (fresh(lose) && !fresh(win)) {
+      for (const k of [f.code, f.expires, f.attempts]) out[k] = lose[k];
+      continue;
+    }
     const spent = () => {
       out[f.code] = f.code === "verificationCode" ? "" : undefined;
       out[f.expires] = f.code === "verificationCode" ? 0 : undefined;
@@ -2503,26 +2513,29 @@ const CODE_FIELDS = {
 // refuses every save; accepted, not a defect. ensureLocalOwner (idempotent), the login
 // rehash (the old hash still verifies) and the hosted-only register/email paths
 // (GCS saveDB returns true) are the other bare calls, each left deliberately.
-function verifyOneTimeCode(user: User, kind: keyof typeof CODE_FIELDS, submitted: string): { ok: boolean; locked: boolean } {
+// `alsoOk` false = the code matched but the request fails another check: it
+// still costs an attempt, so a right code never buys unlimited retries.
+function verifyOneTimeCode(user: User, kind: keyof typeof CODE_FIELDS, submitted: string, alsoOk = true): { ok: boolean; locked: boolean; codeOk: boolean } {
   const f = CODE_FIELDS[kind];
   const u = user as unknown as Record<string, unknown>;
   const stored = u[f.code];
   if (typeof stored !== "string" || stored.length === 0) {
-    return { ok: false, locked: false };
+    return { ok: false, locked: false, codeOk: false };
   }
-  if (safeEqual(stored, submitted)) {
+  const codeOk = safeEqual(stored, submitted);
+  if (codeOk && alsoOk) {
     u[f.attempts] = undefined;
-    return { ok: true, locked: false };
+    return { ok: true, locked: false, codeOk };
   }
   const attempts = ((u[f.attempts] as number) ?? 0) + 1;
   if (attempts >= MAX_CODE_ATTEMPTS) {
     u[f.code] = kind === "verification" ? "" : undefined;
     u[f.expires] = kind === "verification" ? 0 : undefined;
     u[f.attempts] = undefined;
-    return { ok: false, locked: true };
+    return { ok: false, locked: true, codeOk };
   }
   u[f.attempts] = attempts;
-  return { ok: false, locked: false };
+  return { ok: false, locked: false, codeOk };
 }
 
 function makeId(prefix: "u" | "g"): string {
@@ -2533,6 +2546,12 @@ function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16);
   const hash = crypto.pbkdf2Sync(password, salt, PASSWORD_ITERATIONS, 32, "sha256");
   return `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(salt)}$${b64url(hash)}`;
+}
+
+// Login/verify identifier: an email match wins over a username match, so a
+// username set to someone else's email no longer shadows them (sweep 5).
+function findByIdentifier(users: User[], id: string): User | undefined {
+  return users.find((u) => u.email === id) ?? users.find((u) => u.username.toLowerCase() === id);
 }
 
 function verifyPassword(password: string, stored: string): boolean {
@@ -4680,14 +4699,22 @@ async function startServer() {
 
   // Verify Endpoint
   app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), (req, res) => {
-    const { email, code } = req.body;
-    if (!email || !code) {
-      return res.status(400).json({ error: "Email and verification code are required." });
+    const { email, code, password } = req.body;
+    // Hosted: the code alone proved only the mailbox, so a stranger who
+    // re-registered a pending email got THEIR password verified by the
+    // owner's code (pre-hijack, sweep 4). The pending password must match too.
+    // Desktop auto-verifies on register; its legacy pending path is unchanged.
+    const hosted = !process.env.ELECTRON_USER_DATA_PATH;
+    if (!email || !code || (hosted && !password)) {
+      return res.status(400).json({ error: hosted ? "Email, verification code and password are required." : "Email and verification code are required." });
     }
 
     const emailTrimmed = email.trim().toLowerCase();
     const db = loadDB();
-    const userIndex = db.users.findIndex(u => u.email === emailTrimmed);
+    // Login's lookup: a username login's 403 opens this screen with the
+    // username as `email`, which used to dead-end in a 404 here.
+    const found = findByIdentifier(db.users, emailTrimmed);
+    const userIndex = found ? db.users.indexOf(found) : -1;
 
     if (userIndex === -1) {
       return res.status(404).json({ error: "No pending registration found for this email." });
@@ -4703,13 +4730,16 @@ async function startServer() {
       return res.status(400).json({ error: "Verification code has expired. Please register again to get a new code." });
     }
 
-    const verifyCheck = verifyOneTimeCode(user, "verification", code);
+    const passwordOk = !hosted || verifyPassword(password, user.passwordHash);
+    const verifyCheck = verifyOneTimeCode(user, "verification", code, passwordOk);
     if (!verifyCheck.ok) {
       saveDB(db);
       return res.status(400).json({
         error: verifyCheck.locked
           ? "Too many incorrect attempts. Please register again to get a new code."
-          : "Incorrect verification code."
+          : verifyCheck.codeOk
+            ? "That code is right, but this email's pending registration was made with a different password. Register again with your password to get a new code."
+            : "Incorrect verification code."
       });
     }
 
@@ -4734,9 +4764,7 @@ async function startServer() {
 
     const identifier = email.trim().toLowerCase();
     const db = loadDB();
-    const candidate = db.users.find(u =>
-      u.email === identifier || u.username.toLowerCase() === identifier
-    );
+    const candidate = findByIdentifier(db.users, identifier);
     // Always run pbkdf2 (against a dummy hash on a miss) so a non-existent
     // account isn't revealed by a faster response — see DUMMY_PASSWORD_HASH.
     const passwordOk = verifyPassword(password, candidate ? candidate.passwordHash : DUMMY_PASSWORD_HASH);

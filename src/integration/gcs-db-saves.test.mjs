@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 84;
+const EXPECTED_CHECKS = 91;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -906,6 +906,11 @@ try {
     const tokX = await loginOn(dX, 'd1@example.test'); await settle();
     const tokY1 = await loginOn(dY, 'd1@example.test'); await settle();
     const tokY2 = await loginOn(dY, 'd2@example.test'); await settle();
+    // X re-reads GCS at most every 2s: open X's window NOW, so the deletions
+    // and X's writes below fit inside it and X is still stale (a slow run
+    // used to let X re-read first: orphan POST 401, fixture failed).
+    await new Promise((r) => setTimeout(r, 2100));
+    await fetch(`http://127.0.0.1:${dX}/api/auth/me`); const xWindow = Date.now();
     for (const t of [tokY1, tokY2]) {
       await fetch(`http://127.0.0.1:${dY}/api/auth/delete-confirm`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${t}` }, body: JSON.stringify({ code: '654321' }) });
       await settle();
@@ -915,11 +920,12 @@ try {
     await fetch(`http://127.0.0.1:${dX}/api/auth/forgot-password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'd2@example.test' }) });
     const orphan = await fetch(`http://127.0.0.1:${dX}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokX}` },
       body: JSON.stringify({ name: 'Orphan-Game', payoffs: pay }) });
+    const xStaleMs = Date.now() - xWindow;
     fake.setUploadDelayMs(0);
     await new Promise((r) => setTimeout(r, 2500)); await settle();
     const fin = onGcs();
     record('fixture: both deletions reached GCS before the stale instance merged, and X accepted its writes',
-      deletedFirst && orphan.status === 200, `users on GCS before: ${deletedFirst ? 0 : 'some'}, orphan POST ${orphan.status}`);
+      deletedFirst && orphan.status === 200, `users on GCS before: ${deletedFirst ? 0 : 'some'}, orphan POST ${orphan.status}, X window used ${xStaleMs}ms of 2000`);
     record('THE DEFECT: an account deleted elsewhere stays deleted even though THIS instance changed it (deletion wins)',
       !fin.users.some((u) => u.id === 'u_D2') && !fin.users.some((u) => u.id === 'u_D1'), JSON.stringify(fin.users.map((u) => u.id)));
     record('THE DEFECT: no game is left owned by a deleted account', !fin.games.some((g) => g.userId === 'u_D1'), JSON.stringify(fin.games));
@@ -966,7 +972,7 @@ try {
     const signUp = async (p, username, email, password) => {
       const r = await call(p, '/api/auth/register', { username, email, password });
       const code = codes.at(-1);
-      const v = await call(p, '/api/auth/verify', { email, code });
+      const v = await call(p, '/api/auth/verify', { email, code, password });
       const t = (await (await call(p, '/api/auth/login', { email, password })).json()).token;
       return { r: r.status, v: v.status, t };
     };
@@ -1047,11 +1053,11 @@ try {
     fake2.peerWrite(JSON.stringify({ users: [{ ...seededUser('u_A', 'annie', 'fold@example.test', 'Sup3rSecretA'),
       isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 }], games: [] }));
     await call(fY, '/api/auth/register', { username: 'bella', email: 'fold@example.test', password: 'Sup3rSecretB' });
-    const vB = await call(fY, '/api/auth/verify', { email: 'fold@example.test', code: codes.at(-1) });
+    const vB = await call(fY, '/api/auth/verify', { email: 'fold@example.test', code: codes.at(-1), password: 'Sup3rSecretB' });
     // X booted before A existed; its own 2s window must lapse so it re-reads
     // and sees A (Y's fold is still held by the 2.5s upload delay).
     await new Promise((r) => setTimeout(r, 2100));
-    const vA = await call(fX, '/api/auth/verify', { email: 'fold@example.test', code: '111111' });
+    const vA = await call(fX, '/api/auth/verify', { email: 'fold@example.test', code: '111111', password: 'Sup3rSecretA' });
     const tA = (await (await call(fX, '/api/auth/login', { email: 'fold@example.test', password: 'Sup3rSecretA' })).json()).token;
     const late = await call(fX, '/api/games', { name: 'A-Late', payoffs: pay }, tA);
     const onGcs2 = () => { try { return JSON.parse(fake2.getStored()); } catch { return { users: [], games: [] }; } };
@@ -1643,11 +1649,16 @@ try {
   // still saw the old state (its answer proves it) and its upload 412'd.
   {
     const aGcs = gcsPortA + 44, aX = port1 + 48, aY = port1 + 50, aSmtp = gcsPortA + 46;
+    const mailed = []; // { to, code } per message, in order
     const smtp = net.createServer((sock) => {
-      sock.write('220 t ESMTP\r\n'); let inData = false;
+      sock.write('220 t ESMTP\r\n'); let inData = false, body = '', to = '';
       sock.on('data', (c) => { for (const line of c.toString().split(/\r?\n/)) {
-        if (inData) { if (line === '.') { inData = false; sock.write('250 ok\r\n'); } continue; }
+        if (inData) {
+          if (line === '.') { inData = false; mailed.push({ to, code: (body.replace(/=\s*/g, '').match(/\b(\d{6})\b/) || [])[1] }); body = ''; sock.write('250 ok\r\n'); } else body += line + '\n';
+          continue;
+        }
         const v = line.split(/[ :]/)[0].toUpperCase(); if (!v) continue;
+        if (v === 'RCPT') to = (line.match(/<([^>]+)>/) || [])[1] ?? '';
         if (v === 'EHLO' || v === 'HELO') sock.write('250-t\r\n250 AUTH PLAIN LOGIN\r\n'); else if (v === 'AUTH') sock.write('235 ok\r\n');
         else if (v === 'DATA') { inData = true; sock.write('354 go\r\n'); } else if (v === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); } else sock.write('250 ok\r\n');
       } });
@@ -1685,7 +1696,7 @@ try {
     const aNew = await a.out.login('N3wSecret!pass'), aOld = await a.out.login('Sup3rSecret!23'); await a.done();
     // (b) owner verifies on X, someone re-registers the same unverified email on Y
     const b = await run('b', { ...base, isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 },
-      (p) => call(p, '/api/auth/verify', { email: base.email, code: '111111' }),
+      (p) => call(p, '/api/auth/verify', { email: base.email, code: '111111', password: 'Sup3rSecret!23' }),
       (p) => call(p, '/api/auth/register', { username: 'intruder', email: base.email, password: 'Intrud3r!pass' }));
     const bIntruder = await b.out.login('Intrud3r!pass'), bOwner = await b.out.login('Sup3rSecret!23'); await b.done();
     // (c) one wrong code on each instance, 3 attempts already used: 3 + 1 + 1 = the lockout
@@ -1702,6 +1713,100 @@ try {
         && bIntruder === 401 && bOwner === 200 && b.out.stored.isVerified === true
         && !c.out.stored.recoveryCode,
       `a new ${aNew} old ${aOld} tv ${a.out.stored.tokenVersion}; b intruder ${bIntruder} owner ${bOwner} verified ${b.out.stored.isVerified}; c code ${c.out.stored.recoveryCode ?? '-'} attempts ${c.out.stored.recoveryCodeAttempts ?? '-'}`);
+    // (d) forgot on X (code mailed), a plain login on Y (legacy-hash rehash): the
+    // mailed recovery code must survive whichever record wins (sweep 4, code loss).
+    const mails0 = mailed.length;
+    const d = await run('d', base,
+      (p) => call(p, '/api/auth/forgot-password', { email: base.email }),
+      (p) => call(p, '/api/auth/login', { email: base.email, password: 'Sup3rSecret!23' }));
+    const dCode = mailed.slice(mails0).find((m) => m.to === base.email)?.code;
+    const dReset = (await call(aX, '/api/auth/reset-password', { email: base.email, code: dCode, newPassword: 'N3wSecret!pass' })).status;
+    await d.done();
+    // (e) pending account: the owner re-registers with a NEW password on X (new
+    // code mailed), a wrong code is tried on Y: the new code with the new
+    // password must verify (sweep 5). Same password would let a code carried
+    // onto Y's record pass by coincidence (M37 survived that).
+    const mails1 = mailed.length;
+    const e = await run('e', { ...base, isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 },
+      (p) => call(p, '/api/auth/register', { username: 'acct', email: base.email, password: 'N3wOwner!pass' }),
+      (p) => call(p, '/api/auth/verify', { email: base.email, code: '000000', password: 'Sup3rSecret!23' }));
+    const eCode = mailed.slice(mails1).find((m) => m.to === base.email)?.code;
+    const eVerify = (await call(aX, '/api/auth/verify', { email: base.email, code: eCode, password: 'N3wOwner!pass' })).status;
+    await e.done();
+    record('fixture: (d) forgot and (e) resend each mailed a code, and Y\'s stale answer 412\'d',
+      d.out.rx === 200 && d.out.ry === 200 && d.out.refused && /^\d{6}$/.test(dCode ?? '')
+        && e.out.rx === 200 && e.out.ry === 400 && e.out.refused && /^\d{6}$/.test(eCode ?? ''),
+      JSON.stringify([[d.out.rx, d.out.ry, d.out.refused, !!dCode], [e.out.rx, e.out.ry, e.out.refused, !!eCode]]));
+    record('THE DEFECT: a code mailed on one instance still works after the other instance\'s change merged (recovery; new verification code)',
+      dReset === 200 && eVerify === 200, `d reset ${dReset} stored ${d.out.stored.recoveryCode ? 'code' : 'none'}; e verify ${eVerify} stored ${e.out.stored.verificationCode}`);
+
+    // s22 — one instance, the pending-account family (sweep 4/5). The owner's
+    // code verified an ATTACKER's re-register password (pre-hijack); a username
+    // login could not verify; a username equal to someone's email shadowed that
+    // account. FIXTURE: every step's code is read from the mail actually sent.
+    {
+      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-pend-'))), aX, aGcs, mail)), aX);
+      const j = async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) });
+      const codeFor = (to, from) => mailed.slice(from).filter((m) => m.to === to).at(-1)?.code;
+      const login = async (email, password) => j(await call(aX, '/api/auth/login', { email, password }));
+      const OWN = 'OwnerPass!23', ATT = 'Att4cker!pass';
+      const order = async (tag, first, second) => {
+        const email = `${tag}@example.test`, m0 = mailed.length;
+        await call(aX, '/api/auth/register', { username: `${tag}-${first.u}`, email, password: first.pw });
+        await call(aX, '/api/auth/register', { username: `${tag}-${second.u}`, email, password: second.pw });
+        const code = codeFor(email, m0), v = await j(await call(aX, '/api/auth/verify', { email, code, password: OWN }));
+        return { mails: mailed.slice(m0).filter((m) => m.to === email).length, v, own: await login(email, OWN), att: await login(email, ATT) };
+      };
+      const ownerFirst = await order('of', { u: 'owner', pw: OWN }, { u: 'att', pw: ATT });
+      const attFirst = await order('af', { u: 'att', pw: ATT }, { u: 'owner', pw: OWN });
+      // After the owner verified (af), a re-register is refused and changes nothing.
+      const reAfter = await j(await call(aX, '/api/auth/register', { username: 'late-att', email: 'af@example.test', password: ATT }));
+      const ownAfter = await login('af@example.test', OWN);
+      // Fresh process for the rest: register is rate-limited to 8/min per IP.
+      await stop(S.child);
+      const S2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-pend2-'))), aX, aGcs, mail)), aX);
+      // Right code + wrong password: counts as an attempt; 5 of them lock the code.
+      const lk = 'lock@example.test', m1 = mailed.length;
+      await call(aX, '/api/auth/register', { username: 'locker', email: lk, password: OWN });
+      const lkCode = codeFor(lk, m1), tries = [];
+      for (let i = 0; i < 5; i++) tries.push(await j(await call(aX, '/api/auth/verify', { email: lk, code: lkCode, password: ATT })));
+      const lkAfter = await j(await call(aX, '/api/auth/verify', { email: lk, code: lkCode, password: OWN }));
+      // Verify by username (login's 403 opens the verify screen with what was typed).
+      const un = 'uname@example.test', m2 = mailed.length;
+      await call(aX, '/api/auth/register', { username: 'Unamed', email: un, password: OWN });
+      const l403 = await login('unamed', OWN);
+      const vByName = await j(await call(aX, '/api/auth/verify', { email: 'unamed', code: codeFor(un, m2), password: OWN }));
+      // A username set to another person's email must not shadow that person.
+      const sh = 'shadow@example.test', m3 = mailed.length;
+      await call(aX, '/api/auth/register', { username: sh, email: 'squatter@example.test', password: ATT });
+      await call(aX, '/api/auth/register', { username: 'shadowed', email: sh, password: OWN });
+      const vSh = await j(await call(aX, '/api/auth/verify', { email: sh, code: codeFor(sh, m3), password: OWN }));
+      const lSh = await login(sh, OWN);
+      // Forgot-password on a pending account mails nothing (reset would bypass verify).
+      const m4 = mailed.length; const fp = await j(await call(aX, '/api/auth/forgot-password', { email: lk }));
+      const fpMails = mailed.slice(m4).filter((m) => m.to === lk).length;
+      const missing = await j(await call(aX, '/api/auth/verify', { email: un, code: '123456' }));
+      await stop(S2.child); await fake.close();
+      record('fixture: every registration mailed its code (2 per contested email, 1 each for lock/uname/shadow), and the lock loop ran 5 verifies',
+        ownerFirst.mails === 2 && attFirst.mails === 2 && /^\d{6}$/.test(lkCode ?? '') && tries.length === 5 && l403.status === 403 && l403.body.needVerification === true,
+        JSON.stringify({ of: ownerFirst.mails, af: attFirst.mails, lk: !!lkCode, l403: l403.status }));
+      record('THE DEFECT (pre-hijack): with the owner\'s newest code, whoever registered last owns the pending account; the attacker never signs in',
+        ownerFirst.v.status === 400 && /different password/.test(ownerFirst.v.body.error ?? '') && ownerFirst.own.status === 401 && ownerFirst.att.status === 403
+          && attFirst.v.status === 200 && attFirst.own.status === 200 && attFirst.att.status === 401,
+        JSON.stringify({ of: [ownerFirst.v.status, ownerFirst.own.status, ownerFirst.att.status], af: [attFirst.v.status, attFirst.own.status, attFirst.att.status] }));
+      record('THE DEFECT: a right code with a wrong password counts toward the lockout (5 -> code dead) and says so honestly',
+        tries.slice(0, 4).every((t) => t.status === 400 && /different password/.test(t.body.error ?? '')) && /Too many/.test(tries[4].body.error ?? '')
+          && lkAfter.status === 400 && lkAfter.body.success !== true, // the owner's own pair no longer verifies
+        JSON.stringify({ tries: tries.map((t) => (t.body.error ?? '').slice(0, 20)), after: [lkAfter.status, (lkAfter.body.error ?? '').slice(0, 30)] }));
+      record('THE DEFECT: verify accepts the username login used; a username equal to another\'s email does not shadow them; no password -> 400',
+        vByName.status === 200 && vSh.status === 200 && lSh.status === 200 && lSh.body.user?.username === 'shadowed'
+          && missing.status === 400 && /password/.test(missing.body.error ?? ''),
+        JSON.stringify({ byName: vByName.status, shadowVerify: vSh.status, shadowLogin: [lSh.status, lSh.body.user?.username], missing: missing.status }));
+      record('THE DEFECT: a verified account refuses re-registration; a pending account gets no recovery code',
+        reAfter.status === 400 && ownAfter.status === 200 && fp.status === 200 && fpMails === 0,
+        JSON.stringify({ reAfter: reAfter.status, ownAfter: ownAfter.status, fp: fp.status, fpMails }));
+    }
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',
