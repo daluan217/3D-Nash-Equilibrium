@@ -3445,7 +3445,7 @@ try {
       let up = false;
       up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       const deskErrors = [];
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
@@ -3881,7 +3881,7 @@ try {
         body: JSON.stringify({ username: `b${Date.now().toString(36)}`, email, password: 'TestPass123' }) });
       record('precondition: a brand-new account exists on this device', reg.ok, `status ${reg.status}`);
 
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       const deskErrors = [];
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       // The two induced 500s below legitimately log "Failed to load resource";
@@ -3975,7 +3975,7 @@ try {
   section('51', 'pinch drifting off the plot never becomes a native page zoom', async () => {
     const ctx = await browser.newContext({ ...devices['Pixel 7'] });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before scenario rendering'); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
@@ -4025,7 +4025,7 @@ try {
   section('52', 'the first drag on a running simulation rotates the camera', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before scenario rendering'); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
@@ -4086,7 +4086,7 @@ try {
   section('53', 'a double-click on Delete while offline sends one request and one alert', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       const uniq = await registerAndLogin(p, 'del');
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
       record('precondition: signed in with a stored token', typeof token === 'string' && token.length > 0);
@@ -4153,7 +4153,7 @@ try {
   section('54', 'closing a dialog returns focus to the control that opened it', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       const uniq = await registerAndLogin(p, 'foc');
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
       const name = `Focus-${uniq}`;
@@ -4199,7 +4199,7 @@ try {
   section('56', 'a closed dialog whose opener vanished still hands focus to a landmark', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before focus persistence'); /* may not show */
       const uniq = `foc2${Date.now()}`;
@@ -4288,7 +4288,7 @@ try {
     const tiny = await browser.newContext({ viewport: { width: 320, height: 200 } });
     const normal = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await tiny.newPage();
+      const p = trackPage(await tiny.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before header interaction'); /* may not show */
       await p.keyboard.press('Escape').catch(() => {});
@@ -4299,7 +4299,7 @@ try {
       for (let i = 0; i < 20 && (await p.evaluate(() => window.scrollY)) < 50; i++) await p.waitForTimeout(50);
       const hit = await p.evaluate(() => { const el = document.elementFromPoint(160, 100); const h = document.querySelector('header'); return { tag: el?.tagName ?? null, inHeader: !!(el && h && h.contains(el)), scrollY: Math.round(window.scrollY) }; });
       record('FIX: after scrolling, the point at the centre of the viewport is NOT inside the header (the page is reachable)', hit.tag !== null && !hit.inHeader, JSON.stringify(hit));
-      const q = await normal.newPage();
+      const q = trackPage(await normal.newPage());
       await q.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(q, 'setup: clear a possible tour before header-position control'); /* may not show */
       const pos = await q.evaluate(() => getComputedStyle(document.querySelector('header')).position);
@@ -5415,7 +5415,7 @@ try {
       let up = false;
       up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: the desktop local-owner server is up', up);
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
       await dismissTourForSetup(dp, 'setup: clear a possible tour before desktop-account checks'); /* may not appear */
       await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
@@ -5539,7 +5539,7 @@ try {
     // predicate) must hold here too, not just for the desktop local owner. ──
     const ctxB = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctxB.newPage();
+      const p = trackPage(await ctxB.newPage());
       const uniq = await registerAndLogin(p, 'sgl68');
       const nameC = `LG-C-${uniq}`;
       const nameD = `LG-D-${uniq}`;
@@ -5650,7 +5650,7 @@ try {
       await fetch(deskBase + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: `t${Date.now().toString(36)}`, email, password: 'TestPass123' }) });
 
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
       await dismissTourForSetup(dp, 'setup: clear a possible tour before desktop sign-in'); /* may not show */
       await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
@@ -8044,7 +8044,7 @@ try {
       let up = false;
       up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       const deskErrors = [];
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
@@ -11242,7 +11242,7 @@ const suggestedScenario = {
       try {
         for (const fw of [320, 1280]) {
         const fctx = await fontBrowser.newContext({ viewport: { width: fw, height: 900 } });
-        const pf = await fctx.newPage();
+        const pf = trackPage(await fctx.newPage());
         await pf.goto(BASE, { waitUntil: 'networkidle' });
         await dismissTourForSetup(pf, 'setup: clear the tour before the minimum-font-size payoff check', { timeout: 20000 });
         const r = await pf.evaluate(() => {
@@ -12166,6 +12166,12 @@ const EXPECTED_STATUS_NOISE = {
   // panel's Refresh — the exact behavior "a visible error banner + Retry,
   // stale numbers stay on screen" verifies.
   '76': [429],
+  // TASK-18 H18: these pages were untracked, so their deliberate statuses never reached this
+  // check. Measured at 1x (h18-noise): §50 a real refused write (chmod 0500) and a mocked 500
+  // on adopt-local; §70 one mocked 500 on adopt-local; §78 four mocked 401s (Save x2, N1, Edit).
+  '50': [500, 500],
+  '70': [500],
+  '78': [401, 401, 401, 401],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),

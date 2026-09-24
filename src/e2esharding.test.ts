@@ -304,6 +304,13 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert.deepEqual(racing, [], 'every load reaches the app\'s tour decision before it reads the tour');
   assert.equal((smoke.match(/tour-decision: exempt/g) ?? []).length, 2, 'two exemptions, both §108 reading before the decision under a paused clock');
 }
+// TASK-18 H18: 14 ctx.newPage() pages skipped trackPage, so their page errors never reached the
+// suite's console check and failure evidence came back empty (§78: "<unavailable>", no png).
+{
+  const untracked = smoke.split('\n').map((l, i) => [l, i + 1]).filter(([l]) => /\.newPage\(/.test(l as string)
+    && !/^\s*(\/\/|\*)/.test(l as string) && !/trackPage\(await \w+\.newPage\(|browser\.newPage\(opts\)/.test(l as string));
+  assert.deepEqual(untracked.map(([l, n]) => `${n}: ${(l as string).trim()}`), [], 'every page smoke.mjs creates goes through trackPage');
+}
 assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
   'CI runs the CPU-throttle reach guard in a job that has chromium');
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
