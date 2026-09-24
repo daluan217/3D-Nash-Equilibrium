@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 77;
+const EXPECTED_CHECKS = 79;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1498,6 +1498,74 @@ try {
     const worst = Math.max(...[...wave1, ...wave2].map((x) => x[1]));
     record('THE DEFECT: with 5s metadata, every DB request answers 200 within 3s (one 2s wait, not stacked)',
       [...wave1, ...wave2].every(([st, ms]) => st === 200 && ms < 3000), `worst ${worst}ms ${JSON.stringify([...wave1, ...wave2].map((x) => x[0]).filter((x) => x !== 200))}`);
+    await stop(boot.child); await fake.close();
+  }
+
+  // 19. THE PEER WRITE A DROPPED OR PENDING READ CARRIED IS NOT LOST.
+  // (i) Y writes while X's re-check downloads and X writes meanwhile: X's
+  // upload is still conditioned on the old generation, so it must 412 and
+  // merge. (ii) X's own ack overtakes its re-check and Y writes on top; s16
+  // drops that read, so Y's game must arrive by X's next upload (412 merge)
+  // and by the next re-check. Director, sweep 3.
+  {
+    const pGcs = gcsPortA + 52, pApp = port1 + 44; // s12's released app port
+    const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+    const fake = await trackFake(startFakeGcsDb({ port: pGcs, initialContent: JSON.stringify({ users: [seededUser('u_p', 'peer', 'p@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-peerdrop-'))), pApp, pGcs)), pApp);
+    const url = (p) => `http://127.0.0.1:${pApp}${p}`;
+    const tok = (await (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'p@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    const auth = { authorization: `Bearer ${tok}` };
+    const save = (name) => fetch(url('/api/games'), { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: JSON.stringify({ name, payoffs: pay }) });
+    const list = async () => (await (await fetch(url('/api/games'), { headers: auth })).json()).map((g) => g.name);
+    const withGame = (stored, name) => { const db = JSON.parse(stored); db.games.push({ id: `g_${name}`, userId: 'u_p', name, payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }); return JSON.stringify(db); };
+    const onGcs = () => { try { return JSON.parse(fake.getStored()).games.map((g) => g.name); } catch { return []; } };
+    const has = (names) => () => names.every((n) => onGcs().includes(n));
+    await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    await new Promise((r) => setTimeout(r, 2200));
+
+    // (i)
+    fake.peerWrite(withGame(fake.getStored(), 'Y-Early')); // the generation moved: X's re-check downloads
+    fake.setReadDelayMs(0, 1800);
+    const r0 = fake.readLog().length, n0 = fake.count412();
+    const trig1 = fetch(url('/api/games'), { headers: auth });
+    await waitUntil(() => fake.readLog().length > r0, 3000);
+    const read1 = fake.readLog().at(-1);
+    fake.peerWrite(withGame(fake.getStored(), 'Y-Mid'));
+    const s1 = await save('X-During');
+    const refused1 = await waitUntil(() => fake.count412() > n0, 3000);
+    const mid1 = read1.doneMs === undefined;
+    await trig1; fake.setReadDelayMs(0, 0);
+    await waitUntil(has(['Y-Early', 'Y-Mid', 'X-During']), 8000);
+    await new Promise((r) => setTimeout(r, 2200));
+    const list1 = await list(), gcs1 = onGcs();
+
+    // (ii)
+    await new Promise((r) => setTimeout(r, 2200));
+    const u0 = fake.uploadCount(), n1 = fake.count412(), r1 = fake.readLog().length, m1 = fake.metaGets();
+    fake.setReadDelayMs(600, 1800);
+    fake.afterStoreOnce((stored) => withGame(stored, 'Y-Late')); // Y writes right on top of X's ack
+    const trig2 = fetch(url('/api/games'), { headers: auth });
+    await waitUntil(() => fake.metaGets() > m1, 3000);
+    const s2 = await save('X-Acked');
+    await waitUntil(() => fake.uploadLog().slice(u0).some((x) => x.landedGen), 3000);
+    const ackGen = fake.uploadLog().slice(u0).find((x) => x.landedGen).landedGen;
+    await waitUntil(() => fake.readLog().length > r1, 3000);
+    const read2 = fake.readLog().at(-1);
+    await trig2; await waitUntil(() => read2.doneMs !== undefined, 4000);
+    fake.setReadDelayMs(0, 0);
+    const s3 = await save('X-After'); // inside the window that read opened: no re-check first
+    await waitUntil(has(['X-Acked', 'Y-Late', 'X-After']), 8000);
+    const refused2 = fake.count412() - n1;
+    await new Promise((r) => setTimeout(r, 2200));
+    const list2 = await list(), gcs2 = onGcs();
+
+    record('fixture: (i) Y wrote and X saved while X\'s re-check was downloading, and X\'s upload was refused (412); (ii) the read X dropped carried Y\'s write on top of X\'s ack',
+      s1.status === 200 && mid1 && refused1 && s2.status === 200 && s3.status === 200 && read2.want === String(ackGen + 1),
+      `s1 ${s1.status} mid ${mid1} 412 ${refused1}; s2 ${s2.status} s3 ${s3.status} ack ${ackGen} dropped-read gen ${read2.want}`);
+    record('THE DEFECT: no peer write is lost: every game on GCS and in X\'s list, and X\'s next upload merged (412) rather than overwrote',
+      ['Y-Early', 'Y-Mid', 'X-During', 'X-Acked', 'Y-Late', 'X-After'].every((n) => gcs2.includes(n) && list2.includes(n))
+        && ['Y-Early', 'Y-Mid', 'X-During'].every((n) => gcs1.includes(n) && list1.includes(n)) && refused2 >= 1,
+      `gcs ${JSON.stringify(gcs2)} list ${JSON.stringify(list2)} (ii) 412s ${refused2}`);
     await stop(boot.child); await fake.close();
   }
 
