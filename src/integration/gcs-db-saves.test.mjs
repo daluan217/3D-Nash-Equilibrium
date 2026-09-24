@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 65;
+const EXPECTED_CHECKS = 67;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1260,6 +1260,34 @@ try {
     record('THE DEFECT: the other instance lists it within one freshness window, with no write of its own',
       Array.isArray(listY) && listY.some((g) => g.name === 'Saved-On-X'), JSON.stringify(listY));
     await stop(X.child); await stop(Y.child); await fake.close();
+  }
+
+  // 13. A NON-STRING AUTH FIELD IS A CLIENT ERROR. Live on 0.0.226 (sweep 1),
+  // `{"email":5}` on login/forgot/verify/reset and `{"password":{}}` on login
+  // answered 500 "Internal server error": every route called string methods on
+  // whatever JSON arrived. CONTROL: the same routes with string fields answer
+  // their ordinary 4xx, so a 400 below cannot come from a broken route.
+  {
+    const vGcs = gcsPortA + 42, vApp = port1 + 46;
+    const fake = await trackFake(startFakeGcsDb({ port: vGcs, initialContent: JSON.stringify({ users: [{ ...seededUser('u_v', 'valid', 'v@example.test', 'Sup3rSecret!23'), deleteCode: '123456', deleteCodeExpires: Date.now() + 600000 }], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-types-'))), vApp, vGcs)), vApp);
+    const tok = (await (await fetch(`http://127.0.0.1:${vApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'v@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    const cases = [
+      ['/api/auth/login', { email: 5, password: 'x' }], ['/api/auth/login', { email: 'v@example.test', password: { a: 1 } }],
+      ['/api/auth/register', { username: 'nn', email: ['x'], password: 'Sup3rSecretX' }], ['/api/auth/register', { username: 'nn', email: 'n@example.test', password: 7 }],
+      ['/api/auth/verify', { email: true, code: '1' }], ['/api/auth/forgot-password', { email: { $ne: 1 } }],
+      ['/api/auth/reset-password', { email: 'v@example.test', code: 123456, newPassword: 'Sup3rSecretX' }],
+      ['/api/auth/delete-confirm', { code: 123456 }, true], ['/api/auth/login', []],
+    ];
+    const got = [];
+    for (const [route, body, auth] of cases) {
+      const r = await fetch(`http://127.0.0.1:${vApp}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${tok}` } : {}) }, body: JSON.stringify(body) });
+      got.push([route, r.status]);
+    }
+    const control = await fetch(`http://127.0.0.1:${vApp}/api/auth/delete-confirm`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` }, body: JSON.stringify({ code: '000000' }) });
+    record('CONTROL: a string field on the same route gets its ordinary 4xx (wrong code -> 400)', control.status === 400, `status ${control.status}`);
+    record('THE DEFECT: every non-string auth field is a 400, never a 500', got.every(([, st]) => st === 400), JSON.stringify(got));
+    await stop(boot.child); await fake.close();
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',
