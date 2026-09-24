@@ -128,7 +128,8 @@ function splitProblems(parts: Record<string, Record<string, (number | Row)[]>>, 
   return problems;
 }
 // Section id -> the text up to the next section() call: enough to see which slice it runs.
-const sectionBodies = new Map([...smoke.matchAll(/section\('([^']+)',[\s\S]*?(?=\n\s*section\('|$)/g)].map((m) => [m[1], m[0]]));
+// The last section ends where the runner starts (`await executeSections();`), not at end of file.
+const sectionBodies = new Map([...smoke.slice(0, smoke.indexOf('\nawait executeSections();')).matchAll(/section\('([^']+)',[\s\S]*?(?=\n\s*section\('|$)/g)].map((m) => [m[1], m[0]]));
 const realSplit = splitProblems(SPLIT_PARTS, sectionBodies);
 assert.deepStrictEqual(realSplit, [], 'the §100-§103 split parts must partition the pre-split loop lists exactly');
 assert.deepStrictEqual(WIDEST_PAYOFFS, ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345', '-99.9999', '-100.0000'],
@@ -168,6 +169,27 @@ assert.match(smoke, /async function parkSharedPageWhenDone\(remaining\) \{\n  if
   'parkSharedPageWhenDone parks the shared page exactly when no primary section remains');
 assert.strictEqual((executeBody.match(/await parkSharedPageWhenDone\((selected|failed)\.slice\(index\)\);\n\s+(?:if \(primaryPageSection\(definition\.id\)\) await gotoHome\(\)\.catch\(\(\) => \{\}\);\n\s+)?const passed = await runSection\(definition, [12]\);/g) || []).length, 2,
   'both section loops park the shared page (from the current index on) right before runSection');
+// What H1 could regress: a section after §16 that silently relied on the shared page being
+// loaded would now find about:blank. None may touch it (comments and string literals stripped;
+// a local `page`/helper of the same name is its own page).
+function sharedPageUsers(bodies: Map<string, string>): string[] {
+  const out: string[] = [];
+  for (const [id, body] of bodies) {
+    if (Number.parseInt(id, 10) <= 16) continue;
+    const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+      .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, "''");
+    const local = new Set([...code.matchAll(/\b(?:const|let|function)\s+(page|startLine|dismissTour|setSpeed|gotoHome)\b/g)].map((m) => m[1]));
+    for (const m of code.matchAll(/(?<![\w.$])(page(?=\s*[.,)])|\$(?=\.[a-z])|startLine(?=\()|dismissTour(?=\()|setSpeed(?=\()|gotoHome(?=\())/g)) {
+      if (!local.has(m[1])) { out.push(`section ${id} uses the shared primary page (${m[1]})`); break; }
+    }
+  }
+  return out;
+}
+assert.deepStrictEqual(sharedPageUsers(sectionBodies), [], 'no section after §16 may use the shared page that the runner parks');
+{
+  const planted = new Map(sectionBodies).set('104', (sectionBodies.get('104') ?? '') + "\n    await page.goto(BASE);");
+  assert.deepStrictEqual(sharedPageUsers(planted), ['section 104 uses the shared primary page (page)'], 'a later section using the shared page is caught by name');
+}
 // TASK-18 H2: §103c's resting-footer check reads the card only after it settled; a fixed 1.2 s
 // sleep read "no Next/Explore control at all" on two CI runs (35671699905, 35689614157).
 const footer103 = sectionBodies.get('103c') ?? '';
