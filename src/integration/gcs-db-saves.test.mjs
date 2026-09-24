@@ -1132,16 +1132,22 @@ try {
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-aband-'))), aApp, aGcs, { GCS_DEADLINE_MS: '800' })), aApp);
     const tok = (await (await fetch(`http://127.0.0.1:${aApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'ab@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
-    fake.setUploadDelayMs(2000); // stored AFTER the 800ms deadline: the process never learns it landed
+    // Stored at 1.2s, after the 800ms deadline (the process never learns it
+    // landed) but inside the save's 2s freshness window, so the delete below
+    // is served without a re-read: only the unacked record says it landed.
+    fake.setUploadDelayMs(1200);
     const made = await (await fetch(`http://127.0.0.1:${aApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
       body: JSON.stringify({ name: 'Created-Then-Deleted', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) })).json();
     const landed = await waitUntil(() => { try { return JSON.parse(fake.getStored()).games.length === 1; } catch { return false; } }, 5000);
     fake.setUploadDelayMs(0);
+    const metaBeforeDelete = fake.metaGets();
     const del = await fetch(`http://127.0.0.1:${aApp}/api/games/${made.game?.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${tok}` } });
+    const deleteReRead = fake.metaGets() !== metaBeforeDelete;
     await new Promise((r) => setTimeout(r, 4000));
     const list = await (await fetch(`http://127.0.0.1:${aApp}/api/games`, { headers: { authorization: `Bearer ${tok}` } })).json();
     let storedGames = null; try { storedGames = JSON.parse(fake.getStored()).games.length; } catch { /* reported */ }
-    record('fixture: the abandoned upload DID land on GCS before the delete', landed, fake.getStored().slice(0, 200));
+    record('fixture: the abandoned upload DID land on GCS before the delete, and the delete was served without a re-read',
+      landed && !deleteReRead, `landed ${landed} reRead ${deleteReRead} ${fake.getStored().slice(0, 160)}`);
     record('THE DEFECT: a game deleted after its abandoned upload landed stays deleted, on GCS and in the list',
       del.status === 200 && storedGames === 0 && Array.isArray(list) && list.length === 0,
       `delete ${del.status}, stored games ${storedGames}, list ${JSON.stringify(list)}`);
