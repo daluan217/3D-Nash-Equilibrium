@@ -247,6 +247,13 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert.match(walker, /const advanced = await next\.click\(\{ timeout: 60000 \}\)/, 'the §101/§103 walker gives a Next click 60 s');
   const s105 = sectionBodies.get('105') ?? '';
   assert.match(s105, /getByRole\('button', \{ name: \/\^next\/i \}\)\.first\(\)\.click\(\{ timeout: 60000 \}\)/, '§105 gives a tour Next click 60 s');
+  assert.match(s105, /\}, before, \{ timeout: 20000 \}\)\.then\(\(\) => true\)\.catch\(\(\) => false\);\n\s+if \(!moved\) break;/,
+    '§105 stops walking at the first Next that does not advance (one bound, not 25)');
+  assert.match(s105, /const paused = reached13 && await pt\.waitForFunction/, '§105 skips the step-13 wait when step 13 was never reached');
+  assert.match(s105, /const resumed = reached15 && await pt\.waitForFunction/, '§105 skips the step-15 wait when step 15 was never reached');
+  assert.match(walker, /if \(!advanced\) \{ unreachable\.push\(`step \$\{steps\}: Next could not be clicked`\); break; \}/, 'the walker stops at a Next that cannot be pressed');
+  assert.match(walker, /if \(!moved\) \{ unreachable\.push\(`step \$\{steps\}: Next was pressed but the tour did not advance from \$\{before\}`\); break; \}/,
+    'the walker names a Next that is pressed but does not advance');
   assert.match(sectionBodies.get('100d') ?? '', /await l\.click\(\{ timeout: 60000 \}\)\.then\(\(\) => true\)/, '§100d gives each "can it be pressed" click 60 s');
   assert.match(s105, /const decision = await pt\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
 }

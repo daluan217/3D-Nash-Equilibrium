@@ -11780,19 +11780,24 @@ const suggestedScenario = {
     const tRunning = () => pt.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
     // Bounds for a loaded runner: at 11x CPU (about CI's load) one Next click measured 9.5-15.7 s
     // of Playwright actionability alone (TASK-18 sweep 5), so a 10 s bound failed there.
+    // A Next that cannot be pressed, or is pressed and does not advance, stops the walk at once:
+    // "reached step N" then fails by name after one bound, not 25 (a no-op Next once ran 25 x 60 s).
     const nextTo = async (label) => {
       for (let i = 0; i < 25 && (await counter()) !== label; i++) {
         const before = await counter();
-        await pt.getByRole('button', { name: /^next/i }).first().click({ timeout: 60000 });
-        await pt.waitForFunction((b) => {
+        const clicked = await pt.getByRole('button', { name: /^next/i }).first().click({ timeout: 60000 }).then(() => true).catch(() => false);
+        const moved = clicked && await pt.waitForFunction((b) => {
           const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
           return (c?.querySelector('.text-indigo-600')?.textContent?.trim() ?? null) !== b;
-        }, before, { timeout: 60000 }).catch(() => {});
+        }, before, { timeout: 20000 }).then(() => true).catch(() => false);
+        if (!moved) break;
       }
       return (await counter()) === label;
     };
-    record('§105 tour fixture guard: reached step 13 ("Watch the leans flatten")', await nextTo('13 / 19'));
-    const paused = await pt.waitForFunction(() => {
+    // A failed fixture skips the waits that depend on it; the rows below still record, as FAIL.
+    const reached13 = await nextTo('13 / 19');
+    record('§105 tour fixture guard: reached step 13 ("Watch the leans flatten")', reached13);
+    const paused = reached13 && await pt.waitForFunction(() => {
       const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
       return e && Number(e.textContent.trim().split(' / ')[0]) > 0
         && ![...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause');
@@ -11803,8 +11808,9 @@ const suggestedScenario = {
     record('§105 tour step 13: the scripted pause lands on the first-find step and holds (no step after it)',
       paused && at13 === firstFind && (await tProgress()) === at13 && !(await tRunning()),
       `paused=${paused} at=${at13} firstFind=${firstFind} after=${await tProgress()}`);
-    record('§105 tour fixture guard: reached step 15 ("Now watch the second coordinate")', await nextTo('15 / 19'));
-    const resumed = await pt.waitForFunction((from) => {
+    const reached15 = reached13 && await nextTo('15 / 19');
+    record('§105 tour fixture guard: reached step 15 ("Now watch the second coordinate")', reached15);
+    const resumed = reached15 && await pt.waitForFunction((from) => {
       const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
       return e && Number(e.textContent.trim().split(' / ')[0]) >= from + 2;
     }, firstFind, { timeout: 60000 }).then(() => true).catch(() => false);
