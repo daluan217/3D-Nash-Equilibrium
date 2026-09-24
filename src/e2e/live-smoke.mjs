@@ -187,16 +187,21 @@ if (process.env.EXPECTED_INDEX) {
       + (r.error ? ` error=${r.error}` : ''));
 }
 
-// RED-CLOUD-21/001: the backend sourcemap (sourcesContent = every backend
-// source file) was served at /server.cjs.map. A real map is a large JSON
-// document; the SPA fallback answers HTML. Both readings are asserted.
-{
-  const r = await getText('/server.cjs.map', {
+// RED-CLOUD-21/001 + SR-48: neither the backend bundle nor its sourcemap may be
+// served. #209 made the server REFUSE both (JSON 404) instead of letting them fall
+// through to the SPA page, so this check asserted the old shape and failed every
+// deploy since. Safe = JSON 404, or HTML with no backend source in it.
+for (const path of ['/server.cjs', '/server.cjs.map']) {
+  const r = await getText(path, {
     signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS),
   }).catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
   const ct = r.headers.get('content-type') || '';
-  record('backend sourcemap is not served (/server.cjs.map falls through to the SPA page)',
-    r.status === 200 && ct.includes('text/html') && !/"sourcesContent"/.test(r.text),
+  let body = null;
+  try { body = JSON.parse(r.text); } catch { /* not JSON */ }
+  const refused = r.status === 404 && ct.includes('application/json') && body?.error === 'Not found';
+  const spa = r.status === 200 && ct.includes('text/html') && !/"sourcesContent"|require\(|module\.exports/.test(r.text);
+  record(`backend ${path === '/server.cjs' ? 'bundle' : 'sourcemap'} is not served (${path} is refused or falls through to the SPA page)`,
+    refused || spa,
     `status=${r.status} content-type=${ct} bytes=${r.text.length}` + (r.error ? ` error=${r.error}` : ''));
 }
 
