@@ -11457,12 +11457,11 @@ const suggestedScenario = {
           return e ? e.textContent.trim() : null;
         });
         lastCounter = before ?? lastCounter;
-        // 10s, not 3s: a real click on this control takes 1.2s alone but 2.5s
-        // with four browsers running, and a CI shard is busier than that. The
-        // check is "can it be pressed", not "how fast" — too tight a budget
-        // reports a dead control that is merely a loaded machine, and a guard
-        // that cries wolf gets ignored.
-        const advanced = await next.click({ timeout: 10000 }).then(() => true).catch(() => false);
+        // 60s: a real click on this control takes 1.2s alone and 11.3s at 11x CPU (about
+        // CI's load; TASK-18 sweep 5 measured 10s failing "step 0: Next could not be clicked"
+        // while the click itself succeeded). The check is "can it be pressed", not "how fast"
+        // -- too tight a budget reports a dead control that is merely a loaded machine.
+        const advanced = await next.click({ timeout: 60000 }).then(() => true).catch(() => false);
         if (!advanced) { unreachable.push(`step ${steps}: Next could not be clicked`); break; }
         // Wait on the counter actually changing, not on a fixed sleep: it is
         // both the correct signal (the step really advanced) and cheaper than
@@ -11761,7 +11760,10 @@ const suggestedScenario = {
     // replays from that frame and runs on) go through the same loop.
     const pt = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
     await pt.goto(BASE, { waitUntil: 'networkidle' });
-    const tourUp = await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).then(() => true).catch(() => false);
+    // Wait for the app's own decision (data-tour-auto, H6), not a fixed 20 s, which ran out at 11x.
+    const decision = await pt.waitForFunction(() => document.documentElement.dataset.tourAuto || false, null, { timeout: 180000 })
+      .then((h) => h.jsonValue()).catch(() => null);
+    const tourUp = decision === 'shown' && await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible();
     record('§105 tour fixture guard: the guided tour opened', tourUp);
     const counter = () => pt.evaluate(() => {
       const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
@@ -11772,14 +11774,16 @@ const suggestedScenario = {
       return e ? Number(e.textContent.trim().split(' / ')[0]) : -1;
     });
     const tRunning = () => pt.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+    // Bounds for a loaded runner: at 11x CPU (about CI's load) one Next click measured 9.5-15.7 s
+    // of Playwright actionability alone (TASK-18 sweep 5), so a 10 s bound failed there.
     const nextTo = async (label) => {
       for (let i = 0; i < 25 && (await counter()) !== label; i++) {
         const before = await counter();
-        await pt.getByRole('button', { name: /^next/i }).first().click({ timeout: 10000 });
+        await pt.getByRole('button', { name: /^next/i }).first().click({ timeout: 60000 });
         await pt.waitForFunction((b) => {
           const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
           return (c?.querySelector('.text-indigo-600')?.textContent?.trim() ?? null) !== b;
-        }, before, { timeout: 10000 }).catch(() => {});
+        }, before, { timeout: 60000 }).catch(() => {});
       }
       return (await counter()) === label;
     };

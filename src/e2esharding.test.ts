@@ -240,6 +240,15 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
     'evidence is taken at the first failing record, before the section closes its pages');
   assert.match(smoke, /function trackPage\(p\) \{\n\s+if \(activeSection\) sectionPages\.push\(p\);/, 'every page a section opens is a candidate for its evidence');
 }
+// TASK-18 sweep 5: a tour Next click is "can it be pressed", bounded for a loaded runner. At
+// 11x CPU (about CI) one click measured 9.5-15.7 s, and 10 s bounds failed §101a and §105.
+{
+  const walker = smoke.slice(smoke.indexOf('const walkTourAt = '), smoke.indexOf("section('101a',"));
+  assert.match(walker, /const advanced = await next\.click\(\{ timeout: 60000 \}\)/, 'the §101/§103 walker gives a Next click 60 s');
+  const s105 = sectionBodies.get('105') ?? '';
+  assert.match(s105, /getByRole\('button', \{ name: \/\^next\/i \}\)\.first\(\)\.click\(\{ timeout: 60000 \}\)/, '§105 gives a tour Next click 60 s');
+  assert.match(s105, /const decision = await pt\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
+}
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
