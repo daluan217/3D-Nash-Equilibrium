@@ -2182,6 +2182,38 @@ function loadDB(): DB {
  * from both sides of the union honors that deletion even though `remote`
  * doesn't know about it yet.
  */
+/**
+ * An account changed on BOTH instances since the last read: keep one side's
+ * WHOLE record, never a field mix. Mixing verified an attacker's re-register
+ * password (owner verified on X, attacker re-registered on Y); plain local-wins
+ * reverted a peer's acked password reset (sweep 4). A credential rotation
+ * wins; two rotations keep the one GCS already holds (first landed, as on one
+ * instance); then verified; then local. A code used up on either side stays
+ * so, and failed attempts on one code add up to the lockout.
+ */
+function pickAccount(mine: User, theirs: User, was: User): User {
+  const tv = (u: User) => u.tokenVersion ?? 0;
+  const theirsWins = tv(theirs) > tv(mine) || (tv(theirs) === tv(mine)
+    && ((tv(mine) > tv(was)) || (theirs.isVerified && !mine.isVerified)));
+  const win = (theirsWins ? theirs : mine) as unknown as Record<string, unknown>;
+  const lose = (theirsWins ? mine : theirs) as unknown as Record<string, unknown>, base = was as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...win };
+  for (const f of Object.values(CODE_FIELDS)) {
+    const spent = () => {
+      out[f.code] = f.code === "verificationCode" ? "" : undefined;
+      out[f.expires] = f.code === "verificationCode" ? 0 : undefined;
+      out[f.attempts] = undefined;
+    };
+    if (!win[f.code] || base[f.code] !== win[f.code]) continue; // no code, or a fresh one: the winner's stands
+    if (!lose[f.code]) { spent(); continue; } // the other side used it up
+    if (lose[f.code] !== win[f.code]) continue; // the other side issued a new one: the winner's stands
+    const n = (u: Record<string, unknown>) => Number(u[f.attempts] ?? 0);
+    const attempts = n(base) + Math.max(0, n(win) - n(base)) + Math.max(0, n(lose) - n(base));
+    if (attempts >= MAX_CODE_ATTEMPTS) spent(); else out[f.attempts] = attempts || undefined;
+  }
+  return JSON.parse(JSON.stringify(out)) as User;
+}
+
 function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | null = null): DB {
   // THREE-way, not two (BLUE-LOOP-CLOUD-22, hit c): a stale instance's
   // untouched copy of a record another instance DELETED (delete-confirm) or
@@ -2189,7 +2221,7 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
   // is what uploads we gave up on carried: they may have landed, so their ids
   // count as "known remotely" for deletions made HERE — never as proof of a
   // remote deletion or edit (they may not have landed; data loss is worse).
-  const merge = <T extends { id: string }>(r: T[], l: T[], b: T[], u: T[]): T[] => {
+  const merge = <T extends { id: string }>(r: T[], l: T[], b: T[], u: T[], pick?: (mine: T, theirs: T, was: T) => T): T[] => {
     const base = new Map(b.map((x) => [x.id, x]));
     const sent = new Map(u.map((x) => [x.id, x]));
     const inLocal = new Set(l.map((x) => x.id));
@@ -2201,11 +2233,13 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
       if (was !== undefined && !inRemote.has(x.id)) continue; // deleted remotely
       // Unchanged here since the baseline: remote's copy stands.
       if (was !== undefined && isDeepStrictEqual(JSON.parse(JSON.stringify(x)), was)) continue;
-      out.set(x.id, x); // new or changed here: local wins a same-id collision
+      const theirs = out.get(x.id);
+      const both = pick && was !== undefined && theirs !== undefined && !isDeepStrictEqual(theirs, was);
+      out.set(x.id, both ? pick(x, theirs, was) : x); // new or changed here: local wins a same-id collision
     }
     return [...out.values()];
   };
-  const users = merge(remote.users, local.users, baseline?.users ?? [], unacked?.users ?? []);
+  const users = merge(remote.users, local.users, baseline?.users ?? [], unacked?.users ?? [], pickAccount);
   const kept = new Set(users.map((u) => u.id));
   // A folded duplicate is not a deleted account: its games follow the alias.
   const alias = new Map(users.flatMap((u) => (u.mergedFrom ?? []).map((from) => [from, u.id] as const)));

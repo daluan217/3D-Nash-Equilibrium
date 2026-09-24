@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 2 account conflict (21) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 82;
+const EXPECTED_CHECKS = 84;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1634,6 +1634,72 @@ try {
     record('THE DEFECT: X lists the peer\'s game within one freshness window during the outage; after recovery both are on GCS',
       during.some((g) => g.name === 'Peer-During-Outage') && both, `during ${JSON.stringify(during.map((g) => g.name))} both ${both}`);
     await stop(boot.child); await fake.close();
+  }
+
+  // 21. ONE ACCOUNT CHANGED ON BOTH INSTANCES. Y's copy is stale (inside its
+  // 2s window) when it serves a second credential op after X's landed. Whole-
+  // record local-wins reverted X's acked reset; a field mix let an attacker's
+  // re-register password log in on a verified account (sweep 4). FIXTURE: Y
+  // still saw the old state (its answer proves it) and its upload 412'd.
+  {
+    const aGcs = gcsPortA + 44, aX = port1 + 48, aY = port1 + 50, aSmtp = gcsPortA + 46;
+    const smtp = net.createServer((sock) => {
+      sock.write('220 t ESMTP\r\n'); let inData = false;
+      sock.on('data', (c) => { for (const line of c.toString().split(/\r?\n/)) {
+        if (inData) { if (line === '.') { inData = false; sock.write('250 ok\r\n'); } continue; }
+        const v = line.split(/[ :]/)[0].toUpperCase(); if (!v) continue;
+        if (v === 'EHLO' || v === 'HELO') sock.write('250-t\r\n250 AUTH PLAIN LOGIN\r\n'); else if (v === 'AUTH') sock.write('235 ok\r\n');
+        else if (v === 'DATA') { inData = true; sock.write('354 go\r\n'); } else if (v === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); } else sock.write('250 ok\r\n');
+      } });
+      sock.on('error', () => {});
+    });
+    await new Promise((r) => smtp.listen(aSmtp, '127.0.0.1', r));
+    trackFake({ close: () => new Promise((r) => smtp.close(() => r())) });
+    const mail = { SMTP_HOST: '127.0.0.1', SMTP_PORT: String(aSmtp), SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'x@example.invalid' };
+    const call = (port, route, body) => fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const run = async (tag, seedUser, opX, opY) => {
+      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify({ users: [seedUser], games: [] }) }));
+      const X = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), `nash-gcs-acct-${tag}x-`))), aX, aGcs, mail)), aX);
+      const Y = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), `nash-gcs-acct-${tag}y-`))), aY, aGcs, mail)), aY);
+      await fetch(`http://127.0.0.1:${aX}/api/games`); await fetch(`http://127.0.0.1:${aY}/api/games`);
+      await new Promise((r) => setTimeout(r, 2200));
+      await fetch(`http://127.0.0.1:${aY}/api/games`); // Y's window opens on the pre-X state
+      const u0 = fake.uploadCount(), n0 = fake.count412();
+      const rx = await opX(aX);
+      await waitUntil(() => fake.uploadLog().slice(u0).some((x) => x.landedGen), 3000);
+      const ry = await opY(aY);
+      const ryBody = await ry.json().catch(() => ({}));
+      await waitUntil(() => fake.count412() > n0 && fake.uploadLog().at(-1)?.landedGen, 5000);
+      await new Promise((r) => setTimeout(r, 300));
+      const login = async (pw) => (await call(aX, '/api/auth/login', { email: seedUser.email, password: pw })).status;
+      const out = { rx: rx.status, ry: ry.status, ryError: ryBody.error ?? '', refused: fake.count412() > n0, stored: JSON.parse(fake.getStored()).users[0], login };
+      return { out, done: async () => { await stop(X.child); await stop(Y.child); await fake.close(); } };
+    };
+    const base = seededUser('u_acct', 'acct', 'acct@example.test', 'Sup3rSecret!23');
+    // (a) reset on X, a wrong code on Y
+    const a = await run('a', { ...base, recoveryCode: '123456', recoveryCodeExpires: Date.now() + 600000 },
+      (p) => call(p, '/api/auth/reset-password', { email: base.email, code: '123456', newPassword: 'N3wSecret!pass' }),
+      (p) => call(p, '/api/auth/reset-password', { email: base.email, code: '000000', newPassword: 'Oth3rSecret!pw' }));
+    const aNew = await a.out.login('N3wSecret!pass'), aOld = await a.out.login('Sup3rSecret!23'); await a.done();
+    // (b) owner verifies on X, someone re-registers the same unverified email on Y
+    const b = await run('b', { ...base, isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 },
+      (p) => call(p, '/api/auth/verify', { email: base.email, code: '111111' }),
+      (p) => call(p, '/api/auth/register', { username: 'intruder', email: base.email, password: 'Intrud3r!pass' }));
+    const bIntruder = await b.out.login('Intrud3r!pass'), bOwner = await b.out.login('Sup3rSecret!23'); await b.done();
+    // (c) one wrong code on each instance, 3 attempts already used: 3 + 1 + 1 = the lockout
+    const c = await run('c', { ...base, recoveryCode: '123456', recoveryCodeExpires: Date.now() + 600000, recoveryCodeAttempts: 3 },
+      (p) => call(p, '/api/auth/reset-password', { email: base.email, code: '000000', newPassword: 'N3wSecret!pass' }),
+      (p) => call(p, '/api/auth/reset-password', { email: base.email, code: '000001', newPassword: 'N3wSecret!pass' }));
+    await c.done();
+    record('fixture: in each case X\'s change landed first, Y answered from its stale copy (wrong code / re-register accepted) and Y\'s upload 412\'d',
+      a.out.rx === 200 && a.out.ry === 400 && /Incorrect recovery code/.test(a.out.ryError) && a.out.refused
+        && b.out.rx === 200 && b.out.ry === 200 && b.out.refused && c.out.rx === 400 && c.out.ry === 400 && /Incorrect/.test(c.out.ryError) && c.out.refused,
+      JSON.stringify([a, b, c].map((x) => [x.out.rx, x.out.ry, x.out.ryError.slice(0, 40), x.out.refused])));
+    record('THE DEFECT: the acked reset stands, the intruder cannot sign in to the verified account, and attempts on both instances add up to the lockout',
+      aNew === 200 && aOld === 401 && a.out.stored.tokenVersion === 1 && !a.out.stored.recoveryCode
+        && bIntruder === 401 && bOwner === 200 && b.out.stored.isVerified === true
+        && !c.out.stored.recoveryCode,
+      `a new ${aNew} old ${aOld} tv ${a.out.stored.tokenVersion}; b intruder ${bIntruder} owner ${bOwner} verified ${b.out.stored.isVerified}; c code ${c.out.stored.recoveryCode ?? '-'} attempts ${c.out.stored.recoveryCodeAttempts ?? '-'}`);
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',
