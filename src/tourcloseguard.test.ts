@@ -355,10 +355,10 @@ const fakeTourPage = ({
 }
 
 // TASK-18 H6: data-tour-auto is test-facing only. Nothing under src/ may read it except the
-// App.tsx hook that writes it, the e2e helper, smoke §108 and this guard.
+// App.tsx hook that writes it, the e2e helper and suite, and the two static guards that pin them.
 const tourAutoReaders = (files: Map<string, string>): string[] => {
   const out: string[] = [];
-  const allowed = new Set(['src/e2e/tour.mjs', 'src/e2e/smoke.mjs', 'src/tourcloseguard.test.ts']);
+  const allowed = new Set(['src/e2e/tour.mjs', 'src/e2e/smoke.mjs', 'src/tourcloseguard.test.ts', 'src/e2esharding.test.ts']);
   for (const [file, text] of files) {
     if (allowed.has(file) || !/tour-?auto/i.test(text)) continue;
     if (file === 'src/App.tsx') {
@@ -375,7 +375,7 @@ const tourAutoReaders = (files: Map<string, string>): string[] => {
 const srcFiles = new Map(readdirSync('src', { recursive: true })
   .filter((entry): entry is string => typeof entry === 'string' && /\.(tsx?|mjs|js|css|html)$/.test(entry) && !/ \d+\./.test(entry))
   .map((entry) => path.join('src', entry)).map((file) => [file, readFileSync(file, 'utf8')]));
-check('only the App.tsx hook, the e2e helper, §108 and this guard reference data-tour-auto',
+check('only the App.tsx hook, the e2e helper and suite, and the two static guards reference data-tour-auto',
   tourAutoReaders(srcFiles).length === 0, tourAutoReaders(srcFiles).join(','));
 {
   const planted = new Map(srcFiles);
