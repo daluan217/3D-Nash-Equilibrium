@@ -55,11 +55,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 3 merge (7) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10).
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 6 merge (7, 7b) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10).
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 51;
+const EXPECTED_CHECKS = 54;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -93,7 +93,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   let stored = initialContent; // null = object does not exist
   let generation = initialGeneration;
   const uploadLog = []; // { atMs, ifGenerationMatch, body }
-  let uploadDelayMs = 0, omitGeneration = false, dropUploads = false;
+  let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, afterStoreOnce = null;
   const startedAt = Date.now();
 
   const server = http.createServer((req, res) => {
@@ -146,6 +146,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
         const answer = { name: OBJECT, bucket: BUCKET, generation: String(generation), size: String(stored.length) };
         if (omitGeneration) { omitGeneration = false; delete answer.generation; }
         res.end(JSON.stringify(answer));
+        if (afterStoreOnce) { const f = afterStoreOnce; afterStoreOnce = null; stored = f(stored); generation += 1; } // a peer writes right after us
       });
       return;
     }
@@ -165,6 +166,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     omitGenerationOnce: () => { omitGeneration = true; },
     dropUploads: (v) => { dropUploads = v; }, // accept, never store, never answer
     peerWrite: (content) => { stored = content; generation += 1; },
+    afterStoreOnce: (f) => { afterStoreOnce = f; },
     // For the "GCS was unreachable at boot, comes back later" case: the
     // server object exists (so a spawned process pointed at `port` gets
     // ECONNREFUSED, not a slow timeout) but does not accept connections
@@ -850,6 +852,48 @@ try {
     await stop(X.child); await stop(Y.child); await fake.close();
   }
 
+  // 7b. DELETION WINS OVER A CONCURRENT EDIT ON THE STALE INSTANCE. Y deletes
+  // accounts U and U2; X, not knowing, CHANGES U2 (a forgot-password code)
+  // and saves a new game for U, both inside one 412 merge. Neither account
+  // may come back, and no game may be left owned by a deleted account.
+  // CONTROL: the fixture's deletions reached GCS before X's merge.
+  {
+    const dGcs = gcsPortA + 28, dX = port1 + 24, dY = port1 + 26;
+    const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+    const code = { deleteCode: '654321', deleteCodeExpires: Date.now() + 600000 };
+    const fake = await trackFake(startFakeGcsDb({ port: dGcs, initialContent: JSON.stringify({
+      users: [{ ...seededUser('u_D1', 'del1', 'd1@example.test', 'Sup3rSecret!23'), ...code }, { ...seededUser('u_D2', 'del2', 'd2@example.test', 'Sup3rSecret!23'), ...code }],
+      games: [],
+    }) }));
+    const X = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-dwx-'))), dX, dGcs)), dX);
+    const Y = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-dwy-'))), dY, dGcs)), dY);
+    const loginOn = async (p, email) => (await (await fetch(`http://127.0.0.1:${p}/api/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) })).json()).token;
+    const onGcs = () => { try { return JSON.parse(fake.getStored()); } catch { return { users: [], games: [] }; } };
+    const settle = async () => { let last = null; await waitUntil(() => { const now = fake.getStored(); const same = now === last; last = now; return same && fake.uploadCount() > 0; }, 6000); };
+    const tokX = await loginOn(dX, 'd1@example.test'); await settle();
+    const tokY1 = await loginOn(dY, 'd1@example.test'); await settle();
+    const tokY2 = await loginOn(dY, 'd2@example.test'); await settle();
+    for (const t of [tokY1, tokY2]) {
+      await fetch(`http://127.0.0.1:${dY}/api/auth/delete-confirm`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${t}` }, body: JSON.stringify({ code: '654321' }) });
+      await settle();
+    }
+    const deletedFirst = onGcs().users.length === 0;
+    fake.setUploadDelayMs(1500); // X's first upload is held, then 412s: both changes below land in ONE merge
+    await fetch(`http://127.0.0.1:${dX}/api/auth/forgot-password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'd2@example.test' }) });
+    const orphan = await fetch(`http://127.0.0.1:${dX}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokX}` },
+      body: JSON.stringify({ name: 'Orphan-Game', payoffs: pay }) });
+    fake.setUploadDelayMs(0);
+    await new Promise((r) => setTimeout(r, 2500)); await settle();
+    const fin = onGcs();
+    record('fixture: both deletions reached GCS before the stale instance merged, and X accepted its writes',
+      deletedFirst && orphan.status === 200, `users on GCS before: ${deletedFirst ? 0 : 'some'}, orphan POST ${orphan.status}`);
+    record('THE DEFECT: an account deleted elsewhere stays deleted even though THIS instance changed it (deletion wins)',
+      !fin.users.some((u) => u.id === 'u_D2') && !fin.users.some((u) => u.id === 'u_D1'), JSON.stringify(fin.users.map((u) => u.id)));
+    record('THE DEFECT: no game is left owned by a deleted account', !fin.games.some((g) => g.userId === 'u_D1'), JSON.stringify(fin.games));
+    await stop(X.child); await stop(Y.child); await fake.close();
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   // 8. ACKNOWLEDGED SAVES SURVIVE AN OUTAGE AND A SHUTDOWN (hit d). Before:
   // after an upload failed nothing retried until the NEXT save (measured:
@@ -950,31 +994,39 @@ try {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 10. THE PUMP NEVER WRITES WITHOUT A GENERATION. The route gate keeps DB
-  // routes off an unread store, so this is the pump's own guard, reached when
-  // an upload's answer carries no generation: the next save must re-read
-  // first. A peer writes in between; unconditional, that save erased it.
-  // CONTROL: the peer's write happened (it is on GCS before our save).
+  // 10. THE PUMP NEVER WRITES WITHOUT A GENERATION. Routes re-read an unread
+  // store at the gate, so the pump's own guard is reached by a save QUEUED
+  // behind an upload whose answer carried no generation, with a peer writing
+  // right after that upload. The queued save must re-read before writing.
+  // CONTROL: the peer's write happened (checked below via the fake's hook).
   // ───────────────────────────────────────────────────────────────────────────
   {
     const nGcs = gcsPortA + 24, nApp = port1 + 18;
+    const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
     const fake = await trackFake(startFakeGcsDb({ port: nGcs, initialContent: JSON.stringify({ users: [seededUser('u_n', 'nogen', 'n@example.test', 'Sup3rSecret!23')], games: [] }) }));
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-nogen-'))), nApp, nGcs)), nApp);
-    fake.omitGenerationOnce(); // the login rehash's upload answers without a generation
     const tok = (await (await fetch(`http://127.0.0.1:${nApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'n@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
-    const peer = JSON.parse(fake.getStored());
-    peer.games.push({ id: 'g_peer', userId: 'u_n', name: 'Peer-Game', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01' });
-    fake.peerWrite(JSON.stringify(peer));
-    const peerLanded = JSON.parse(fake.getStored()).games.some((g) => g.name === 'Peer-Game');
-    const mine = await fetch(`http://127.0.0.1:${nApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
-      body: JSON.stringify({ name: 'Mine', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+    let peerRan = false;
+    fake.setUploadDelayMs(800);
+    fake.omitGenerationOnce();
+    fake.afterStoreOnce((content) => {
+      peerRan = true;
+      const db = JSON.parse(content);
+      db.games.push({ id: 'g_peer', userId: 'u_n', name: 'Peer-Game', description: '', payoffs: pay, createdAt: '2026-01-01' });
+      return JSON.stringify(db);
+    });
+    const post = (name) => fetch(`http://127.0.0.1:${nApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+      body: JSON.stringify({ name, payoffs: pay }) });
+    const first = await post('First'); await new Promise((r) => setTimeout(r, 200));
+    const queued = await post('Queued');
+    fake.setUploadDelayMs(0);
     let names = [];
-    await waitUntil(() => { try { names = JSON.parse(fake.getStored()).games.map((g) => g.name).sort(); } catch { /* reported */ } return names.includes('Mine'); }, 6000);
-    record('fixture: the peer write reached GCS before our save', peerLanded, fake.getStored().slice(0, 200));
-    record('THE DEFECT: with no known generation the pump re-reads first, so the peer\'s game survives our save',
-      mine.status === 200 && JSON.stringify(names) === JSON.stringify(['Mine', 'Peer-Game']),
-      `save ${mine.status}; stored ${JSON.stringify(names)}; last precondition ${JSON.stringify(fake.uploadLog().at(-1)?.ifGenerationMatch)}`);
+    await waitUntil(() => { try { names = JSON.parse(fake.getStored()).games.map((g) => g.name).sort(); } catch { /* reported */ } return names.includes('Queued'); }, 8000);
+    record('fixture: a peer wrote right after the generation-less upload answered', peerRan, fake.getStored().slice(0, 200));
+    record('THE DEFECT: with no known generation the queued save re-reads first, so the peer\'s game survives it',
+      first.status === 200 && queued.status === 200 && JSON.stringify(names) === JSON.stringify(['First', 'Peer-Game', 'Queued']),
+      `stored ${JSON.stringify(names)}; preconditions ${JSON.stringify(fake.uploadLog().slice(-3).map((u) => u.ifGenerationMatch))}`);
     await stop(boot.child); await fake.close();
   }
 
