@@ -29,8 +29,11 @@ const results = [];
 const sections = [];
 let activeSection = null;
 let activeAttempt = 1;
+let failureEvidence = null;
 let executedShard = null;
 function record(name, pass, detail) {
+  // Evidence of the FIRST failure in an attempt, taken now: the section goes on and closes its pages.
+  if (!pass && activeSection && !failureEvidence) failureEvidence = captureFailureEvidence();
   results.push({ name, pass, detail, sectionId: activeSection?.id ?? null, attempt: activeAttempt });
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
@@ -126,7 +129,25 @@ const consoleErrors = [];
  * `browser` directly — that page must still go through `trackPage` so it is
  * not a second, silent blind spot of exactly the kind this fix closes.
  */
+// Failure evidence shows the page the failing section drove: the shared page is parked at
+// about:blank after §16, so shooting it gave blank evidence (TASK-18 H8). A thrown section's
+// finally closes its pages before the catch records, so each page's HTML is kept as it closes.
+const sectionPages = [];
+let lastClosedHtml = null;
+const htmlWithin = (pg) => Promise.race([pg.content().catch(() => null), new Promise((r) => setTimeout(() => r(null), 5000))]);
+async function keepHtmlBeforeClose(pg) {
+  if (activeSection && !pg.isClosed()) lastClosedHtml = (await htmlWithin(pg)) ?? lastClosedHtml;
+}
 function trackPage(p) {
+  if (activeSection) sectionPages.push(p);
+  const closePage = p.close.bind(p);
+  p.close = async (...args) => { await keepHtmlBeforeClose(p); return closePage(...args); };
+  const ctx = p.context();
+  if (!ctx.keepsEvidence) {
+    ctx.keepsEvidence = true;
+    const closeContext = ctx.close.bind(ctx);
+    ctx.close = async (...args) => { for (const pg of ctx.pages()) await keepHtmlBeforeClose(pg); return closeContext(...args); };
+  }
   p.on('console', (m) => {
     if (m.type() === 'error') {
       consoleErrors.push({
@@ -203,10 +224,13 @@ async function captureFailureEvidence() {
   const suffix = `section-${activeSection?.id ?? 'suite'}-attempt-${activeAttempt}`;
   const failurePng = `${failureBase}_${suffix}.png`;
   const failureHtml = `${failureBase}_${suffix}.html`;
-  await page.screenshot({ path: failurePng, fullPage: true }).catch(() => {});
+  const live = [...sectionPages].reverse().find((pg) => !pg.isClosed())
+    ?? (!activeSection || primaryPageSection(activeSection.id) ? page : null);
+  if (live) await live.screenshot({ path: failurePng, fullPage: true }).catch(() => {});
   try {
     const fs = await import('node:fs');
-    fs.writeFileSync(failureHtml, await page.content().catch(() => '<unavailable>'));
+    fs.writeFileSync(failureHtml, (live ? await htmlWithin(live) : null)
+      ?? lastClosedHtml ?? '<unavailable: the section closed its pages and kept no HTML>');
   } catch { /* evidence capture must never mask the original failure */ }
 }
 
@@ -218,6 +242,9 @@ function primaryPageSection(id) {
 async function runSection(definition, attempt) {
   activeSection = definition;
   activeAttempt = attempt;
+  sectionPages.length = 0;
+  lastClosedHtml = null;
+  failureEvidence = null;
   const resultStart = results.length;
   const startedAt = Date.now();
   console.log(`\n════ SECTION ${definition.id} [shard ${definition.shard}/${SHARD_COUNT}] ${definition.name}${attempt > 1 ? ' (retry)' : ''} ════`);
@@ -242,7 +269,7 @@ async function runSection(definition, attempt) {
   const passed = attemptResults.length > 0 && attemptResults.every((result) => result.skip || result.pass);
   finalAttemptBySection.set(definition.id, attempt);
   console.log(`SECTION-${passed ? 'PASS' : 'FAIL'} ${definition.id} ${definition.name} (${Date.now() - startedAt}ms)`);
-  if (!passed) await captureFailureEvidence();
+  if (!passed) await (failureEvidence ?? captureFailureEvidence());
   activeSection = null;
   activeAttempt = 1;
   return passed;

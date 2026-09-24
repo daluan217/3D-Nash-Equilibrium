@@ -229,6 +229,17 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert(at > 0 && body.lastIndexOf('await surfacesSettled(p);', at) > body.lastIndexOf('.click();', at),
     `§${id} waits for the opened surface to settle before reading coordinates in it`);
 }
+// TASK-18 H8: failure evidence shows the failing section's own page (the shared one is parked at
+// about:blank after §16, so every later section's evidence was blank), taken at the first failure.
+{
+  const cap = smoke.slice(smoke.indexOf('async function captureFailureEvidence()'), smoke.indexOf('function primaryPageSection('));
+  assert.match(cap, /const live = \[\.\.\.sectionPages\]\.reverse\(\)\.find\(\(pg\) => !pg\.isClosed\(\)\)\n\s+\?\? \(!activeSection \|\| primaryPageSection\(activeSection\.id\) \? page : null\);/,
+    'failure evidence shoots the failing section\'s own live page, the shared page only for §1-§16 or the suite');
+  assert(!/await page\.(screenshot|content)\(/.test(cap), 'failure evidence never shoots the parked shared page unconditionally');
+  assert.match(smoke, /function record\(name, pass, detail\) \{\n.*\n\s+if \(!pass && activeSection && !failureEvidence\) failureEvidence = captureFailureEvidence\(\);/,
+    'evidence is taken at the first failing record, before the section closes its pages');
+  assert.match(smoke, /function trackPage\(p\) \{\n\s+if \(activeSection\) sectionPages\.push\(p\);/, 'every page a section opens is a candidate for its evidence');
+}
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
