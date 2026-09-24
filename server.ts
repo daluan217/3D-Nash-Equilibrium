@@ -5407,7 +5407,8 @@ async function startServer() {
   // upgraded on next successful login, but dormant rows stay plaintext-equivalent
   // if db.json/GCS leaks. Counted AFTER initDB: it used to run before the load,
   // on an empty database, so it could never fire.
-  const legacyPwCount = loadDB().users.filter(u => needsPasswordRehash(u.passwordHash)).length;
+  // '' is no password at all (the desktop local owner), not a reversible one.
+  const legacyPwCount = loadDB().users.filter(u => u.passwordHash !== '' && needsPasswordRehash(u.passwordHash)).length;
   if (legacyPwCount > 0) {
     console.warn(`SECURITY: ${legacyPwCount} account(s) still use legacy (reversible) password hashes. Consider forcing a password reset for these users.`);
   }

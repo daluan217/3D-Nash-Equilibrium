@@ -589,6 +589,13 @@ for (const [label, doc, expectMsg] of [
     /"games\[1\]" is a number, not an object/],
   ['users[0] is an array (arrays are objects to typeof — the check must not be fooled)',
     { users: [[]], games: [] }, /"users\[0\]" is an array, not an object/],
+  // BLUE-LOOP-CLOUD-22: one level further. `users:[{}]` 500'd login and
+  // register for everyone (`u.email.trim()`, `passwordHash.startsWith`).
+  ['users[0] is {} (no email, no hash: every auth route dereferenced them)',
+    { users: [{}], games: [] }, /"users\[0\]\.id" is not a string/],
+  ['users[1].passwordHash is a number (the index and FIELD are the real ones)',
+    { users: [{ id: 'u1', username: 'a', email: 'a@x.test', passwordHash: '' }, { id: 'u2', username: 'b', email: 'b@x.test', passwordHash: 5 }], games: [] },
+    /"users\[1\]\.passwordHash" is not a string/],
 ]) {
   const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-el-'));
   const original = JSON.stringify(doc);
@@ -630,20 +637,23 @@ for (const [label, doc, expectMsg] of [
   port += 1;
 }
 
-// 9c. THE CONTROL. `{}` is a genuine object — not a recognised User, but
-// nothing about it is unguessable in the way `null`/`7`/`"nope"` are, and the
-// readers that crashed above (`u.id`, `g.userId`) simply read `undefined` from
-// it, which is a value they already handle. It must boot AND serve.
+// 9c. THE CONTROL. A user with its four string fields — passwordHash '' is
+// exactly the desktop local owner's own shape, so a "non-empty" check would
+// refuse every existing install — and a game `{}` (no reader crashes on game
+// fields; not validated on purpose). It must boot AND serve.
 {
   const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-el-control-'));
-  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ users: [{}], games: [{}] }));
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({
+    users: [{ id: 'local-owner', username: 'This device', email: 'local-owner@localhost.invalid', passwordHash: '' }], games: [{}] }));
 
   const child = spawnServer(userData, port);
   try {
-    await waitReady(child, port);
+    const ready = await waitReady(child, port);
     const list = await fetch(`http://127.0.0.1:${port}/api/games`);
-    record('CONTROL: an object element with no known fields still BOOTS and serves',
+    record('CONTROL: a local-owner-shaped user (passwordHash \'\') and a bare game object still BOOT and serve',
       list.ok, `GET /api/games status ${list.status}`);
+    record('CONTROL: no legacy-password SECURITY warning for the local owner (\'\' is no password, not a reversible one)',
+      !/SECURITY: \d+ account\(s\) still use legacy/.test(ready.log()), ready.log().slice(0, 200));
     const save = await fetch(`http://127.0.0.1:${port}/api/games`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'probe', description: 'd',
@@ -652,7 +662,7 @@ for (const [label, doc, expectMsg] of [
     record('CONTROL: and saving still works on it (the refusal did not widen to every array)',
       save.ok, `POST /api/games status ${save.status}`);
   } catch (err) {
-    record('CONTROL: an object element with no known fields still BOOTS and serves', false, String(err));
+    record('CONTROL: a local-owner-shaped user (passwordHash \'\') and a bare game object still BOOT and serve', false, String(err));
   } finally {
     await stop(child);
     rmSync(userData, { recursive: true, force: true });
