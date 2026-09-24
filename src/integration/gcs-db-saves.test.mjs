@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 11 merge (7, 7b, 7c, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 62;
+const EXPECTED_CHECKS = 65;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -971,14 +971,30 @@ try {
       `accounts ${same.length}; games ${JSON.stringify(fin.games.map((g) => [g.name, g.userId === same[0]?.id]))}`);
     record('THE DEFECT: one username shared by two people ends as two accounts with distinct names',
       carols.length === 2 && new Set(carols.map((u) => u.username.toLowerCase())).size === 2, JSON.stringify(carols.map((u) => u.username)));
+    // As the renamed user sees it, on BOTH instances (each re-reads GCS within
+    // 2s): sign-in by email still works, and the name the app shows — the
+    // login response and /api/auth/me, the header's `@username` — is the NEW one.
+    const renamed = carols.find((u) => u.username !== 'carol' && u.username !== 'Carol');
+    await new Promise((r) => setTimeout(r, 2100));
+    const seen = [];
+    for (const p of [eX, eY]) {
+      const who = renamed?.email === 'dave@example.test' ? ['dave@example.test', 'Sup3rSecretD'] : ['carol@example.test', 'Sup3rSecretC'];
+      const lr = await call(p, '/api/auth/login', { email: who[0], password: who[1] });
+      const lj = await lr.json().catch(() => ({}));
+      const me = await (await fetch(`http://127.0.0.1:${p}/api/auth/me`, { headers: { authorization: `Bearer ${lj.token}` } })).json().catch(() => ({}));
+      seen.push({ login: lr.status, loginName: lj.user?.username, meName: me.username });
+    }
+    record('THE DEFECT: the renamed user signs in by email on both instances and every shown username is the NEW name',
+      !!renamed && seen.every((x) => x.login === 200 && x.loginName === renamed.username && x.meName === renamed.username),
+      `renamed to ${renamed?.username}; ${JSON.stringify(seen)}`);
     await stop(X.child); await stop(Y.child); await fake.close(); smtp.close();
 
-    // 7d. THE FOLDED ID STILL OWNS WHAT ITS INSTANCE SAVES NEXT. Account A is
-    // on GCS unverified; Y registers the same email as B and verifies it
-    // before its merge, so the merge keeps verified B and folds A. X, which
-    // still holds A, verifies A and saves a game in the same window. That
-    // game must end up owned by the surviving account, not by an id that no
-    // longer exists. CONTROL: X accepted the game (200).
+    // 7d. THE FOLDED ID STILL OWNS WHAT ITS INSTANCE SAVES NEXT. Account A
+    // lands on GCS unverified INSIDE Y's freshness window (Y re-checked just
+    // before), so Y registers the same email as B and verifies it before its
+    // merge; the merge keeps verified B and folds A. X, which loads A, then
+    // verifies A and saves a game. That game must end up owned by the
+    // surviving account, not by an id that no longer exists.
     const fGcs = gcsPortA + 34, fX = port1 + 34, fY = port1 + 36;
     const smtp2 = net.createServer((sock) => {
       let inData = false, buf = '';
@@ -1000,12 +1016,16 @@ try {
     await new Promise((r) => smtp2.listen(smtpPort, '127.0.0.1', r));
     const fake2 = await trackFake(startFakeGcsDb({ port: fGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
     const Y2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-foldy-'))), fY, fGcs, mailEnv)), fY);
-    fake2.peerWrite(JSON.stringify({ users: [{ ...seededUser('u_A', 'annie', 'fold@example.test', 'Sup3rSecretA'),
-      isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 }], games: [] }));
     const X2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-foldx-'))), fX, fGcs)), fX);
     fake2.setUploadDelayMs(2500);
+    await fetch(`http://127.0.0.1:${fY}/api/auth/me`); // Y re-checks GCS now: its 2s freshness window starts
+    fake2.peerWrite(JSON.stringify({ users: [{ ...seededUser('u_A', 'annie', 'fold@example.test', 'Sup3rSecretA'),
+      isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 }], games: [] }));
     await call(fY, '/api/auth/register', { username: 'bella', email: 'fold@example.test', password: 'Sup3rSecretB' });
     const vB = await call(fY, '/api/auth/verify', { email: 'fold@example.test', code: codes.at(-1) });
+    // X booted before A existed; its own 2s window must lapse so it re-reads
+    // and sees A (Y's fold is still held by the 2.5s upload delay).
+    await new Promise((r) => setTimeout(r, 2100));
     const vA = await call(fX, '/api/auth/verify', { email: 'fold@example.test', code: '111111' });
     const tA = (await (await call(fX, '/api/auth/login', { email: 'fold@example.test', password: 'Sup3rSecretA' })).json()).token;
     const late = await call(fX, '/api/games', { name: 'A-Late', payoffs: pay }, tA);
@@ -1217,6 +1237,29 @@ try {
       hung.every((r) => r.status === 500 && r.ms >= 1400 && r.ms < 8000) && /SMTP deadline exceeded after 1500ms/.test(boot.log()),
       JSON.stringify(hung));
     await stop(boot.child); await fake.close(); smtp.close();
+  }
+
+  // 12. READS ARE FRESH ACROSS INSTANCES. In a rollover the new instance read
+  // GCS once at boot and never again until it wrote, so a game saved on the
+  // old instance was missing from the new one's list without bound (sweep 1,
+  // main too). CONTROL: the game is on GCS before the read.
+  {
+    const rGcs = gcsPortA + 40, rX = port1 + 42, rY = port1 + 44;
+    const fake = await trackFake(startFakeGcsDb({ port: rGcs, initialContent: JSON.stringify({ users: [seededUser('u_r', 'fresh', 'r@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const X = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-freshx-'))), rX, rGcs)), rX);
+    const Y = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-freshy-'))), rY, rGcs)), rY);
+    const loginOn = async (p) => (await (await fetch(`http://127.0.0.1:${p}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'r@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    const tX = await loginOn(rX); await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    const tY = await loginOn(rY); await waitUntil(() => fake.uploadCount() >= 2, 5000);
+    const saved = await fetch(`http://127.0.0.1:${rX}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tX}` },
+      body: JSON.stringify({ name: 'Saved-On-X', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+    const onGcs = await waitUntil(() => { try { return JSON.parse(fake.getStored()).games.some((g) => g.name === 'Saved-On-X'); } catch { return false; } }, 5000);
+    await new Promise((r) => setTimeout(r, 2100)); // one freshness window
+    const listY = await (await fetch(`http://127.0.0.1:${rY}/api/games`, { headers: { authorization: `Bearer ${tY}` } })).json().catch(() => null);
+    record('fixture: the game saved on X reached GCS before Y lists', saved.status === 200 && onGcs, fake.getStored().slice(0, 160));
+    record('THE DEFECT: the other instance lists it within one freshness window, with no write of its own',
+      Array.isArray(listY) && listY.some((g) => g.name === 'Saved-On-X'), JSON.stringify(listY));
+    await stop(X.child); await stop(Y.child); await fake.close();
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',

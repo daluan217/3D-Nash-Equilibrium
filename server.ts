@@ -1996,12 +1996,13 @@ function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS, peer
  * generation was adopted, so the first save replaced the bucket with an
  * empty database (BLUE-LOOP-CLOUD-22, hit a).
  */
-async function readGcsDb(): Promise<{ db: DB; generation: string } | null> {
+async function readGcsDb(unlessGeneration: string | null = null): Promise<{ db: DB; generation: string } | 'unchanged' | null> {
   const { Storage } = await import('@google-cloud/storage');
   const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
   const [exists] = await withDeadline(file.exists(), 'db.json exists()');
   if (!exists) return null;
   const [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
+  if (unlessGeneration !== null && meta.generation != null && String(meta.generation) === unlessGeneration) return 'unchanged';
   const [content] = await withDeadline(
     file.bucket.file('db.json', { generation: meta.generation }).download(),
     'db.json download()',
@@ -2016,6 +2017,9 @@ async function readGcsDb(): Promise<{ db: DB; generation: string } | null> {
   if (meta.generation == null) throw new Error('db.json metadata carried no generation');
   return { db, generation: String(meta.generation) };
 }
+
+const GCS_FRESH_MS = 2_000; // see requireGcsStore
+let gcsFreshUntil = 0;
 
 /**
  * Set when the bucket's db.json was READ but is not a database we can trust.
@@ -2039,8 +2043,10 @@ function blockGcsStore(reason: string): void {
  * AFTER the awaits: routes commit meanwhile, and merging an older snapshot
  * wrote it back over them (#208).
  */
-async function syncFromGcs(): Promise<void> {
-  const remote = await readGcsDb();
+async function syncFromGcs(ifChanged = false): Promise<void> {
+  const remote = await readGcsDb(ifChanged ? gcsGeneration : null);
+  gcsFreshUntil = Date.now() + GCS_FRESH_MS;
+  if (remote === 'unchanged') return;
   if (remote === null) {
     gcsBaselineDb = { users: [], games: [] };
     gcsGeneration = '0'; // GCS's own "must not exist yet" precondition
@@ -2054,25 +2060,47 @@ async function syncFromGcs(): Promise<void> {
   gcsGeneration = remote.generation;
 }
 
+/** One sync at a time: the gate, the refresh and the pump share it. */
+let gcsSyncInFlight: Promise<void> | null = null;
+function syncShared(ifChanged = false): Promise<void> {
+  gcsSyncInFlight ??= syncFromGcs(ifChanged).finally(() => { gcsSyncInFlight = null; });
+  return gcsSyncInFlight;
+}
+
 /**
  * Hosted DB routes serve only a store this process has READ. After a failed
  * boot read, `inMemoryDb` is an empty stand-in: a real user got 401 from it
- * and could register their own email a second time (hit b). One shared sync
- * attempt per burst; failure is an honest 503, never a guess.
+ * and could register their own email a second time (hit b). Once read, the
+ * copy is re-checked at most every GCS_FRESH_MS (one metadata GET; a download
+ * only when the generation moved): in a rollover the new instance never saw
+ * the old one's later writes until it wrote itself, so a saved game or a new
+ * account stayed invisible there without bound (sweep 1). A re-check holds a
+ * request at most 2s (it finishes in the background); a failed one serves the
+ * copy it has and backs off 30s; a blocked store is an honest 503.
  */
-let gcsSyncInFlight: Promise<void> | null = null;
 function requireGcsStore(req: express.Request, res: express.Response, next: express.NextFunction): void {
-  if (process.env.ELECTRON_USER_DATA_PATH || !GCS_BUCKET || (gcsGeneration !== null && !gcsStoreBlocked)) return next();
+  if (process.env.ELECTRON_USER_DATA_PATH || !GCS_BUCKET) return next();
   const unavailable = () => {
     res.setHeader('Retry-After', '30');
     res.status(503).json({ error: 'Accounts and saved games are temporarily unavailable. Please try again shortly.' });
   };
   if (gcsStoreBlocked) return unavailable();
-  gcsSyncInFlight ??= syncFromGcs().finally(() => { gcsSyncInFlight = null; });
-  gcsSyncInFlight.then(
+  const unread = gcsGeneration === null;
+  // While an upload is in flight the pump reconciles through its own 412 merge.
+  if (!unread && (Date.now() < gcsFreshUntil || gcsUploadInFlight)) return next();
+  if (!unread) gcsFreshUntil = Date.now() + GCS_FRESH_MS;
+  const sync = syncShared(!unread);
+  const waited = unread ? sync : Promise.race([sync, new Promise<void>((r) => setTimeout(r, 2_000).unref?.())]);
+  waited.then(
     () => (gcsGeneration !== null && !gcsStoreBlocked ? next() : unavailable()),
-    (err) => { console.error('GCS read before serving a DB route failed:', err); unavailable(); },
+    (err) => {
+      console.error(`GCS ${unread ? 'read' : 're-check'} before serving a DB route failed:`, err);
+      if (unread || gcsStoreBlocked) return unavailable();
+      gcsFreshUntil = Date.now() + 30_000; // serve the copy we have; retry the re-check later
+      next();
+    },
   );
+  if (!unread) sync.catch(() => { gcsFreshUntil = Date.now() + 30_000; }); // a re-check that outlived the wait
 }
 
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
@@ -2268,7 +2296,7 @@ async function uploadDbToGcs(): Promise<void> {
   // leaves `gcsGeneration` null, and an unconditional save would replace the
   // bucket with the empty stand-in (CodeRabbit). Throws on any failure; the
   // pump owns retrying.
-  if (gcsGeneration === null) await syncFromGcs();
+  if (gcsGeneration === null) await syncShared();
   const { Storage } = await import('@google-cloud/storage');
   const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
   for (let attempt = 0; ; attempt++) {
@@ -2295,7 +2323,10 @@ async function uploadDbToGcs(): Promise<void> {
       // have landed; `unionMergeDb` needs to know what it carried.
       if (err?.code !== 412) gcsUnackedDb = overlayDb(gcsUnackedDb ?? { users: [], games: [] }, JSON.parse(bodyStr));
       if (err?.code !== 412 || attempt >= 2) throw err;
-      await syncFromGcs(); // someone else wrote first: merge their state, retry
+      // Someone else wrote first: merge their state, retry. A sync already in
+      // flight may predate their write, so run a fresh one after it.
+      await gcsSyncInFlight?.catch(() => {});
+      await syncShared();
     }
   }
 }
