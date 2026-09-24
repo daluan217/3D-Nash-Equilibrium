@@ -1670,7 +1670,9 @@ try {
       const ry = await opY(aY);
       const ryBody = await ry.json().catch(() => ({}));
       await waitUntil(() => fake.count412() > n0 && fake.uploadLog().at(-1)?.landedGen, 5000);
-      await new Promise((r) => setTimeout(r, 300));
+      // Past X's window, so X re-reads the MERGED record: logging in on X
+      // any sooner answers from X's own copy and proves nothing about GCS.
+      await new Promise((r) => setTimeout(r, 2200));
       const login = async (pw) => (await call(aX, '/api/auth/login', { email: seedUser.email, password: pw })).status;
       const out = { rx: rx.status, ry: ry.status, ryError: ryBody.error ?? '', refused: fake.count412() > n0, stored: JSON.parse(fake.getStored()).users[0], login };
       return { out, done: async () => { await stop(X.child); await stop(Y.child); await fake.close(); } };
