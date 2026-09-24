@@ -3669,14 +3669,14 @@ async function startServer() {
   // on whatever JSON arrived, so `{"email":5}` or `{"password":{}}` answered
   // 500 "Internal server error" on login, register, verify, forgot, reset and
   // delete-confirm (live, sweep 1). A malformed field is the client's error.
+  const authFieldsAreStrings = (b: unknown): boolean => {
+    if (b === null || typeof b !== "object" || Array.isArray(b)) return false;
+    const r = b as Record<string, unknown>;
+    return ["username", "email", "password", "code", "newPassword"].every((f) => r[f] == null || typeof r[f] === "string");
+  };
   app.use("/api/auth", (req, res, next) => {
-    const body = req.body;
-    if (req.method !== "POST" || body === undefined) return next();
-    const fields = ["username", "email", "password", "code", "newPassword"] as const;
-    const bad = body === null || typeof body !== "object" || Array.isArray(body)
-      || fields.some((f) => body[f] !== undefined && body[f] !== null && typeof body[f] !== "string");
-    if (bad) return res.status(400).json({ error: "Invalid request." });
-    next();
+    if (req.method !== "POST" || req.body === undefined || authFieldsAreStrings(req.body)) return next();
+    res.status(400).json({ error: "Invalid request." });
   });
 
   // Hosted: every route that reads or writes accounts/games needs a store this
