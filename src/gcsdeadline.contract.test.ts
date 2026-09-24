@@ -166,10 +166,10 @@ collect(sf, (n) => sites.push(buildSite(n, sf)));
 
 // The scan must be LIVE. If the AST walk silently matched nothing, every
 // "all sites deadlined" claim below would be vacuously true.
-// 8 GCS sites since BLUE-LOOP-CLOUD-22 folded three copies of the db.json read
-// into readGcsDb (was 13), plus the 4 SMTP sends. A floor, not an exact count.
+// 7 GCS sites since BLUE-LOOP-CLOUD-22 folded three copies of the db.json read
+// into readGcsDb and dropped its exists() (was 13), plus the 4 SMTP sends.
 check('the AST scan actually found GCS network calls in server.ts',
-  sites.length >= 12, `found only ${sites.length}`);
+  sites.length >= 11, `found only ${sites.length}`);
 
 // This contract reads server.ts and nothing else, which is only sufficient
 // while server.ts is the only product file that talks to GCS. Gate review #10

@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 71;
+const EXPECTED_CHECKS = 77;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -99,6 +99,8 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   let generation = initialGeneration;
   const uploadLog = []; // { atMs, ifGenerationMatch, body }
   let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, afterStoreOnce = null, n412 = 0;
+  let readDelay = { meta: 0, media: 0 }, metaGets = 0, stale404s = 0, afterMetaOnce = null;
+  const readLog = []; // media GETs: { arrivedGen, want, atMs, doneMs }
   const startedAt = Date.now();
 
   const server = http.createServer((req, res) => {
@@ -106,19 +108,32 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     const objectPath = `/b/${BUCKET}/o/${encodeURIComponent(OBJECT)}`;
 
     if (req.method === 'GET' && u.pathname === objectPath) {
-      if (u.searchParams.get('alt') === 'media') {
-        if (stored === null) { res.writeHead(404); res.end(); return; }
+      // Metadata: `meta` delay is inbound latency (read AFTER it). Download:
+      // read on arrival, `media` delay is a slow transfer, so a download can
+      // straddle a write. A generation no longer live on arrival is a 404.
+      const media = u.searchParams.get('alt') === 'media', want = u.searchParams.get('generation');
+      const answer = (seen, seenGen, entry) => {
+        if (entry) entry.doneMs = Date.now() - startedAt;
+        if (seen === null || (media && want !== null && want !== String(seenGen))) {
+          if (media && seen !== null) stale404s += 1;
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { code: 404, message: 'not found' } }));
+          return;
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(stored);
-        return;
+        res.end(media ? seen : JSON.stringify({ name: OBJECT, bucket: BUCKET, generation: String(seenGen), size: String(seen.length) }));
+        if (!media && afterMetaOnce) { const f = afterMetaOnce; afterMetaOnce = null; stored = f(stored); generation += 1; }
+      };
+      if (media) {
+        const entry = { arrivedGen: generation, want, atMs: Date.now() - startedAt };
+        readLog.push(entry);
+        const seen = stored, seenGen = generation;
+        if (readDelay.media > 0) setTimeout(() => answer(seen, seenGen, entry), readDelay.media); else answer(seen, seenGen, entry);
+      } else {
+        metaGets += 1;
+        const now = () => answer(stored, generation, null);
+        if (readDelay.meta > 0) setTimeout(now, readDelay.meta); else now();
       }
-      if (stored === null) {
-        res.writeHead(404, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: { code: 404, message: 'not found' } }));
-        return;
-      }
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ name: OBJECT, bucket: BUCKET, generation: String(generation), size: String(stored.length) }));
       return;
     }
 
@@ -149,6 +164,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
         }
         stored = content;
         generation += 1;
+        uploadLog.at(-1).landedGen = generation;
         res.writeHead(200, { 'content-type': 'application/json' });
         const answer = { name: OBJECT, bucket: BUCKET, generation: String(generation), size: String(stored.length) };
         if (omitGeneration) { omitGeneration = false; delete answer.generation; }
@@ -175,6 +191,9 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     peerWrite: (content) => { stored = content; generation += 1; },
     afterStoreOnce: (f) => { afterStoreOnce = f; },
     count412: () => n412,
+    setReadDelayMs: (meta, media) => { readDelay = { meta, media }; },
+    afterMetaOnce: (f) => { afterMetaOnce = f; }, // a peer writes right after our metadata GET is answered
+    metaGets: () => metaGets, stale404s: () => stale404s, readLog: () => readLog,
     // For the "GCS was unreachable at boot, comes back later" case: the
     // server object exists (so a spawned process pointed at `port` gets
     // ECONNREFUSED, not a slow timeout) but does not accept connections
@@ -600,7 +619,7 @@ try {
   record('fixture: initDB reached the accepted-but-silent db.json peer',
     deadlineFake.reads().some((r) => r.name === OBJECT), JSON.stringify(deadlineFake.reads()));
   record('THE DEFECT: a hung GCS boot falls back and binds instead of hanging dark',
-    /GCS deadline exceeded after 500ms: db\.json exists\(\) never answered/.test(deadlineBoot.log()), deadlineBoot.log().slice(-500));
+    /GCS deadline exceeded after 500ms: db\.json getMetadata\(\) never answered/.test(deadlineBoot.log()), deadlineBoot.log().slice(-500));
   await stop(deadlineBoot.child); await deadlineFake.close();
 
   const slowPort = gcsPortA + 8, slowAppPort = port1 + 40;
@@ -610,8 +629,10 @@ try {
     trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-slow-'))), slowAppPort, slowPort,
     { GCS_DEADLINE_MS: '1500' },
   )), slowAppPort);
+  // Two reads since the boot read dropped its exists() (metadata, then the
+  // generation-bound download): each delayed 1s, so 2s against a 1.5s deadline.
   record('fixture: slow control delayed every boot db.json read by 1 second',
-    slowFake.reads().filter((r) => r.name === OBJECT).length >= 3, JSON.stringify(slowFake.reads()));
+    slowFake.reads().filter((r) => r.name === OBJECT).length >= 2, JSON.stringify(slowFake.reads()));
   const loginSlow = await fetch(`http://127.0.0.1:${slowAppPort}/api/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'deadline@example.test', password: 'Sup3rSecret!23' }),
@@ -710,7 +731,7 @@ try {
   // behind it (mutation M-resync in SWEEPS.md).
   record('THE DEFECT: a re-sync that never answered writes NOTHING — no blind overwrite of state it never read',
     uploadsWhileHung === 0 && regHung?.status === 503
-      && /GCS deadline exceeded after 800ms: db\.json exists\(\) never answered/.test(resyncBoot.log()),
+      && /GCS deadline exceeded after 800ms: db\.json getMetadata\(\) never answered/.test(resyncBoot.log()),
     `${uploadsWhileHung} upload(s) during the hang, register ${regHung?.status}; log: ${resyncBoot.log().slice(-300)}`);
 
   resyncFake.hang(null); // GCS recovers
@@ -1365,6 +1386,119 @@ try {
     record('THE DEFECT: with the flags off, every shape answers 200 within 8s (deterministic), not held open',
       offRes.every((r) => r.status === 200 && r.ms < 8000), JSON.stringify(offRes));
     await stop(on.child); await stop(off.child); await fake.close();
+  }
+
+  // 16. A RE-CHECK READ THAT STRADDLES OUR OWN ACKED WRITE. The 2s re-check
+  // finishes in the background; a write that commits and LANDS while its
+  // download is in flight used to be undone by that older copy: a deleted
+  // game came back, a new one vanished, a deleted account could sign in
+  // (sweep 2, director angle). FIXTURE: the log proves the straddle.
+  {
+    const kGcs = gcsPortA + 50, kApp = port1 + 58;
+    const seed = { ...seededUser('u_k', 'straddle', 'k@example.test', 'Sup3rSecret!23'), deleteCode: '123456', deleteCodeExpires: Date.now() + 600000 };
+    const keepGame = { id: 'g_keep', userId: 'u_k', name: 'Keep', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' };
+    const fake = await trackFake(startFakeGcsDb({ port: kGcs, initialContent: JSON.stringify({ users: [seed], games: [keepGame, { ...keepGame, id: 'g_victim', name: 'Victim' }] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-straddle-'))), kApp, kGcs)), kApp);
+    const url = (p) => `http://127.0.0.1:${kApp}${p}`;
+    const tok = (await (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'k@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    const auth = { authorization: `Bearer ${tok}` }, json = { 'content-type': 'application/json', ...auth };
+    await waitUntil(() => fake.uploadCount() >= 1, 5000); // login's rehash landed
+    await new Promise((r) => setTimeout(r, 2200)); // freshness window over
+    // A first save lands while the re-check's metadata GET is in flight, so
+    // the generation moved and the re-check downloads; the write under test
+    // then lands while that (slow) download is still in flight.
+    const straddle = async (write, tag) => {
+      fake.setReadDelayMs(600, 1800);
+      const m0 = fake.metaGets(), r0 = fake.readLog().length;
+      const trigger = fetch(url('/api/games'), { headers: auth });
+      await waitUntil(() => fake.metaGets() > m0, 3000);
+      const u0 = fake.uploadCount();
+      await fetch(url('/api/games'), { method: 'POST', headers: json, body: JSON.stringify({ name: `Pre-${tag}`, payoffs: keepGame.payoffs }) });
+      await waitUntil(() => fake.uploadLog().slice(u0).some((x) => x.landedGen), 3000);
+      const downloading = await waitUntil(() => fake.readLog().length > r0, 3000);
+      const read = fake.readLog().at(-1), before = fake.uploadCount();
+      const w = await write();
+      await waitUntil(() => fake.uploadLog().slice(before).some((x) => x.landedGen), 3000);
+      const landedWhileReading = downloading && read.doneMs === undefined;
+      await trigger; await waitUntil(() => read.doneMs !== undefined, 4000);
+      fake.setReadDelayMs(0, 0);
+      await new Promise((r) => setTimeout(r, 300));
+      return { status: w.status, landedWhileReading };
+    };
+    const del = await straddle(() => fetch(url('/api/games/g_victim'), { method: 'DELETE', headers: auth }), 'del');
+    const afterDel = await (await fetch(url('/api/games'), { headers: auth })).json();
+    await new Promise((r) => setTimeout(r, 2200));
+    const add = await straddle(() => fetch(url('/api/games'), { method: 'POST', headers: json, body: JSON.stringify({ name: 'Added', payoffs: keepGame.payoffs }) }), 'add');
+    const afterAdd = await (await fetch(url('/api/games'), { headers: auth })).json();
+    await new Promise((r) => setTimeout(r, 2200));
+    const acct = await straddle(() => fetch(url('/api/auth/delete-confirm'), { method: 'POST', headers: json, body: JSON.stringify({ code: '123456' }) }), 'acct');
+    const relogin = await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'k@example.test', password: 'Sup3rSecret!23' }) });
+    record('fixture: each acked write (delete, save, account delete) LANDED while the re-check download was in flight',
+      [del, add, acct].every((x) => x.status === 200 && x.landedWhileReading), JSON.stringify([del, add, acct]));
+    record('THE DEFECT: no acked write is undone by the older copy that re-check was reading',
+      !afterDel.some((g) => g.name === 'Victim') && afterAdd.some((g) => g.name === 'Added') && relogin.status === 401
+        && JSON.parse(fake.getStored()).users.length === 0,
+      `afterDel ${JSON.stringify(afterDel.map((g) => g.name))} afterAdd ${JSON.stringify(afterAdd.map((g) => g.name))} relogin ${relogin.status}`);
+    await stop(boot.child); await fake.close();
+  }
+
+  // 17. A PEER WRITE BETWEEN OUR METADATA GET AND OUR DOWNLOAD. The download
+  // is bound to the generation the metadata named; once that generation is
+  // gone GCS answers 404, and the re-read must follow rather than fail.
+  {
+    const jGcs = gcsPortA + 40, jApp = port1 + 42; // section 12's ports, released
+    const fake = await trackFake(startFakeGcsDb({ port: jGcs, initialContent: JSON.stringify({ users: [seededUser('u_j', 'gen', 'j@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-genrace-'))), jApp, jGcs)), jApp);
+    const url = (p) => `http://127.0.0.1:${jApp}${p}`;
+    const tok = (await (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'j@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    await new Promise((r) => setTimeout(r, 2200));
+    const db = JSON.parse(fake.getStored());
+    db.games.push({ id: 'g_peer1', userId: 'u_j', name: 'Peer-1', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' });
+    fake.peerWrite(JSON.stringify(db)); // the generation moved: the re-check will download
+    // A peer writes again the moment our metadata GET is answered, so the
+    // download that follows names a generation that is already gone.
+    fake.afterMetaOnce(() => { db.games.push({ ...db.games[0], id: 'g_peer2', name: 'Peer-2' }); return JSON.stringify(db); });
+    const listing = fetch(url('/api/games'), { headers: { authorization: `Bearer ${tok}` } });
+    const first = await listing; fake.setReadDelayMs(0, 0);
+    await new Promise((r) => setTimeout(r, 2200));
+    const after = await (await fetch(url('/api/games'), { headers: { authorization: `Bearer ${tok}` } })).json();
+    record('fixture: GCS answered a stale-generation download 404 at least once', fake.stale404s() >= 1, `stale404s ${fake.stale404s()}`);
+    record('THE DEFECT: the re-check follows the new generation: both peer games listed, the route never 5xx',
+      first.status === 200 && after.some((g) => g.name === 'Peer-1') && after.some((g) => g.name === 'Peer-2'),
+      `first ${first.status} after ${JSON.stringify(after.map?.((g) => g.name))}`);
+    await stop(boot.child); await fake.close();
+  }
+
+  // 18. THE RE-CHECK'S COST AND LATENCY BOUND. Under 12 concurrent clients for
+  // 6s: at most one metadata GET per 2s window and no download while the
+  // generation is unchanged. With metadata taking 5s, a DB route waits about
+  // 2s, never stacked, and a second wave inside that call waits no longer.
+  {
+    const cGcs = gcsPortA + 42, cApp = port1 + 46; // section 13's ports, released
+    const fake = await trackFake(startFakeGcsDb({ port: cGcs, initialContent: JSON.stringify({ users: [seededUser('u_c', 'cost', 'c@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-cost-'))), cApp, cGcs, { TRUST_PROXY: '1' })), cApp);
+    const url = (p) => `http://127.0.0.1:${cApp}${p}`;
+    const tok = (await (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'c@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    await new Promise((r) => setTimeout(r, 2200));
+    let ipn = 0; // one address per request: the route's own rate limit is not what this measures
+    const get = () => fetch(url('/api/games'), { headers: { authorization: `Bearer ${tok}`, 'x-forwarded-for': `10.7.${(ipn >> 8) & 255}.${ipn++ & 255}` } });
+    const m0 = fake.metaGets(), d0 = fake.readLog().length; let n = 0, ok = 0; const end = Date.now() + 6000;
+    await Promise.all(Array.from({ length: 12 }, async () => { while (Date.now() < end) { const r = await get(); ok += r.status === 200; n += 1; } }));
+    const metas = fake.metaGets() - m0, downloads = fake.readLog().length - d0;
+    record('THE DEFECT: 12 clients for 6s cost at most 4 metadata GETs and no download (generation unchanged)',
+      n > 100 && ok === n && metas <= 4 && downloads === 0, `requests ${n} ok ${ok} metadataGETs ${metas} downloads ${downloads}`);
+    await new Promise((r) => setTimeout(r, 2100));
+    fake.setReadDelayMs(5000, 0);
+    const timed = async () => { const t = Date.now(); const r = await get(); return [r.status, Date.now() - t]; };
+    const wave1 = await Promise.all(Array.from({ length: 12 }, timed));
+    const wave2 = await Promise.all(Array.from({ length: 12 }, timed));
+    fake.setReadDelayMs(0, 0);
+    const worst = Math.max(...[...wave1, ...wave2].map((x) => x[1]));
+    record('THE DEFECT: with 5s metadata, every DB request answers 200 within 3s (one 2s wait, not stacked)',
+      [...wave1, ...wave2].every(([st, ms]) => st === 200 && ms < 3000), `worst ${worst}ms ${JSON.stringify([...wave1, ...wave2].map((x) => x[0]).filter((x) => x !== 200))}`);
+    await stop(boot.child); await fake.close();
   }
 
   record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',

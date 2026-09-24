@@ -1999,14 +1999,24 @@ function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS, peer
 async function readGcsDb(unlessGeneration: string | null = null): Promise<{ db: DB; generation: string } | 'unchanged' | null> {
   const { Storage } = await import('@google-cloud/storage');
   const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
-  const [exists] = await withDeadline(file.exists(), 'db.json exists()');
-  if (!exists) return null;
-  const [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
-  if (unlessGeneration !== null && meta.generation != null && String(meta.generation) === unlessGeneration) return 'unchanged';
-  const [content] = await withDeadline(
-    file.bucket.file('db.json', { generation: meta.generation }).download(),
-    'db.json download()',
-  );
+  let meta: { generation?: string | number } = {}, content: Buffer | null = null;
+  // One metadata GET per read (404 = no object). The download is bound to that
+  // generation; a peer write in between makes it 404 (buckets keep only the
+  // live generation), so re-read once rather than fail the re-check.
+  for (let attempt = 0; content === null; attempt++) {
+    try {
+      [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
+    } catch (err: any) {
+      if (err?.code === 404) return null;
+      throw err;
+    }
+    if (unlessGeneration !== null && meta.generation != null && String(meta.generation) === unlessGeneration) return 'unchanged';
+    try {
+      [content] = await withDeadline(file.bucket.file('db.json', { generation: meta.generation }).download(), 'db.json download()');
+    } catch (err: any) {
+      if (err?.code !== 404 || attempt >= 1) throw err;
+    }
+  }
   let db: DB;
   try {
     db = normalizeDbShape(JSON.parse(content.toString('utf-8')), `gs://${GCS_BUCKET}/db.json`);
@@ -2043,10 +2053,16 @@ function blockGcsStore(reason: string): void {
  * AFTER the awaits: routes commit meanwhile, and merging an older snapshot
  * wrote it back over them (#208).
  */
+let gcsAckEpoch = 0; // bumped when an upload of ours lands
 async function syncFromGcs(ifChanged = false): Promise<void> {
+  const epoch = gcsAckEpoch;
   const remote = await readGcsDb(ifChanged ? gcsGeneration : null);
   gcsFreshUntil = Date.now() + GCS_FRESH_MS;
-  if (remote === 'unchanged') return;
+  // An upload of ours landed while this read was in flight, so the read may
+  // predate it: merged, it restored deleted games and accounts and moved the
+  // generation back (sweep 2). Our acked state is at least as new; drop the
+  // read. Anything a peer wrote meanwhile arrives by 412 merge or next re-check.
+  if (remote === 'unchanged' || gcsAckEpoch !== epoch) return;
   if (remote === null) {
     gcsBaselineDb = { users: [], games: [] };
     gcsGeneration = '0'; // GCS's own "must not exist yet" precondition
@@ -2317,6 +2333,7 @@ async function uploadDbToGcs(): Promise<void> {
       gcsGeneration = generation != null ? String(generation) : null;
       gcsBaselineDb = JSON.parse(bodyStr); // a real copy, not a live reference
       gcsUnackedDb = null; // an older write can no longer land: its precondition is now stale
+      gcsAckEpoch += 1;
       return;
     } catch (err: any) {
       // Anything but a definite refusal (a deadline, a reset socket) may still
