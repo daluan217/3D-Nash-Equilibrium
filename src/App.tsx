@@ -4444,15 +4444,24 @@ export default function App() {
    * answers. Waiting for `user` would flash the tour at returning members for a
    * few hundred milliseconds on every page load.
    */
+  // Test-facing only (e2e/tour.mjs; no CSS or app code reads it): data-tour-auto says the
+  // auto-open decision is made -- 'skip' when it will not open, 'shown' in the commit that
+  // opens it. Without it a setup cannot tell "not yet" from "never" on a slow page.
+  // State, not a ref: the timer firing while a manually opened tour is showing must still render.
+  const [tourAutoFired, setTourAutoFired] = useState(false);
   useEffect(() => {
     if (authToken) {
       everAuthedRef.current = true;
+      document.documentElement.dataset.tourAuto = 'skip';
       return;
     }
-    if (everAuthedRef.current) return;
-    const t = setTimeout(() => setTourOpen(true), 700);
+    if (everAuthedRef.current) { document.documentElement.dataset.tourAuto = 'skip'; return; }
+    const t = setTimeout(() => { setTourAutoFired(true); setTourOpen(true); }, 700);
     return () => clearTimeout(t);
   }, [authToken]);
+  useLayoutEffect(() => {
+    if (tourOpen && tourAutoFired) document.documentElement.dataset.tourAuto = 'shown';
+  }, [tourOpen, tourAutoFired]);
 
   /**
    * Armed only by the tour's run step: stop the simulation the moment either

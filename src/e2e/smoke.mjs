@@ -11781,6 +11781,78 @@ const suggestedScenario = {
   // MUTANT (measured on the built bundle): deleting the dataParsed/success
   // clause from handleDeleteGame makes the row VANISH on a 200+HTML answer —
   // the user is told the game is gone while it is still on the server.
+  // §108 (TASK-18 H6, App.tsx + tour.mjs): a setup never proceeds while the tour can still open.
+  // The tour auto-opens 700 ms after mount; tour.mjs used to answer "absent" after a fixed 8 s,
+  // which a 32x-throttled page outlasts (51 s, then the tour opened over the section). Here the
+  // page clock is paused, so the auto-open timer cannot fire until the test says so: the old
+  // helper returns 'absent' with the timer still pending, the fixed one waits for the decision.
+  // MUTANTS (measured): tour.mjs = the fixed 8 s wait fails "the helper waits..." and "once the
+  // timer fires..."; 'shown' on any open fails the manual row; no 'skip' on sign-in fails both skip rows.
+  section('108', 'a setup never proceeds while the tour can still open; data-tour-auto reports only the auto-open', async () => {
+    const tourDialog = '[role="dialog"][aria-label="Guided tour"]';
+    // Paused before navigation: pausing after load jumps the clock and fires the due timer.
+    const CLOCK_T0 = Date.parse('2026-01-01T00:00:00Z');
+    const marker = (p) => p.evaluate(() => document.documentElement.dataset.tourAuto ?? null);
+    const hasTour = (p) => p.evaluate((sel) => !!document.querySelector(sel), tourDialog);
+    // (a) The helper waits for the decision: clock paused before the 700 ms timer can fire.
+    const pa = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await pa.clock.install({ time: CLOCK_T0 });
+    await pa.clock.pauseAt(CLOCK_T0 + 1);
+    await pa.goto(BASE, { waitUntil: 'networkidle' });
+    await pa.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0, null, { timeout: 30000 });
+    record('§108 fixture guard: with the clock paused, the tour has not opened and no decision is published',
+      !(await hasTour(pa)) && (await marker(pa)) === null, `marker=${await marker(pa)}`);
+    let settled = null;
+    const pending = dismissTourForSetup(pa, 'setup: §108 proves the helper waits for the tour decision')
+      .then((r) => { settled = r; return r; }, (e) => { settled = { error: String(e).slice(0, 120) }; return settled; });
+    await new Promise((r) => setTimeout(r, 12000));
+    record('§108 the helper waits for the app\'s decision: still pending 12 s after it started (old bound 8 s) while the auto-open timer is unfired',
+      settled === null, `settled=${JSON.stringify(settled)}`);
+    await pa.clock.runFor(1000);
+    const result = await pending;
+    record('§108 once the timer fires, the helper sees the tour open and closes it', result?.closed === true && !(await hasTour(pa)),
+      `result=${JSON.stringify(result)}`);
+    record('§108 the auto-open publishes data-tour-auto="shown"', (await marker(pa)) === 'shown', `marker=${await marker(pa)}`);
+    await pa.close();
+    // (b) A manual "Take the tour" inside the first 700 ms is not the auto-open: no 'shown'.
+    const pb = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await pb.clock.install({ time: CLOCK_T0 });
+    await pb.clock.pauseAt(CLOCK_T0 + 1);
+    await pb.goto(BASE, { waitUntil: 'networkidle' });
+    await pb.getByRole('button', { name: 'Take the tour', exact: true }).click({ timeout: 30000 });
+    await pb.locator(tourDialog).waitFor({ state: 'visible', timeout: 30000 });
+    record('§108 a manual "Take the tour" before the auto timer opens the tour without publishing a decision',
+      (await marker(pb)) === null, `marker=${await marker(pb)}`);
+    await pb.clock.runFor(1000);
+    await pb.waitForFunction(() => document.documentElement.dataset.tourAuto === 'shown', null, { timeout: 30000 }).catch(() => {});
+    record('§108 the auto timer firing over the manual tour then publishes "shown"', (await marker(pb)) === 'shown', `marker=${await marker(pb)}`);
+    await pb.close();
+    // (c) Sign-in inside the 700 ms window: the timer is cleared and the rerun publishes 'skip',
+    // never a stale 'shown', and the tour never opens.
+    const pc = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    const uniq = `e2e108${Date.now()}`;
+    const reg = await fetch(BASE + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: uniq, email: `${uniq}@example.com`, password: 'TestPass123' }) });
+    record('§108 precondition: an account exists', reg.ok, `status ${reg.status}`);
+    await pc.clock.install({ time: CLOCK_T0 });
+    await pc.clock.pauseAt(CLOCK_T0 + 1);
+    await pc.goto(BASE, { waitUntil: 'networkidle' });
+    await pc.getByRole('button', { name: /sign in.*sign up/i }).first().click({ timeout: 30000 });
+    const account = pc.locator('[role="dialog"][aria-label="Account"]');
+    await account.waitFor({ state: 'visible', timeout: 30000 });
+    await account.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
+    await account.getByPlaceholder('••••••••').first().fill('TestPass123');
+    await account.getByRole('button', { name: /^login$/i }).click();
+    await pc.waitForFunction(() => document.documentElement.dataset.tourAuto === 'skip', null, { timeout: 30000 }).catch(() => {});
+    record('§108 signing in before the auto timer fires publishes "skip"', (await marker(pc)) === 'skip', `marker=${await marker(pc)}`);
+    await pc.clock.runFor(5000);
+    record('§108 after sign-in the cleared timer never opens the tour and the marker stays "skip"',
+      !(await hasTour(pc)) && (await marker(pc)) === 'skip', `tour=${await hasTour(pc)} marker=${await marker(pc)}`);
+    const absent = await dismissTourForSetup(pc, 'setup: §108 a decided "skip" page answers absent at once');
+    record('§108 on a "skip" page the helper answers absent', absent.via === 'absent', `via=${absent.via}`);
+    await pc.close();
+  });
+
   section('104', 'a captive portal answering 200+HTML never convinces the app that a write succeeded', async () => {
     const p104 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(p104, 'e2e104portal');
