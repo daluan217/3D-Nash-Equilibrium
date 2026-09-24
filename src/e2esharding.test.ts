@@ -10,7 +10,7 @@ import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
-import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
+import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './e2e/selection.js';
 import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
 
@@ -271,6 +271,14 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
 // there). Silently raising the 200 s line instead would have hidden the other 7 shards this same
 // repack pushed over it for ordinary multi-section reasons — those are exactly what this must still
 // catch.
+// TASK-18 sweep 4: the extra §47 step test.yml runs on shard 24 is packed, not ignored.
+assert.deepStrictEqual(EXTRA_STEP_SECTIONS, { 24: '47' }, 'the packer knows test.yml\'s one extra-step section');
+assert.match(workflow, /- name: Exercise section 47 after natural simulation completion\n\s+if: matrix\.shard == 24\n[\s\S]{0,160}?run: node src\/e2e\/smoke\.mjs\n\s+env:\n\s+E2E_SECTION: '47'/,
+  'test.yml\'s extra step is still §47 on shard 24, as EXTRA_STEP_SECTIONS says');
+{
+  const on24 = definitions.filter((d) => d.shard === 24).reduce((sum, d) => sum + measuredMs(d.id), 0);
+  assert.strictEqual(totals[23], on24 + measuredMs('47'), 'shard 24 packs its sections plus the extra §47 step it runs');
+}
 const HEADROOM_MS = 310000;
 assert.strictEqual(SECTION_BUDGET_MS, 345000, 'the per-job section budget is 345 s (420 s ceiling - 75 s overhead, TASK-18)');
 const shardMembers = new Map<number, string[]>();
