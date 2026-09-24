@@ -20,6 +20,7 @@ import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 import { closeTour, dismissTourForSetup } from './tour.mjs';
 import { waitForStableGeometry } from './settled-geometry.mjs';
+import { SPLIT_PARTS, WIDEST_PAYOFFS } from './split-parts.mjs';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -10553,13 +10554,14 @@ const suggestedScenario = {
   // reflow fix that keys on width is invisible to it. Real zoom divides the
   // layout viewport, which is exactly how WCAG 1.4.10 is stated: 1280px at
   // 400% IS a 320px layout viewport. CDP device metrics reproduce that.
-  section('100', 'no width and zoom a user can reach makes the page scroll sideways', async () => {
-    // 280px is the narrowest phone still sold; 300% is mid-range for the 400%
-    // the SC requires. 280/3 = a 93px layout viewport — the hardest point.
-    // 390@1.45x = 269px and 390@1.63x = 239px bracket the band where the matrix
-    // collapses to 0px inputs (221-261 measured). 1.5x lands on 260 -- inside
-    // the band -- and swept green only because the oracles skipped 0px boxes.
-    const COMBOS = [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5], [390, 1.45], [390, 1.63]];
+  // Split 100 -> 100a/b/c along COMBOS (378 s on CI whole; each runs every phase over its third,
+  // 100c also the drawer) + 100d, the scrolled sweep. 280px is the narrowest phone still sold;
+  // 300% is mid-range for the 400% the SC requires: 280/3 = a 93px layout viewport, the hardest
+  // point. 390@1.45x = 269px and 390@1.63x = 239px bracket the band where the matrix collapses
+  // to 0px inputs (221-261 measured); 1.5x lands on 260 -- inside the band -- and swept green
+  // only because the oracles skipped 0px boxes.
+  const reflowAt = (sid) => async () => {
+    const { combos: COMBOS, drawerHeights = [] } = SPLIT_PARTS[sid];
     const measure = async (p, cdp, w, z) => {
       await cdp.send('Emulation.setDeviceMetricsOverride', {
         width: Math.round(w / z), height: Math.round(844 / z), deviceScaleFactor: z, mobile: false });
@@ -10803,7 +10805,7 @@ const suggestedScenario = {
     // layout viewport, every row below would pass by measuring zoom 1.
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 93, height: 281, deviceScaleFactor: 3, mobile: false });
     const lv = await p97.evaluate(() => document.documentElement.clientWidth);
-    record('§100 fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)',
+    record(`§${sid} fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)`,
       lv <= 95, `clientWidth=${lv}`);
     const sweep = async (phase) => {
       for (const [w, z] of COMBOS) {
@@ -10812,25 +10814,25 @@ const suggestedScenario = {
         // Per-condition, not once up front: if setDeviceMetricsOverride ever
         // no-opped, every row below would silently measure an unzoomed page
         // and pass (ds-rev finding 3).
-        record(`§100 ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
+        record(`§${sid} ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
           Math.abs(m.vw - Math.round(w / z)) <= 2, `measured=${m.vw} expected=${Math.round(w / z)}`);
-        record(`§100 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
-        record(`§100 ${at} fixture guard: the width held still before it was read (a slow runner is not a reflow failure)`,
+        record(`§${sid} ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
+        record(`§${sid} ${at} fixture guard: the width held still before it was read (a slow runner is not a reflow failure)`,
           m.settled, 'scrollWidth never held for 30 frames within 20 s');
-        record(`§100 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
+        record(`§${sid} ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
           m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
-        record(`§100 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
-        record(`§100 ${at}: no text was shredded to one character per line to buy the width`,
+        record(`§${sid} ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
+        record(`§${sid} ${at}: no text was shredded to one character per line to buy the width`,
           m.readable.length === 0, JSON.stringify(m.readable));
-        record(`§100 ${at}: an input's whole VALUE is visible, not just one character of it`,
+        record(`§${sid} ${at}: an input's whole VALUE is visible, not just one character of it`,
           m.clippedValues.length === 0, JSON.stringify(m.clippedValues));
-        record(`§100 ${at}: nothing is painted on top of an input's value`,
+        record(`§${sid} ${at}: nothing is painted on top of an input's value`,
           m.overlaidValues.length === 0, JSON.stringify(m.overlaidValues));
-        record(`§100 ${at}: every input is still wide enough to read one character of its own value`,
+        record(`§${sid} ${at}: every input is still wide enough to read one character of its own value`,
           m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
-        record(`§100 ${at}: every box the fix made scrollable is reachable from the keyboard`,
+        record(`§${sid} ${at}: every box the fix made scrollable is reachable from the keyboard`,
           m.unreachableScrollers.length === 0, JSON.stringify(m.unreachableScrollers));
-        record(`§100 ${at}: no control is painted entirely outside the viewport`,
+        record(`§${sid} ${at}: no control is painted entirely outside the viewport`,
           m.unreachableControls.length === 0, JSON.stringify(m.unreachableControls));
         // Inside the viewport but under something: a `fixed`/`sticky` overlay
         // holds its corner no matter what reflows beneath it. The feedback pill
@@ -10838,7 +10840,7 @@ const suggestedScenario = {
         // a 93px layout viewport -- both on screen, neither clickable, and every
         // scroll-based check green. Nine sample points per control; a control is
         // only a failure when NONE of them reach it.
-        record(`§100 ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
+        record(`§${sid} ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
           m.coveredControls.length === 0, JSON.stringify(m.coveredControls));
       }
     };
@@ -10850,7 +10852,7 @@ const suggestedScenario = {
     await p97.getByRole('button', { name: 'Search Game' }).first().click();
     await p97.getByRole('button', { name: /^Run$/ }).click();
     await p97.waitForSelector('text=Converged', { timeout: 240000 });
-    record('§100 fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page',
+    record(`§${sid} fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page`,
       await p97.getByText(/A indifferent:|A strictly prefers:/).first().isVisible().catch(() => false));
     await sweep('post-run');
     // Dark mode renders the same boxes, but Plotly re-fits later in dark — the
@@ -10858,7 +10860,7 @@ const suggestedScenario = {
     await p97.evaluate(() => { const b = [...document.querySelectorAll('button')]
       .find((x) => /theme|dark|light/i.test(x.getAttribute('aria-label') || '')); b && b.click(); });
     await p97.waitForTimeout(700);
-    record('§100 fixture guard: dark mode is actually on for the rows below',
+    record(`§${sid} fixture guard: dark mode is actually on for the rows below`,
       await p97.evaluate(() => document.documentElement.classList.contains('dark')));
     await sweep('dark post-run');
     // The modals are the surface a `main`-scoped fix and a `main`-scoped oracle
@@ -10872,7 +10874,7 @@ const suggestedScenario = {
     // containing it -- it silently marked MenuDrawer's never-pressed "Sign In to
     // Your Account" as covered and evicted its allowlist entry (ds-rev finding
     // D). The dialog's aria-label is exactly "Account", so nothing is lost.
-    record('§100 fixture guard: the Account dialog is open, so the rows below measure a real modal',
+    record(`§${sid} fixture guard: the Account dialog is open, so the rows below measure a real modal`,
       await p97.getByRole('dialog', { name: 'Account', exact: true }).isVisible().catch(() => false));
     // TYPE into them: an empty field has no glyphs, so every value-overlap check
     // skips it and the gutter icon painting over "ga<icon>me_t" was invisible to
@@ -10892,9 +10894,10 @@ const suggestedScenario = {
       }
       return n;
     });
-    record('§100 fixture guard: the Account fields hold a value, so the overlap rows below have glyphs to measure',
+    record(`§${sid} fixture guard: the Account fields hold a value, so the overlap rows below have glyphs to measure`,
       acctFilled > 0, `filled ${acctFilled} inputs`);
     await sweep('account dialog');
+    if (!drawerHeights.length) { await cdp.send('Emulation.clearDeviceMetricsOverride'); await p97.close(); return; }
     // The workspace drawer is a second modal shape with its own header row:
     // `flex-nowrap` + `justify-between`, whose children default to
     // `min-width:auto` and so refuse to shrink -- the close button was pushed to
@@ -10912,18 +10915,18 @@ const suggestedScenario = {
     // panel with `overflow-y: visible`, which can never scroll back -- passed
     // it while the drawer was uncloseable at 281 and 400.
     let drawerClosed = true;
-    for (const dh of [281, 400, 700]) {
+    for (const dh of drawerHeights) {
       await cdp.send('Emulation.setDeviceMetricsOverride', {
         width: 93, height: dh, deviceScaleFactor: 3, mobile: false });
       await p97.getByRole('button', { name: /open workspace menu/i }).first()
         .click({ timeout: 8000 }).catch(() => {});
       await p97.waitForTimeout(900);
-      record(`§100 drawer fixture guard: the workspace drawer is open at 93x${dh}`,
+      record(`§${sid} drawer fixture guard: the workspace drawer is open at 93x${dh}`,
         await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
           .some((d) => d.getBoundingClientRect().width > 0
             && [...d.querySelectorAll('button')]
               .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))));
-      record(`§100 drawer at 93x${dh}: its close control is fully inside the viewport`,
+      record(`§${sid} drawer at 93x${dh}: its close control is fully inside the viewport`,
         await p97.evaluate(() => {
           const b = [...document.querySelectorAll('button')]
             .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
@@ -10948,15 +10951,22 @@ const suggestedScenario = {
             && [...d.querySelectorAll('button')]
               .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))))
         .catch(() => false);
-      record(`§100 drawer at 93x${dh}: it can actually be closed again (not a trap)`, shut);
+      record(`§${sid} drawer at 93x${dh}: it can actually be closed again (not a trap)`, shut);
       drawerClosed = drawerClosed && shut;
       await p97.keyboard.press('Escape').catch(() => {});
       await p97.waitForTimeout(300);
     }
-    record('§100 drawer: closeable at EVERY height swept, not just the tallest', drawerClosed);
+    record(`§${sid} drawer: closeable at EVERY height swept, not just the tallest`, drawerClosed);
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.close();
+  };
+  // The `async () => ...` shape is load-bearing: e2esharding.test.ts parses it (see §101).
+  section('100a', 'no width and zoom a user can reach makes the page scroll sideways (280-320px)', async () => { await reflowAt('100a')(); });
+  section('100b', 'no width and zoom a user can reach makes the page scroll sideways (360-390px at 200-300%)', async () => { await reflowAt('100b')(); });
+  section('100c', 'no width and zoom a user can reach makes the page scroll sideways (390px at 145-163%, drawer)', async () => { await reflowAt('100c')(); });
 
+  section('100d', 'no width and zoom a user can reach makes the page scroll sideways (93x700 scrolled under fixed overlays)', async () => {
+    const sid = '100d';
     // A TALL narrow viewport, SCROLLED. Every condition above is short (844/z),
     // where the header is already static and the page barely scrolls -- so none
     // of them can see an overlay that holds its corner while content moves
@@ -10967,10 +10977,10 @@ const suggestedScenario = {
     const ps = await newTrackedPage({ viewport: { width: 93, height: 700 } });
     await ps.goto(BASE, { waitUntil: 'networkidle' });
     await dismissTourForSetup(ps, 'setup: clear the tour before the scrolled overlay sweep', { timeout: 20000 });
-    record('§100 scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner',
+    record(`§${sid} scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner`,
       await ps.evaluate(() => document.documentElement.scrollHeight > innerHeight * 3),
       await ps.evaluate(() => `docH=${document.documentElement.scrollHeight} vh=${innerHeight}`));
-    record('§100 scrolled-overlay fixture guard: no element covers the viewport from a stuck position',
+    record(`§${sid} scrolled-overlay fixture guard: no element covers the viewport from a stuck position`,
       await ps.evaluate(() => {
         for (const el of document.querySelectorAll('body *')) {
           const cs = getComputedStyle(el);
@@ -11012,26 +11022,27 @@ const suggestedScenario = {
       window.scrollTo(0, 0);
       return [...out];
     });
-    record('§100 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset',
+    record(`§${sid} 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset`,
       dead.length === 0, dead.slice(0, 5).join(' | '));
     // And the ground truth a geometric check cannot give: press them.
     for (const nm of [/search game/i, /open workspace menu/i, /^sign in/i]) {
       const l = ps.getByRole('button', { name: nm }).first();
       const pressed = await l.count()
         ? await l.click({ timeout: 10000 }).then(() => true).catch(() => false) : false;
-      record(`§100 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
+      record(`§${sid} 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
       await ps.keyboard.press('Escape').catch(() => {});
       await ps.waitForTimeout(300);
     }
     await ps.close();
-
   });
 
   // Split out of §100 (2026-09-16): §100 measured 225.0s against a 225.0s
   // per-section budget once the payoff checks landed. These three share one
   // subject -- the number a payoff FIELD actually shows -- so they split
   // cleanly rather than being trimmed.
-  section('102', 'a payoff always renders as the number it holds', async () => {
+  // Split 102 -> 102a-d (legibility, a quarter of the viewports each), 102e (minimum font
+  // size) and 102f (target size): 735 s on CI whole.
+  const payoffLegibilityAt = (sid) => async () => {
     // A payoff that PRINTS as a different number is the worst defect this
     // surface can carry: "-99.999" rendered "-99." and "-100" rendered "-10".
     // The field clamps to PAYOFF_RANGE quantised to 3dp, so the widest legal
@@ -11041,8 +11052,7 @@ const suggestedScenario = {
     // write and the read are separate tasks: they canonicalise on commit
     // ("-99.9999" and "-100.0000" both settle to "-100"), so the value the
     // user is left reading is the SETTLED one, never the raw entry.
-    const WIDEST_PAYOFFS = ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345', '-99.9999', '-100.0000'];
-    const LEGIBILITY_VIEWPORTS = [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1], [280, 3], [320, 2], [390, 3]];
+    const LEGIBILITY_VIEWPORTS = SPLIT_PARTS[sid].viewports;
     let clipRows = [];
     for (const [vw, zoom] of LEGIBILITY_VIEWPORTS) {
       const pv = await newTrackedPage({ viewport: { width: Math.round(vw / zoom), height: Math.round(900 / zoom) } });
@@ -11119,10 +11129,17 @@ const suggestedScenario = {
       await pv.close();
     }
     record(
-      `§102 payoff legibility: an unfocused field paints exactly what it holds, at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports)`,
+      `§${sid} payoff legibility: an unfocused field paints exactly what it holds, at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports: ${LEGIBILITY_VIEWPORTS.map(([w, z]) => `${w}@${z}x`).join(' ')})`,
       clipRows.length === 0,
       clipRows.slice(0, 6).join(' | ') || 'every field painted its whole value; none zero-width; the document never scrolled sideways',
     );
+  };
+  section('102a', 'a payoff always renders as the number it holds (280-390px)', async () => { await payoffLegibilityAt('102a')(); });
+  section('102b', 'a payoff always renders as the number it holds (430-768px)', async () => { await payoffLegibilityAt('102b')(); });
+  section('102c', 'a payoff always renders as the number it holds (1024-1440px)', async () => { await payoffLegibilityAt('102c')(); });
+  section('102d', 'a payoff always renders as the number it holds (zoomed 200-300%)', async () => { await payoffLegibilityAt('102d')(); });
+
+  section('102e', 'a payoff always renders as the number it holds (minimum font size preference)', async () => {
 
     // A browser MINIMUM FONT SIZE (an accessibility preference) raises the
     // payoff text no matter what the CSS asks, so a px-sized box always loses;
@@ -11170,10 +11187,13 @@ const suggestedScenario = {
       }
     }
     record(
-      '§102 payoff legibility: a real minimum-font-size preference does not clip a payoff (15/18/24px)',
+      '§102e payoff legibility: a real minimum-font-size preference does not clip a payoff (15/18/24px)',
       minFontRows.length === 0,
       minFontRows.join(' | ') || 'the preference raised the payoff font at every size and nothing clipped',
     );
+  });
+
+  section('102f', 'a payoff always renders as the number it holds (24x24 pointer target)', async () => {
 
     // SC 2.5.8: the payoff field IS its own pointer target -- clicking the cell
     // padding around it does not focus it -- so the input box must clear 24px.
@@ -11198,7 +11218,7 @@ const suggestedScenario = {
       await pt.close();
     }
     record(
-      '§102 payoff fields meet the 24x24 target minimum (SC 2.5.8) in BOTH axes at every width',
+      '§102f payoff fields meet the 24x24 target minimum (SC 2.5.8) in BOTH axes at every width',
       targetRows.length === 0,
       targetRows.join(' | ') || 'every payoff field clears 24x24 at all six widths',
     );
@@ -11213,7 +11233,7 @@ const suggestedScenario = {
   // Split because adding the landscape trio took §101 to 259,112ms against the
   // 225,000ms per-section budget -- the same split §100 -> §102 took, and the
   // budget is never raised to fit.
-  const walkTourAt = (sid, SIZES) => async () => {
+  const walkTourAt = (sid, SIZES = SPLIT_PARTS[sid].sizes) => async () => {
     // THE TOUR — the FIRST thing a first-time visitor sees, and the one surface
     // every other section DISMISSES before measuring (`dismissTourForSetup`), so
     // until now nothing measured it at all. It is not in `main`, it is
@@ -11404,15 +11424,24 @@ const suggestedScenario = {
   // The `async () => ...` shape is load-bearing: e2esharding.test.ts PARSES it
   // to enumerate the sections, so a section passed as a bare callback registers
   // nowhere and silently never runs in CI.
-  section('101', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
-    await walkTourAt('101', [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]])();
-  });
+  // Split 101 -> 101a-g, one size each (1086 s on CI whole: ~155 s per 19-step walk).
+  section('101a', 'the guided tour can be walked to the end at every width and zoom a user can reach (280px at 300%)', async () => { await walkTourAt('101a')(); });
+  section('101b', 'the guided tour can be walked to the end at every width and zoom a user can reach (280px at 200%)', async () => { await walkTourAt('101b')(); });
+  section('101c', 'the guided tour can be walked to the end at every width and zoom a user can reach (320px at 300%)', async () => { await walkTourAt('101c')(); });
+  section('101d', 'the guided tour can be walked to the end at every width and zoom a user can reach (390px at 200%)', async () => { await walkTourAt('101d')(); });
+  section('101e', 'the guided tour can be walked to the end at every width and zoom a user can reach (280x640 at 200%)', async () => { await walkTourAt('101e')(); });
+  section('101f', 'the guided tour can be walked to the end at every width and zoom a user can reach (390x960 at 300%)', async () => { await walkTourAt('101f')(); });
+  section('101g', 'the guided tour can be walked to the end at every width and zoom a user can reach (390px at 100%)', async () => { await walkTourAt('101g')(); });
 
   // LANDSCAPE is its own orientation class, not more widths: a short, wide
   // viewport is where the footer hid below the card's clip (60px at 844x390)
   // while every portrait size passed.
-  section('103', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide', async () => {
-    await walkTourAt('103', [[844, 390, 1], [667, 375, 1], [740, 360, 1]])();
+  // Split 103 -> 103a-c, one landscape size each (326 s on CI whole); the resting-geometry
+  // invariant below rides with 103c.
+  section('103a', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide (844x390)', async () => { await walkTourAt('103a')(); });
+  section('103b', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide (667x375)', async () => { await walkTourAt('103b')(); });
+  section('103c', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide (740x360, resting footer)', async () => {
+    await walkTourAt('103c')();
 
     // Promoted out of _gen/ (Amendment 2): the invariant the landscape fix was
     // CHOSEN by, stated so neither half can rot silently. Whenever the footer
@@ -11522,7 +11551,7 @@ const suggestedScenario = {
           }
           return out;
         });
-        record(`§103 ${dark ? 'dark' : 'light'} ${w}x${h}@${z}x: the walking control is visible whenever its row fits, and scroll-reachable when it cannot`,
+        record(`§103c ${dark ? 'dark' : 'light'} ${w}x${h}@${z}x: the walking control is visible whenever its row fits, and scroll-reachable when it cannot`,
           bad.length === 0, bad.join(' | ') || 'control visible or scroll-reachable; caption reachable');
         await cdpF.send('Emulation.clearDeviceMetricsOverride');
         await pf.close();
