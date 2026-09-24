@@ -11097,8 +11097,9 @@ const suggestedScenario = {
     // And the ground truth a geometric check cannot give: press them.
     for (const nm of [/search game/i, /open workspace menu/i, /^sign in/i]) {
       const l = ps.getByRole('button', { name: nm }).first();
+      // 60 s, as the tour walker: "can it be pressed", not "how fast" (TASK-18 H10, 11x CPU).
       const pressed = await l.count()
-        ? await l.click({ timeout: 10000 }).then(() => true).catch(() => false) : false;
+        ? await l.click({ timeout: 60000 }).then(() => true).catch(() => false) : false;
       record(`§${sid} 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
       await ps.keyboard.press('Escape').catch(() => {});
       await ps.waitForTimeout(300);

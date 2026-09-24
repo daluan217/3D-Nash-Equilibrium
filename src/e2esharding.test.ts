@@ -247,6 +247,7 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert.match(walker, /const advanced = await next\.click\(\{ timeout: 60000 \}\)/, 'the §101/§103 walker gives a Next click 60 s');
   const s105 = sectionBodies.get('105') ?? '';
   assert.match(s105, /getByRole\('button', \{ name: \/\^next\/i \}\)\.first\(\)\.click\(\{ timeout: 60000 \}\)/, '§105 gives a tour Next click 60 s');
+  assert.match(sectionBodies.get('100d') ?? '', /await l\.click\(\{ timeout: 60000 \}\)\.then\(\(\) => true\)/, '§100d gives each "can it be pressed" click 60 s');
   assert.match(s105, /const decision = await pt\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
 }
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
