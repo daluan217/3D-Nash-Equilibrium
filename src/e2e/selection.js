@@ -64,7 +64,9 @@ import { dirname, join } from 'node:path';
  * really ran 785-1,224 s. The ceiling is now 420 s (a 345 s budget, 310 s
  * multi-section line) and §100-§103 are split along their viewport lists.
  * Raising the ceiling makes the budget honest; no check was dropped to fit.
- * 35 stays: all three runs already peaked at 40 concurrent jobs.
+ * 35 stays: all three runs already peaked at 40 concurrent jobs. Refreshed
+ * from runs 35952906105 + 35953748451: slowest shard 393 / 365 s (was 1,228),
+ * about 6.5 min of e2e wall clock (was 20.5).
  */
 export const SHARD_COUNT = 35;
 
