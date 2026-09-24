@@ -160,6 +160,25 @@ for (const [pattern, why] of [
   const wrongSlice = new Map(sectionBodies); wrongSlice.set('103b', (wrongSlice.get('103b') ?? '').replace("walkTourAt('103b')", "walkTourAt('103a')"));
   assert.deepStrictEqual(splitProblems(SPLIT_PARTS, wrongSlice), ["section 103b does not run its own slice (walkTourAt('103b'))"], 'a part running a sibling\'s slice');
 }
+// TASK-18 H1: the shared primary page is parked once no §1-§16 section is left. Left open, its
+// idle 3D spin cost later sections 4-5x on CI (101a 129 s after §6 vs 101b 35 s alone), and both
+// section loops (first pass and retry) must park before each run.
+const executeBody = smoke.slice(smoke.indexOf('async function executeSections()'), smoke.indexOf('\nconst $ = {'));
+assert.match(smoke, /async function parkSharedPageWhenDone\(remaining\) \{\n  if \(remaining\.some\(\(definition\) => primaryPageSection\(definition\.id\)\)\) return;\n  if \(page\.url\(\) !== 'about:blank'\) await page\.goto\('about:blank'\)/,
+  'parkSharedPageWhenDone parks the shared page exactly when no primary section remains');
+assert.strictEqual((executeBody.match(/await parkSharedPageWhenDone\((selected|failed)\.slice\(index\)\);\n\s+(?:if \(primaryPageSection\(definition\.id\)\) await gotoHome\(\)\.catch\(\(\) => \{\}\);\n\s+)?const passed = await runSection\(definition, [12]\);/g) || []).length, 2,
+  'both section loops park the shared page (from the current index on) right before runSection');
+// TASK-18 H2: §103c's resting-footer check reads the card only after it settled; a fixed 1.2 s
+// sleep read "no Next/Explore control at all" on two CI runs (35671699905, 35689614157).
+const footer103 = sectionBodies.get('103c') ?? '';
+assert(!/waitForTimeout\(/.test(footer103), '§103c waits on a condition, never a fixed sleep, before reading the card');
+assert.match(footer103, /\(body\.scrollHeight > body\.clientHeight \+ 1\) === \(body\.getAttribute\('role'\) === 'region'\)/,
+  '§103c waits until the tour body\'s region role agrees with its measured overflow');
+assert.match(footer103, /if \(stable >= 10\) resolve\(true\)/, '§103c waits for the card rect to hold 10 frames');
+// TASK-18 H3: §39's post-reload row wait is bounded for a loaded runner (a healthy CI run listed
+// the row at 10.8 s against the old 8 s bound; 11x CPU throttle measures 12.6 s).
+assert.match(sectionBodies.get('39') ?? '', /await flapPage\.reload\(\{ waitUntil: 'networkidle' \}\);[\s\S]{0,420}?getByRole\('button', \{ name: editedName, exact: true \}\)\.first\(\)\n\s+\.waitFor\(\{ state: 'visible', timeout: 30000 \}\)/,
+  '§39 waits up to 30 s for the reloaded row before counting it');
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
@@ -266,7 +285,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2
   'a whitespace-only section list must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: `1/${SHARD_COUNT}`, E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
-assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
+assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const \[index, definition\] of failed\.entries\(\)\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
 assert.match(smoke, /pass-after-section-retry:/,
   'a recovered section retry must be visible in CI output');

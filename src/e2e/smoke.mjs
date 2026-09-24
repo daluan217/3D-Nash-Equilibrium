@@ -238,6 +238,15 @@ async function runSection(definition, attempt) {
   return passed;
 }
 
+// TASK-18: once no primary section is left, park the shared page. Left open it spins the
+// idle 3D plot for the rest of the shard, and on CI's software GL that took §101a from 35 s
+// to 129 s in a shard that had run a primary section earlier. Only §1-§16 use this page
+// (primaryPageSection); every other section opens its own.
+async function parkSharedPageWhenDone(remaining) {
+  if (remaining.some((definition) => primaryPageSection(definition.id))) return;
+  if (page.url() !== 'about:blank') await page.goto('about:blank').catch(() => {});
+}
+
 async function executeSections() {
   const selection = selectSmokeSections(sections);
   executedShard = selection.shard;
@@ -250,7 +259,8 @@ async function executeSections() {
   }
 
   const failed = [];
-  for (const definition of selected) {
+  for (const [index, definition] of selected.entries()) {
+    await parkSharedPageWhenDone(selected.slice(index));
     const passed = await runSection(definition, 1);
     if (!passed) {
       failed.push(definition);
@@ -263,7 +273,8 @@ async function executeSections() {
 
   if (failed.length > 0) {
     console.log(`\n════ RETRYING ONLY FAILED SECTIONS: ${failed.map((definition) => `${definition.id} ${definition.name}`).join(', ')} ════`);
-    for (const definition of failed) {
+    for (const [index, definition] of failed.entries()) {
+      await parkSharedPageWhenDone(failed.slice(index));
       if (primaryPageSection(definition.id)) await gotoHome().catch(() => {});
       const passed = await runSection(definition, 2);
       if (passed) console.log(`pass-after-section-retry: ${definition.id} ${definition.name}`);
@@ -2633,10 +2644,11 @@ try {
 
     await flapPage.reload({ waitUntil: 'networkidle' });
     // Poll rather than a fixed sleep: a fresh reload re-runs the
-    // auth/me + games fetch effects from scratch, which can take longer
-    // than a short sleep on a busy CI runner.
+    // auth/me + games fetch effects from scratch. 30 s, not 8 s (TASK-18): a CI shard
+    // listed the row at 10.8 s and a healthy run failed (edited=0 stale=0); 11x CPU
+    // throttle measures 12.6 s. A missing or duplicate row still fails on the counts.
     await flapPage.getByRole('button', { name: editedName, exact: true }).first()
-      .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      .waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
     const uiCountAfterReload = await flapPage.getByRole('button', { name: editedName, exact: true }).count();
     const staleUiCount = await flapPage.getByRole('button', { name: gameName, exact: true }).count();
     record('FIX: exactly one row (the edited name) visible after a reload too — no duplicate, no stale name reaches the user',
@@ -11466,7 +11478,23 @@ const suggestedScenario = {
         await cdpF.send('Emulation.setDeviceMetricsOverride', {
           width: lw, height: lh, deviceScaleFactor: z, mobile: false });
         await pf.goto(BASE, { waitUntil: 'networkidle' });
-        await pf.waitForTimeout(1200);
+        // Settled, not slept (TASK-18): a fixed 1.2 s read no card at all on a loaded runner,
+        // or a body whose tabIndex/role had not yet caught up with its own overflow. Wait for
+        // the card rect to hold 10 frames AND the box's role to match its measured overflow;
+        // on timeout the check below still runs and reports what it sees.
+        await pf.waitForFunction(() => new Promise((resolve) => {
+          let last = '', stable = 0;
+          const tick = () => {
+            const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+            const body = card && card.querySelector('div.min-h-0');
+            const r = card && card.getBoundingClientRect();
+            const agrees = !!body && (body.scrollHeight > body.clientHeight + 1) === (body.getAttribute('role') === 'region');
+            const v = r ? `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)},${agrees}` : '';
+            stable = v && agrees && v === last ? stable + 1 : 0; last = v;
+            if (stable >= 10) resolve(true); else requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }), null, { timeout: 30000 }).catch(() => {});
         const bad = await pf.evaluate(() => {
           const btn = [...document.querySelectorAll('button')]
             .find((x) => /^(Next|Explore on your own)/.test((x.textContent || '').trim()));
