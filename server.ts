@@ -2134,22 +2134,21 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
   // THREE-way, not two (BLUE-LOOP-CLOUD-22, hit c): a stale instance's
   // untouched copy of a record another instance DELETED (delete-confirm) or
   // CHANGED (a reset's hash and tokenVersion) used to overwrite that. `unacked`
-  // is what uploads we gave up on carried: they may have landed, so their
-  // records count as "known remotely" for deletions made HERE, never as proof
-  // of a remote deletion (they may not have landed; losing data is worse).
+  // is what uploads we gave up on carried: they may have landed, so their ids
+  // count as "known remotely" for deletions made HERE — never as proof of a
+  // remote deletion or edit (they may not have landed; data loss is worse).
   const merge = <T extends { id: string }>(r: T[], l: T[], b: T[], u: T[]): T[] => {
     const base = new Map(b.map((x) => [x.id, x]));
     const sent = new Map(u.map((x) => [x.id, x]));
     const inLocal = new Set(l.map((x) => x.id));
-    const rem = new Map(r.map((x) => [x.id, x]));
-    const same = (x: T, y: T | undefined) => y !== undefined && isDeepStrictEqual(JSON.parse(JSON.stringify(x)), y);
+    const inRemote = new Set(r.map((x) => x.id));
     const out = new Map<string, T>();
     for (const x of r) if (inLocal.has(x.id) || !(base.has(x.id) || sent.has(x.id))) out.set(x.id, x);
     for (const x of l) {
-      const was = base.get(x.id), there = rem.get(x.id);
-      if (was !== undefined && there === undefined) continue; // deleted remotely
-      // Unchanged here since the last known remote state: remote's copy stands.
-      if (there !== undefined && (same(x, was) || (same(x, sent.get(x.id)) && !same(there, was)))) continue;
+      const was = base.get(x.id);
+      if (was !== undefined && !inRemote.has(x.id)) continue; // deleted remotely
+      // Unchanged here since the baseline: remote's copy stands.
+      if (was !== undefined && isDeepStrictEqual(JSON.parse(JSON.stringify(x)), was)) continue;
       out.set(x.id, x); // new or changed here: local wins a same-id collision
     }
     return [...out.values()];

@@ -55,11 +55,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 11 shape/legacy-warning (6) + 3 merge (7) + 3 outage/drain (8) + 2 abandoned (9) + 2 no-generation (10).
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 3 merge (7) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10).
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 48;
+const EXPECTED_CHECKS = 51;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -93,7 +93,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   let stored = initialContent; // null = object does not exist
   let generation = initialGeneration;
   const uploadLog = []; // { atMs, ifGenerationMatch, body }
-  let uploadDelayMs = 0, omitGeneration = false;
+  let uploadDelayMs = 0, omitGeneration = false, dropUploads = false;
   const startedAt = Date.now();
 
   const server = http.createServer((req, res) => {
@@ -126,6 +126,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
         const ifGenerationMatch = u.searchParams.get('ifGenerationMatch');
 
         if (uploadDelayMs > 0) await new Promise((r) => setTimeout(r, uploadDelayMs));
+        if (dropUploads) { uploadLog.push({ atMs: Date.now() - startedAt, ifGenerationMatch, body: content, dropped: true }); return; }
 
         uploadLog.push({ atMs: Date.now() - startedAt, ifGenerationMatch, body: content });
 
@@ -162,6 +163,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     uploadLog: () => uploadLog,
     setUploadDelayMs: (ms) => { uploadDelayMs = ms; },
     omitGenerationOnce: () => { omitGeneration = true; },
+    dropUploads: (v) => { dropUploads = v; }, // accept, never store, never answer
     peerWrite: (content) => { stored = content; generation += 1; },
     // For the "GCS was unreachable at boot, comes back later" case: the
     // server object exists (so a spawned process pointed at `port` gets
@@ -768,6 +770,29 @@ try {
     await stop(boot.child); await fake.close();
   }
 
+  // A PEER writes a malformed object mid-life; our next save takes the 412
+  // merge. On main that path merged `users:"x"` character by character and
+  // uploaded the result. It must refuse and block exactly like the boot read.
+  {
+    const good = JSON.stringify({ users: [seededUser('u_mid', 'mid', 'mid@example.test', 'Sup3rSecret!23')], games: [] });
+    const fake = await trackFake(startFakeGcsDb({ port: shapeGcsPort, initialContent: good }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-mid-'))), shapeAppPort, shapeGcsPort)), shapeAppPort);
+    const tok = (await (await fetch(`http://127.0.0.1:${shapeAppPort}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'mid@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    const bad = JSON.stringify({ users: 'x', games: [] });
+    fake.peerWrite(bad);
+    const n = fake.uploadCount();
+    const save = await fetch(`http://127.0.0.1:${shapeAppPort}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+      body: JSON.stringify({ name: 'After-Peer-Garbage', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+    await waitUntil(() => /GCS store BLOCKED/.test(boot.log()), 5000);
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await fetch(`http://127.0.0.1:${shapeAppPort}/api/games`, { headers: { authorization: `Bearer ${tok}` } });
+    record('THE DEFECT: a malformed object a peer wrote mid-life is never merged over: bucket untouched, DB routes now 503',
+      save.status === 200 && fake.getStored() === bad && fake.uploadCount() === n + 1 && after.status === 503,
+      `save ${save.status}, uploads ${fake.uploadCount() - n} after the peer write, stored ${String(fake.getStored()).slice(0, 80)}, then GET ${after.status}`);
+    await stop(boot.child); await fake.close();
+  }
+
   // The legacy-hash SECURITY warning counted users BEFORE initDB loaded any,
   // so it could never fire. The fixture seeds one base64 hash.
   {
@@ -896,6 +921,31 @@ try {
     record('THE DEFECT: a game deleted after its abandoned upload landed stays deleted, on GCS and in the list',
       del.status === 200 && storedGames === 0 && Array.isArray(list) && list.length === 0,
       `delete ${del.status}, stored games ${storedGames}, list ${JSON.stringify(list)}`);
+    await stop(boot.child); await fake.close();
+  }
+  // 9b. THE OTHER HALF: an abandoned upload that did NOT land is no proof the
+  // game is gone. A peer writes meanwhile, so the retry takes the 412 merge;
+  // counting the unacked game as "known remotely" there would drop an
+  // acknowledged save. CONTROL: the peer's game survives the same merge.
+  {
+    const bGcs = gcsPortA + 26, bApp = port1 + 22;
+    const fake = await trackFake(startFakeGcsDb({ port: bGcs, initialContent: JSON.stringify({ users: [seededUser('u_nl', 'unland', 'nl@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-unland-'))), bApp, bGcs, { GCS_DEADLINE_MS: '800' })), bApp);
+    const tok = (await (await fetch(`http://127.0.0.1:${bApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'nl@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    fake.dropUploads(true);
+    const save = await fetch(`http://127.0.0.1:${bApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+      body: JSON.stringify({ name: 'Never-Landed', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+    const peer = JSON.parse(fake.getStored());
+    peer.games.push({ id: 'g_peer2', userId: 'u_nl', name: 'Peer-Game-2', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01' });
+    fake.peerWrite(JSON.stringify(peer));
+    await waitUntil(() => /GCS write failed; the pending save stays queued/.test(boot.log()), 5000);
+    fake.dropUploads(false);
+    let names = [];
+    await waitUntil(() => { try { names = JSON.parse(fake.getStored()).games.map((g) => g.name).sort(); } catch { /* reported */ } return names.length >= 2; }, 8000);
+    record('CONTROL: the peer\'s game survives the merge that follows an unlanded upload', names.includes('Peer-Game-2'), JSON.stringify(names));
+    record('THE DEFECT: an acknowledged save whose upload never landed survives the next 412 merge',
+      save.status === 200 && names.includes('Never-Landed'), `save ${save.status}; stored ${JSON.stringify(names)}`);
     await stop(boot.child); await fake.close();
   }
 
