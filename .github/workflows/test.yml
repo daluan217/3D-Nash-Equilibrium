@@ -847,6 +847,11 @@ jobs:
           E2E_PORT: '3098'
           E2E_BASE: http://localhost:3098
 
+      - name: Prove E2E_CPU_THROTTLE reaches every page smoke.mjs creates
+        # A throttle that silently skipped ctx.newPage() pages voided every local
+        # "green at 11x" for those sections (TASK-18 H16). Measured busy-loop ratio.
+        run: node src/e2e/throttle.test.mjs
+
   # Branch protection requires the exact context "e2e". Keep that stable
   # while the implementation fans out behind it. The deploy gate therefore
   # cannot pass until every smoke shard (the matrix above, packed by selection.js) and the AI-surface suite pass.

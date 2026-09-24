@@ -19,6 +19,7 @@ import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.m
 import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 import { closeTour, dismissTourForSetup } from './tour.mjs';
+import { throttleEveryPage } from './throttle.mjs';
 import { waitForStableGeometry } from './settled-geometry.mjs';
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './split-parts.mjs';
 
@@ -103,7 +104,7 @@ if (!(reuseServerAllowed() && await fetch(`${BASE}/`).then((r) => r.ok, () => fa
 // measure 4s and a busy frame can stall one for 30s+. All waits below are
 // poll-based or generously bounded; the defect classes this suite guards
 // ("never responds", "never converges", "wrong text") fail ANY bound.
-const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
+const browser = throttleEveryPage(await chromium.launch({ args: ['--disable-dev-shm-usage'] }));
 const consoleErrors = [];
 
 /**
@@ -175,12 +176,7 @@ async function surfacesSettled(p) {
 const surfacesAnimating = (p) => p.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running'
   && a.effect?.getComputedTiming().endTime !== Infinity && a.effect?.target?.closest?.('[data-modal-surface]')).length);
 async function newTrackedPage(opts) {
-  const p = trackPage(await browser.newPage(opts));
-  // E2E_CPU_THROTTLE=<n>: slow the page's CPU n-fold (chromium) to replay a loaded
-  // CI runner locally. Off unless set. S93's race reproduced at 32.
-  const rate = Number(process.env.E2E_CPU_THROTTLE || 0);
-  if (rate > 1) await (await p.context().newCDPSession(p)).send('Emulation.setCPUThrottlingRate', { rate }).catch(() => {});
-  return p;
+  return trackPage(await browser.newPage(opts));
 }
 
 /**
@@ -369,6 +365,11 @@ async function waitForInputValue(p, selector, nth, expected, timeout = 3000) {
     { timeout },
   ).then(() => true).catch(() => false);
 }
+// The app's own tour decision (data-tour-auto on <html>, H6): 'shown' once the auto tour is open,
+// 'skip' when it will not open, null if it never decided. Every read of the tour after a load goes
+// through it: fixed waits for the dialog lost at CI load (§22, §69, §83, §85, §87, §88 at 11x, H15).
+const awaitTourDecision = (p) => p.waitForFunction(() => document.documentElement.dataset.tourAuto || false, null,
+  { timeout: 180000 }).then((h) => h.jsonValue()).catch(() => null);
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await dismissTour();
@@ -1464,9 +1465,8 @@ try {
     // Tour auto-opens on a fresh anonymous load — do NOT exit it here. It opens 700 ms after
     // mount, so read it only once the app has published its decision (data-tour-auto, H6):
     // an unwaited read failed 2/2 on CI (36023553844, 36023499379) and at 11x CPU.
+    const tourDecision = await awaitTourDecision(escPage);
     const tourOpen = async () => escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Guided tour"]'));
-    const tourDecision = await escPage.waitForFunction(() => document.documentElement.dataset.tourAuto || false, null, { timeout: 180000 })
-      .then((h) => h.jsonValue()).catch(() => null);
     record('tour is open on a fresh anonymous load (precondition)', tourDecision === 'shown' && await tourOpen(), `decision=${tourDecision}`);
 
     // CodeRabbit finding (this branch): poll for the tour's own step counter
@@ -2355,6 +2355,7 @@ try {
     // the tour dialog itself decides. Escape is the fallback dismissTour() uses,
     // and a tour that survives both is recorded as a failed precondition rather
     // than silently left on top of the checks below.
+    await awaitTourDecision(shortPage);
     const exitTourShort = shortPage.locator('[aria-label="Close tour"]');
     try { await exitTourShort.click({ timeout: 20000 }); } catch { /* decided by the dialog below */ }
     let shortTourGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
@@ -2559,6 +2560,7 @@ try {
       await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
 
       await tabB.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(tabB);
       const exitTourB = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
       await tabB.waitForTimeout(500);
@@ -2595,6 +2597,7 @@ try {
       await tabA.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
 
       await tabB.reload({ waitUntil: 'networkidle' });
+      await awaitTourDecision(tabB);
       const exitTourB2 = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB2.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB2.click();
       await tabB.waitForTimeout(500);
@@ -3557,6 +3560,7 @@ try {
     await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
     const tabB = trackPage(await twoTab.newPage());
     await tabB.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(tabB);
     const exitTourB = tabB.getByRole('button', { name: /close tour/i });
     if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
     const rowB = tabB.getByRole('button', { name: gameName, exact: true });
@@ -3612,6 +3616,7 @@ try {
 
     // 003: Delete while offline must SAY something.
     await tabA.reload({ waitUntil: 'networkidle' });
+    await awaitTourDecision(tabA);
     const exitTourA = tabA.getByRole('button', { name: /close tour/i });
     if (await exitTourA.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourA.click();
     await tabA.getByRole('button', { name: gameName, exact: true }).waitFor({ state: 'visible', timeout: 12000 });
@@ -5561,15 +5566,15 @@ try {
   section('69', 'keys typed inside an open dialog never reach the guided tour', async () => {
     const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    const decision = await awaitTourDecision(p);
     const tourSel = '[role="dialog"][aria-label="Guided tour"]';
-    await p.waitForSelector(tourSel, { timeout: 15000 });
     const readTour = () => p.evaluate((sel) => {
       const t = document.querySelector(sel);
       const m = (t?.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
       return { step: m ? Number(m[1]) : null, matrix: [...document.querySelectorAll('input[inputmode="decimal"][class*="text-center"]')].map((i) => i.value).join(',') };
     }, tourSel);
     const start = await readTour();
-    record('precondition: the tour auto-opened on step 1', start.step === 1, JSON.stringify(start));
+    record('precondition: the tour auto-opened on step 1', start.step === 1, JSON.stringify({ ...start, decision }));
     await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 8000 });
     const email = p.getByPlaceholder(/example\.com or username/i);
@@ -7794,19 +7799,16 @@ try {
     // subtree, not document.body.innerText — an unrelated "n / m" string
     // elsewhere on the page would otherwise be indistinguishable from the
     // tour's step counter.
+    const decision = await awaitTourDecision(p);
     const TOUR_SEL = '[role="dialog"][aria-label="Guided tour"]';
     const tourStep = () => p.evaluate((sel) => {
       const t = document.querySelector(sel);
       return (t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null;
     }, TOUR_SEL);
-    // Wait for the tour dialog itself before the first read: the tour opens
-    // after mount, and reading the counter straight after networkidle raced
-    // it on the runner (CI 2026-09-08 shard 30 on #175: step0=null while the
-    // very next read of the same page said "1"). The waitFor makes step0 a
-    // real reading of the opened tour, not of the page's load timing.
-    await p.locator(TOUR_SEL).waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+    // Read the counter only after the app's tour decision (above): straight after networkidle it
+    // raced the tour on the runner (CI 2026-09-08 shard 30 on #175: step0=null, then "1").
     const step0 = await tourStep();
-    record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0}`);
+    record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0} decision=${decision}`);
 
     // The drawer's 300 ms slide-in runs at 1/20 speed here, so a coordinate read before it has
     // settled lands on the backdrop every time, not once in 60 runs (TASK-18 sweep 3).
@@ -8614,11 +8616,11 @@ try {
       // — a dropped ArrowRight would otherwise leave this on the wrong step
       // and the old `!== null` precondition would still (wrongly) pass
       // (CodeRabbit CLI).
-      let stepBefore = await tourStepOf(p);
-      for (let i = 0; i < 20 && stepBefore !== expectedStep; i++) {
-        await p.waitForTimeout(100);
-        stepBefore = await tourStepOf(p);
-      }
+      // Bounded by the condition, not 2 s: each step's onEnter re-renders the board and plot,
+      // which at CI load takes longer than a fixed poll allowed (TASK-18 H15).
+      await p.waitForFunction(([sel, want]) => (document.querySelector(sel)?.textContent || '')
+        .match(/(\d+)\s*\/\s*\d+/)?.[1] === want, [TOUR_SEL, expectedStep], { timeout: 60000 }).catch(() => {});
+      const stepBefore = await tourStepOf(p);
       record(`[${label}] precondition: the tour is open at the expected step ${expectedStep}`, stepBefore === expectedStep, `step=${stepBefore}`);
 
       // Capture the tour control's coordinate BEFORE the surface opens,
@@ -8768,7 +8770,7 @@ try {
           const p = trackPage(await ctx.newPage());
           try {
             await p.goto(BASE, { waitUntil: 'networkidle' });
-            await p.waitForSelector(TOUR_SEL, { state: 'visible', timeout: 8000 }).catch(() => {});
+            await awaitTourDecision(p);
             await runScenario(p, `${engineLabel} ${scenario.name}`, scenario);
           } finally {
             await p.close().catch(() => {});
@@ -8938,6 +8940,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(p);
       const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
@@ -8991,6 +8994,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(p);
       const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
@@ -9053,6 +9057,7 @@ try {
     try {
       const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(p);
       const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
@@ -9186,6 +9191,7 @@ try {
   section('87', 'tour keys belong to the focused control', async () => {
     const p = await newTrackedPage({ viewport: { width: 1440, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(p);
     const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
     await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(600);
     const stepOf = async () => { const t = (await tour.textContent().catch(() => '')) || ''; const m = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(t); return m ? Number(m[1]) : null; };
@@ -9250,6 +9256,7 @@ try {
   section('88', 'tour card never sits inside its own spotlight (912x1368 dsf2)', async () => {
     const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(p);
     const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
     await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(800);
     const steps = [];
@@ -9454,6 +9461,7 @@ try {
   section('90', 'tour layout family comes from a measured card, not an estimate (enlarged captions)', async () => {
     const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(p);
     const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
     await tour.waitFor({ state: 'visible', timeout: 15000 });
     // The condition under test: every caption paragraph in the tour (the real
@@ -9586,6 +9594,7 @@ try {
     for (const [cw, ch] of [[320, 256], [900, 300]]) {
       const cp = await newTrackedPage({ viewport: { width: cw, height: ch } });
       await cp.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(cp);
       const closeBtn = cp.getByRole('button', { name: /close tour/i });
       const up = await closeBtn.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false);
       record(`precondition ${cw}x${ch}: the tour is open and its close button is visible`, up, `visible=${up}`);
@@ -11227,9 +11236,9 @@ const suggestedScenario = {
     // needs its own browser instance.
     let minFontRows = [];
     for (const minFs of [15, 18, 24]) {
-      const fontBrowser = await chromium.launch({
+      const fontBrowser = throttleEveryPage(await chromium.launch({
         args: ['--disable-dev-shm-usage', `--blink-settings=minimumFontSize=${minFs}`],
-      });
+      }));
       try {
         for (const fw of [320, 1280]) {
         const fctx = await fontBrowser.newContext({ viewport: { width: fw, height: 900 } });
@@ -11334,6 +11343,7 @@ const suggestedScenario = {
       // `reload` rather than a cold `goto`: the tour must restart at step 0 for
       // each condition, but the app is already warm, which is most of the cost.
       await pt.reload({ waitUntil: 'domcontentloaded' });
+      await awaitTourDecision(pt);
       await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
       // `visible` is not `placed`: the card anchors itself to its step's target
       // after layout, so the first frame can be measured mid-placement -- one
@@ -11543,6 +11553,7 @@ const suggestedScenario = {
         await cdpF.send('Emulation.setDeviceMetricsOverride', {
           width: lw, height: lh, deviceScaleFactor: z, mobile: false });
         await pf.goto(BASE, { waitUntil: 'networkidle' });
+        await awaitTourDecision(pf);
         // Settled, not slept (TASK-18): a fixed 1.2 s read no card at all on a loaded runner,
         // or a body whose tabIndex/role had not yet caught up with its own overflow. Wait for
         // the card rect to hold 10 frames AND the box's role to match its measured overflow;
@@ -11769,8 +11780,7 @@ const suggestedScenario = {
     const pt = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
     await pt.goto(BASE, { waitUntil: 'networkidle' });
     // Wait for the app's own decision (data-tour-auto, H6), not a fixed 20 s, which ran out at 11x.
-    const decision = await pt.waitForFunction(() => document.documentElement.dataset.tourAuto || false, null, { timeout: 180000 })
-      .then((h) => h.jsonValue()).catch(() => null);
+    const decision = await awaitTourDecision(pt);
     const tourUp = decision === 'shown' && await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible();
     record('§105 tour fixture guard: the guided tour opened', tourUp);
     const counter = () => pt.evaluate(() => {
@@ -11864,6 +11874,7 @@ const suggestedScenario = {
     await pa.clock.pauseAt(CLOCK_T0 + 1);
     await pa.goto(BASE, { waitUntil: 'networkidle' });
     await pa.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0, null, { timeout: 30000 });
+    // tour-decision: exempt -- (a) reads the tour while the paused clock holds the decision back.
     record('§108 fixture guard: with the clock paused, the tour has not opened and no decision is published',
       !(await hasTour(pa)) && (await marker(pa)) === null, `marker=${await marker(pa)}`);
     let settled = null;
@@ -11883,6 +11894,7 @@ const suggestedScenario = {
     await pb.clock.install({ time: CLOCK_T0 });
     await pb.clock.pauseAt(CLOCK_T0 + 1);
     await pb.goto(BASE, { waitUntil: 'networkidle' });
+    // tour-decision: exempt -- (b) opens the tour by hand while the paused clock holds the decision back.
     await pb.getByRole('button', { name: 'Take the tour', exact: true }).click({ timeout: 30000 });
     await pb.locator(tourDialog).waitFor({ state: 'visible', timeout: 30000 });
     record('§108 a manual "Take the tour" before the auto timer opens the tour without publishing a decision',

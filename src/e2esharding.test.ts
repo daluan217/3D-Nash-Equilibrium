@@ -255,7 +255,7 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert.match(walker, /if \(!moved\) \{ unreachable\.push\(`step \$\{steps\}: Next was pressed but the tour did not advance from \$\{before\}`\); break; \}/,
     'the walker names a Next that is pressed but does not advance');
   assert.match(sectionBodies.get('100d') ?? '', /await l\.click\(\{ timeout: 60000 \}\)\.then\(\(\) => true\)/, '§100d gives each "can it be pressed" click 60 s');
-  assert.match(s105, /const decision = await pt\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
+  assert.match(s105, /const decision = await awaitTourDecision\(pt\);/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
 }
 // TASK-18 sweep 6: §100's width settle is bounded in frames (a 20 s bound failed at 11x, where
 // 30 frames took 12.7-22.4 s; the next combo's viewport row then read 390 as a knock-on).
@@ -264,10 +264,48 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert(m100.length > 0 && !/timeout: 20000 \}\)\.then\(\(\) => true\)/.test(m100), '§100 measure has no 20 s bound on its settle');
   assert.match(m100, /if \(stable >= 30\) resolve\(true\); else if \(frames >= 600\) resolve\(false\);/, '§100 settle: 30 stable frames, unsettled only after 600 frames');
 }
-// TASK-18 sweep 8: §22 reads "the tour is open" only after the app's tour decision (it opens
-// 700 ms after mount; an unwaited read failed 2/2 on CI at f843600).
-assert.match(sectionBodies.get('22') ?? '', /const tourDecision = await escPage\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto/,
-  '§22 waits for the app\'s tour decision before reading that the tour is open');
+// TASK-18 sweep 8 (H14/H15): the tour opens 700 ms after mount, so no load may reach the tour
+// before the app's decision (data-tour-auto). Fixed waits lost at CI load: §22 2/2 on CI, and §69,
+// §83, §85, §85b, §87, §88, §90, §38, §46 at 11x. Every goto/reload's first tour token must be a
+// decision-aware call; a deliberate exception names itself with `tour-decision: exempt`.
+{
+  assert.match(smoke, /const awaitTourDecision = \(p\) => p\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto \|\| false, null,\n\s+\{ timeout: 180000 \}\)/,
+    'awaitTourDecision waits on the app\'s own decision, bounded at 180 s');
+  const lines = smoke.slice(0, smoke.indexOf('\nawait executeSections();')).split('\n');
+  const baseToken = /Guided tour|guided tour|TOUR_SEL|tourSel|[Cc]lose tour|Take the tour|tourAuto|z-\\\\\[60\\\\\]|dismissTour|closeTour|gotoHome\(|awaitTourDecision|registerAndLogin\(/;
+  // A helper whose own body reads the tour is a tour read at its call site (§83's first call after
+  // its load is runScenario). Body = its definition line through the first line back at its indent.
+  const helpers = lines.flatMap((l, i) => {
+    const m = /^(\s*)(?:async function (\w+)\(|const (\w+) = (?:async )?\([^)]*\) =>)/.exec(l);
+    if (!m) return [];
+    let end = i;
+    if (!/;\s*$/.test(l)) while (end + 1 < lines.length && !(lines[end + 1].startsWith(m[1] + '}') || lines[end + 1].startsWith(m[1] + ')'))) end++;
+    return [{ name: m[2] ?? m[3], body: lines.slice(i, end + 2).join('\n') }];
+  });
+  let readers = new Set<string>();
+  for (let grew = true; grew;) {
+    const known = [...readers];
+    const next = new Set(helpers.filter(({ body }) => baseToken.test(body) || known.some((n) => body.includes(`${n}(`))).map(({ name }) => name));
+    grew = next.size > readers.size; readers = next;
+  }
+  assert.ok(['runScenario', 'walkTourAt', 'tourStepOf', 'readTour'].every((n) => readers.has(n)), `tour-reading helpers are derived (${[...readers].join(', ')})`);
+  const tourToken = new RegExp(`${baseToken.source}|\\b(?:${[...readers].join('|')})\\(`);
+  const decisionAware = /awaitTourDecision\(|dismissTourForSetup\(|closeTour\(|dismissTour\(|gotoHome\(\)|registerAndLogin\(|tourAuto|tour-decision: exempt/;
+  // Loads of the app only: about:blank carries no tour.
+  const loads = lines.flatMap((l, i) => (/\.(goto|reload)\(/.test(l) && !/about:blank|^\s*(\/\/|\*)/.test(l) ? [i] : []));
+  const racing = loads.flatMap((li, j) => {
+    for (let i = li + 1; i < (loads[j + 1] ?? lines.length); i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i]) && !/tour-decision: exempt/.test(lines[i])) continue;
+      if (tourToken.test(lines[i]) || /tour-decision: exempt/.test(lines[i])) return decisionAware.test(lines[i]) ? [] : [`line ${i + 1}: ${lines[i].trim().slice(0, 90)}`];
+    }
+    return [];
+  });
+  assert.ok(loads.length > 60, `the load census found the suite's page loads (${loads.length})`);
+  assert.deepEqual(racing, [], 'every load reaches the app\'s tour decision before it reads the tour');
+  assert.equal((smoke.match(/tour-decision: exempt/g) ?? []).length, 2, 'two exemptions, both §108 reading before the decision under a paused clock');
+}
+assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
+  'CI runs the CPU-throttle reach guard in a job that has chromium');
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
