@@ -220,6 +220,15 @@ for (const id of ['42', '44']) {
   assert(!/timeout: 3000 \}\)\.then\(\(\) => true\)/.test(body), `§${id} does not bound its hint on a fixed 3 s wait`);
   assert.match(body, /requestAnimationFrame\(\(\) => requestAnimationFrame\(r\)\)/, `§${id} reads its hint two frames after the last keystroke`);
 }
+// TASK-18 sweep 3 (§76 retry, CI 35979484351): a coordinate read after a surface opens waits for
+// its entrance animation, or the point lands on the backdrop of a drawer still sliding in.
+assert.match(smoke, /async function surfacesSettled\(p\) \{\n  await p\.waitForFunction\(\(\) => document\.getAnimations\(\)\.every/, 'surfacesSettled waits on the page\'s own animations');
+for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74', 'const fb = await field.boundingBox();']]) {
+  const body = sectionBodies.get(id) ?? '';
+  const at = body.indexOf(read);
+  assert(at > 0 && body.lastIndexOf('await surfacesSettled(p);', at) > body.lastIndexOf('.click();', at),
+    `§${id} waits for the opened surface to settle before reading coordinates in it`);
+}
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────

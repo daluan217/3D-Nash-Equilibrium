@@ -143,6 +143,16 @@ function trackPage(p) {
   }));
   return p;
 }
+// Coordinates read while a surface is still animating in are stale: §76's drawer was mid-slide
+// on CI (35979484351), so the "Next" point hit the backdrop and closed it. Wait until every
+// finite animation inside a ModalSurface has finished (infinite spinners are not entrances).
+async function surfacesSettled(p) {
+  await p.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'
+    || a.effect?.getComputedTiming().endTime === Infinity
+    || !a.effect?.target?.closest?.('[data-modal-surface]')), null, { timeout: 30000 });
+}
+const surfacesAnimating = (p) => p.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running'
+  && a.effect?.getComputedTiming().endTime !== Infinity && a.effect?.target?.closest?.('[data-modal-surface]')).length);
 async function newTrackedPage(opts) {
   const p = trackPage(await browser.newPage(opts));
   // E2E_CPU_THROTTLE=<n>: slow the page's CPU n-fold (chromium) to replay a loaded
@@ -7523,6 +7533,7 @@ try {
     await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     const dlg = p.locator('[role="dialog"][aria-label="Account"]'); await dlg.waitFor({ state: 'visible', timeout: 8000 });
     const field = p.getByPlaceholder(/example\.com or username/i); await field.fill('drag me');
+    await surfacesSettled(p);
     const fb = await field.boundingBox(); const db = await dlg.boundingBox();
     await p.mouse.move(fb.x + 10, fb.y + fb.height / 2); await p.mouse.down();
     await p.mouse.move(db.x + db.width + 120, fb.y + fb.height / 2, { steps: 8 }); await p.mouse.up();
@@ -7766,8 +7777,16 @@ try {
     const step0 = await tourStep();
     record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0}`);
 
+    // The drawer's 300 ms slide-in runs at 1/20 speed here, so a coordinate read before it has
+    // settled lands on the backdrop every time, not once in 60 runs (TASK-18 sweep 3).
+    const anim = await p.context().newCDPSession(p);
+    await anim.send('Animation.setPlaybackRate', { playbackRate: 0.05 });
     await p.getByRole('button', { name: /open workspace menu/i }).first().click();
     await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 8000 });
+    await surfacesSettled(p);
+    const animatingAtRead = await surfacesAnimating(p);
+    await anim.send('Animation.setPlaybackRate', { playbackRate: 1 });
+    record('precondition: the drawer has finished sliding in before the Next button\'s point is read', animatingAtRead === 0, `running=${animatingAtRead}`);
     const next = p.locator('button', { hasText: /^Next\s*$/ }).first();
     const nb = await next.boundingBox();
     // OPUS-REVIEW-MODAL16 N (§76): `hit` used to be computed and then only
