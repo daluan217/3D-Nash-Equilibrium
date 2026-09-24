@@ -109,6 +109,7 @@ const NON_GCS_RECEIVERS = new Set([
   'app',          // express: app.delete(route, ...)
   'rateBuckets',  // Map.delete
   'reportCache',  // Map.delete
+  'lastCodeMail', // Map.delete: the per-address mail cooldown prunes expired entries (BLUE-LOOP-CLOUD-22)
 ]);
 
 /**
@@ -216,15 +217,15 @@ check('createReadStream is excluded by design, and still present',
 // touching a single assertion: adding a receiver name silently un-guards
 // every call on it. Keep it tiny and force a re-justification to grow it.
 check('the non-GCS receiver allowlist stays minimal',
-  NON_GCS_RECEIVERS.size <= 4,
+  NON_GCS_RECEIVERS.size <= 5,
   `${NON_GCS_RECEIVERS.size} exempt receivers — each one un-guards every GCS-named call on it: ${
     [...NON_GCS_RECEIVERS].join(', ')}`);
 
 // A size cap alone can be satisfied by SWAPPING an entry for `file`. Pin the
 // membership too: exempting anything that could be a GCS File must fail here,
 // not silently drop call sites out of the scan.
-check('the allowlist is exactly the four known non-GCS receivers',
-  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,rateBuckets,reportCache,res',
+check('the allowlist is exactly the five known non-GCS receivers',
+  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,lastCodeMail,rateBuckets,reportCache,res',
   `allowlist is now: ${[...NON_GCS_RECEIVERS].sort().join(',')}`);
 
 // SHADOWING is the attack the membership check cannot see: bind a GCS File to
@@ -238,6 +239,7 @@ const EXPECTED_BINDING: Record<string, RegExp | null> = {
   app: /^express\(\)/,
   rateBuckets: /^new Map\b/,
   reportCache: /^new Map\b/,
+  lastCodeMail: /^new Map\b/,
 };
 const shadowed: string[] = [];
 for (const [name, expected] of Object.entries(EXPECTED_BINDING)) {
@@ -414,6 +416,27 @@ check('SELF-TEST: a call without a signal is REPORTED', sig('async function f(){
 check('SELF-TEST: a call with no options object is REPORTED', sig('async function f(){ await generateScenario(p); }') === 1);
 check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
   sig('async function f(){ await generateReport(p, { signal: s }); await generateScenario(p, { model, signal }); }') === 0);
+
+// The mail cooldown's Map is exempt above because it PRUNES: run the real
+// source (sliced out of server.ts) over 5,000 distinct addresses with a
+// clock that moves past the cooldown, and the map must stay under its cap.
+{
+  const start = source.indexOf('const MAIL_COOLDOWN_CAP');
+  const end = source.indexOf('\nconst releaseCodeMail', start);
+  const MS = /const MAIL_COOLDOWN_MS = ([\d_]+);/.exec(source)?.[1]?.replace(/_/g, '');
+  let size = -1, maxSize = 0, stillCools = false;
+  if (start > 0 && end > start && MS) {
+    const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    let now = 0;
+    const run = new Function('Date', 'MAIL_COOLDOWN_MS', `${js}; return { left: mailCooldownLeft, map: lastCodeMail };`);
+    const { left, map } = run({ now: () => now }, Number(MS));
+    for (let i = 0; i < 5000; i++) { now += 50; left('verification', `a${i}@example.test`); maxSize = Math.max(maxSize, map.size); }
+    size = map.size;
+    stillCools = left('verification', 'a4999@example.test') > 0; // a fresh entry survives pruning
+  }
+  check('the mail-cooldown map stays bounded over 5,000 distinct addresses (expired entries pruned)',
+    size > 0 && maxSize <= 1000 + Number(MS) / 50 && stillCools, `size ${size}, max ${maxSize}, fresh entry still cooling ${stillCools}`);
+}
 
 console.log(failures === 0
   ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`

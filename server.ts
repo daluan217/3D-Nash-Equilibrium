@@ -2554,15 +2554,19 @@ const EMAIL_SHAPE = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a
 // send hands the slot back (releaseCodeMail).
 const MAIL_COOLDOWN_MS = 60_000;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000; // a dead pending row is swept this long after its code expired
-let lastCodeMail = new Map<string, number>();
+// Bounded: entries past the cooldown are pruned whenever the map passes
+// MAIL_COOLDOWN_CAP, so it holds at most the addresses mailed in the last
+// minute (register's per-IP limit bounds that rate) plus the cap.
+const MAIL_COOLDOWN_CAP = 1000;
+const lastCodeMail = new Map<string, number>();
 function mailCooldownLeft(kind: "verification" | "recovery", email: string): number {
   const now = Date.now(), key = `${kind}:${email}`;
-  if (lastCodeMail.size > 1000) lastCodeMail = new Map([...lastCodeMail].filter(([, t]) => now - t < MAIL_COOLDOWN_MS));
+  if (lastCodeMail.size >= MAIL_COOLDOWN_CAP) for (const [k, t] of lastCodeMail) if (now - t >= MAIL_COOLDOWN_MS) lastCodeMail.delete(k);
   const left = MAIL_COOLDOWN_MS - (now - (lastCodeMail.get(key) ?? -Infinity));
   if (left <= 0) lastCodeMail.set(key, now);
   return Math.max(0, left);
 }
-const releaseCodeMail = (kind: "verification" | "recovery", email: string) => { lastCodeMail.set(`${kind}:${email}`, -Infinity); };
+const releaseCodeMail = (kind: "verification" | "recovery", email: string) => lastCodeMail.delete(`${kind}:${email}`);
 
 function findByIdentifier(users: User[], id: string): User | undefined {
   return users.find((u) => u.email === id) ?? users.find((u) => u.username.toLowerCase() === id);
