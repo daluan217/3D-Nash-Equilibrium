@@ -55,11 +55,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 6 merge (7, 7b) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10).
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 6 merge (7, 7b) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 54;
+const EXPECTED_CHECKS = 55;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -89,6 +89,10 @@ function parseMultipart(contentType, rawBody) {
  * `save()` (POST, `uploadType=multipart`, optional `ifGenerationMatch`
  * query param).
  */
+// Every db.json upload any fake saw without a numeric generation precondition.
+// What GCS does with `ifGenerationMatch=` (empty) is not something this suite
+// can know, so SENDING one is the defect: an unread store written blindly.
+const unconditionalUploads = [];
 function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferListen = false }) {
   let stored = initialContent; // null = object does not exist
   let generation = initialGeneration;
@@ -124,6 +128,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
         const parts = parseMultipart(req.headers['content-type'], body);
         const content = parts[1] ?? ''; // part 0 = metadata JSON, part 1 = the actual data
         const ifGenerationMatch = u.searchParams.get('ifGenerationMatch');
+        if (!/^\d+$/.test(ifGenerationMatch ?? '')) unconditionalUploads.push({ port, ifGenerationMatch });
 
         if (uploadDelayMs > 0) await new Promise((r) => setTimeout(r, uploadDelayMs));
         if (dropUploads) { uploadLog.push({ atMs: Date.now() - startedAt, ifGenerationMatch, body: content, dropped: true }); return; }
@@ -201,6 +206,7 @@ function startDeadlineGcs(port, initialContent) {
         req.on('data', (c) => { body += c; });
         req.on('end', () => {
           uploads.push(parseMultipart(req.headers['content-type'], body)[1] ?? '');
+          if (!/^\d+$/.test(u.searchParams.get('ifGenerationMatch') ?? '')) unconditionalUploads.push({ port, ifGenerationMatch: u.searchParams.get('ifGenerationMatch') });
           if (hangUploads) return;
           stored = uploads.at(-1); generation += 1;
           res.writeHead(200, { 'content-type': 'application/json' });
@@ -1029,6 +1035,9 @@ try {
       `stored ${JSON.stringify(names)}; preconditions ${JSON.stringify(fake.uploadLog().slice(-3).map((u) => u.ifGenerationMatch))}`);
     await stop(boot.child); await fake.close();
   }
+
+  record('THE DEFECT: across every section, no upload was sent without a numeric generation precondition',
+    unconditionalUploads.length === 0, JSON.stringify(unconditionalUploads.slice(0, 5)));
 
 } finally {
   for (const c of children) { try { await stop(c); } catch { /* already gone */ } }
