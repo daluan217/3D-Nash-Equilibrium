@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 81;
+const EXPECTED_CHECKS = 82;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1224,16 +1224,19 @@ try {
   {
     const qGcs = gcsPortA + 36, qApp = port1 + 38, qSmtp = gcsPortA + 38;
     let silent = true;
+    const mails = []; // { rcpts, data } per delivered message (answering mode only)
     const smtp = net.createServer((sock) => {
       sock.write('220 t ESMTP\r\n');
+      let inData = false, buf = '', rcpts = [];
       sock.on('data', (c) => {
         for (const line of c.toString().split(/\r?\n/)) {
-          const v = line.split(' ')[0].toUpperCase();
+          if (inData) { if (line === '.') { inData = false; mails.push({ rcpts, data: buf }); buf = ''; rcpts = []; sock.write('250 queued\r\n'); } else buf += `${line}\n`; continue; }
+          const v = line.split(/[ :]/)[0].toUpperCase();
           if (!v) continue;
+          if (v === 'RCPT') rcpts.push(line);
           if (v === 'EHLO' || v === 'HELO') sock.write('250-t\r\n250 AUTH PLAIN LOGIN\r\n');
           else if (v === 'AUTH') sock.write('235 ok\r\n');
-          else if (v === 'DATA') { if (!silent) sock.write('354 go\r\n'); }
-          else if (line === '.') sock.write('250 queued\r\n');
+          else if (v === 'DATA') { if (!silent) { inData = true; sock.write('354 go\r\n'); } }
           else if (v === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); }
           else if (/^(MAIL|RCPT|RSET|NOOP)$/.test(v)) sock.write('250 ok\r\n');
         }
@@ -1259,6 +1262,28 @@ try {
     silent = false;
     const ok = [];
     for (const [route, body] of routes) ok.push(await timed(route, body()));
+    // Feedback is anonymous public input mailed to the project inbox: nothing a
+    // sender types may add a recipient or a header, or reach the HTML part as
+    // markup (sweep 4 probe; held on main too, so a guard, not a fix).
+    mails.length = 0;
+    const hostile = [
+      { message: 'hi\r\nBcc: evil@example.test\r\n\r\nbody', rating: '5\r\nCc: evil@example.test' },
+      { message: '<script>alert(1)</script>', email: 'a@b.co' },
+      { message: 'x', email: 'a@b.co\r\nBcc: evil@example.test' },
+      { message: 'x', email: 'a@b.co,evil@example.test' },
+    ];
+    const hostileStatus = [];
+    for (const body of hostile) hostileStatus.push((await fetch(`http://127.0.0.1:${qApp}/api/feedback`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status);
+    await waitUntil(() => mails.length >= 2, 3000);
+    const headerOf = (m) => m.data.split('\n\n')[0];
+    const qp = (t) => t.replace(/=\n/g, '').replace(/=([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+    const htmlOf = (m) => m.data.split(/\n--[^\n]+\n/).filter((p) => /content-type: text\/html/i.test(p))
+      .map((p) => { const b = p.split('\n\n').slice(1).join('\n\n'); return /base64/i.test(p) ? Buffer.from(b.replace(/\s/g, ''), 'base64').toString() : qp(b); }).join('');
+    record('THE DEFECT: hostile feedback adds no recipient or header and reaches the HTML part escaped; bad reply-to addresses are 400',
+      JSON.stringify(hostileStatus) === '[200,200,400,400]' && mails.length === 2
+        && mails.every((m) => m.rcpts.length === 1 && !/evil/.test(m.rcpts.join()) && !/^(?:bcc|cc):/im.test(headerOf(m)))
+        && /&lt;script&gt;/.test(htmlOf(mails[1])) && !/<script>/i.test(htmlOf(mails[1])),
+      `statuses ${JSON.stringify(hostileStatus)} mails ${mails.length} rcpts ${JSON.stringify(mails.map((m) => m.rcpts))}`);
     silent = true;
     const hung = [];
     for (const [route, body] of routes) hung.push(await timed(route, body()));
