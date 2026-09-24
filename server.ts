@@ -2102,8 +2102,10 @@ function requireGcsStore(req: express.Request, res: express.Response, next: expr
   };
   if (gcsStoreBlocked) return unavailable();
   const unread = gcsGeneration === null;
-  // While an upload is in flight the pump reconciles through its own 412 merge.
-  if (!unread && (Date.now() < gcsFreshUntil || gcsUploadInFlight)) return next();
+  // Not skipped while the pump is busy: in backoff it can stay busy for the
+  // whole outage, and reads went stale with it (sweep 4). A re-check during an
+  // upload is safe: that upload's precondition then 412s and it re-merges.
+  if (!unread && Date.now() < gcsFreshUntil) return next();
   if (!unread) gcsFreshUntil = Date.now() + GCS_FRESH_MS;
   const sync = syncShared(!unread);
   const waited = unread ? sync : Promise.race([sync, new Promise<void>((r) => setTimeout(r, 2_000).unref?.())]);

@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 2 SMTP deadline (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 79;
+const EXPECTED_CHECKS = 81;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -99,7 +99,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   let generation = initialGeneration;
   const uploadLog = []; // { atMs, ifGenerationMatch, body }
   let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, afterStoreOnce = null, n412 = 0;
-  let readDelay = { meta: 0, media: 0 }, metaGets = 0, stale404s = 0, afterMetaOnce = null;
+  let readDelay = { meta: 0, media: 0 }, metaGets = 0, stale404s = 0, afterMetaOnce = null, failUploads = false;
   const readLog = []; // media GETs: { arrivedGen, want, atMs, doneMs }
   const startedAt = Date.now();
 
@@ -150,6 +150,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
         if (dropUploads) { uploadLog.push({ atMs: Date.now() - startedAt, ifGenerationMatch, body: content, dropped: true }); return; }
 
         uploadLog.push({ atMs: Date.now() - startedAt, ifGenerationMatch, body: content });
+        if (failUploads) { uploadLog.at(-1).failed = true; res.writeHead(503, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { code: 503, message: 'Service Unavailable' } })); return; }
 
         if (ifGenerationMatch !== null) {
           const want = ifGenerationMatch === '0' ? null : String(generation);
@@ -191,6 +192,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     peerWrite: (content) => { stored = content; generation += 1; },
     afterStoreOnce: (f) => { afterStoreOnce = f; },
     count412: () => n412,
+    failUploads: (v) => { failUploads = v; }, // every upload answers 503 (the pump backs off)
     setReadDelayMs: (meta, media) => { readDelay = { meta, media }; },
     afterMetaOnce: (f) => { afterMetaOnce = f; }, // a peer writes right after our metadata GET is answered
     metaGets: () => metaGets, stale404s: () => stale404s, readLog: () => readLog,
@@ -1566,6 +1568,40 @@ try {
       ['Y-Early', 'Y-Mid', 'X-During', 'X-Acked', 'Y-Late', 'X-After'].every((n) => gcs2.includes(n) && list2.includes(n))
         && ['Y-Early', 'Y-Mid', 'X-During'].every((n) => gcs1.includes(n) && list1.includes(n)) && refused2 >= 1,
       `gcs ${JSON.stringify(gcs2)} list ${JSON.stringify(list2)} (ii) 412s ${refused2}`);
+    await stop(boot.child); await fake.close();
+  }
+
+  // 20. READS STAY FRESH WHILE THE PUMP IS IN BACKOFF. The gate skipped its
+  // re-check whenever an upload was in flight, and in backoff the pump stays
+  // in flight for the whole outage: a peer's game stayed invisible on X until
+  // X's own write landed (sweep 4; main too). CONTROL: after recovery both
+  // writes are on GCS, so the pump still merges rather than overwrites.
+  {
+    const bGcs = gcsPortA + 40, bApp = port1 + 42; // s12's released ports
+    const fake = await trackFake(startFakeGcsDb({ port: bGcs, initialContent: JSON.stringify({ users: [seededUser('u_bk', 'backoff', 'bk@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-backoff-'))), bApp, bGcs)), bApp);
+    const url = (p) => `http://127.0.0.1:${bApp}${p}`;
+    const tok = (await (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'bk@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    const auth = { authorization: `Bearer ${tok}` };
+    await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    await new Promise((r) => setTimeout(r, 2200));
+    fake.failUploads(true);
+    const save = await fetch(url('/api/games'), { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: JSON.stringify({ name: 'X-Pending', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+    // Busy = the SDK retrying the 503s or the pump's own backoff; either way
+    // gcsUploadInFlight stays true and X-Pending has not landed.
+    const failing = await waitUntil(() => fake.uploadLog().some((u) => u.failed), 5000);
+    const db = JSON.parse(fake.getStored());
+    db.games.push({ id: 'g_peer_bk', userId: 'u_bk', name: 'Peer-During-Outage', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' });
+    fake.peerWrite(JSON.stringify(db));
+    await new Promise((r) => setTimeout(r, 2200));
+    const during = await (await fetch(url('/api/games'), { headers: auth })).json();
+    const stillFailing = fake.uploadLog().at(-1)?.failed === true && !JSON.parse(fake.getStored()).games.some((g) => g.name === 'X-Pending');
+    fake.failUploads(false);
+    const both = await waitUntil(() => { const n = JSON.parse(fake.getStored()).games.map((g) => g.name); return n.includes('X-Pending') && n.includes('Peer-During-Outage'); }, 70000);
+    record('fixture: X\'s save was acked, its uploads were failing and it had not landed when the peer wrote and X listed',
+      save.status === 200 && failing && stillFailing, `save ${save.status} failing ${failing} stillPending ${stillFailing}`);
+    record('THE DEFECT: X lists the peer\'s game within one freshness window during the outage; after recovery both are on GCS',
+      during.some((g) => g.name === 'Peer-During-Outage') && both, `during ${JSON.stringify(during.map((g) => g.name))} both ${both}`);
     await stop(boot.child); await fake.close();
   }
 
