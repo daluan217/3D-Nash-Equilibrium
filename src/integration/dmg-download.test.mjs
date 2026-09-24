@@ -29,7 +29,7 @@
  *   node src/integration/dmg-download.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
 import path from 'node:path';
@@ -244,6 +244,67 @@ try {
     fakeGcs.mediaRequestCount() === mediaCountBeforeHead,
     `media requests before: ${mediaCountBeforeHead}, after: ${fakeGcs.mediaRequestCount()}`);
 
+  // ── The range shapes the suite did not reach (BLUE-LOOP-DESKTOP-22).
+  //
+  // The cases above cover `bytes=N-M`, past-the-end, the RFC 9110 §14.1.2
+  // clamp and HEAD. Three shapes real clients actually send were untested,
+  // and each has a distinct way of going wrong:
+  //   - `bytes=-N` (SUFFIX): curl's `-r -100` and most resumers' "give me the
+  //     tail" form. The route computes start = size - N itself, so an
+  //     arithmetic slip here serves the WRONG BYTES with a 206 — silent
+  //     corruption of a resumed download, not a visible error.
+  //   - INVERTED (`bytes=500-100`) and MALFORMED (`bytes=abc-def`,
+  //     multi-range): these must not 5xx and must not serve a nonsense slice.
+  //     A NaN reaching createReadStream is the shape that 500s a CDN.
+  // Measured against LIVE production first (_gen/b22-dmgrange.mjs, the only
+  // condition where the GCS branch runs at all): suffix -> 206 with
+  // `bytes 136677198-136677261/136677262`; inverted -> 416; malformed and
+  // multi-range -> 200 full-file, no 5xx. Frozen here against the fake GCS.
+  //
+  // MUTATION-PROVEN (recorded 2026-09-19): changing the suffix branch's
+  // `start = Math.max(0, size - suffixLen)` to `size - suffixLen` without the
+  // clamp, or to `suffixLen`, fails the suffix checks below by name.
+  const suffixRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: 'bytes=-8' },
+  });
+  const suffixBody = Buffer.from(await suffixRes.arrayBuffer());
+  record('a SUFFIX range (bytes=-8, curl -r -8) returns the LAST 8 bytes as a 206',
+    suffixRes.status === 206
+      && suffixRes.headers.get('content-range') === `bytes ${DMG_CONTENT.length - 8}-${DMG_CONTENT.length - 1}/${DMG_CONTENT.length}`
+      && suffixBody.equals(DMG_CONTENT.subarray(DMG_CONTENT.length - 8)),
+    `status ${suffixRes.status}, content-range ${suffixRes.headers.get('content-range')}, ${suffixBody.length} bytes`);
+
+  // A suffix LONGER than the file must clamp to the whole file, not produce a
+  // negative start (which would be a nonsense Content-Range, or a throw).
+  const bigSuffixRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: `bytes=-${DMG_CONTENT.length + 5000}` },
+  });
+  const bigSuffixBody = Buffer.from(await bigSuffixRes.arrayBuffer());
+  record('a suffix range LONGER than the file clamps to the whole file (no negative start)',
+    bigSuffixRes.status === 206
+      && bigSuffixRes.headers.get('content-range') === `bytes 0-${DMG_CONTENT.length - 1}/${DMG_CONTENT.length}`
+      && bigSuffixBody.equals(DMG_CONTENT),
+    `status ${bigSuffixRes.status}, content-range ${bigSuffixRes.headers.get('content-range')}, ${bigSuffixBody.length} bytes`);
+
+  // An INVERTED range (last-byte-pos < first-byte-pos) is unsatisfiable: it
+  // must be a 416, never a 206 carrying a backwards or empty slice, and never
+  // a 500 from a negative length reaching createReadStream. Live production
+  // answers 416 with `bytes */<size>`; the same is required here.
+  // (The malformed / multi-range / wrong-unit / both-sides-empty shapes are
+  // already covered by the ignored-range block further down in this file —
+  // not repeated here, both to keep this suite under the route's own
+  // 10-requests-per-60s rate limit and because a duplicated check that can
+  // only ever agree with its twin adds no information.)
+  const invertedRes = await fetch(`http://127.0.0.1:${port}/api/download/dmg`, {
+    headers: { range: 'bytes=500-100' },
+  });
+  const invertedBody = Buffer.from(await invertedRes.arrayBuffer());
+  record('an INVERTED range (bytes=500-100) is 416 with an empty body, not a 500 or a backwards slice',
+    invertedRes.status === 416
+      && invertedBody.length === 0
+      && invertedRes.headers.get('content-range') === `bytes */${DMG_CONTENT.length}`,
+    `status ${invertedRes.status}, content-range ${invertedRes.headers.get('content-range')}, ${invertedBody.length} bytes`);
+
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 
@@ -384,12 +445,179 @@ try {
     JSON.stringify(json3));
   await stop(srv); srv = null;
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 4. THE DESKTOP BRANCH of the same route (BLUE-LOOP-DESKTOP-22, sweep 21).
+  //
+  // Everything above is the Cloud Run path. A PACKAGED app never reaches it —
+  // the GCS block is gated on `!ELECTRON_USER_DATA_PATH && GCS_BUCKET`, so on
+  // desktop control falls through to the dist-electron branch, which was
+  // entirely unguarded:
+  //
+  //   const distElectronPath = path.join(process.cwd(), "dist-electron");
+  //   const dmgFile = files.find(f => f.toLowerCase().endsWith(".dmg"));
+  //   return res.download(path.join(distElectronPath, dmgFile), dmgFile);
+  //
+  // The filename comes OFF THE FILESYSTEM and is handed to res.download, which
+  // puts it in Content-Disposition. A name carrying CRLF is header injection;
+  // a name carrying a quote can break out of the quoted-string. Measured
+  // against the real bundle (_gen/b22-s21-dmg-cwd.mjs): Express sanitizes both
+  // (CRLF -> "??" plus an RFC 5987 filename*), and an encoded-traversal name
+  // does not even match the .dmg suffix. These are Express's guarantees, not
+  // ours, which is exactly why they need a guard: an express major bump, or
+  // anyone "simplifying" this to a hand-built setHeader, silently reopens it.
+  // ───────────────────────────────────────────────────────────────────────────
+  const desktopBoot = async (cwd) => {
+    const child = spawn('node', [BUNDLE], {
+      cwd,
+      env: {
+        PATH: process.env.PATH, HOME: cwd, NODE_ENV: 'production',
+        PORT: String(port), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: cwd,
+        // No GCS_BUCKET_NAME/STORAGE_EMULATOR_HOST: the packaged condition.
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let log = '';
+    child.stdout.on('data', (d) => { log += d; });
+    child.stderr.on('data', (d) => { log += d; });
+    for (let i = 0; i < 80; i++) {
+      if (child.exitCode !== null) throw new Error(`desktop server exited (${child.exitCode})\n${log}`);
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
+        if (r.ok && (await r.json())?.pid === child.pid) return child;
+      } catch { /* not up yet */ }
+      await new Promise((res) => setTimeout(res, 250));
+    }
+    child.kill('SIGKILL');
+    throw new Error(`desktop server never became ready\n${log}`);
+  };
+
+  // CONTROL FIRST: with no dist-electron in cwd the route 404s. Without this,
+  // every "no injected header" check below would also pass on a build where
+  // the desktop branch never serves anything at all.
+  {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-none-'));
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      const j = await r.json().catch(() => null);
+      record('DESKTOP CONTROL: with no dist-electron in cwd the route 404s',
+        r.status === 404 && typeof j?.message === 'string' && j.message.includes('electron:dist'),
+        `status ${r.status}, ${JSON.stringify(j)}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
+
+  // CONTROL 2: a plainly-named .dmg in cwd/dist-electron really is served, so
+  // the hostile-name cases below are measuring sanitization and not a branch
+  // that refuses everything.
+  {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-plain-'));
+    mkdirSync(path.join(cwd, 'dist-electron'));
+    writeFileSync(path.join(cwd, 'dist-electron', 'Plain.dmg'), 'PLAIN DMG BYTES');
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      const body = await r.text();
+      record('DESKTOP CONTROL: a plainly-named dist-electron/*.dmg is served with its name',
+        r.status === 200 && body === 'PLAIN DMG BYTES'
+          && (r.headers.get('content-disposition') || '').includes('filename="Plain.dmg"'),
+        `status ${r.status}, disposition ${r.headers.get('content-disposition')}, body ${JSON.stringify(body.slice(0, 40))}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
+
+  // THE HOSTILE NAMES. Each asserts the SPECIFIC sanitization measured, not
+  // merely "no crash": a check that only demanded a non-500 would pass on a
+  // build that injected the header.
+  const HOSTILE = [
+    {
+      name: 'a\r\nX-Injected: yes.dmg',
+      label: 'a CRLF in the filename does not inject a response header',
+      expect: (r, disp) => !r.headers.has('x-injected')
+        && !/[\r\n]/.test(disp)
+        && disp.includes('??')
+        && disp.includes("filename*=UTF-8''a%0D%0AX-Injected%3A%20yes.dmg"),
+    },
+    {
+      name: 'a"b.dmg',
+      label: 'a quote in the filename is escaped inside the quoted-string, not left to terminate it',
+      expect: (_r, disp) => disp.includes('filename="a\\"b.dmg"'),
+    },
+    {
+      name: 'ünïcodé.dmg',
+      label: 'a non-ASCII filename is still served and carries no raw control bytes',
+      expect: (r, disp) => r.status === 200 && !/[\r\n]/.test(disp) && disp.includes('filename'),
+    },
+  ];
+  for (const h of HOSTILE) {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-evil-'));
+    mkdirSync(path.join(cwd, 'dist-electron'));
+    let planted = true;
+    try { writeFileSync(path.join(cwd, 'dist-electron', h.name), 'x'); }
+    catch { planted = false; }
+    // A filename the FILESYSTEM refuses is not a pass — it means this check
+    // measured nothing, so say so rather than banking a silent skip.
+    record(`DESKTOP setup: the hostile name ${JSON.stringify(h.name)} could be planted on disk`,
+      planted, planted ? '' : 'filesystem refused the name — the case below measured nothing');
+    if (!planted) { rmSync(cwd, { recursive: true, force: true }); continue; }
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      await r.arrayBuffer();
+      const disp = r.headers.get('content-disposition') || '';
+      record(`DESKTOP: ${h.label}`, h.expect(r, disp),
+        `status ${r.status}, disposition ${JSON.stringify(disp)}, x-injected present: ${r.headers.has('x-injected')}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
+
+  // An encoded traversal in the NAME never even reaches res.download: the
+  // suffix match is on the literal filename, and "..%2F..%2Fetc%2Fpasswd.dmg"
+  // is one directory entry, not a path. It must 404 like any other cwd with
+  // no real .dmg — i.e. the route must not treat the name as a path at all.
+  // A SENTINEL one level above dist-electron makes this bite: "no traversal"
+  // asserted only as "the body is not /etc/passwd" would also hold on a build
+  // that served nothing at all. The sentinel is a file the route could only
+  // ever reach by resolving the name as a PATH, and the planted entry's own
+  // bytes are the control for "the branch ran".
+  {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'nash-dmg-desk-trav-'));
+    mkdirSync(path.join(cwd, 'dist-electron'));
+    // The sentinel's name must be EXACTLY what the encoded entry decodes to,
+    // or the case is unfalsifiable: the first version of this fixture planted
+    // "SENTINEL-OUTSIDE-DIST-ELECTRON" while the entry decoded to
+    // "../SENTINEL-OUTSIDE-DIST-ELECTRON.dmg", so a build that really did
+    // decode the name still found nothing there and the check passed anyway.
+    writeFileSync(path.join(cwd, 'SENTINEL-OUTSIDE-DIST-ELECTRON.dmg'), 'SENTINEL-LEAKED');
+    writeFileSync(path.join(cwd, 'dist-electron', '..%2FSENTINEL-OUTSIDE-DIST-ELECTRON.dmg'), 'PLANTED-ENTRY-BYTES');
+    try {
+      srv = await desktopBoot(cwd);
+      const r = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+      const body = await r.text();
+      record('DESKTOP: an encoded-traversal filename never resolves to a file outside dist-electron',
+        !body.includes('SENTINEL-LEAKED'),
+        `status ${r.status}, body ${JSON.stringify(body.slice(0, 80))}`);
+      // The name is ONE directory entry, not a path: whatever the route does
+      // with it, it is either that entry's own bytes or a refusal — never the
+      // neighbouring file the encoded "../" points at.
+      record('DESKTOP: the traversal-shaped entry is treated as a name, not a path',
+        r.status !== 200 || body === 'PLANTED-ENTRY-BYTES',
+        `status ${r.status}, body ${JSON.stringify(body.slice(0, 80))}`);
+    } finally { await stop(srv); srv = null; rmSync(cwd, { recursive: true, force: true }); }
+  }
+
 } finally {
   await stop(srv);
   if (fakeGcs) await stopFakeGcs(fakeGcs);
   rmSync(userData, { recursive: true, force: true });
 }
 
+// SR-47: the count is DECLARED, not counted — a silently skipped block
+// otherwise prints "N/N checks passed" and exits 0. Measured: filtering one
+// data array to empty in desktop-dead-token-owner removed six checks and the
+// run said "37/37 checks passed".
+const EXPECTED_CHECKS = 47;
+if (results.length < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
+  process.exit(1);
+}
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length > 0) {

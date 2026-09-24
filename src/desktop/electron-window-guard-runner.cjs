@@ -211,6 +211,13 @@ if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-s
       'smb://attacker.example/share',
       'vscode://file/etc/passwd',
       'not a url at all',
+      // An https URL whose HOST is not what it reads as. `openExternal` hands
+      // the string to the browser, and the browser's omnibox shows the real
+      // host — but the app that decided to open it saw "apple.com" first.
+      // Userinfo, and a scheme spelled so `new URL` normalises it to https.
+      'https://apple.com@attacker.example/signin',
+      'https://nash-equilibrium-simulator.com:pw@attacker.example/update',
+      'HtTpS://apple.com@attacker.example/signin',
     ];
     const probes = windowOpenProbes.map((url) => {
       const before = openedUrls.length;
@@ -243,6 +250,7 @@ if (mode === 'lockfail' || mode === 'data-conflict' || mode === 'data-conflict-s
       'file:///etc/passwd',
       'javascript:alert(document.domain)',
       'not a url at all',
+      'https://apple.com@attacker.example/signin',
     ].map(driveNav);
 
     // The frame door, driven in BOTH argument shapes Electron has used: 31.x passes

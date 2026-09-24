@@ -18,6 +18,7 @@
  *   npx tsx src/electronenv.contract.test.ts
  */
 import assert from 'node:assert';
+import ts from 'typescript';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -34,19 +35,67 @@ const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as {
   build?: { files?: string[]; extraResources?: unknown };
 };
 
-// Comments must not satisfy the contract: a rule that a code comment can pass
-// is not a rule. Strip them first, and prove the stripper works.
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+// Neither a comment NOR a string may satisfy the contract, and section 2 below
+// compares INDEXES, so whatever we blank has to keep every other character at
+// its original offset. The old `stripComments` failed both halves: it deleted
+// the text it removed (shifting every later index) and it could not see a
+// literal at all. MEASURED on the real file: with the assignment moved below
+// the require and `const ENV_DOC = 'process.env.NODE_ENV ...';` added near the
+// top, the suite passed 28/28 while the packaged app would boot Vite.
+// TWO views, both offset-preserving. `blankLiterals: false` keeps the quoted
+// VALUES that section 1's `= '1'` regexes must read; `true` also blanks them,
+// which is what the NAME and ORDER checks need. A value check cannot use the
+// strict view (nothing to match) and an order check cannot use the loose one
+// (a string is exactly how you forge one).
+function codeOnly(src: string, blankLiterals = true, kind = ts.ScriptKind.JS): string {
+  const sf = ts.createSourceFile('probe', src, ts.ScriptTarget.Latest, true, kind);
+  const out = src.split('');
+  const blank = (a: number, b: number) => {
+    for (let i = a; i < b; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  const LITERALS = new Set<number>([
+    ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+    ts.SyntaxKind.RegularExpressionLiteral, ts.SyntaxKind.TemplateHead,
+    ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail,
+  ]);
+  const walk = (n: ts.Node): void => {
+    if (blankLiterals && LITERALS.has(n.kind)) blank(n.getStart(sf), n.getEnd());
+    for (const r of ts.getLeadingCommentRanges(src, n.getFullStart()) ?? []) blank(r.pos, r.end);
+    for (const r of ts.getTrailingCommentRanges(src, n.getEnd()) ?? []) blank(r.pos, r.end);
+    n.forEachChild(walk);
+  };
+  walk(sf);
+  return out.join('');
 }
-ok(!stripComments('// process.env.NASH_PAYOFF_TEMPLATE = "1";').includes('NASH_PAYOFF_TEMPLATE'),
-  'the comment stripper must remove a line comment');
-ok(!stripComments('/* process.env.NASH_LLM_TIES = "template"; */').includes('NASH_LLM_TIES'),
-  'the comment stripper must remove a block comment');
-ok(stripComments("process.env.NASH_PAYOFF_TEMPLATE = '1';").includes('NASH_PAYOFF_TEMPLATE'),
-  'the comment stripper must keep real code');
+// SELF-TESTS. The last two are the shapes that defeated the old stripper; the
+// CONTROL fails a scanner that simply blanks everything.
+for (const [shape, src, needle] of [
+  ['a line comment', '// process.env.NASH_PAYOFF_TEMPLATE = "1";', 'NASH_PAYOFF_TEMPLATE'],
+  ['a block comment', '/* process.env.NASH_LLM_TIES = "template"; */', 'NASH_LLM_TIES'],
+  ['a single-quoted string', "const d = 'process.env.NODE_ENV is set';", 'NODE_ENV'],
+  ['a template literal', 'const d = `process.env.NODE_ENV ${x} set`;', 'NODE_ENV'],
+] as const) {
+  ok(!codeOnly(src).includes(needle), `${shape} must NOT satisfy the contract`);
+}
+ok(codeOnly("process.env.NASH_PAYOFF_TEMPLATE = '1';").includes('NASH_PAYOFF_TEMPLATE'),
+  'CONTROL: real code must survive, or every check above passes vacuously');
+// The loose view keeps VALUES but must still drop comments, or section 1's
+// `= '1'` regexes could be satisfied by a commented-out assignment.
+ok(codeOnly("process.env.NASH_LLM_TIES = 'template';", false).includes("'template'"),
+  'CONTROL: the loose view must keep the quoted value section 1 matches on');
+ok(!codeOnly("// process.env.NASH_LLM_TIES = 'template';", false).includes('NASH_LLM_TIES'),
+  'the loose view must still remove comments');
+// Offsets must be PRESERVED, or the `indexOf(...) < requireIdx` comparisons in
+// section 2 are comparing positions in a string the file never had.
+{
+  const src = "const d = 'xxxxxxxx'; process.env.NODE_ENV = 'production';";
+  ok(codeOnly(src).length === src.length
+    && codeOnly(src).indexOf('process.env.NODE_ENV') === src.indexOf('process.env.NODE_ENV'),
+    'CONTROL: blanking must not move any surviving character');
+}
 
-const code = stripComments(main);
+const code = codeOnly(main);          // names + ORDER: literals blanked too
+const codeWithValues = codeOnly(main, false);  // VALUES: literals kept
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. THE RUNG-3 TRIO
@@ -62,7 +111,7 @@ const required: [string, string][] = [
 ];
 for (const [name, value] of required) {
   const re = new RegExp(`process\\.env\\.${name}\\s*=\\s*['"]${value}['"]`);
-  ok(re.test(code),
+  ok(re.test(codeWithValues),
     `electron-main.cjs must set ${name} = '${value}'. Without it the packaged app answers `
     + `source: 'deterministic' — no explanation and no scenario — while the website runs rung 3.`);
 }
@@ -72,7 +121,7 @@ for (const [name, value] of [
   ['NODE_ENV', 'production'],
   ['IS_ELECTRON', 'true'],
 ] as [string, string][]) {
-  ok(new RegExp(`process\\.env\\.${name}\\s*=\\s*['"]${value}['"]`).test(code),
+  ok(new RegExp(`process\\.env\\.${name}\\s*=\\s*['"]${value}['"]`).test(codeWithValues),
     `electron-main.cjs must set ${name} = '${value}'`);
 }
 ok(/process\.env\.ELECTRON_USER_DATA_PATH\s*=/.test(code),
@@ -92,11 +141,77 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
 // and become a load-bearing accident.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const requireIdx = code.search(/require\(['"][^'"]*server\.cjs['"]\)/);
+  // From the AST, not from `code`: blanking literals erases the require's own
+  // path argument, and a text search over the RAW file matches the prose
+  // mention of `require('./dist/server.cjs')` 56 lines above the real call —
+  // which is what made the SR-56 check compare against the wrong offset.
+  // Offsets are preserved by codeOnly, so an AST position is comparable to an
+  // index into `code`. Lowest call wins: a later one cannot launder an early
+  // require.
+  //   REACHABILITY IS CHECKED, not assumed (gate review #6, finding 3 —
+  // reproduced). This comment used to claim "EXECUTED calls only"; it did not
+  // check that, and wrapping the real call in a never-invoked function left
+  // this file 35/35 GREEN while the packaged app would never boot its server.
+  // `enclosingFunctions` counts the function-like ancestors of the call, and
+  // the require must sit at statement level (inside the top-level `else`
+  // block, which is not a function) so "before the require" describes
+  // module-load order rather than the text order of a dead branch.
+  const sf = ts.createSourceFile('m.js', main, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const requirePositions: number[] = [];
+  const nested: string[] = [];
+  const findRequires = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && n.expression.getText(sf) === 'require'
+      && n.arguments.length === 1 && ts.isStringLiteralLike(n.arguments[0])
+      && /server\.cjs$/.test(n.arguments[0].text)) {
+      requirePositions.push(n.getStart(sf));
+      for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+        if (ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p)
+          || ts.isArrowFunction(p) || ts.isMethodDeclaration(p)) {
+          nested.push(`${ts.isFunctionDeclaration(p) && p.name ? p.name.text : '<anonymous>'}`
+            + ` at line ${main.slice(0, p.getStart(sf)).split('\n').length}`);
+          break;
+        }
+      }
+    }
+    n.forEachChild(findRequires);
+  };
+  findRequires(sf);
+  ok(requirePositions.length === 1,
+    `electron-main.cjs must require the compiled server exactly once; found `
+    + `${requirePositions.length}. With more than one, "before the require" is ambiguous `
+    + 'and this section must be rewritten rather than silently picking the first.');
+  ok(nested.length === 0,
+    `the require of dist/server.cjs must run at module load, not inside a function `
+    + `(found inside: ${nested.join(', ')}). A require that is only REACHED when something `
+    + 'calls it makes every "set before the require" check below meaningless — measured: '
+    + 'wrapping it in a never-invoked function left this file 35/35 green while the packaged '
+    + 'app would never start its server.');
+  const requireIdx = requirePositions[0];
   ok(requireIdx > 0, 'electron-main.cjs must require the compiled server');
-  for (const [name] of required) {
+  // CONTROL: the anchor must be the CALL, not the prose that mentions it. The
+  // raw-text search lands 56 lines earlier, so these two disagree today; if
+  // they ever agree, this control is dead and must be re-derived.
+  ok(main.search(/require\(['"][^'"]*server\.cjs['"]\)/) < requireIdx,
+    'CONTROL: a raw-text search finds the COMMENT first — proof the AST anchor is doing work');
+  // SR-56. This loop covered `required` — the three rung-3 flags — and left out
+  // the variable with the largest blast radius. server.ts gates its DEV branch
+  // on `process.env.NODE_ENV !== "production"`, and that branch calls
+  // createViteServer(). The flags are read per request, so setting one late is
+  // a latent bug; NODE_ENV is read while the module graph loads, so setting it
+  // late is live. MEASURED: moving the NODE_ENV line below the require left
+  // this file 24/24 GREEN while the packaged app booted a Vite dev server in
+  // the user's app and SPAWNED esbuild — electron-behavior.test.mjs caught it
+  // with "the main process made a child_process.spawn call", this file did not.
+  // The dev toolchain really is in the shipped asar (vite, rollup, esbuild,
+  // tailwind, babel — 40 entries under node_modules for vite/esbuild alone,
+  // and the unpacked esbuild binary runs: `--version` -> 0.25.12), so the
+  // branch is not merely wrong, it WORKS.
+  for (const [name] of [...required, ['NODE_ENV'], ['IS_ELECTRON'],
+    ['ELECTRON_USER_DATA_PATH'], ['PORT']] as [string][]) {
     ok(code.indexOf(`process.env.${name}`) < requireIdx,
-      `${name} must be set BEFORE dist/server.cjs is required`);
+      `${name} must be set BEFORE dist/server.cjs is required. For NODE_ENV this is not a `
+      + 'style point: server.ts takes its `NODE_ENV !== "production"` dev branch and calls '
+      + 'createViteServer() in the packaged app, which ships the whole dev toolchain.');
   }
 }
 
@@ -149,7 +264,9 @@ ok(code.indexOf("process.env.IS_ELECTRON") < code.indexOf("process.env.NASH_PAYO
 // rather than as a positive assertion of its own.
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const serverSrc = stripComments(readFileSync(join(repo, 'server.ts'), 'utf8'));
+  // TS kind: server.ts's type annotations and generics would otherwise parse
+  // as expressions and shift what counts as a literal.
+  const serverSrc = codeOnly(readFileSync(join(repo, 'server.ts'), 'utf8'), true, ts.ScriptKind.TS);
   const flagNames = ['NASH_PAYOFF_TEMPLATE', 'NASH_LLM_TIES', 'NASH_DIRECTION_CHECKS', 'NASH_SCENARIO_REGEN'];
 
   for (const name of flagNames) {

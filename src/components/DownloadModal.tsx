@@ -276,15 +276,22 @@ export const DownloadModal: React.FC<DownloadModalProps> = ({ isOpen, onClose })
             <h5 className="font-bold text-amber-700 dark:text-amber-400 text-xs flex items-center gap-1.5">
               <AlertCircle className="w-4 h-4 shrink-0" /> macOS Security — One-Time Step After Download
             </h5>
+            {/* Every dialog string below is MEASURED against the shipping OS, never guessed:
+                a quarantined copy of the live DMG was launched on macOS 26 and screencaptured,
+                and each label checked against CoreServicesUIAgent's Quarantine.loctable /
+                SecurityPrivacyExtension's Localizable.loctable. macOS 15 replaced the old
+                "unidentified developer" sheet (headline + Cancel) with this one, whose only
+                buttons are Move to Trash and Done — so naming Cancel sent users to the
+                highlighted button, which deletes the download. Guard: downloadmodal.contract. */}
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              Because this app is not notarized through Apple, macOS will show an <strong className="text-slate-700 dark:text-slate-300">"unidentified developer"</strong> warning on first launch. Follow these steps to open it:
+              Because this app is not notarized through Apple, macOS blocks it on first launch. Follow these steps to open it:
             </p>
             <ol className="space-y-1.5 list-none">
               {[
                 <>Drag <strong className="text-slate-700 dark:text-slate-300">Nash Equilibrium Simulator</strong> from the DMG into your <strong className="text-slate-700 dark:text-slate-300">Applications</strong> folder.</>,
-                <>Double-click the app. When the warning appears, click <strong className="text-slate-700 dark:text-slate-300">Cancel</strong> (not Move to Trash).</>,
+                <>Double-click the app. macOS says it <em>"could not verify"</em> the app — click <strong className="text-slate-700 dark:text-slate-300">Done</strong> (on macOS 14 and earlier, <strong className="text-slate-700 dark:text-slate-300">Cancel</strong>). Do <strong className="text-slate-700 dark:text-slate-300">not</strong> click Move to Trash, the highlighted button — it deletes the download.</>,
                 <>Open <strong className="text-slate-700 dark:text-slate-300">System Settings → Privacy &amp; Security</strong>.</>,
-                <>Scroll down to find <em>"Nash Equilibrium Simulator was blocked"</em> and click <strong className="text-slate-700 dark:text-slate-300">Open Anyway</strong>.</>,
+                <>Scroll down to <strong className="text-slate-700 dark:text-slate-300">Security</strong>, find <em>"Nash Equilibrium Simulator" was blocked to protect your Mac</em>, and click <strong className="text-slate-700 dark:text-slate-300">Open Anyway</strong>.</>,
                 <>Double-click the app again and click <strong className="text-slate-700 dark:text-slate-300">Open</strong> to confirm. You only need to do this once.</>,
               ].map((step, i) => (
                 <li key={i} className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-400 leading-relaxed">

@@ -42,6 +42,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const PORT = process.env.SBF_TEST_PORT || '3150';
 const STUB_PORT = process.env.SBF_STUB_PORT || '3151';
@@ -128,11 +129,8 @@ let serverLog = '';
 server.stdout.on('data', (d) => { serverLog += d; });
 server.stderr.on('data', (d) => { serverLog += d; });
 async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${BASE}/api/health`); if (r.ok) return true; } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return false;
+  try { await waitForOwnServer(server, BASE); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 
 try {
@@ -248,14 +246,14 @@ try {
     // in fact failed to bind), which read as a false failure with nothing
     // about it obviously wrong. Fixed by using fully separate, hardcoded
     // ports instead of arithmetic on the other servers' port numbers.
-    const cleanPort = Number(STUB_PORT) + 1000;
+    const cleanPort = Number(process.env.SBF_CLEAN_STUB_PORT) || Number(STUB_PORT) + 1000;
     await new Promise((resolve) => cleanStub.listen(cleanPort, '127.0.0.1', resolve));
 
     // A second server instance pointed at the clean stub — the running one is
     // already committed to the drop-everything stub above for the lifetime of
     // this process (env vars are fixed at spawn), so a control needs its own.
     const controlUserData = mkdtempSync(path.join(tmpdir(), 'nash-sbf-control-'));
-    const controlPort = Number(PORT) + 1000;
+    const controlPort = Number(process.env.SBF_CONTROL_PORT) || Number(PORT) + 1000;
     const controlServer = spawn('node', [path.join(serverDir, 'dist/server.cjs')], {
       cwd: controlUserData,
       env: {
@@ -268,11 +266,8 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     try {
-      let ready = false;
-      for (let i = 0; i < 60; i++) {
-        try { const r = await fetch(`http://127.0.0.1:${controlPort}/api/health`); if (r.ok) { ready = true; break; } } catch { /* not up yet */ }
-        await new Promise((res) => setTimeout(res, 250));
-      }
+      const ready = await waitForOwnServer(controlServer, `http://127.0.0.1:${controlPort}`, { timeoutMs: 15000 })
+        .then(() => true, (err) => { console.error(err.message); return false; });
       record('control setup: second server (clean stub) became ready', ready);
       const r = await fetch(`http://127.0.0.1:${controlPort}/api/report`, {
         method: 'POST', headers: { 'content-type': 'application/json' },

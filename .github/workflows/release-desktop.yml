@@ -86,6 +86,20 @@ jobs:
           npm run build
           npx electron-builder --publish never
 
+      # BEFORE the upload, not after: this is the last point at which a leaked
+      # file is still ours. The account store reached app.asar once already,
+      # and this workflow used to package and upload with nothing in between.
+      - name: Audit the packaged app.asar before uploading
+        # AUDIT_REQUIRE_SHIPPED=1: audit the .dmg and .zip that are actually
+        # uploaded, not just dist-electron/mac-*/X.app. electron-builder
+        # produces them as separate artifacts, so the two can diverge — a DMG
+        # carrying a baked-in API key passed with the staging dir clean and the
+        # audit reporting 140/140. Without this flag, a build that produced no
+        # shipped artifact would audit the staging dir alone and pass.
+        env:
+          AUDIT_REQUIRE_SHIPPED: '1'
+        run: node src/desktop/audit-packaged-asar.cjs
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:

@@ -29,6 +29,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const PORT = process.env.STATIC_BUNDLE_PORT || '3198';
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -68,15 +69,8 @@ const child = spawn(process.execPath, [BUNDLE], {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitForServer(timeoutMs = 25000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const r = await fetch(`${BASE}/api/health`);
-      if (r.ok || r.status === 404) return true;
-    } catch { /* not up yet */ }
-    await sleep(250);
-  }
-  return false;
+  try { await waitForOwnServer(child, BASE, { timeoutMs }); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 
 try {

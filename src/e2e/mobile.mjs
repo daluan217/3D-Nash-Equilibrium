@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
 import { chromium, devices } from 'playwright';
 import { dismissTourForSetup } from './tour.mjs';
 
@@ -40,14 +41,9 @@ async function killServer() {
   if (!server.kill('SIGKILL')) return;
   await exited;
 }
-async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${BASE}/`); if (r.ok) return true; } catch { /* not up */ }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
-if (!(await waitReady())) {
+// Reuse an already-listening server ONLY under REUSE_SERVER=1 (local dev); by
+// default and in CI this suite spawns and measures its own build (S73-006).
+if (!(reuseServerAllowed() && await fetch(`${BASE}/`).then((r) => r.ok, () => false))) {
   const serverDir = path.resolve(import.meta.dirname, '../..');
   server = spawn('node', [path.join(serverDir, 'dist/server.cjs')], {
     cwd: userData,
@@ -56,7 +52,8 @@ if (!(await waitReady())) {
   });
   server.stdout.on('data', () => {});
   server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
-  if (!(await waitReady())) { console.error('FAIL server never became ready'); await killServer(); process.exit(2); }
+  try { await waitForOwnServer(server, BASE); }
+  catch (err) { console.error(`FAIL server never became ready: ${err.message}`); await killServer(); process.exit(2); }
 }
 
 const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });

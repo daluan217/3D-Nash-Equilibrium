@@ -30,9 +30,10 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 import { fileURLToPath } from 'node:url';
 
 const PORT = process.env.RSL_TEST_PORT || '3187';
@@ -105,14 +106,8 @@ server.stdout.on('data', (d) => { serverLog += d.toString(); });
 server.stderr.on('data', (d) => { serverLog += d.toString(); });
 
 async function waitForServer() {
-  for (let i = 0; i < 100; i++) {
-    try {
-      const r = await fetch(`${BASE}/`, { signal: AbortSignal.timeout(1000) });
-      if (r.ok || r.status === 404) return true;
-    } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return false;
+  try { await waitForOwnServer(server, BASE, { timeoutMs: 20000 }); return true; }
+  catch (err) { serverLog += `\n${err.message}`; return false; }
 }
 
 try {
@@ -200,6 +195,109 @@ try {
   rmSync(userData, { recursive: true, force: true });
 }
 
+// ── Review #15: the hosted rollback must not write back a stale snapshot ──
+// register (new email) holds its `db` across the SMTP send; when the send fails
+// it removes the user and saves. Routes now commit NEW snapshots, so saving the
+// held one undid whatever landed meanwhile. Here: a recovery code issued during
+// the slow failure must survive it, and so must a retry of the same address whose
+// fresh code DID go out (every code is pinned to one value, so a retry's code
+// always equals the first attempt's: review #16), and so must an account verified
+// from a mail that was delivered before the send failed. SMTP: every code is
+// captured; the FIRST message to a SLOW address is refused 3 s after DATA.
+{
+  const PORT2 = String(Number(PORT) + 2);
+  const SMTP2 = String(Number(SMTP_PORT) + 2);
+  const BASE2 = `http://127.0.0.1:${PORT2}`;
+  const SLOW = 'slowfail@example.invalid';
+  const RETRY = 'retry@example.invalid';
+  const LATE = 'deliveredthenfailed@example.invalid';
+  const slowOnce = new Set([SLOW, RETRY, LATE]);
+  const codes = {};
+  const smtp2 = createServer((sock) => {
+    let inData = false; let rcpt = ''; let body = '';
+    sock.write('220 rsl2.test ESMTP\r\n');
+    sock.on('data', (chunk) => {
+      for (const line of chunk.toString().split(/\r?\n/)) {
+        if (inData) {
+          if (line === '.') {
+            inData = false;
+            const code = (body.replace(/=\r?\n/g, '').match(/\b\d{6}\b/) || [])[0];
+            codes[rcpt] = code;
+            if (slowOnce.delete(rcpt)) setTimeout(() => sock.write('451 4.3.0 try later\r\n'), 3000);
+            else sock.write('250 2.0.0 Ok: queued\r\n');
+          } else body += line + '\n';
+          continue;
+        }
+        if (!line) continue;
+        const verb = line.split(' ')[0].toUpperCase();
+        if (verb === 'EHLO' || verb === 'HELO') sock.write('250-rsl2.test\r\n250 AUTH PLAIN LOGIN\r\n');
+        else if (verb === 'AUTH') sock.write('235 2.7.0 Authentication successful\r\n');
+        else if (verb === 'RCPT') { rcpt = (line.match(/<([^>]+)>/) || [])[1] || ''; sock.write('250 2.1.0 Ok\r\n'); }
+        else if (verb === 'MAIL') sock.write('250 2.1.0 Ok\r\n');
+        else if (verb === 'DATA') { inData = true; body = ''; sock.write('354 go ahead\r\n'); }
+        else if (verb === 'QUIT') { sock.write('221 Bye\r\n'); sock.end(); }
+        else sock.write('250 2.0.0 Ok\r\n');
+      }
+    });
+    sock.on('error', () => {});
+  });
+  await new Promise((r) => smtp2.listen(Number(SMTP2), '127.0.0.1', r));
+  const userData2 = mkdtempSync(path.join(tmpdir(), 'nash-rsl2-'));
+  const pinCodes = path.join(userData2, 'pin-codes.cjs'); // makeCode is the only randomInt caller
+  writeFileSync(pinCodes, "require('crypto').randomInt = () => 135790;\n");
+  const server2 = spawn('node', ['--require', pinCodes, path.join(serverDir, 'dist/server.cjs')], { cwd: userData2, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_ENV: 'production', PORT: PORT2, SMTP_HOST: '127.0.0.1', SMTP_PORT: SMTP2, SMTP_USER: 'u', SMTP_PASS: 'p',
+      SMTP_FROM: 'rsl2@example.invalid', ELECTRON_USER_DATA_PATH: undefined, IS_ELECTRON: undefined, GCS_BUCKET_NAME: undefined } });
+  const post = (url, body) => fetch(`${BASE2}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }), () => ({ status: 0, json: null }));
+  try {
+    await waitForOwnServer(server2, BASE2, { timeoutMs: 20000 });
+    const V = 'victim@example.invalid';
+    const reg = await post('/api/auth/register', { username: 'victim', email: V, password: 'TestPass123' });
+    const ver = await post('/api/auth/verify', { email: V, code: codes[V] });
+    record('rollback setup: a verified hosted account exists (code read from the mail)', reg.status === 200 && ver.status === 200,
+      `register=${reg.status} verify=${ver.status} code=${codes[V] ? 'captured' : 'none'}`);
+    delete codes[V];
+    const slowReg = post('/api/auth/register', { username: 'slowfail', email: SLOW, password: 'TestPass123' });
+    await new Promise((r) => setTimeout(r, 800));
+    const forgot = await post('/api/auth/forgot-password', { email: V });
+    const rolled = await slowReg;
+    record('rollback setup: the recovery code was issued WHILE the other registration waited, which then failed',
+      forgot.status === 200 && !!codes[V] && rolled.status === 500, `forgot=${forgot.status} code=${codes[V] ? 'captured' : 'none'} slowRegister=${rolled.status}`);
+    const reset = await post('/api/auth/reset-password', { email: V, code: codes[V], newPassword: 'NewPass456' });
+    record("the failed registration's rollback did not erase a recovery code issued meanwhile: the reset works",
+      reset.status === 200, `reset=${reset.status} ${JSON.stringify(reset.json).slice(0, 120)}`);
+
+    const first = post('/api/auth/register', { username: 'retry', email: RETRY, password: 'TestPass123' });
+    await new Promise((r) => setTimeout(r, 800));
+    const retry = await post('/api/auth/register', { username: 'retry', email: RETRY, password: 'TestPass123' });
+    const firstDone = await first;
+    const retryVer = await post('/api/auth/verify', { email: RETRY, code: codes[RETRY] });
+    record("a retry whose code went out survives the first attempt's rollback: that code verifies",
+      retry.status === 200 && firstDone.status === 500 && !!codes[RETRY] && retryVer.status === 200,
+      `retry=${retry.status} first=${firstDone.status} verify=${retryVer.status} ${JSON.stringify(retryVer.json).slice(0, 100)}`);
+
+    const late = post('/api/auth/register', { username: 'late', email: LATE, password: 'TestPass123' });
+    await new Promise((r) => setTimeout(r, 800));
+    const lateVer = await post('/api/auth/verify', { email: LATE, code: codes[LATE] });
+    const lateDone = await late;
+    const lateLogin = await post('/api/auth/login', { email: LATE, password: 'TestPass123' });
+    record('an account verified from a mail delivered before the send failed is not rolled back: login works',
+      lateVer.status === 200 && lateDone.status === 500 && lateLogin.status === 200,
+      `verify=${lateVer.status} register=${lateDone.status} login=${lateLogin.status}`);
+  } catch (e) {
+    record('rollback phase completed without an exception', false, String(e?.stack || e).slice(0, 300));
+  } finally {
+    server2.kill('SIGKILL'); smtp2.close();
+    rmSync(userData2, { recursive: true, force: true });
+  }
+}
+
+const EXPECTED_CHECKS = 23;
+if (results.length !== EXPECTED_CHECKS) {
+  console.error(`FAILED: ${results.length} checks ran, expected exactly ${EXPECTED_CHECKS}`);
+  process.exit(1);
+}
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length) { console.error('FAILED:\n' + failed.map((f) => ` - ${f.name}: ${f.detail}`).join('\n')); process.exit(1); }

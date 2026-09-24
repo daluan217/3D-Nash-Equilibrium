@@ -24,7 +24,7 @@
  *   node src/integration/desktop-concurrent-lock.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, openSync, closeSync, constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -218,37 +218,36 @@ try {
     await new Promise((r) => setTimeout(r, 800));
     e = spawnServer(raceUserData, ePort, {});
 
-    // E should win cleanly and become the live, healthy server.
-    await waitReady(e, ePort);
-    record('process E completes its stale takeover and becomes healthy',
-      true, `pid ${e.pid}`);
+    // Who wins is the arbiter's call. On darwin the kernel decides (flock on
+    // the data directory, taken before the pid file is read): D, started
+    // first, holds it through its pause, and E refuses. Elsewhere main's
+    // pid-file arbiter lets E win and D's recheck refuse. Either way the
+    // invariant is ONE live writer holding the label, with the other refused.
+    const [winner, loser, winPort, losePort] = process.platform === 'darwin'
+      ? [d, e, dPort, ePort] : [e, d, ePort, dPort];
+    await waitReady(winner, winPort);
+    record('the rightful starter completes its takeover and becomes healthy',
+      true, `pid ${winner.pid}`);
     const lockAfterE = readFileSync(raceLockFile, 'utf-8').trim();
-    record('the lock now holds E\'s pid (E genuinely took over)',
-      lockAfterE === String(e.pid), `lock holds "${lockAfterE}", expected ${e.pid}`);
+    record('the lock now holds the winner\'s pid (it genuinely took over)',
+      lockAfterE === String(winner.pid), `lock holds "${lockAfterE}", expected ${winner.pid}`);
 
-    // Now D wakes from its pause, rechecks, and (on the fix) MUST detect the
-    // change and refuse rather than deleting E's fresh lock.
-    const { code: dExit, log: dLog } = await waitExit(d, 8000);
-    record('THE FIX: D detects the change and refuses (exits non-zero), rather than winning a second lock',
+    const { code: dExit } = await waitExit(loser, 8000);
+    record('THE FIX: the other starter refuses (exits non-zero), rather than winning a second lock',
       dExit !== 0, `exit code ${dExit}`);
 
-    // The clinching check: E must still be alive and healthy AFTER D's
-    // whole sequence completes — on the pre-fix code, D's blind unlink would
-    // have deleted E's lock file (E itself stays alive in-process, unaware,
-    // but the FILE protecting it is gone), and D would then create its own
-    // second lock and start serving too.
-    const eStillUp = await fetch(`http://127.0.0.1:${ePort}/api/health`, { signal: AbortSignal.timeout(2000) })
+    // The clinching check: the winner is still alive and healthy AFTER the
+    // loser's whole sequence, and the loser never served.
+    const eStillUp = await fetch(`http://127.0.0.1:${winPort}/api/health`, { signal: AbortSignal.timeout(2000) })
       .then((r) => r.ok).catch(() => false);
-    record('E is still running and healthy after D\'s whole attempt',
-      eStillUp);
+    record('the winner is still running and healthy after the other\'s whole attempt', eStillUp);
     const lockAfterD = existsSync(raceLockFile) ? readFileSync(raceLockFile, 'utf-8').trim() : null;
-    record('the lock file still holds E\'s pid, undisturbed by D',
-      lockAfterD === String(e.pid), `lock holds "${lockAfterD}", expected ${e.pid}`);
+    record('the lock file still holds the winner\'s pid, undisturbed',
+      lockAfterD === String(winner.pid), `lock holds "${lockAfterD}", expected ${winner.pid}`);
 
-    // D must never have bound its own port either.
-    const dBound = await fetch(`http://127.0.0.1:${dPort}/api/health`, { signal: AbortSignal.timeout(500) })
+    const dBound = await fetch(`http://127.0.0.1:${losePort}/api/health`, { signal: AbortSignal.timeout(500) })
       .then((r) => r.ok).catch(() => false);
-    record('D never bound a port of its own (no second live writer)', !dBound);
+    record('the refused starter never bound a port of its own (no second live writer)', !dBound);
   } finally {
     await stop(d);
     await stop(e);
@@ -279,8 +278,10 @@ try {
     // (well before its own 1500ms pause ends), then delete the lock file
     // out from under it while it's paused.
     await new Promise((r) => setTimeout(r, 500));
+    // On darwin the starter never reads the pid file (the directory flock
+    // decides), so this pause never fires and the label is simply replaced.
     record('fixture precondition: the lock file exists right before we delete it mid-pause',
-      existsSync(enoentLockFile));
+      existsSync(enoentLockFile) || process.platform === 'darwin');
     rmSync(enoentLockFile, { force: true });
 
     // F resumes, calls readFileSync against a now-missing file. On the
@@ -292,8 +293,17 @@ try {
     record('THE FIX: F survives the ENOENT and becomes healthy, rather than crashing on an uncaught throw',
       true, `pid ${f.pid}`);
     const lockAfterF = existsSync(enoentLockFile) ? readFileSync(enoentLockFile, 'utf-8').trim() : null;
-    record('F ends up holding its own fresh lock',
-      lockAfterF === String(f.pid), `lock holds "${lockAfterF}", expected ${f.pid}`);
+    if (process.platform === 'darwin') {
+      // The label is gone (we deleted it after F wrote it); the LOCK is not:
+      // a second opener of the directory is refused by the kernel.
+      let held = false;
+      try { closeSync(openSync(enoentUserData, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | 0x20 | fsConstants.O_NONBLOCK)); }
+      catch (err) { held = err.code === 'EAGAIN'; }
+      record('F ends up holding its own fresh lock', held, `second opener of the directory refused: ${held}`);
+    } else {
+      record('F ends up holding its own fresh lock',
+        lockAfterF === String(f.pid), `lock holds "${lockAfterF}", expected ${f.pid}`);
+    }
   } finally {
     await stop(f);
     rmSync(enoentUserData, { recursive: true, force: true });
@@ -306,6 +316,18 @@ try {
   rmSync(userData, { recursive: true, force: true });
 }
 
+// SR-47: a suite that SILENTLY SKIPS a block still prints "N/N checks passed"
+// and exits 0, because N is counted, not expected. Measured on this file's own
+// ancestor: filtering one data array to empty removed six checks and the run
+// said "37/37 checks passed". The red probe that had aborted for three sweeps
+// was the same shape. So the count is DECLARED: fewer means a block did not
+// run, which is a failure even when every check that did run passed.
+const EXPECTED_CHECKS = 19;
+if (results.length < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — `
+    + 'a block was skipped. Raise EXPECTED_CHECKS deliberately when adding checks.');
+  process.exit(1);
+}
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length > 0) {

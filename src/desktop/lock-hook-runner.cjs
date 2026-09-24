@@ -16,10 +16,10 @@
  * the same cached exports, and skip startServer()'s top-level side effects
  * entirely, on a second in-process require of the same path).
  *
- * Writes its OWN pid into the lock file before requiring the bundle, which
- * deterministically exercises the "alive" branch of acquireDesktopLock: a
- * process can always signal itself, so `process.kill(process.pid, 0)` always
- * succeeds. This is also exactly the shape of the false-positive class the
+ * Writes a live node CHILD's pid into the lock file before requiring the
+ * bundle, which deterministically exercises the "alive" branch of
+ * acquireDesktopLock and survives both stale proofs (the child started after
+ * nothing; it is a node, i.e. ours). This is also exactly the shape of the false-positive class the
  * finding is about — PID aliveness alone cannot tell "the same server" apart
  * from "any live process," which is why the packaged app needs a real dialog
  * and a way to clear a misidentified lock rather than a silent kill.
@@ -45,7 +45,12 @@ if (!bundlePath || !userDataDir) {
 
 fs.mkdirSync(userDataDir, { recursive: true });
 const lockFile = path.join(userDataDir, '.server.lock');
-fs.writeFileSync(lockFile, String(process.pid));
+// A live holder of the data directory, the way a running server holds it
+// (flock-holder.cjs: flock on darwin, a live pid elsewhere). The bundle is
+// required only once it is READY, so the refusal is deterministic.
+const holder = require('child_process').spawn(process.execPath,
+  [path.join(__dirname, 'flock-holder.cjs'), userDataDir], { stdio: ['ignore', 'pipe', 'inherit'] });
+process.on('exit', () => { try { holder.kill('SIGKILL'); } catch {} });
 
 process.env.NODE_ENV = 'production';
 process.env.IS_ELECTRON = 'true';
@@ -81,6 +86,7 @@ net.Server.prototype.listen = function patchedListen(...args) {
   return originalListen.apply(this, args);
 };
 
+holder.stdout.once('data', () => {
 require(path.resolve(bundlePath));
 
 // If acquireDesktopLock took the process.exit(1) path, execution never
@@ -95,3 +101,4 @@ setTimeout(() => {
   })}`);
   process.exit(0);
 }, 300);
+});

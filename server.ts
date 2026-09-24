@@ -811,17 +811,70 @@ function desktopAuthSecret(): string | null {
   if (!dir) return null;
   const file = path.join(dir, "auth-secret");
   try {
-    if (fs.existsSync(file)) {
+    assertDesktopDirStillLocked();
+    // A SYMLINK here is not a secret file, it is a redirect. `writeFileSync`
+    // follows it, so `auth-secret -> ~/.ssh/authorized_keys` (or any path the
+    // user can write) had this function OVERWRITE that file with a fresh
+    // 64-hex key, and the `chmodSync` that follows changed the TARGET's mode
+    // to 0600 — the `mode: 0o600` protects the bytes, never the location.
+    // Reproduced: a 644 file outside the data dir came back 600 and holding
+    // the session key. A directory in its place threw EISDIR out of the whole
+    // function, which silently downgraded sessions to a per-process secret.
+    // Same reasoning as the bundle's symlink rule: auditing the path cannot
+    // see what the link resolves to, so refuse anything that is not a plain
+    // file and replace it in place.
+    let st: import("fs").Stats | null = null;
+    try { st = fs.lstatSync(file); } catch { /* absent: the fresh path below */ }
+    if (st && !st.isFile()) {
+      console.warn(`The desktop session secret at ${file} is not a regular file `
+        + `(${st.isSymbolicLink() ? "symlink" : st.isDirectory() ? "directory" : "special"}); `
+        + "replacing it. A link here would redirect the key to another path.");
+      try {
+        if (st.isDirectory()) fs.rmSync(file, { recursive: true });
+        else fs.unlinkSync(file);
+      } catch (e) {
+        console.error("Could not remove it; sessions will not survive a restart:", e);
+        return null;
+      }
+    } else if (st) {
       const existing = fs.readFileSync(file, "utf-8").trim();
       // Only accept something that is actually a key. A truncated or empty file
       // must not silently become a one-character HMAC secret that still "works".
-      if (/^[0-9a-f]{64}$/.test(existing)) return existing;
+      if (/^[0-9a-f]{64}$/.test(existing)) {
+        // Repair the mode on the way out. This is the NORMAL path — every
+        // launch after the first — and it used to return before reaching the
+        // chmod below, so a key left world-readable by an older build (or by
+        // a umask, a restore-from-backup, or another process) stayed that way
+        // for the life of the install. Best-effort: a key we can read but not
+        // chmod is still better than refusing to boot.
+        try { fs.chmodSync(file, 0o600); } catch { /* keep the working key */ }
+        return existing;
+      }
     }
     const fresh = crypto.randomBytes(32).toString("hex");
     fs.mkdirSync(dir, { recursive: true });
     // 0600: the database beside it is only as private as the user's home
     // directory, but a session key should not be world-readable.
-    fs.writeFileSync(file, fresh, { encoding: "utf-8", mode: 0o600 });
+    // `mode` is honoured only when writeFileSync CREATES the file, so an
+    // auth-secret already on disk keeps its old permissions — and this branch
+    // runs precisely when one was found and rejected. chmod unconditionally.
+    // "wx" = O_CREAT|O_EXCL: it refuses to follow a symlink, so a link
+    // re-created between the lstat above and this write cannot be written
+    // through. O_EXCL also fails when a REGULAR file is present, which is the
+    // ordinary rejected-content path (a truncated or garbage auth-secret that
+    // must be replaced) — the first spelling returned null there and left the
+    // bad file in place, breaking five existing guards. Caught by running them:
+    // this is precisely the regression the fix could cause. So unlink first,
+    // and keep O_EXCL for the race.
+    try { fs.unlinkSync(file); } catch { /* already gone: the normal fresh path */ }
+    try {
+      fs.writeFileSync(file, fresh, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      console.error(`Something re-created ${file} while replacing it; not writing through it.`);
+      return null;
+    }
+    fs.chmodSync(file, 0o600);
     return fresh;
   } catch (err) {
     console.error("Could not persist the desktop session secret; sessions will not survive a restart:", err);
@@ -829,11 +882,37 @@ function desktopAuthSecret(): string | null {
   }
 }
 
-const AUTH_SECRET = process.env.AUTH_SECRET
-  || process.env.SESSION_SECRET
-  || process.env.ADMIN_SECRET
-  || desktopAuthSecret()
-  || crypto.randomBytes(32).toString("hex");
+/**
+ * LAZY, because `desktopAuthSecret()` WRITES to the user-data directory and a
+ * module-level const ran it at IMPORT time — before `startServer()` could call
+ * `acquireDesktopLock()`. So a second instance, the one the lock exists to
+ * refuse, had already rewritten the live owner's key before being turned away.
+ *
+ * MEASURED: two instances launched together on a FRESH data directory, 6
+ * trials. 1/6, the surviving server's tokens did not verify against the
+ * auth-secret left on disk — the loser wrote its own key over the winner's
+ * after the winner had read it. Every session the winner then issues is dead
+ * at the next launch: exactly the "my saved games are gone" defect persisting
+ * the secret was added to fix, reintroduced by a startup race. Forced the same
+ * state deterministically by corrupting the key file and launching a second
+ * instance: refused with exit 1, and the owner's key changed underneath it.
+ *
+ * `authSecret()` is called only from sign/verify, both of which run after
+ * `startServer()` has taken the lock; `primeAuthSecret()` pins it there so the
+ * first HTTP request does not pay for the read.
+ */
+let authSecretCache: string | null = null;
+function authSecret(): string {
+  if (authSecretCache === null) {
+    authSecretCache = process.env.AUTH_SECRET
+      || process.env.SESSION_SECRET
+      || process.env.ADMIN_SECRET
+      || desktopAuthSecret()
+      || crypto.randomBytes(32).toString("hex");
+  }
+  return authSecretCache;
+}
+function primeAuthSecret(): void { authSecret(); }
 
 if (process.env.NODE_ENV === "production" && !process.env.AUTH_SECRET && !process.env.SESSION_SECRET && !process.env.ADMIN_SECRET
     && !process.env.ELECTRON_USER_DATA_PATH) {
@@ -862,11 +941,26 @@ const DB_FILE = process.env.ELECTRON_USER_DATA_PATH
  * whole old file or the whole new one, never a partial. The fsync is what makes
  * that hold after a power loss rather than only after a process crash.
  */
+/**
+ * Review #13 F2: a temp name is predictable, so a planted symlink there made "w"
+ * write through it. O_EXCL ("wx") never follows a link; a squatted name is
+ * unlinked (unlink never follows either) and opened exclusively once more.
+ */
+function openTempExclusive(tmp: string): number {
+  try { return fs.openSync(tmp, "wx", 0o600); } catch (err: any) {
+    if (err?.code !== "EEXIST") throw err;
+    fs.unlinkSync(tmp);
+    return fs.openSync(tmp, "wx", 0o600);
+  }
+}
+
 function writeFileAtomicSync(file: string, data: string): void {
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   let fd: number | null = null;
   try {
-    fd = fs.openSync(tmp, "w", 0o600);
+    // Before the temp exists. A swap after this fails the rename (ENOENT): the temp is in the old folder.
+    assertDesktopDirStillLocked();
+    fd = openTempExclusive(tmp);
     fs.writeFileSync(fd, data, "utf-8");
     fs.fsyncSync(fd);
     fs.closeSync(fd);
@@ -926,6 +1020,7 @@ function writeFileAtomicSync(file: string, data: string): void {
  * young enough to be left alone out of caution.
  */
 function sweepStaleAtomicTmpFiles(file: string, maxAgeMs = 5000): void {
+  if (!ensureDesktopDirOurs()) return;
   const dir = path.dirname(file);
   const prefix = `${path.basename(file)}.tmp-`;
   let entries: string[];
@@ -1013,6 +1108,28 @@ function normalizeDbShape(parsed: unknown, filePath: string): DB {
     }
     if (!Array.isArray(value)) {
       throw new Error(`${filePath}: "${name}" is present but is a ${typeof value}, not an array — refusing to guess its contents.`);
+    }
+    // The CONTAINER was validated here; its ELEMENTS were not, so the class
+    // RED-DESKTOP-6/001 closed survived one level down. `[null]` is an array,
+    // so it passed whole, and the very next reader dereferences it: users
+    // through `ensureLocalOwner`'s `db.users.find(u => u.id === ...)` and games
+    // through `migrateOwnerlessGames`'s `g.userId`. MEASURED against the real
+    // bundle, packaged condition: `users:[null]` 500'd every saved-game request
+    // for the life of the process, and `games:[null]` threw in the STARTUP path
+    // (before `serverListening`), so `handleFatalAsync` exited — which, since
+    // electron-main requires this file IN-PROCESS, takes the whole app down
+    // with no window and no dialog. That is #88/#93's silent-vanish class,
+    // reached through a third door. A non-object element is not a recognised
+    // old shape and nothing can guess its intent, so it gets this function's
+    // existing policy for that case exactly: throw, and let the caller preserve
+    // the bytes aside and refuse to boot rather than serve a DB it misread.
+    const bad = value.findIndex((el) => el === null || typeof el !== "object" || Array.isArray(el));
+    if (bad !== -1) {
+      const el = value[bad];
+      throw new Error(
+        `${filePath}: "${name}[${bad}]" is ${el === null ? "null" : Array.isArray(el) ? "an array" : `a ${typeof el}`}, `
+        + `not an object — refusing to guess its contents.`
+      );
     }
     return value;
   };
@@ -1196,6 +1313,7 @@ function loadDBFromFile(): DB | null {
     const aside = `${DB_FILE}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let preserved = false;
     try {
+      assertDesktopDirStillLocked();
       fs.renameSync(DB_FILE, aside);
       preserved = true;
     } catch (renameErr) {
@@ -1241,6 +1359,7 @@ function loadDBFromFile(): DB | null {
     // and the next save lands on a clean path.
     const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     try {
+      assertDesktopDirStillLocked();
       fs.renameSync(DB_FILE, aside);
       console.error(`Error reading db.json, resetting database. The unreadable file has been kept at ${aside}:`, err);
     } catch (renameErr) {
@@ -1261,6 +1380,7 @@ function loadDBFromFile(): DB | null {
     const aside = `${DB_FILE}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let preserved = false;
     try {
+      assertDesktopDirStillLocked();
       fs.renameSync(DB_FILE, aside);
       preserved = true;
     } catch (renameErr) {
@@ -1386,7 +1506,7 @@ let gcsBaselineDb: DB | null = null;
 function reportDesktopLockFailure(
   message: string,
   lockFile: string,
-  kind: "lock" | "data-conflict" = "lock",
+  kind: "lock" | "flock" | "data-conflict" = "lock",
   candidateCount?: number,
 ): boolean {
   console.error(message);
@@ -1414,6 +1534,116 @@ function reportDesktopLockFailure(
     return false;
   }
   process.exit(1);
+}
+
+// S75-009 + review #12: on macOS the KERNEL arbitrates. A pid file cannot: a
+// pid is reused after a reboot (672 became Passwords.app), and unlinking a
+// "stale" lock races a second recoverer into two writers. flock on the data
+// directory is released by the kernel when its holder dies, however it dies.
+// The pid file is only a label for the dialog. Mac is the only shipping target.
+const O_EXLOCK = 0x20; // <sys/fcntl.h>; node exports no constant for it
+let desktopFlockFd: number | null = null; // held for the process lifetime
+let desktopFlockPath = "";
+
+/**
+ * Review #13 F1: the flock holds an INODE, but every write here goes by PATH. If
+ * the folder is moved or replaced while we run, a second server can lock the new
+ * one and both would write one db.json. So each path write first checks the path
+ * still names the folder we lock. If not, we take the folder now at the path only
+ * when nobody else can own it: we can lock it and it holds no db.json (the user
+ * deleted or emptied it). Otherwise every write refuses (500), logged once.
+ * macOS cannot write through a held directory fd (/dev/fd/N/x is ENOENT, measured),
+ * so the few microseconds between this check and the open are the floor.
+ */
+let desktopDirLostLogged = false;
+function desktopDirIsOurs(): boolean {
+  if (desktopFlockFd === null) return true;
+  try {
+    const held = fs.fstatSync(desktopFlockFd), now = fs.statSync(desktopFlockPath);
+    return held.dev === now.dev && held.ino === now.ino;
+  } catch { return false; /* the path is gone */ }
+}
+function ensureDesktopDirOurs(): boolean {
+  if (desktopDirIsOurs()) return true;
+  let fd: number | null = null;
+  try {
+    fs.mkdirSync(desktopFlockPath, { recursive: true });
+    fd = fs.openSync(desktopFlockPath,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | O_EXLOCK | fs.constants.O_NONBLOCK);
+    if (fs.existsSync(path.join(desktopFlockPath, "db.json"))) throw new Error("it holds a db.json this process did not write");
+  } catch (err: any) {
+    if (fd !== null) fs.closeSync(fd);
+    if (!desktopDirLostLogged) {
+      desktopDirLostLogged = true;
+      console.error(`Not saving: the data folder ${desktopFlockPath} was moved or replaced while the app was running, and the `
+        + `folder now at that path is not this process's to write (${err?.code === "EAGAIN" ? "another copy of the app holds it"
+        : err?.code || err?.message}). Quit and reopen the app.`);
+    }
+    return false;
+  }
+  fs.closeSync(desktopFlockFd as number);
+  desktopFlockFd = fd;
+  desktopDirLostLogged = false;
+  console.error(`The data folder ${desktopFlockPath} was recreated while the app was running; it is locked again and saves go there.`);
+  writeDesktopLockLabel(path.join(desktopFlockPath, ".server.lock"));
+  return true;
+}
+function assertDesktopDirStillLocked(): void {
+  if (!ensureDesktopDirOurs()) throw new Error(`Refusing to write: the data folder ${desktopFlockPath} is not this process's any more.`);
+}
+/** The pid file is only a label for the dialog. Temp + rename: never empty, and a link at either name is replaced. */
+function writeDesktopLockLabel(lockFile: string): void {
+  const tmp = `${lockFile}.${process.pid}.tmp`;
+  try {
+    assertDesktopDirStillLocked();
+    const fd = openTempExclusive(tmp);
+    try { fs.writeFileSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, lockFile);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* never written */ }
+    console.error("Could not write the desktop lock's pid label (the directory lock still holds):", err);
+  }
+}
+
+function acquireDesktopFlock(userDataPath: string, lockFile: string): boolean {
+  try {
+    desktopFlockFd = fs.openSync(userDataPath,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | O_EXLOCK | fs.constants.O_NONBLOCK);
+    desktopFlockPath = userDataPath;
+  } catch (err: any) {
+    if (err && err.code === "EAGAIN") {
+      // The holder may be between its flock and its pid write: no pid is fine.
+      let pid = "";
+      try { pid = fs.readFileSync(lockFile, "utf-8").trim(); } catch { /* unreadable: say nothing */ }
+      const who = /^\d{1,10}$/.test(pid) ? ` (pid ${pid})` : "";
+      return reportDesktopLockFailure(
+        `Refusing to start: another Nash Equilibrium Simulator server${who} is already using this data `
+        + `directory (${userDataPath}). Starting a second one would silently overwrite its saved games. `
+        + `Quit the other instance first, then try again.`,
+        lockFile, "flock",
+      );
+    }
+    // Any other error: we cannot know whether another process holds it. Fail closed.
+    return reportDesktopLockFailure(
+      `Refusing to start: the desktop data directory at ${userDataPath} cannot be locked `
+      + `(${err && err.code ? err.code : "unknown error"}), so it could not determine whether another `
+      + `Nash Equilibrium Simulator process is using it. Starting anyway could silently overwrite its `
+      + `saved games. Check that the folder exists, is a folder and is accessible, then try again.`,
+      userDataPath, "flock",
+    );
+  }
+  // We hold the directory: the pid file is ours whatever it says.
+  writeDesktopLockLabel(lockFile);
+  const release = () => {
+    try {
+      if (!desktopDirIsOurs()) return; // never touch a label in a folder we no longer hold
+      if (fs.readFileSync(lockFile, "utf-8").trim() === String(process.pid)) fs.unlinkSync(lockFile);
+    } catch { /* best effort: a leftover label is harmless under the flock */ }
+  };
+  process.on("exit", release);
+  process.on("SIGINT", () => { release(); process.exit(0); });
+  process.on("SIGTERM", () => { release(); process.exit(0); });
+  return true;
 }
 
 function acquireDesktopLock(): boolean {
@@ -1447,6 +1677,7 @@ function acquireDesktopLock(): boolean {
     );
   }
   const lockFile = path.join(userDataPath, ".server.lock");
+  if (process.platform === "darwin") return acquireDesktopFlock(userDataPath, lockFile);
 
   // ATOMIC on purpose. An earlier version checked `fs.existsSync(lockFile)`
   // and then `fs.writeFileSync`'d it as two separate steps — a real
@@ -1695,6 +1926,48 @@ function acquireDesktopLock(): boolean {
   return true;
 }
 
+// @google-cloud/storage's `{ timeout }` is sent as a query parameter, not a
+// client deadline (hung-listener reproduction: one request still pending at
+// 150s). Every awaited GCS call goes through this race, or a dead GCS blocks
+// startup / pins the save pump forever. The error text distinguishes deadline
+// breaches from backend errors; unref prevents this timer keeping Node alive.
+//
+// ponytail: this frees the CALLER, not the socket. A breach cannot cancel the
+// underlying request — per-call `signal`, `signal` via StorageOptions, a
+// custom http.Agent, a socket timeout on the global agent, and
+// `fetchImplementation` were each measured against an accept-and-never-answer
+// peer and the auth layer's transport ignores all five, so the connection is
+// held until the peer or the OS drops it (measured: still open 75s later).
+// For the REQUEST-DRIVEN sites (/api/version, initDB) this is pre-existing:
+// each request was already its own unbounded await, and the same probe leaks
+// identically against the pre-deadline tree (20 polls -> 20 sockets both
+// ways). For the SAVE PUMP it is a deliberate trade, not pre-existing: the
+// old behaviour leaked one socket and then pinned gcsUploadInFlight forever,
+// so there were no further attempts to leak; freeing the pump means each
+// later save retries and leaks again while an outage lasts. Losing sockets
+// during an outage beats never persisting a save again (gate review #11).
+// Capping in-flight calls here does NOT bound it — retries and auth open
+// sockets that never reach this function (measured: 40 sockets for 3
+// breaches + 37 refusals). The upgrade path is the SDK's own transport.
+const GCS_DEADLINE_MS = (() => {
+  const ms = Number(process.env.GCS_DEADLINE_MS || 15_000);
+  return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
+})();
+
+function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`GCS deadline exceeded after ${ms}ms: ${what} never answered`)),
+      ms,
+    );
+    timer.unref?.();
+    p.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
 // Returns `false` when `loadDBFromFile` refused to load an unrecoverable
 // db.json shape (RED-DESKTOP-6/001) — the failure has already been reported
@@ -1711,15 +1984,22 @@ async function initDB(): Promise<boolean> {
       const { Storage } = await import('@google-cloud/storage');
       const storage = new Storage();
       const file = storage.bucket(GCS_BUCKET).file('db.json');
-      const [exists] = await file.exists();
+      // Deadlines here are what keep a hung GCS from blocking `app.listen`
+      // forever (see `withDeadline`). A breach lands in the same `catch` as
+      // any other GCS failure, so the existing local-file fallback applies
+      // unchanged — the process boots and serves instead of hanging dark.
+      const [exists] = await withDeadline(file.exists(), 'db.json exists()');
       if (exists) {
         // Metadata FIRST, then a download BOUND to that generation:
         // `download()` ignores `preconditionOpts` in @google-cloud/storage 7,
         // so content and a separately fetched generation could straddle a
         // concurrent write, and the next conditional save would overwrite
         // that write without ever seeing a 412 (CodeRabbit, PR #85).
-        const [meta] = await file.getMetadata();
-        const [content] = await file.bucket.file('db.json', { generation: meta.generation }).download();
+        const [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
+        const [content] = await withDeadline(
+          file.bucket.file('db.json', { generation: meta.generation }).download(),
+          'db.json download()',
+        );
         inMemoryDb = JSON.parse(content.toString('utf-8'));
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         // A genuine deep copy, not a reference to `inMemoryDb`: the object
@@ -1870,13 +2150,20 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
   // future saves.
   if (gcsGeneration === null) {
     try {
-      const [exists] = await file.exists();
+      const [exists] = await withDeadline(file.exists(), 're-sync exists()');
       if (exists) {
-        const [meta] = await file.getMetadata(); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await file.bucket.file('db.json', { generation: meta.generation }).download();
+        const [meta] = await withDeadline(file.getMetadata(), 're-sync getMetadata()'); // metadata first, generation-bound download — see initDB
+        const [remoteContent] = await withDeadline(
+          file.bucket.file('db.json', { generation: meta.generation }).download(),
+          're-sync download()',
+        );
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        db = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
+        // Merge the CURRENT state, not `db`: `db` is the snapshot this upload
+        // started with, and routes commit new snapshots meanwhile. Merging `db`
+        // wrote it back over them (a game saved or a rollback committed during
+        // the upload was lost). Same at the 412 merge below.
+        db = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
       } else {
         gcsGeneration = '0'; // GCS's own "must not exist yet" convention, matching initDB
       }
@@ -1892,15 +2179,15 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
     preconditionOpts?: { ifGenerationMatch: string };
   } = {
     contentType: 'application/json', resumable: false, validation: false,
-    // The non-resumable path defaults to timeout 0 (wait forever); a hung
-    // request would pin `gcsUploadInFlight` and starve every later save.
+    // This existing request option becomes a query parameter, not a local
+    // deadline; `withDeadline` is what stops a hung upload pinning this pump.
     timeout: 30_000,
   };
   if (gcsGeneration !== null) {
     saveOpts.preconditionOpts = { ifGenerationMatch: gcsGeneration };
   }
   try {
-    await file.save(bodyStr, saveOpts);
+    await withDeadline(file.save(bodyStr, saveOpts), 'db.json save()');
     // Read the generation OFF THE UPLOAD RESPONSE ITSELF
     // (`@google-cloud/storage` populates `file.metadata` from it), not a
     // separate `getMetadata()` call — CodeRabbit caught the TOCTOU: between
@@ -1916,11 +2203,14 @@ async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
       // Someone else wrote first. Re-download, merge OUR pending changes
       // onto their state, and retry with the fresh generation.
       try {
-        const [meta] = await file.getMetadata(); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await file.bucket.file('db.json', { generation: meta.generation }).download();
+        const [meta] = await withDeadline(file.getMetadata(), '412-retry getMetadata()'); // metadata first, generation-bound download — see initDB
+        const [remoteContent] = await withDeadline(
+          file.bucket.file('db.json', { generation: meta.generation }).download(),
+          '412-retry download()',
+        );
         gcsGeneration = meta.generation != null ? String(meta.generation) : null;
         const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        const merged = applyMergedDb(unionMergeDb(remote, db, gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
+        const merged = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // CURRENT state, see the re-sync above
         await uploadDbToGcs(merged, attempt + 1);
       } catch (mergeErr) {
         console.error('GCS write conflict: re-download/merge failed:', mergeErr);
@@ -2003,6 +2293,12 @@ const CODE_FIELDS = {
 // space (the per-IP rate limit alone is bypassable via IP rotation). Mutates
 // `user`; the caller must persist with saveDB(). `locked` means this attempt
 // tripped the limit and the code is now cleared.
+// Review #14 family note: verify/reset/delete-confirm persist the attempt count with a
+// bare saveDB after a WRONG code and answer 400 (honest). If that save fails, the count
+// is ahead in memory only, so a relaunch forgets it. That needs a folder that already
+// refuses every save; accepted, not a defect. ensureLocalOwner (idempotent), the login
+// rehash (the old hash still verifies) and the hosted-only register/email paths
+// (GCS saveDB returns true) are the other bare calls, each left deliberately.
 function verifyOneTimeCode(user: User, kind: keyof typeof CODE_FIELDS, submitted: string): { ok: boolean; locked: boolean } {
   const f = CODE_FIELDS[kind];
   const u = user as unknown as Record<string, unknown>;
@@ -2075,14 +2371,14 @@ function createAuthToken(user: User): string {
     exp: Date.now() + AUTH_TOKEN_TTL_MS,
     nonce: b64url(crypto.randomBytes(12)),
   }));
-  const sig = b64url(crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  const sig = b64url(crypto.createHmac("sha256", authSecret()).update(payload).digest());
   return `${payload}.${sig}`;
 }
 
 function readAuthToken(token: string): { sub: string; ver: number } | null {
   const [payload, sig, extra] = token.split(".");
   if (!payload || !sig || extra) return null;
-  const expected = b64url(crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest());
+  const expected = b64url(crypto.createHmac("sha256", authSecret()).update(payload).digest());
   if (!safeEqual(sig, expected)) return null;
   try {
     const parsed = JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8"));
@@ -2432,11 +2728,32 @@ function cleanScenario(value: any, options: { actorNouns?: boolean } = {}): Scen
   return sc;
 }
 
+/**
+ * SR-64. `Number()` COERCES, so validating the coerced value accepted inputs
+ * that were never payoffs: null -> 0, [] -> 0, [1] -> 1, true -> 1, "" -> 0,
+ * " " -> 0 are all finite. MEASURED against the packaged bundle, POST
+ * /api/report with `a11: null` answered 200 and the prose asserted numbers
+ * the user never supplied — "against Request Earlier, A prefers Open Later
+ * (5 rather than 0)", where that 0 is the coerced null — while `a11: "NaN"`
+ * was correctly refused with 400. On the endpoint whose whole job is being
+ * trustworthy about the matrix, a confident wrong number is worse than a
+ * refusal.
+ *
+ * A payoff must therefore ARRIVE as a number, or as a string that spells one
+ * exactly. Numeric strings stay accepted because they are a legitimate JSON
+ * wire shape that round-trips to the number they spell; padded and
+ * whitespace-only strings are refused with everything else, so there is one
+ * rule ("the string IS the number") rather than a coercion to reason about.
+ */
 function cleanPayoffs(value: any): GamePayoffs | null {
   const keys: (keyof GamePayoffs)[] = ["a11", "a12", "a21", "a22", "b11", "b12", "b21", "b22"];
   const out = {} as GamePayoffs;
   for (const key of keys) {
-    const n = Number(value?.[key]);
+    const raw = value?.[key];
+    if (typeof raw !== "number" && typeof raw !== "string") return null;
+    if (typeof raw === "string" && raw !== raw.trim()) return null;
+    if (typeof raw === "string" && raw.trim() === "") return null;
+    const n = Number(raw);
     if (!Number.isFinite(n)) return null;
     out[key] = Math.max(-100, Math.min(100, Math.round(n * 1000) / 1000));
   }
@@ -2962,6 +3279,11 @@ async function startServer() {
   // standalone run's process.exit(1), or the packaged app's dialog hook) —
   // either way this function must stop here: no initDB, no listen.
   if (!acquireDesktopLock()) return;
+  // Only now may the session key be read or created: desktopAuthSecret()
+  // WRITES, and until the line above returned true this process might have
+  // been the second instance whose write would land in another process's
+  // data directory. See authSecret()'s comment for the measured race.
+  primeAuthSecret();
   // RED-DESKTOP-7/001: clean up any db.json.tmp-* scratch file an earlier,
   // interrupted writeFileAtomicSync could not remove itself. Safe exactly
   // here — the lock above already guarantees no other process can be
@@ -2991,6 +3313,54 @@ async function startServer() {
       : trustProxy);
   }
 
+  // SR-63 (DNS rebinding). On the desktop every route answers as `local-owner`
+  // with no credential, so the only thing standing between a web page and the
+  // user's library is that the page cannot reach 127.0.0.1 as a first-party
+  // origin. DNS rebinding defeats exactly that: attacker.example resolves to
+  // its own server, the page loads, then the name re-resolves to 127.0.0.1.
+  // The browser now believes attacker.example:<port> IS the origin, so it
+  // sends NO Origin header at all and CORS never runs.
+  // MEASURED against the real bundle: `Host: evil.example:<port>` with no
+  // Origin returned 200 and the whole saved-game library, and a POST with the
+  // same Host created a game owned by local-owner. With an Origin it was also
+  // echoed back in Access-Control-Allow-Origin, because the same-origin test
+  // below compares Origin against this very Host — the attacker controls both
+  // sides of that comparison.
+  // The fix is to stop trusting the request's own alias: the desktop binds
+  // loopback, so a request whose Host is not a loopback literal did not come
+  // from the app's own origin, whatever it claims.
+  // REGISTERED FIRST, ahead of every other middleware. It used to sit after the
+  // `www` -> apex 301 and the body parser, so a rebound page still got a real
+  // answer out of the app: measured, `Host: www.nash-equilibrium-simulator.com`
+  // returned "301 -> https://nash-equilibrium-simulator.com<path+query>", and
+  // express.json() parsed an attacker's body before anything rejected it. The
+  // 301 leaks nothing by itself, but "rejected before any route" has to be true
+  // of the whole stack or the next middleware added above it repeats this.
+  if (process.env.IS_ELECTRON === "true") {
+    app.use((req, res, next) => {
+      const host = typeof req.headers.host === "string" ? req.headers.host.toLowerCase() : "";
+      // RFC 7230 §5.4: an IPv6 literal MUST be bracketed, so the two forms are
+      // matched separately rather than by stripping a trailing ":<digits>"
+      // from anything. Stripping blindly also ate the tail of an UNBRACKETED
+      // IPv6 address: "::1:14321" (a real, non-loopback address) became "::1"
+      // and was accepted. Not reachable — a browser cannot be made to send an
+      // unbracketed IPv6 Host, and a local process needs no bypass — but an
+      // exact match costs the same as an approximate one.
+      // The bracketed branch requires a colon: brackets are IPv6-only, so
+      // "[127.0.0.1]" is malformed and must not be read as the loopback IPv4
+      // it resembles. No privilege rides on it (that host is allowed
+      // unbracketed anyway), but a guard should mean exactly what it says.
+      const m = /^\[([0-9a-f.]*:[0-9a-f:.]*)\](?::\d+)?$/.exec(host)  // [::1] or [::1]:port
+        ?? /^([a-z0-9.-]+)(?::\d+)?$/.exec(host);                     // 127.0.0.1 / localhost
+      const hostname = m ? m[1] : "";
+      if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1") {
+        next();
+        return;
+      }
+      res.status(403).json({ error: "Invalid Host header." });
+    });
+  }
+
   // `www` is not a canonical host (sitemap/robots/canonical all use the bare
   // apex): 301 it straight to the apex, same shape as the existing http->https
   // redirect at the edge. Case-insensitive host match; preserves path+query.
@@ -3005,6 +3375,13 @@ async function startServer() {
 
   // Parse JSON bodies
   app.use(express.json());
+  // Review #13 F1: several account routes mutate memory and ignore saveDB's
+  // result. While the data folder is not ours, no write claims success.
+  app.use(["/api/auth", "/api/games"], (req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD" || ensureDesktopDirOurs()) return next();
+    res.status(500).json({ error: "Could not save your changes: the app's data folder was moved or replaced while it "
+      + "was running. Quit and reopen the app, then try again." });
+  });
 
   // Baseline security headers. A full content CSP is intentionally omitted here
   // because the app loads Google Analytics + inline scripts and Plotly may use
@@ -3047,6 +3424,60 @@ async function startServer() {
         res.setHeader("Vary", "Origin");
         res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "x-admin-secret");
+      }
+    } else if (process.env.IS_ELECTRON === "true") {
+      // SR-57. `*` is harmless on the hosted site, where every private route
+      // needs a bearer token — /api/games there is 401 without one (verified
+      // against production). The DESKTOP is the opposite: it authenticates
+      // nothing, because `resolveGameOwner` hands any caller the `local-owner`
+      // identity, so /api/games answers 200 with the user's whole library and
+      // POST /api/games writes to it. The same `*` in front of that means any
+      // page the user visits while the app is running can read and modify
+      // their saved games with a plain cross-origin fetch to
+      // http://127.0.0.1:14321 — no token to steal, no prompt, nothing on
+      // screen. MEASURED: GET with `Origin: https://evil.example` returned
+      // `Access-Control-Allow-Origin: *` and 521 bytes of game data; POST
+      // created a game owned by local-owner.
+      //
+      // Loopback binding is not the boundary here. It stops another MACHINE,
+      // not another ORIGIN in the user's own browser — that is exactly what
+      // CORS is for, and `*` switches it off. The app's own renderer is a
+      // loopback origin, so it keeps working; the rule is the same one the
+      // admin branch above already uses.
+      // SR-59. "Loopback" is too wide, and it was measured to be: with
+      // `isLocalClientOrigin` alone, http://127.0.0.1:5173,
+      // http://localhost:8080 and https://localhost:443 were each echoed back,
+      // so a Vite dev server, a Jupyter notebook, or any other local app or
+      // page the user runs could read the whole saved-game library. The
+      // renderer does not need that latitude: it is loaded with
+      // `mainWindow.loadURL('http://127.0.0.1:<port>')` and `getApiUrl`
+      // returns a RELATIVE path in local mode, so its requests are
+      // same-origin and carry no Origin header at all (they fall through
+      // untouched — no ACAO is needed for a same-origin request).
+      //
+      // The bound port is not a constant (the EADDRINUSE walk moves it), so
+      // the app's own origin is derived from the REQUEST's Host rather than
+      // hardcoded: same-origin means origin.host === host. That stays correct
+      // whatever port the walk lands on, and cannot be spoofed into echoing a
+      // FOREIGN origin — a request from evil.example carries the app's Host
+      // and evil.example's Origin, which do not match.
+      // The Host guard above has already rejected anything that is not a
+      // loopback literal, so comparing against it is safe here. The SCHEME is
+      // compared too: the app's renderer is loaded over plain http, and
+      // `https://127.0.0.1:<port>` is a DIFFERENT origin that was being echoed
+      // because only `.host` was checked (reviewer finding, 2026-09-20).
+      const sameOriginAsApp = (() => {
+        if (!origin || !req.headers.host) return false;
+        try {
+          const u = new URL(origin);
+          return u.host === req.headers.host && u.protocol === "http:";
+        } catch { return false; }
+      })();
+      if (origin && (sameOriginAsApp || corsAllowlist.includes(origin))) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-secret");
       }
     } else {
       if (corsAllowlist.length === 0) {
@@ -3135,9 +3566,14 @@ async function startServer() {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
         const file = new Storage().bucket(GCS_BUCKET).file('app-version.json');
-        const [exists] = await file.exists();
+        // Deadlined: this is the route the INSTALLED desktop app polls to
+        // decide whether to prompt for an update. Without one, a GCS that
+        // accepts the socket and never answers hangs the request forever
+        // rather than failing it. A breach lands in the catch below, so the
+        // client sees the same 500 it already sees on any GCS failure.
+        const [exists] = await withDeadline(file.exists(), 'app-version.json exists()');
         if (exists) {
-          const [content] = await file.download();
+          const [content] = await withDeadline(file.download(), 'app-version.json download()');
           res.setHeader('Cache-Control', 'no-store');
           return res.type('application/json').send(content.toString('utf-8'));
         }
@@ -3746,7 +4182,12 @@ async function startServer() {
       if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
         const { Storage } = await import('@google-cloud/storage');
         const file = new Storage().bucket(GCS_BUCKET).file('Nash Equilibrium Simulator.dmg');
-        const [exists] = await file.exists();
+        // Deadlined for the same reason as every other awaited GCS call (see
+        // `withDeadline`): a backend that accepts the socket and never answers
+        // would otherwise hold this request open forever. The stream below is
+        // NOT deadlined — it is piped, not awaited, and already has its own
+        // 'error' handler; a long download is legitimate, a long await is not.
+        const [exists] = await withDeadline(file.exists(), 'dmg exists()');
         if (exists) {
           // getMetadata() before piping: without it the response carries no
           // Content-Length, so the browser shows an unknown-size download with
@@ -3757,7 +4198,7 @@ async function startServer() {
           // `curl -r 0-0` got a full 200 stream with no Content-Length, no
           // Accept-Ranges, no Content-Range — the range request was silently
           // ignored. `size` comes back as a STRING from the GCS JSON API.
-          const [metadata] = await file.getMetadata();
+          const [metadata] = await withDeadline(file.getMetadata(), 'dmg getMetadata()');
           const size = metadata.size !== undefined && metadata.size !== null
             ? parseInt(String(metadata.size), 10) : null;
 
@@ -3892,10 +4333,10 @@ async function startServer() {
 
       // If we are in Electron local mode, mark them verified instantly and save
       if (isElectron) {
-        existingUser.isVerified = true;
-        existingUser.username = usernameTrimmed;
-        existingUser.passwordHash = hashPassword(password);
-        saveDB(db);
+        const verified = { ...existingUser, isVerified: true, username: usernameTrimmed, passwordHash: hashPassword(password) };
+        if (!saveDB({ users: db.users.map((u) => (u === existingUser ? verified : u)), games: db.games })) {
+          return res.status(500).json({ error: "Could not create your account: nothing was saved. Please try again." });
+        }
         return res.json({
           success: true,
           message: "Local account created successfully! You are ready to log in.",
@@ -3944,8 +4385,9 @@ async function startServer() {
         verificationCode: "",
         verificationCodeExpires: 0
       };
-      db.users.push(newUser);
-      saveDB(db);
+      if (!saveDB({ users: [...db.users, newUser], games: db.games })) {
+        return res.status(500).json({ error: "Could not create your account: nothing was saved. Please try again." });
+      }
       return res.json({
         success: true,
         message: "Local account created successfully! You are ready to log in.",
@@ -3954,11 +4396,12 @@ async function startServer() {
     }
 
     const verificationCode = makeCode();
+    const passwordHash = hashPassword(password); // freshly salted: identifies THIS request's row (rollback below)
     const newUser: User = {
       id: makeId("u"),
       username: usernameTrimmed,
       email: emailTrimmed,
-      passwordHash: hashPassword(password),
+      passwordHash,
       isVerified: false,
       verificationCode,
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
@@ -3978,8 +4421,12 @@ async function startServer() {
     if (emailErrorMsg) {
       // Discard the unverified registration if SMTP is failing completely,
       // so we do not block subsequent attempts when SMTP config is updated.
-      db.users = db.users.filter(u => u.email.trim().toLowerCase() !== emailTrimmed);
-      saveDB(db);
+      // Review #15: re-read AFTER the await; writing the pre-send `db` back undid
+      // other routes' commits. Remove the row only while it is still ours: a retry
+      // re-hashes (new salt; a 6-digit code can repeat, review #16) and owns it, and
+      // a mail that was delivered before the error may already have verified it.
+      const now = loadDB();
+      saveDB({ users: now.users.filter((u) => !(u.id === newUser.id && u.passwordHash === passwordHash && !u.isVerified)), games: now.games });
       return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
     }
 
@@ -4027,9 +4474,10 @@ async function startServer() {
       });
     }
 
-    // Mark verified
-    user.isVerified = true;
-    saveDB(db);
+    // Mark verified — in memory only once it is on disk (STRUCT-DESKTOP-19's order).
+    if (!saveDB({ users: db.users.map((u) => (u === user ? { ...user, isVerified: true } : u)), games: db.games })) {
+      return res.status(500).json({ error: "Could not verify your account: nothing was saved. Please try again." });
+    }
 
     res.json({
       success: true,
@@ -4126,10 +4574,10 @@ async function startServer() {
     }
 
     const recoveryCode = makeCode();
-    user.recoveryCode = recoveryCode;
-    user.recoveryCodeExpires = Date.now() + 10 * 60 * 1000;
-    user.recoveryCodeAttempts = undefined; // fresh code → fresh attempt budget
-    saveDB(db);
+    const withCode = { ...user, recoveryCode, recoveryCodeExpires: Date.now() + 10 * 60 * 1000, recoveryCodeAttempts: undefined };
+    if (!saveDB({ users: db.users.map((u) => (u === user ? withCode : u)), games: db.games })) {
+      return res.status(500).json({ error: "Could not start the password reset: nothing was saved. Please try again." });
+    }
 
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
     let emailErrorMsg = null;
@@ -4229,11 +4677,10 @@ async function startServer() {
     }
 
     const deleteCode = makeCode();
-    user.deleteCode = deleteCode;
-    user.deleteCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-    user.deleteCodeAttempts = undefined; // fresh code → fresh attempt budget
-
-    saveDB(db);
+    const withCode = { ...user, deleteCode, deleteCodeExpires: Date.now() + 10 * 60 * 1000, deleteCodeAttempts: undefined };
+    if (!saveDB({ users: db.users.map((u) => (u.id === user.id ? withCode : u)), games: db.games })) {
+      return res.status(500).json({ error: "Could not start the account deletion: nothing was saved. Please try again." });
+    }
 
     let emailErrorMsg = null;
     try {
@@ -4660,8 +5107,20 @@ async function startServer() {
     res.status(404).json({ error: "Not found" });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  // Vite middleware for development.
+  //
+  // IS_ELECTRON is the second condition, and it is the load-bearing one. The
+  // dev branch was gated on NODE_ENV alone, which the PACKAGED app inherits
+  // from whatever environment launched it; electron-main.cjs overwrites it at
+  // line 183, so the only thing standing between a shipped desktop app and a
+  // live Vite dev server was the ordering of one assignment. MEASURED against
+  // the real dist/server.cjs under the packaged condition with
+  // NODE_ENV=development: it booted Vite and served a shell carrying
+  // @vite/client and @react-refresh. The whole dev toolchain is in the asar
+  // (vite, rollup, tailwind, babel) plus esbuild's 9.9MB native binary
+  // unpacked and executable, so the branch works rather than failing shut.
+  // A desktop build has no src/ tree to serve and never wants this.
+  if (process.env.NODE_ENV !== "production" && process.env.IS_ELECTRON !== "true") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

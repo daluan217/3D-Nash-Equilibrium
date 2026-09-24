@@ -34,6 +34,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const PORT = process.env.LSC_TEST_PORT || '3140';
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -128,11 +129,8 @@ let serverLog = '';
 server.stdout.on('data', (d) => { serverLog += d; });
 server.stderr.on('data', (d) => { serverLog += d; });
 async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${BASE}/api/health`); if (r.ok) return true; } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return false;
+  try { await waitForOwnServer(server, BASE); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 
 try {

@@ -39,7 +39,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,11 +68,22 @@ function loadFails(file: string): string | null {
   return r.status === 0 ? null : (r.stdout || r.stderr || '').trim() || 'unknown failure';
 }
 
+// Every scratch dir is remembered and removed at exit. Without this the suite
+// left one behind per call, forever: 316 `nash-cjs-*` directories were sitting
+// in this machine's temp dir when it was counted. Harmless per run, unbounded
+// across a few hundred.
+const scratchDirs: string[] = [];
 function scratch(name: string, source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'nash-cjs-'));
+  scratchDirs.push(dir);
   const p = join(dir, name);
   writeFileSync(p, source);
   return p;
+}
+function cleanupScratchDirs(): void {
+  for (const d of scratchDirs.splice(0)) {
+    try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
 }
 
 /** Mutate the real electron-main.cjs, keeping the fixture permanently in sync with the code. */
@@ -137,9 +148,88 @@ function testEveryRootCjsLoads() {
   assert(loadFails(MAIN_CJS) === null, 'the real electron-main.cjs does not load');
 }
 
+/**
+ * No root .cjs may build a shell command string out of an interpolated path.
+ *
+ * afterPack.cjs ran `execSync(\`xattr -cr "${appPath}"\`)`. Double quotes do NOT
+ * disable `$(...)` or backticks: MEASURED, a productName of
+ * `Bad$(touch /tmp/pwned)` executed the touch during the build. The value comes
+ * from our own package.json, so there was no live instance — but this is
+ * build-time code that signs the artifact users download, and the review mirror
+ * renames the product. execFileSync takes argv and never invokes a shell.
+ * Discovered over every root .cjs, so the next build hook is covered on sight.
+ */
+function testNoShellInterpolationInRootCjs() {
+  let checked = 0;
+  for (const f of rootCjsFiles()) {
+    const src = readFileSync(join(ROOT, f), 'utf8');
+    // exec/execSync called with a template literal containing a substitution.
+    const bad = /\bexec(?:Sync)?\s*\(\s*`[^`]*\$\{/.test(src);
+    assert(!bad,
+      `${f} builds a shell command from an interpolated template literal. \`$(...)\` and backticks `
+      + 'survive inside double quotes, so an interpolated path executes at build time. Use '
+      + 'execFile/execFileSync with an argv array — it never starts a shell.');
+    checked++;
+  }
+  assert(checked >= 3, `only ${checked} root .cjs files were scanned for shell interpolation; the `
+    + 'discovery found fewer files than this repo has, so a clean result means nothing.');
+  // SELF-TEST: the pattern must actually fire on the spelling it forbids.
+  assert(/\bexec(?:Sync)?\s*\(\s*`[^`]*\$\{/.test('execSync(`xattr -cr "${appPath}"`)'),
+    'the shell-interpolation pattern does not match the exact line this check exists to forbid');
+  assert(!/\bexec(?:Sync)?\s*\(\s*`[^`]*\$\{/.test("execFileSync('xattr', ['-cr', appPath])"),
+    'the shell-interpolation pattern flags the SAFE execFileSync spelling — it would block the fix');
+}
+
+/**
+ * The navigation allowlist and the window's URL are ONE decision: `appOrigin`
+ * must have exactly one writer, inside `loadAppOrigin`, and it must be written
+ * only AFTER `loadURL` is CALLED. Gate review #8 finding 7: assigning first
+ * left the allowlist naming a port with no live window when a
+ * destroyed-but-not-yet-nulled window threw in the port-move arm. A guard on
+ * the behaviour lives in src/integration/electron-behavior.test.mjs; this
+ * pins the SHAPE, which is what a later edit would break first.
+ */
+function testAppOriginHasOneWriterAfterTheLoad() {
+  const src = readFileSync(MAIN_CJS, 'utf8');
+  const writes = src.match(/^[ \t]*appOrigin = /gm) ?? [];
+  assert(writes.length === 1,
+    `appOrigin is assigned ${writes.length} times. It must have exactly ONE writer — a second one `
+    + 'is a second decision about which origin the window is on, which is the defect loadAppOrigin '
+    + 'exists to make impossible.');
+  const fn = src.match(/function loadAppOrigin\(win, port\) \{\n([\s\S]*?)\n\}/);
+  assert(fn, 'loadAppOrigin(win, port) is gone — the allowlist and the load have been split apart again.');
+  const body = fn[1];
+  assert(body.indexOf('win.loadURL(') < body.indexOf('appOrigin = '),
+    'loadAppOrigin assigns appOrigin BEFORE calling loadURL. A throwing load then leaves the '
+    + 'allowlist naming a port with no live window on it; load first, allow second, so a failed '
+    + `load keeps the previous origin. Body:\n${body}`);
+  const loads = src.match(/\.loadURL\(/g) ?? [];
+  assert(loads.length === 1,
+    `${loads.length} loadURL call sites. Only loadAppOrigin may load the window, or a caller can `
+    + 'put the window on an origin the allowlist does not know about.');
+}
+
+// The desktop data-directory lock is a darwin flock (server.ts acquireDesktopFlock);
+// other platforms fall back to a pid file that a reused pid defeats (S75-009,
+// review #12). Shipping any other desktop target needs its own kernel lock first.
+export const nonMacTargets = (build: Record<string, unknown>): string[] =>
+  ['win', 'linux', 'nsis', 'appx', 'snap', 'deb', 'rpm', 'AppImage'].filter((k) => k in build);
+function testDesktopShipsOnlyToMac() {
+  const build = JSON.parse(readFileSync('package.json', 'utf8')).build ?? {};
+  const extra = nonMacTargets(build);
+  assert(extra.length === 0, `package.json build targets ${extra.join(', ')}: the desktop lock is only `
+    + 'sound on darwin (flock on the data directory). Give that platform a kernel lock in '
+    + 'acquireDesktopLock before shipping it.');
+  assert(nonMacTargets({ mac: {}, win: {} }).join() === 'win' && nonMacTargets({ mac: {}, linux: {} }).join() === 'linux',
+    'SELF-TEST: the non-mac target detector no longer sees win/linux');
+}
+
 function runDesktopContractTests() {
+  testDesktopShipsOnlyToMac();
   testEveryRootCjsParses();
   testEveryRootCjsLoads();
+  testNoShellInterpolationInRootCjs();
+  testAppOriginHasOneWriterAfterTheLoad();
   console.log(`All desktop .cjs contract tests passed (${rootCjsFiles().length} root .cjs files covered).`);
 }
 
@@ -148,5 +238,8 @@ try {
 } catch (err: any) {
   console.error('Desktop .cjs contract failure:');
   console.error(err?.message || err);
+  cleanupScratchDirs();
   process.exit(1);
+} finally {
+  cleanupScratchDirs();
 }

@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
 import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 import { closeTour, dismissTourForSetup } from './tour.mjs';
@@ -48,12 +49,12 @@ function section(id, name, run) {
   sections.push({ id: String(id), name, run });
 }
 
-// ── boot the production server (unless one is already listening) ────────────
+// ── boot the production server (reuse only under REUSE_SERVER=1) ────────────
 let server = null;
 const userData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-'));
 // Kill AND await the child's exit: process.exit() right after kill() lets a
 // retry invocation (CI runs `smoke.mjs || smoke.mjs`) race the dying server
-// for the port — waitReady would then see the OLD server still listening.
+// for the port, and a retry would then find the OLD server still listening.
 async function killServer() {
   if (!server) return;
   if (server.exitCode !== null || server.signalCode !== null) return; // already exited
@@ -61,17 +62,12 @@ async function killServer() {
   if (!server.kill('SIGKILL')) return; // couldn't signal (already dead / EPERM)
   await exited; // SIGKILL cannot be ignored
 }
-async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const r = await fetch(`${BASE}/`);
-      if (r.ok) return true;
-    } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
-if (!(await waitReady())) {
+// Reuse an already-listening server ONLY under REUSE_SERVER=1 (local dev); by
+// default and in CI this suite spawns and measures its own build — the old
+// "unless one is already listening" also accepted a stale or leaked server
+// (S73-006). The pid-bound wait below is what keeps a retry from measuring the
+// OLD server killServer() is still reaping.
+if (!(reuseServerAllowed() && await fetch(`${BASE}/`).then((r) => r.ok, () => false))) {
   // cwd = the temp dir, deliberately: dotenv reads .env from the server's cwd,
   // and this suite must exercise the UNKEYED path even on a dev machine whose
   // repo root has real credentials in .env. The server still serves dist/ —
@@ -91,8 +87,8 @@ if (!(await waitReady())) {
   });
   server.stdout.on('data', () => {});
   server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
-  if (!(await waitReady())) {
-    console.error('FAIL server never became ready');
+  try { await waitForOwnServer(server, BASE); } catch (err) {
+    console.error(`FAIL server never became ready: ${err.message}`);
     await killServer();
     process.exit(2);
   }
@@ -147,7 +143,12 @@ function trackPage(p) {
   return p;
 }
 async function newTrackedPage(opts) {
-  return trackPage(await browser.newPage(opts));
+  const p = trackPage(await browser.newPage(opts));
+  // E2E_CPU_THROTTLE=<n>: slow the page's CPU n-fold (chromium) to replay a loaded
+  // CI runner locally. Off unless set. S93's race reproduced at 32.
+  const rate = Number(process.env.E2E_CPU_THROTTLE || 0);
+  if (rate > 1) await (await p.context().newCDPSession(p)).send('Emulation.setCPUThrottlingRate', { rate }).catch(() => {});
+  return p;
 }
 
 /**
@@ -3357,7 +3358,7 @@ try {
   //      credentials) and drives the whole CRUD cycle from an Electron-UA page
   //      that never signs in.
   section('45', 'desktop local owner: save, list, edit, delete without an account', async () => {
-    const deskPort = String(Number(PORT) + 1000);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000));
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-desk-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -3373,7 +3374,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
       const dp = await deskCtx.newPage();
       const deskErrors = [];
@@ -3781,7 +3782,7 @@ try {
   // the server's own lists and the request log, never from the dialog alone:
   // a dialog that appears but still moves games unasked would fail here.
   section('50', 'desktop sign-in offers, never silently moves, the no-account games on this device', async () => {
-    const deskPort = String(Number(PORT) + 1001);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 1);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-adopt-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -3796,7 +3797,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
       // Person A saves without an account; person B has a brand-new account.
       const gameName = `Strangers-${Date.now().toString(36)}`;
@@ -5305,7 +5306,7 @@ try {
   //      disabled/aria-busy check fails.
   section('68', 'one SavedGamesList: the sidebar and the drawer agree on names, count, in-flight Delete and empty state', async () => {
     // ── Part A: desktop local-owner server (reuses section 45's boot). ──
-    const deskPort = String(Number(PORT) + 1000);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000));
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-list68-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -5341,7 +5342,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: the desktop local-owner server is up', up);
       const dp = await deskCtx.newPage();
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
@@ -5555,7 +5556,7 @@ try {
   //      installed in every environment).
   section('70', 'the Tab trap never gives up when every control is disabled; opener tracking survives WebKit on a saved-game row', async () => {
     // ── Part A: desktop-shape server, no account, one local game ──────────
-    const deskPort = String(Number(PORT) + 1002);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 2);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-trap-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -5570,7 +5571,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: the desktop-shaped server for section 70 is up', up);
       await fetch(deskBase + '/api/games', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: `Trap-${Date.now().toString(36)}`, description: 'no-account game', payoffs: { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, row1Label: 'C', row2Label: 'D', col1Label: 'C', col2Label: 'D' }) });
@@ -7949,7 +7950,7 @@ try {
   //      below fail (see src/localowner.test.ts for the structural guard and
   //      its own mutation test against the same revert).
   section('78', 'desktop: a local owner (no account) never gets a sign-in invitation for a non-auth failure; a real session 401 still does', async () => {
-    const deskPort = String(Number(PORT) + 1004);
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 4);
     const deskBase = `http://127.0.0.1:${deskPort}`;
     const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-authpred-'));
     const desk = spawn('node', [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
@@ -7964,7 +7965,7 @@ try {
     });
     try {
       let up = false;
-      for (let i = 0; i < 60 && !up; i++) { try { up = (await fetch(deskBase + '/api/health')).ok; } catch { /* booting */ } if (!up) await new Promise((r) => setTimeout(r, 500)); }
+      up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
       const dp = await deskCtx.newPage();
       const deskErrors = [];
@@ -10218,6 +10219,14 @@ const suggestedScenario = {
     const matrixSelector = 'input[inputmode="decimal"][class*="text-center"]';
     const matrix = p.locator(matrixSelector);
     const hint = p.locator('[data-testid="payoff-input-hint"]');
+    // S93 (CI flake, measured): a fixed 3 s wait raced the render, and at 20x CPU
+    // throttle the hint takes 2.1-2.4 s. Wait for the PAGE instead: once it has
+    // rendered two frames after the last keystroke, React has committed, so the
+    // hint must be there. A render that never shows it still fails.
+    const hintAfterRender = async () => {
+      await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      return hint.isVisible().catch(() => false);
+    };
     const RANGE_HINT = 'Range: -100 to 100.';
     const COMMA_HINT = 'Use a dot for decimals, not a comma.';
     await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
@@ -10251,7 +10260,7 @@ const suggestedScenario = {
       await cell.fill('');
       await p.keyboard.type(typed, { delay: 20 });
       // (a) the hint is up, with role=status, while the field is still focused.
-      const hintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintVisible = await hintAfterRender();
       const hintText = hintVisible ? await hint.textContent().catch(() => null) : null;
       const hintRole = hintVisible ? await hint.getAttribute('role').catch(() => null) : null;
       record(`${label}: (a) the range hint is visible with the exact text while the field is still focused`,
@@ -10309,7 +10318,7 @@ const suggestedScenario = {
     await cell.click();
     await cell.fill('');
     await p.keyboard.type('4,5', { delay: 20 });
-    const commaHintVisible = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+    const commaHintVisible = await hintAfterRender();
     const commaHintText = commaHintVisible ? await hint.textContent().catch(() => null) : null;
     record('§93 (e) regression: the comma path still shows ITS OWN message, not the range one',
       commaHintVisible && commaHintText === COMMA_HINT, `text=${JSON.stringify(commaHintText)}`);
@@ -11529,6 +11538,70 @@ const suggestedScenario = {
   // MUTANTS (verified): dropping the key comparison in regenResponseIsCurrent
   // fails the cross-dialog rows; rendering the Keep note without role="status"
   // fails the announcement row.
+  // §104 BLUE-LOOP-DESKTOP-22 sweep 56. RED-DESKTOP-20/002 is guarded three
+  // ways today — the guard EXPRESSION's text, the verdict helper in isolation,
+  // and a real 200+HTML parse — and none of them presses the button. I found
+  // the gap repairing the red probe that claims to cover this: it pointed the
+  // app at a mock on 127.0.0.1:4999 and never started one, so the app saw
+  // ERR_CONNECTION_REFUSED (the ordinary offline path) and the probe reported
+  // PASS for a condition it never created. Three sweeps had counted it.
+  // So: a real captive portal, in the real UI, through the real buttons.
+  // MUTANT (measured on the built bundle): deleting the dataParsed/success
+  // clause from handleDeleteGame makes the row VANISH on a 200+HTML answer —
+  // the user is told the game is gone while it is still on the server.
+  section('104', 'a captive portal answering 200+HTML never convinces the app that a write succeeded', async () => {
+    const p104 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await registerAndLogin(p104, 'e2e104portal');
+    await p104.getByRole('button', { name: /save preset/i }).click();
+    await p104.waitForSelector('[role="dialog"][aria-label="Save custom game"]', { timeout: 5000 });
+    const name104 = `Portal ${Date.now()}`;
+    await p104.locator('[role="dialog"][aria-label="Save custom game"] input[type="text"]')
+      .first().fill(name104);
+    await p104.getByRole('button', { name: /save game profile/i }).click();
+    await p104.waitForSelector('[role="dialog"][aria-label="Save custom game"]',
+      { state: 'hidden', timeout: 8000 });
+    const row104 = p104.getByRole('button', { name: new RegExp(`^${name104}`, 'i') }).first();
+    record('§104 fixture guard: the game is saved and on screen, so the delete below is a real one',
+      await row104.isVisible().catch(() => false), name104);
+
+    // THE PORTAL. 200, so `res.ok` is true; text/html, so the body is not the
+    // JSON acknowledgement the call site requires. Only the mutation is
+    // intercepted: a portal that swallowed the reads too would empty the
+    // library and leave nothing to press (measured — that is exactly why the
+    // red probe could never find its game card).
+    let deletesIntercepted = 0;
+    await p104.route('**/api/games/*', async (route) => {
+      if (route.request().method() !== 'DELETE') return route.fallback();
+      deletesIntercepted++;
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
+        body: '<!doctype html><html><body><h1>Network sign-in required</h1></body></html>' });
+    });
+    let alerted = '';
+    p104.on('dialog', async (d) => { alerted = d.message(); await d.dismiss().catch(() => {}); });
+
+    const delBtn = p104.locator('button[title*="Delete" i]').first();
+    await delBtn.scrollIntoViewIfNeeded().catch(() => {});
+    await delBtn.click({ timeout: 5000, force: true }).catch(() => {});
+    await p104.waitForTimeout(1500);
+
+    record('§104 fixture guard: the DELETE really was answered by the portal, not by the server',
+      deletesIntercepted >= 1, `intercepted=${deletesIntercepted}`);
+    record('§104: the row STAYS — a 200 with an HTML body is not proof the delete happened',
+      await row104.isVisible().catch(() => false),
+      `the game vanished from the list while the server never processed the delete (alert: ${alerted})`);
+    record('§104: and the user is TOLD it failed rather than being shown a silent success',
+      /failed to delete/i.test(alerted), JSON.stringify(alerted).slice(0, 160));
+
+    // CONTROL: without the portal the same click must succeed, or the row above
+    // would pass equally for a delete button that simply never works.
+    await p104.unroute('**/api/games/*');
+    await delBtn.click({ timeout: 5000, force: true }).catch(() => {});
+    await p104.waitForTimeout(1500);
+    record('§104 CONTROL: with the portal gone the same click really does delete the row',
+      !(await row104.isVisible().catch(() => false)),
+      'the delete path is broken outright, so the portal row above proves nothing');
+  });
+
   section('97', 'regen staleness, announcement and discard: an abandoned answer never lands, the Keep note is announced, Discard leaves nothing behind', async () => {
     const p97 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     // An ORDERED script, so the interleaving is deterministic rather than timing luck:

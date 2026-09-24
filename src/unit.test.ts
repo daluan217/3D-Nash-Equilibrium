@@ -2532,7 +2532,10 @@ function testModelDebris() {
   // directions so it cannot pass by the validators disappearing altogether.
   {
     const server = readFileForContract(new URL('../server.ts', import.meta.url), 'utf-8');
-    const firstGames = server.indexOf('"/api/games"');
+    // The first HANDLER, not the first mention: a middleware mounted on the
+    // prefix (the data-folder gate) named "/api/games" earlier, which moved the
+    // report region into the save region and failed this check in CI.
+    const firstGames = server.search(/app\.(?:get|post|patch|delete)\("\/api\/games"/);
     const lastGames = server.lastIndexOf('/api/games/:id');
     assert(firstGames > 0 && lastGames > firstGames,
       'DEBRIS CONTRACT: could not locate the /api/games handlers in server.ts — this check must not silently pass');

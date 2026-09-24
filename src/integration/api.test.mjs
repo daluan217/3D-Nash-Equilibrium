@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer, reuseServerAllowed } from './ownserver.mjs';
 
 const PORT = process.env.INTEGRATION_PORT || '3098';
 const BASE = process.env.INTEGRATION_BASE || `http://localhost:${PORT}`;
@@ -44,20 +45,14 @@ async function call(method, url, { body, token, origin } = {}) {
   return { status: r.status, json, headers: r.headers };
 }
 
-// ── boot the production server (unless one is already listening) ────────────
+// ── boot the production server (reuse only under REUSE_SERVER=1) ────────────
 let server = null;
 const userData = mkdtempSync(path.join(tmpdir(), 'nash-int-'));
-async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const r = await fetch(`${BASE}/api/health`);
-      if (r.ok) return true;
-    } catch { /* not up yet */ }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
-}
-if (!(await waitReady())) {
+// Reuse an already-listening server ONLY under REUSE_SERVER=1 (local dev); by
+// default and in CI this suite spawns and measures its own build (S73-006).
+const reusing = reuseServerAllowed()
+  && await fetch(`${BASE}/api/health`).then((r) => r.ok, () => false);
+if (!reusing) {
   // cwd = temp dir, deliberately: dotenv reads .env from the server's cwd, and
   // this suite must run the documented key-less paths even on a dev machine
   // whose repo root has real credentials in .env.
@@ -77,8 +72,8 @@ if (!(await waitReady())) {
   });
   server.stdout.on('data', () => {});
   server.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
-  if (!(await waitReady())) {
-    console.error('FAIL server never became ready');
+  try { await waitForOwnServer(server, BASE); } catch (err) {
+    console.error(`FAIL server never became ready: ${err.message}`);
     server?.kill('SIGKILL');
     process.exit(2);
   }

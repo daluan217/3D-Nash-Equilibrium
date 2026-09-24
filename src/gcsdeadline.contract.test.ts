@@ -1,0 +1,341 @@
+/**
+ * Every @google-cloud/storage network call in server.ts must be deadlined.
+ *
+ * Storage's own `{ timeout }` option is sent as a QUERY PARAMETER, not a
+ * client-side deadline (measured: one request still pending at 150s). An
+ * unbounded await against a peer that accepts a socket and never answers
+ * blocks `app.listen` at boot, hangs /api/version forever, or pins
+ * `gcsUploadInFlight` so no save ever persists again.
+ *
+ * The integration suite proves the BEHAVIOUR at four call sites. This proves
+ * the INVARIANT at all of them, including sites added later: the whole class,
+ * not the instances that happen to have a fixture today. Uses the TypeScript
+ * parser rather than a regex because three consecutive reviews defeated
+ * source-text regex guards on this branch (comments, strings, regex literals).
+ */
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const source = readFileSync(path.join(root, 'server.ts'), 'utf-8');
+const sf = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+let failures = 0;
+const check = (name: string, ok: boolean, detail = '') => {
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok || !detail ? '' : ` — ${detail}`}`);
+  if (!ok) failures++;
+};
+
+/**
+ * Storage methods that perform a network round-trip we could wait forever on.
+ *
+ * The four the product uses today, PLUS the rest of the blocking File/Bucket
+ * surface. Listing only what is called today would mean the first `delete()`
+ * or `setMetadata()` someone adds is unguarded on arrival — the guard has to
+ * cover the surface, not the current instances. Verified these names are not
+ * already in use on a non-GCS receiver in server.ts (the only `.delete(`
+ * calls are Map.delete and app.delete, both allowlisted below).
+ */
+const NETWORK_METHODS = new Set([
+  'exists', 'getMetadata', 'download', 'save',
+  'delete', 'copy', 'move', 'setMetadata', 'getFiles', 'deleteFiles',
+  'makePublic', 'makePrivate', 'createResumableUpload', 'getSignedUrl',
+  'combine', 'rotateEncryptionKey', 'setStorageClass',
+]);
+
+type Site = { method: string; line: number; deadlined: boolean; text: string };
+
+const isDeadlined = (call: ts.Node): boolean => {
+  // `await withDeadline(<call>, '...')` — the call must be an ARGUMENT of a
+  // withDeadline(...) invocation, not merely somewhere near one.
+  let n: ts.Node | undefined = call.parent;
+  while (n && !ts.isBlock(n)) {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'withDeadline') {
+      return true;
+    }
+    n = n.parent;
+  }
+  return false;
+};
+
+/**
+ * Receivers that own a same-named method and are NOT GCS. Kept as an explicit
+ * allowlist because the rule below matches on the METHOD NAME ALONE.
+ *
+ * Matching the receiver's source text against /\bfile\b/ was the first
+ * attempt and gate review #9 broke it in one line: `const f2 = file;
+ * await f2.exists()` is a real unbounded GCS await that the contract did not
+ * even count as a site. Any alias, helper parameter or rename defeats a
+ * textual receiver test, so the receiver is no longer trusted to identify
+ * GCS. Measured on the real server.ts before switching: 14 calls to these
+ * four method names on ANY receiver, of which exactly one is not GCS.
+ */
+/**
+ * Function.prototype hops that hide the real method behind an indirection:
+ * `file.exists.call(file)` presents `call` as the outer name. Gate review #11
+ * used exactly this to smuggle a live unbounded GCS call past the contract.
+ */
+const FUNCTION_HOPS = new Set(['call', 'apply', 'bind']);
+
+/**
+ * Names that a GCS method is DESTRUCTURED onto. `const { exists } = file`
+ * strips the receiver entirely, so there is no property access left to match;
+ * the destructuring itself is what has to be refused.
+ */
+const destructuredGcsMethods = (file: ts.SourceFile): string[] => {
+  const found: string[] = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && n.initializer && ts.isObjectBindingPattern(n.name)) {
+      for (const el of n.name.elements) {
+        const source = (el.propertyName ?? el.name).getText(file);
+        if (NETWORK_METHODS.has(source)) found.push(`${source} from ${n.initializer.getText(file).slice(0, 30)}`);
+      }
+    }
+    n.forEachChild(walk);
+  };
+  walk(file);
+  return found;
+};
+
+const NON_GCS_RECEIVERS = new Set([
+  'res',          // express: res.download(path)
+  'app',          // express: app.delete(route, ...)
+  'rateBuckets',  // Map.delete
+  'reportCache',  // Map.delete
+]);
+
+/**
+ * The called method's name, for `file.exists()` and `file['exists']()` alike,
+ * or null when it is computed (`file[m]()`) and cannot be resolved statically.
+ *
+ * ONE resolver, used by both the matcher and the site builder. Gate review #10
+ * found them duplicated and out of step: `collect` handled element access
+ * while the site builder still cast to PropertyAccessExpression, so a real
+ * `file['exists']()` crashed the walk with "Cannot read properties of
+ * undefined" — CI red, but with no line naming the defect, and none of the
+ * self-tests caught it because they never ran the site-building path.
+ */
+const methodName = (call: ts.CallExpression): string | null => {
+  const callee = call.expression;
+  if (ts.isPropertyAccessExpression(callee)) {
+    // `file.exists.call(file)` / `.apply` / `.bind` — the OUTER name is
+    // `call`, so resolving only that hides the real method (gate review #11).
+    // Step inward one level when the outer name is a Function.prototype hop.
+    if (FUNCTION_HOPS.has(callee.name.text) && ts.isPropertyAccessExpression(callee.expression)) {
+      return callee.expression.name.text;
+    }
+    return callee.name.text;
+  }
+  if (ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression)) {
+    return callee.argumentExpression.text;
+  }
+  return null;
+};
+
+const collect = (node: ts.Node, sink: (n: ts.CallExpression) => void): void => {
+  if (ts.isCallExpression(node)
+    && (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression))) {
+    const named = methodName(node);
+    const receiver = node.expression.expression.getText(node.getSourceFile());
+    const exempt = NON_GCS_RECEIVERS.has(receiver);
+    // A computed name cannot be resolved, so it is REFUSED rather than
+    // ignored: an un-deadlined dynamic dispatch onto a GCS file is exactly
+    // the shape this guard exists to catch. There are none in server.ts
+    // today, so this costs nothing and fails loudly if one appears.
+    if (!exempt && (named === null || NETWORK_METHODS.has(named))) sink(node);
+  }
+  node.forEachChild((c) => collect(c, sink));
+};
+
+const buildSite = (n: ts.CallExpression, file: ts.SourceFile): Site => ({
+  method: methodName(n) ?? `[computed] ${n.expression.getText(file)}`,
+  line: file.getLineAndCharacterOfPosition(n.getStart(file)).line + 1,
+  deadlined: isDeadlined(n),
+  text: n.getText(file).replace(/\s+/g, ' ').slice(0, 80),
+});
+
+const sites: Site[] = [];
+collect(sf, (n) => sites.push(buildSite(n, sf)));
+
+// The scan must be LIVE. If the AST walk silently matched nothing, every
+// "all sites deadlined" claim below would be vacuously true.
+check('the AST scan actually found GCS network calls in server.ts',
+  sites.length >= 13, `found only ${sites.length}`);
+
+// This contract reads server.ts and nothing else, which is only sufficient
+// while server.ts is the only product file that talks to GCS. Gate review #10
+// flagged that as an unstated boundary, so it is now a CHECKED precondition:
+// the day someone puts GCS I/O in another module, this fails and says so
+// rather than silently covering less than it claims.
+const gcsImporters = execSync(
+  "grep -rl 'google-cloud/storage' --include='*.ts' --include='*.mts' --include='*.cts' "
+  + "--exclude-dir=node_modules --exclude-dir=dist --exclude-dir=dist-electron "
+  + "--exclude-dir=.git --exclude-dir=_gen . || true",
+  { cwd: root, encoding: 'utf-8' },
+).split('\n').map((f) => f.replace(/^\.\//, '').trim())
+  .filter((f) => f && !/\.test\.|contract\.test/.test(f));
+check('server.ts is still the only product file importing the GCS SDK',
+  gcsImporters.length === 1 && gcsImporters[0] === 'server.ts',
+  `this contract only scans server.ts, but the SDK is imported by: ${gcsImporters.join(', ')}`);
+
+const bare = sites.filter((s) => !s.deadlined);
+check('every GCS network call is wrapped in withDeadline',
+  bare.length === 0,
+  `unbounded await(s) — a silent GCS peer hangs boot / pins the save pump:\n    ${
+    bare.map((s) => `server.ts:${s.line} ${s.text}`).join('\n    ')}`);
+
+// The four methods the product actually calls today must each still be seen,
+// so a refactor that drops a whole call shape cannot quietly shrink what this
+// contract covers. The rest of NETWORK_METHODS is forward cover for calls not
+// written yet, so it is deliberately NOT required to appear.
+const IN_USE = ['exists', 'getMetadata', 'download', 'save'] as const;
+for (const m of IN_USE) {
+  check(`the scan covers file.${m}() calls`,
+    sites.some((s) => s.method === m), `no ${m}() site found`);
+}
+check('the modelled surface is wider than what the product calls today',
+  IN_USE.every((m) => NETWORK_METHODS.has(m)) && NETWORK_METHODS.size > IN_USE.length,
+  `${NETWORK_METHODS.size} modelled vs ${IN_USE.length} in use — a newly added GCS call must be guarded on arrival`);
+
+// `createReadStream` is deliberately NOT deadlined: it is piped to the HTTP
+// response, has its own 'error' handler, and a large DMG download is
+// legitimately long. Pin that as an intentional exclusion, not an oversight.
+check('createReadStream is excluded by design, and still present',
+  /createReadStream\(/.test(source) && !NETWORK_METHODS.has('createReadStream'));
+
+// The allowlist is the one place this contract can be weakened without
+// touching a single assertion: adding a receiver name silently un-guards
+// every call on it. Keep it tiny and force a re-justification to grow it.
+check('the non-GCS receiver allowlist stays minimal',
+  NON_GCS_RECEIVERS.size <= 4,
+  `${NON_GCS_RECEIVERS.size} exempt receivers — each one un-guards every GCS-named call on it: ${
+    [...NON_GCS_RECEIVERS].join(', ')}`);
+
+// A size cap alone can be satisfied by SWAPPING an entry for `file`. Pin the
+// membership too: exempting anything that could be a GCS File must fail here,
+// not silently drop call sites out of the scan.
+check('the allowlist is exactly the four known non-GCS receivers',
+  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,rateBuckets,reportCache,res',
+  `allowlist is now: ${[...NON_GCS_RECEIVERS].sort().join(',')}`);
+
+// SHADOWING is the attack the membership check cannot see: bind a GCS File to
+// a name that is already exempt (`const res = bucket.file(k)`) and every call
+// on it drops out of the scan while the allowlist still reads as expected.
+// So verify what these names are actually BOUND to. `res` is only ever an
+// express handler parameter (never declared), and the other three are pinned
+// to their real initialisers.
+const EXPECTED_BINDING: Record<string, RegExp | null> = {
+  res: null,                       // express parameter only — must never be declared
+  app: /^express\(\)/,
+  rateBuckets: /^new Map\b/,
+  reportCache: /^new Map\b/,
+};
+const shadowed: string[] = [];
+for (const [name, expected] of Object.entries(EXPECTED_BINDING)) {
+  for (const m of source.matchAll(
+    new RegExp(String.raw`(?:const|let|var)\s+${name}\s*=\s*([^;\n]{0,70})`, 'g'),
+  )) {
+    const init = m[1].trim();
+    if (expected === null || !expected.test(init)) shadowed.push(`${name} = ${init.slice(0, 40)}`);
+  }
+}
+check('no allowlisted receiver name is rebound to something else (shadowing)',
+  shadowed.length === 0,
+  `an exempt name bound to a GCS file would silently drop every call on it: ${shadowed.join('; ')}`);
+
+// Gate review #11: `const { exists } = file; await exists()` has no receiver
+// left to match, so the call is invisible. Refuse the destructuring itself.
+const destructured = destructuredGcsMethods(sf);
+check('no GCS network method is destructured off its receiver',
+  destructured.length === 0,
+  `a destructured method loses the receiver and escapes this scan: ${destructured.join('; ')}`);
+
+// Gate review #11: `isDeadlined` matches the IDENTIFIER `withDeadline`, so a
+// local `const withDeadline = (p) => p;` would mark every call in that scope
+// deadlined while doing nothing. Require exactly one top-level definition and
+// no shadowing binding anywhere.
+const deadlineDefs = [...source.matchAll(/^(?:async\s+)?function\s+withDeadline\b/gm)].length;
+const deadlineRebinds = [...source.matchAll(/(?:const|let|var)\s+withDeadline\s*=/g)].length;
+check('withDeadline is a single top-level function, never shadowed',
+  deadlineDefs === 1 && deadlineRebinds === 0,
+  `${deadlineDefs} function definition(s), ${deadlineRebinds} rebinding(s) — a pass-through shadow makes every call "deadlined" while doing nothing`);
+
+// ── SELF-TESTS: the rule must be able to FAIL, on inputs naming the shape ────
+// Runs the SAME path as the real scan: collect + buildSite. Calling only
+// collect() is what let gate review #10's crash hide — the self-tests passed
+// while the real file threw inside the site builder.
+const analyse = (src: string): { total: number; bare: number; methods: string[] } => {
+  const f = ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const found: Site[] = [];
+  collect(f, (n) => found.push(buildSite(n, f)));
+  return {
+    total: found.length,
+    bare: found.filter((s) => !s.deadlined).length,
+    methods: found.map((s) => s.method),
+  };
+};
+
+check('SELF-TEST: a bare awaited file.exists() is REPORTED',
+  analyse('async function f(){ const [e] = await file.exists(); }').bare === 1);
+check('SELF-TEST: a deadlined awaited file.exists() is accepted',
+  analyse("async function f(){ const [e] = await withDeadline(file.exists(), 'x'); }").bare === 0);
+check('SELF-TEST: the generation-bound download shape is seen',
+  analyse("async function f(){ const [c] = await withDeadline(file.bucket.file('db.json', { generation: g }).download(), 'x'); }")
+    .total === 1);
+check('SELF-TEST: a call merely NEAR a withDeadline is not credited',
+  analyse("async function f(){ await withDeadline(other(), 'x'); const [e] = await file.exists(); }").bare === 1);
+check('SELF-TEST: a commented-out bare call does not create a false failure',
+  analyse('async function f(){ // const [e] = await file.exists();\n const [e] = await withDeadline(file.exists(), "x"); }').bare === 0);
+check('SELF-TEST: a bare call in a STRING does not create a false failure',
+  analyse('async function f(){ const doc = "await file.exists()"; const [e] = await withDeadline(file.exists(), "x"); }').bare === 0);
+// The shapes the await-scoped first draft MISSED. Each is a live way to
+// reintroduce an unbounded GCS wait without writing `await file.x()`.
+check('SELF-TEST: a DETACHED promise awaited later is REPORTED',
+  analyse('async function f(){ const p = file.exists(); const [e] = await p; }').bare === 1);
+check('SELF-TEST: `for await` over an un-deadlined call is REPORTED',
+  analyse('async function f(){ for await (const c of file.download()) { use(c); } }').bare === 1);
+check('SELF-TEST: Promise.all of bare calls reports BOTH',
+  analyse('async function f(){ const [a, b] = await Promise.all([file.exists(), file.getMetadata()]); }').bare === 2);
+check('SELF-TEST: a deadlined call inside Promise.all is accepted',
+  analyse("async function f(){ const [a] = await Promise.all([withDeadline(file.exists(), 'x')]); }").bare === 0);
+// Gate review #9 finding #1, verbatim: each of these defeated the previous
+// receiver-text rule while being a genuine unbounded GCS await.
+check('SELF-TEST: an ALIASED receiver is REPORTED (review #9 finding 1)',
+  analyse('async function f(){ const gcsFileAlias = file; const [m] = await gcsFileAlias.getMetadata(); }').bare === 1);
+check('SELF-TEST: a short alias `f2` is REPORTED',
+  analyse('async function f(){ const f2 = file; const [e] = await f2.exists(); }').bare === 1);
+check('SELF-TEST: a call on a HELPER PARAMETER is REPORTED',
+  analyse('function doExists(target){ return target.exists(); }').bare === 1);
+check('SELF-TEST: a renamed intermediate (dmgFile) is REPORTED',
+  analyse('async function f(){ const dmgFile = bucket.file(k); const [e] = await dmgFile.exists(); }').bare === 1);
+check('SELF-TEST: an allowlisted non-GCS receiver (res.download) is NOT reported',
+  analyse('function f(req, res){ res.download(p); }').total === 0);
+// Third-round self-attack: shapes that evaded the method-name rule.
+check('SELF-TEST: computed member file["exists"]() is REPORTED',
+  analyse('async function f(){ const [e] = await file["exists"](); }').bare === 1);
+check('SELF-TEST: dynamic dispatch file[m]() is REPORTED (cannot be resolved, so refused)',
+  analyse('async function f(){ const m = "exists"; const [e] = await file[m](); }').bare === 1);
+check('SELF-TEST: optional chaining file?.exists() is REPORTED',
+  analyse('async function f(){ const [e] = await file?.exists(); }').bare === 1);
+check('SELF-TEST: a not-yet-used blocking method (file.delete) is REPORTED',
+  analyse('async function f(){ await file.delete(); }').bare === 1);
+check('SELF-TEST: file.setMetadata() is REPORTED',
+  analyse('async function f(){ await file.setMetadata(md); }').bare === 1);
+check('SELF-TEST: allowlisted Map.delete is NOT reported',
+  analyse('function f(){ rateBuckets.delete(k); reportCache.delete(k); }').total === 0);
+check('SELF-TEST: allowlisted app.delete route registration is NOT reported',
+  analyse('function f(){ app.delete("/api/games/:id", h); }').total === 0);
+// Gate review #10: the site BUILDER, not just the matcher. These name the
+// resolved method, which is what crashed on an element-access callee.
+check('SELF-TEST: an element-access site reports its resolved method name',
+  analyse('async function f(){ const [e] = await file["exists"](); }').methods.join() === 'exists');
+check('SELF-TEST: a computed site is labelled rather than crashing the walk',
+  analyse('async function f(){ const m = "x"; await file[m](); }').methods.join().startsWith('[computed]'));
+
+console.log(failures === 0
+  ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`
+  : `\n${failures} check(s) failed`);
+process.exit(failures === 0 ? 0 : 1);

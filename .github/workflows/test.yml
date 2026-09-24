@@ -156,6 +156,73 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+  # Audit the ARTIFACT, not the spec. `src/packagedfiles.contract.test.ts`
+  # reasons about package.json's build.files globs; nothing looked at what
+  # electron-builder actually produced. A file can reach app.asar by a route the
+  # spec does not describe — an extraResources entry, an afterPack hook writing
+  # into the bundle, a default inclusion, or a glob that behaves differently
+  # from our model of it. MUTATION-PROVEN: adding "secrets/**/*" to build.files
+  # with a live-shaped API key inside SURVIVES the spec check and is caught
+  # here. macOS because that is the only runner that can package the .app.
+  package-audit:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and package the desktop app
+        # The FULL build (dmg + zip), not `--dir`. The audit mounts each .dmg
+        # and unpacks each .zip and applies every rule to the app.asar inside,
+        # because electron-builder produces those as separate artifacts from
+        # the staging dir and the release uploads the .dmg — a DMG carrying a
+        # baked-in API key passed with dist-electron/mac-arm64/ pristine. With
+        # `--dir` there is no .dmg here, so that whole code path would first
+        # run during a release, which is exactly when failing is expensive and
+        # switching the check off is tempting. Measured: 6s vs 40s.
+        run: |
+          npm run build
+          npx electron-builder --publish never
+
+      # LAUNCH the thing we just packaged. The audit above reads what is INSIDE
+      # the .app; nothing in CI ever STARTED it. That is the gap SR-63 went
+      # through — a Host guard can be right in dist/server.cjs and still brick
+      # the real window (or be missing from the artifact) with every other
+      # suite green, because this is the only harness where Chromium writes the
+      # headers and the real main process runs.
+      - name: Launch the packaged app and smoke-test it
+        run: |
+          npx playwright install --with-deps chromium
+          node src/integration/desktop-packaged-smoke.test.mjs
+
+      # S75-009: a .server.lock whose pid was reused after a reboot refused to
+      # start forever, and its dialog (requested before 'ready') never showed.
+      # macOS-only: ps(1) columns, sandbox-exec, FAT images, LaunchServices.
+      - name: A stale lock whose pid was reused is recovered only on proof
+        run: node src/integration/desktop-stale-lock.test.mjs
+        env:
+          STALE_LOCK_TEST_PORT: '3480'
+
+      - name: The packaged app's Startup Blocked dialog is actually on screen
+        run: node src/integration/desktop-lock-dialog-packaged.test.mjs
+        env:
+          LOCK_DIALOG_INSPECT_PORT: '3471'
+
+      - name: Audit the packaged app.asar
+        # Same flag as the release step, so the PR checks what the release
+        # checks. Without it a build that produced no .dmg/.zip would audit the
+        # staging directory alone and pass.
+        env:
+          AUDIT_REQUIRE_SHIPPED: '1'
+        run: node src/desktop/audit-packaged-asar.cjs
+
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -196,10 +263,23 @@ jobs:
       # found in the real .app: a per-launch session secret that signed the user
       # out on every restart, and a truncating db.json write that turned an
       # unreadable database into a deleted one.
+      # Two properties a DESKTOP app needs and a server does not: it is killed
+      # constantly (Cmd-Q, force quit, logout), and its data directory is a
+      # path a human can move (so it can be a symlink, a file, a link loop).
+      # 3330..3354: this suite walks its port forward once per scenario.
+      - name: Boot the production server and run the desktop shutdown/path-shape suite
+        run: node src/integration/desktop-shutdown-and-paths.test.mjs
+        env:
+          DESKTOP_SHUTDOWN_PORT: '3330'
+
+      # 3300, not 3104: this suite walks its port forward once per scenario and
+      # MEASURED it now spans base..base+19 (instrumented run: 4870 -> 4889).
+      # From 3104 that reached 3123 and sat on scenario-parity's 3106 and eight
+      # other steps' ports. 3300..3319 is free of every other port in this file.
       - name: Boot the production server and run the desktop persistence suite
         run: node src/integration/desktop-persistence.test.mjs
         env:
-          DESKTOP_PERSIST_PORT: '3104'
+          DESKTOP_PERSIST_PORT: '3300'
 
       # Every scenario-invention path draws, screens and REROLLS the same way.
       # Counts PROVIDER CALLS against a mock, because a missing retry is
@@ -221,8 +301,12 @@ jobs:
       - name: Boot the production server and run the GCS db-saves suite (fake GCS)
         run: node src/integration/gcs-db-saves.test.mjs
         env:
-          GCS_DB_TEST_PORT: '3131'
-          GCS_DB_TEST_GCS_PORT: '3130'
+          # 3520/3521, not 3131/3130: this suite binds its app servers through
+          # port1+50 and fake GCS through gcs+12, so it reaches 3570/3533.
+          # src/ciports.contract.test.ts derives that walk and fails on overlap.
+          # That avoids scenario-bank-fallback's 3151 and all nearby lanes.
+          GCS_DB_TEST_PORT: '3520'
+          GCS_DB_TEST_GCS_PORT: '3521'
       # /api/download/dmg against a FAKE GCS object (STORAGE_EMULATOR_HOST —
       # no real credentials, no real GCS spend). Guards RED-DESKTOP-3's live
       # finding against production (revision 00194-fxz): the GCS-streamed DMG
@@ -233,8 +317,24 @@ jobs:
       - name: Boot the production server and run the DMG download suite (fake GCS)
         run: node src/integration/dmg-download.test.mjs
         env:
-          DMG_TEST_PORT: '3109'
-          DMG_TEST_GCS_PORT: '3110'
+          # 3460/3461, not 3109/3110: scenario-parity starts at 3106 and walks
+          # its PORT forward three times, landing on 3109. Moving the DMG pair
+          # (this lane's) rather than PARITY_PORT (another lane's) keeps the
+          # edit inside the desktop surface.
+          DMG_TEST_PORT: '3460'
+          DMG_TEST_GCS_PORT: '3461'
+
+      # A 2xx whose body is NOT the backend's JSON acknowledgement must never
+      # count as a completed write. Desktop cloud mode's API base is
+      # user-configurable, so a captive portal / filtering proxy can answer
+      # DELETE (or save, or edit) with `200 text/html` having done nothing —
+      # and a client that trusts res.ok alone tells the user their game is
+      # gone when it is not (RED-DESKTOP-20/002). Round 20's probe for this
+      # lived under _gen/ and referenced a mock server that did not exist, so
+      # it silently exercised nothing for two rounds; this is the checked-in,
+      # mutation-proven version (BLUE-LOOP-DESKTOP-22).
+      - name: Run the captive-portal write-honesty suite
+        run: node src/integration/desktop-captive-portal-write.test.mjs
 
       # Two dist/server.cjs processes on the SAME ELECTRON_USER_DATA_PATH used
       # to silently clobber each other's saved games (whole-file overwrite,
@@ -246,7 +346,12 @@ jobs:
       - name: Boot the production server and run the desktop concurrent-lock suite
         run: node src/integration/desktop-concurrent-lock.test.mjs
         env:
-          LOCK_TEST_PORT: '3113'
+          # 3400, not 3113: this suite binds base, +1, +2, +10, +11, +12, which
+          # sat on desktop-recovery-hint's walk (3113) and unwritable-save's
+          # PORT5 (3123). 3400-3412 is clear of every other port in this job —
+          # src/ciports.contract.test.ts fails the build if that stops being
+          # true.
+          LOCK_TEST_PORT: '3400'
 
       # A lock-acquisition failure used to be a bare process.exit(1) always.
       # Because electron-main.cjs require()s dist/server.cjs IN-PROCESS (not
@@ -276,7 +381,11 @@ jobs:
       - name: Boot the production server and run the desktop lock write-side suite
         run: node src/integration/desktop-lock-write-side.test.mjs
         env:
-          LOCK_WS_PORT: '3150'
+          # 3420, not 3150: this suite binds base, +1, +10, +11, +12, which sat
+          # on scenario-bank-fallback (3150/3151), gcs-db-saves' +20 (3151),
+          # db-shape-refusal's walk (3160-3162) and scenario-regen (3160) —
+          # five collisions from one base. 3420-3432 is clear.
+          LOCK_WS_PORT: '3420'
 
       # An unwritable ELECTRON_USER_DATA_PATH (read-only dir, full disk, ...)
       # used to accept a game save/update/delete, tell the user it worked,
@@ -290,6 +399,8 @@ jobs:
           UNWRITABLE_SAVE_PORT2: '3120'
           UNWRITABLE_SAVE_PORT3: '3121'
           UNWRITABLE_SAVE_PORT4: '3122'
+          UNWRITABLE_SAVE_PORT5: '3123'
+          UNWRITABLE_SAVE_PORT6: '3124'
 
 
       # A pre-local-owner desktop install's real account is invisible to an
@@ -301,6 +412,20 @@ jobs:
         run: node src/integration/desktop-recovery-hint.test.mjs
         env:
           RECOVERY_HINT_PORT: '3111'
+
+      # G7 (BLUE-LOOP-DESKTOP-22): every game on disk must have its owner row
+      # on disk. `ensureLocalOwner()` ignores saveDB's return value, so a failed
+      # owner write is invisible to it; no orphan is reachable today only
+      # because loadDB() hands back the live in-memory db and the save path
+      # re-reads users at commit time. That is emergent, not asserted anywhere,
+      # so this suite asserts the OUTCOME and stays true however the internals
+      # move. Mutation-proven: sourcing `users` from the last persisted file
+      # instead of memory makes an orphan reachable and this suite goes red.
+      - name: Boot the production server and run the desktop owner-integrity suite
+        run: node src/integration/desktop-owner-integrity.test.mjs
+        env:
+          # 3440, not 3141: gcs-db-saves reaches 3141 via port1+10.
+          OWNER_INTEGRITY_PORT: '3440'
 
       # RED-DESKTOP-16/001: a Bearer token that WAS presented but does not
       # resolve (garbled, or invalidated by a REAL forgot/reset-password) must
@@ -363,6 +488,15 @@ jobs:
       - name: Run the electron window-guard suite (stubbed electron, in-process require)
         run: node src/integration/electron-window-guard.test.mjs
 
+      # BEHAVIORAL guards for permissions / bridge / egress / openExternal.
+      # Three reviews in a row defeated the source-text regexes that used to
+      # guard these (a spread into the permission Set, `() => ipcRenderer.send`,
+      # `const { openExternal } = shell`, an evil URL that merely MENTIONS
+      # UPDATE_BASE_URL). These invoke the real handlers under a fake electron
+      # and judge by identity and recorded effect, so spelling cannot evade them.
+      - name: Run the electron behavioral guards (real handlers, fake electron)
+        run: node src/integration/electron-behavior.test.mjs
+
       # RED-DESKTOP-6/001: a db.json whose "users"/"games" field is PRESENT
       # but the WRONG TYPE (not a recognised old shape — a hand-edit or a
       # genuinely foreign schema) used to load with zero validation and only
@@ -379,7 +513,9 @@ jobs:
       - name: Boot the production server and run the db-shape refusal suite
         run: node src/integration/db-shape-refusal.test.mjs
         env:
-          DB_SHAPE_TEST_PORT: '3155'
+          # 3500, not 3155: this suite walks its port forward nine times, so it
+          # really spans 3155-3164 and landed on scenario-regen's 3160.
+          DB_SHAPE_TEST_PORT: '3500'
 
       # RED-DESKTOP-8/001: an iCloud/Finder conflict can leave a valid
       # `db.json 2` beside the primary `db.json`. The desktop must refuse
@@ -392,6 +528,41 @@ jobs:
         env:
           DB_CONFLICT_TEST_PORT: '3175'
 
+      # BLUE-LOOP-DESKTOP-22 / SR-45: these three suites existed and ran
+      # nowhere. atomic-tmp-sweep and cloud-output-boundary were wired into
+      # `npm run test:integration` — which NO workflow invokes — and
+      # desktop-adopt-local (19 checks) was in neither list, so it had never
+      # run in CI at all. src/testscriptcoverage.test.ts now fails when any
+      # src/integration/*.test.mjs is missing from this job.
+      - name: Boot the production server and run the desktop adopt-local suite
+        run: node src/integration/desktop-adopt-local.test.mjs
+        env:
+          DESKTOP_ADOPT_PORT: '3117'
+
+      # SR-46: the same route's DEAD-SESSION behaviour, in a real renderer.
+      # Everything guarding RED-DESKTOP-19/001 was a source regex, and a
+      # one-character mutation (`localGamesOffer.token + ' '`) kept every
+      # asserted pattern present while clearSession() could never run — the
+      # adopt-local suite above and localowner.test.ts both stayed green while
+      # the header claimed "signed in" for a session the server had killed.
+      # Needs Chromium: App.tsx only renders the offer for an Electron UA.
+      - name: Boot the production server and run the adopt-local dead-session suite
+        run: |
+          npx playwright install --with-deps chromium
+          node src/integration/desktop-adopt-deadsession.test.mjs
+        env:
+          DESKTOP_ADOPT_DEAD_PORT: '3128'
+
+      - name: Boot the production server and run the atomic tmp-sweep suite
+        run: node src/integration/atomic-tmp-sweep.test.mjs
+        env:
+          ATOMIC_SWEEP_PORT: '3721'
+
+      - name: Boot the production server and run the cloud output-boundary suite
+        run: node src/integration/cloud-output-boundary.test.mjs
+        env:
+          COB_TEST_PORT: '3180'
+          COB_STUB_PORT: '3181'
 
       # SR-48: express.static(distPath) published dist/server.cjs — the whole
       # backend bundle, 1.5MB, downloadable from the live public site. Same
@@ -401,6 +572,13 @@ jobs:
         env:
           STATIC_BUNDLE_PORT: '3198'
 
+      # S73-006: every readiness loop now trusts waitForOwnServer(); this checks
+      # the helper itself refuses a foreign pid on the port and a dead child.
+      - name: The own-server readiness helper refuses a foreign listener
+        run: node src/integration/ownserver.test.mjs
+        env:
+          OWNSERVER_TEST_PORT: '3470'
+
       # SR-50: Express routes case-insensitively but the CORS gate's
       # startsWith was case-sensitive, so /api/ADMIN/stats served admin PII
       # with Access-Control-Allow-Origin: *.
@@ -408,6 +586,44 @@ jobs:
         run: node src/integration/admin-cors-case.test.mjs
         env:
           ADMIN_CORS_PORT: '3196'
+
+      # SR-56: the dev branch was gated on NODE_ENV alone, which a packaged app
+      # inherits from its launch environment. With NODE_ENV=development the
+      # shipped bundle booted a real Vite dev server and served @vite/client —
+      # the whole dev toolchain is in the asar, so it works rather than failing
+      # shut. Boots BOTH arms: desktop must refuse, web must still get Vite.
+      - name: Boot the production server and check a desktop build never runs Vite
+        run: node src/integration/desktop-no-dev-server.test.mjs
+        env:
+          NO_DEV_SERVER_PORT: '3199'
+          NO_DEV_SERVER_WEB_PORT: '3200'
+
+      # SR-57: the desktop authenticates nothing (resolveGameOwner hands any
+      # caller local-owner), and the CORS middleware put ACAO * in front of it,
+      # so any page the user visited could read and write their saved games
+      # with a plain fetch to http://127.0.0.1:14321. Loopback stops another
+      # machine, not another origin in the user's own browser.
+      - name: Boot the production server and check desktop CORS is loopback-only
+        run: node src/integration/desktop-cors-loopback.test.mjs
+        env:
+          DESKTOP_CORS_PORT: '3201'
+          # NOT 3202: the suite boots a second desktop instance to prove the
+          # EADDRINUSE walk still serves its own renderer, and that walk lands
+          # on DESKTOP_CORS_PORT+1. With the web server there, the walked
+          # instance's checks would talk to the hosted-condition server.
+          DESKTOP_CORS_WEB_PORT: '3209'
+
+      # What a TOKENLESS LOCAL CALLER can do to the desktop app. The desktop
+      # authenticates nothing by design, so these are the properties holding
+      # that surface together: the route census (derived from the shipped
+      # bundle, so a new route is covered automatically), no cross-owner read
+      # or write, RED-DESKTOP-11/001's "login must not steal the no-account
+      # library", the rate-limit split that keeps the locally-returned recovery
+      # code un-guessable, and the startup scratch-file sweep vs. link classes.
+      - name: Boot the production server and check the desktop local surface
+        run: node src/integration/desktop-local-surface.test.mjs
+        env:
+          LOCAL_SURFACE_PORT: '3212'
 
       # FEATURE-REGEN's server route, POST /api/scenario/regenerate, flag
       # NASH_SCENARIO_REGEN (default OFF). Proves: the flag gates both the

@@ -147,10 +147,25 @@ function run(mode) {
     record(`a renderer-supplied ${url.split(':')[0]} URL never reaches the operating system`,
       by[url]?.opened === false, JSON.stringify(by[url]));
   }
+
+  // BLUE-LOOP-DESKTOP-22, angle N. These ARE https and they DO pass the scheme
+  // set — their host is attacker.example and the name before the `@` is
+  // decoration. MEASURED on the unfixed tree: all three reached
+  // shell.openExternal. Third shape: `new URL` lowercases the protocol, so a
+  // mixed-case spelling is not a way around the same check.
+  const userinfo = [
+    'https://apple.com@attacker.example/signin',
+    'https://nash-equilibrium-simulator.com:pw@attacker.example/update',
+    'HtTpS://apple.com@attacker.example/signin',
+  ];
+  for (const url of userinfo) {
+    record(`an https URL whose real host hides behind userinfo is refused (${url.slice(0, 46)})`,
+      by[url]?.opened === false, JSON.stringify(by[url]));
+  }
   record('an http URL is not handed to the OS either (the policy is https-only)',
     by['http://127.0.0.1:9/health']?.opened === false, JSON.stringify(by['http://127.0.0.1:9/health']));
   record('every window.open request is denied in-app — it never becomes a second app window',
-    (parsed?.probes ?? []).length === 9 && (parsed?.probes ?? []).every((x) => x.action === 'deny'),
+    (parsed?.probes ?? []).length === 12 && (parsed?.probes ?? []).every((x) => x.action === 'deny'),
     JSON.stringify((parsed?.probes ?? []).map((x) => x.action)));
   // CONTROL: two different https origins must still open, or this guard would
   // pass just as well on a build that opens nothing at all.
@@ -160,6 +175,18 @@ function run(mode) {
   record('CONTROL: a second, unrelated https origin still opens externally',
     by['https://mathematics-magazine.example/paper']?.opened === true,
     JSON.stringify(by['https://mathematics-magazine.example/paper']));
+
+  // SR-63 depends on this and nothing asserted it: the server now rejects any
+  // request whose Host is not a loopback literal, and the Host Chromium sends
+  // comes from whatever URL the main process loads. If loadURL ever pointed at
+  // a name (a hostname, an alias, 0.0.0.0), every request the window makes
+  // would 403 and the app would be bricked with an empty error page. The
+  // origin is asserted here, at the place that actually decides it.
+  const loaded = String(parsed?.loadedUrl ?? '');
+  record('SR-63: the window is loaded from a LOOPBACK LITERAL origin over http',
+    /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d+$/.test(loaded),
+    `loadURL was ${JSON.stringify(loaded)} — the desktop Host guard only accepts `
+    + '127.0.0.1/localhost/::1, so any other spelling here 403s the whole renderer');
 
   // ── door 2: same-window navigation (<a href>, location.href)
   const nav = Object.fromEntries((parsed?.navigation ?? []).map((x) => [x.url, x]));
@@ -172,6 +199,10 @@ function run(mode) {
     ['file:///etc/passwd', false],
     ['javascript:alert(document.domain)', false],
     ['not a url at all', false],
+    // The door with no URL bar: an off-origin https navigation is handed to the
+    // browser, so the userinfo refusal has to hold on THIS side too, or the
+    // window-open fix would just move the shape one door over.
+    ['https://apple.com@attacker.example/signin', false],
   ];
   for (const [url, opensExternally] of offOrigin) {
     record(`a same-window navigation to ${url.slice(0, 34)} never moves this window off the app`,
@@ -213,6 +244,18 @@ function run(mode) {
     ]), JSON.stringify(parsed?.openedUrls));
 }
 
+// SR-47: a suite that SILENTLY SKIPS a block still prints "N/N checks passed"
+// and exits 0, because N is counted, not expected. Measured on this file's own
+// ancestor: filtering one data array to empty removed six checks and the run
+// said "37/37 checks passed". The red probe that had aborted for three sweeps
+// was the same shape. So the count is DECLARED: fewer means a block did not
+// run, which is a failure even when every check that did run passed.
+const EXPECTED_CHECKS = 52;
+if (results.length < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — `
+    + 'a block was skipped. Raise EXPECTED_CHECKS deliberately when adding checks.');
+  process.exit(1);
+}
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length > 0) {

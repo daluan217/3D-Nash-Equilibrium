@@ -27,13 +27,18 @@
  *   node src/integration/desktop-persistence.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync,
+  chmodSync, statSync, lstatSync, symlinkSync, linkSync, mkdirSync } from 'node:fs';
+import { tmpdir, networkInterfaces } from 'node:os';
+import { connect } from 'node:net';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
-let port = Number(process.env.DESKTOP_PERSIST_PORT || 3104);
+// The suite walks this forward once per scenario and spans base..base+19
+// (measured). Reserve a 20-wide window, not a single port.
+let port = Number(process.env.DESKTOP_PERSIST_PORT || 3300);
 
 const results = [];
 function record(name, pass, detail) {
@@ -123,6 +128,55 @@ try {
   // ───────────────────────────────────────────────────────────────────────────
   srv = await boot(userData, port);
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 1a. THE DESKTOP SERVER LISTENS ON LOOPBACK ONLY
+  // ───────────────────────────────────────────────────────────────────────────
+  // server.ts picks '127.0.0.1' when IS_ELECTRON is true and '0.0.0.0'
+  // otherwise, with a careful comment explaining why. Nothing tested it:
+  // changing that line to a bare '0.0.0.0' left electronenv, serverpolicy,
+  // desktop.contract and this whole file green, while the packaged app served
+  // every saved game, the account store and /api/report to the entire LAN
+  // (verified — the mutant answered on this machine's en0 address and lsof
+  // showed `TCP *:PORT`). From another machine's point of view this API has
+  // no authentication worth the name.
+  //
+  // Asserted by CONNECTING, not by reading the source: a socket that refuses
+  // is the one piece of evidence that cannot be spelled around.
+  {
+    const lanAddrs = Object.values(networkInterfaces()).flat()
+      .filter((n) => n && n.family === 'IPv4' && !n.internal).map((n) => n.address);
+    // A machine with no non-loopback IPv4 (CI container, airplane mode) cannot
+    // answer this question, and a check that silently passes there is worse
+    // than one that says so. '0.0.0.0' is the universal fallback: a valid
+    // connect target meaning "this host, any interface", which a server bound
+    // to 127.0.0.1 still refuses.
+    const targets = lanAddrs.length ? lanAddrs : ['0.0.0.0'];
+    const canConnect = (host) => new Promise((resolve) => {
+      const sock = connect({ host, port, family: 4 });
+      const done = (v) => { sock.destroy(); resolve(v); };
+      sock.setTimeout(3000);
+      sock.once('connect', () => done(true));
+      sock.once('timeout', () => done(false));
+      sock.once('error', () => done(false));
+    });
+    const reachable = [];
+    for (const addr of targets) if (await canConnect(addr)) reachable.push(addr);
+    // An empty target list would report "not reachable" by never looking —
+    // and the fallback above exists precisely to stop that, so assert it
+    // worked rather than trusting it (a forced-empty `targets` passed this
+    // whole section for free until this line).
+    record('CONTROL: at least one non-loopback address was actually probed',
+      targets.length > 0, `probed ${targets.length}: ${targets.join(', ') || 'NOTHING'}`);
+    record('the desktop server is NOT reachable on a non-loopback address',
+      targets.length > 0 && reachable.length === 0,
+      reachable.length ? `answered on ${reachable.join(', ')}` : `refused on ${targets.join(', ')}`);
+    // CONTROL: those refusals must mean "bound to loopback", not "nothing is
+    // listening" — which is exactly how a crashed server would look.
+    const loopbackOk = await canConnect('127.0.0.1');
+    record('CONTROL: it IS reachable on 127.0.0.1 (a dead server refuses everywhere)',
+      loopbackOk, loopbackOk ? 'loopback accepted' : 'loopback ALSO refused — the server is down');
+  }
+
   const cred = { username: 'desktopuser', email: 'desktop@example.test', password: 'Sup3rSecret!23' };
   const reg = await call(port, 'POST', '/api/auth/register', { body: cred });
   record('a desktop account registers without SMTP (auto-verify)', reg.status === 200 && reg.json?.success === true,
@@ -185,6 +239,154 @@ try {
   const replaced = readFileSync(secretFile, 'utf-8').trim();
   record('a truncated auth-secret file is replaced with a real key, not used as one',
     /^[0-9a-f]{64}$/.test(replaced) && replaced !== 'deadbeef', `${replaced.length} chars`);
+
+  // …AND THE REPLACEMENT MUST NOT INHERIT THE OLD FILE'S PERMISSIONS.
+  //
+  // BLUE-LOOP-DESKTOP-22, reproduced before it was fixed. `writeFileSync`'s
+  // `mode` is honoured only when it CREATES the file; over an existing one it
+  // is ignored. The check above passes on content alone, so a freshly minted
+  // HMAC key kept whatever permissions were already on disk — and this branch
+  // runs precisely when a bad secret was found, i.e. the moment the app
+  // "repairs" a tampered file is the moment it leaves the new one exposed.
+  //
+  // Measured 0666 -> 0666 before the fix, 0666 -> 0600 after. The precondition
+  // needs no attacker: a sync client, a restore that flattened modes, a shared
+  // machine, or a build of this app from before the mode argument existed.
+  //
+  // world-readable  = any local process can forge a session for any account
+  // world-writable  = any local process can CHOOSE the key
+  await stop(srv);
+  srv = null;
+  writeFileSync(secretFile, 'deadbeef', 'utf-8');
+  chmodSync(secretFile, 0o666);
+  const modeBefore = (statSync(secretFile).mode & 0o777).toString(8);
+  port += 1;
+  srv = await boot(userData, port);
+  const modeAfter = (statSync(secretFile).mode & 0o777).toString(8);
+  record('the rewritten auth-secret is 0600, not the old file\'s permissions',
+    modeAfter === '600', `${modeBefore} -> ${modeAfter}`);
+  record('CONTROL: the rewrite really happened (a stale file would pass the mode check for free)',
+    /^[0-9a-f]{64}$/.test(readFileSync(secretFile, 'utf-8').trim()),
+    'the file holds a fresh 64-hex key');
+
+  // …AND THE PATH THAT ACTUALLY RUNS: A VALID KEY THAT IS ALREADY EXPOSED.
+  //
+  // The two checks above cover the REWRITE path — the file was rejected, so a
+  // new key is written. That is the rare case. The common one is a valid
+  // 64-hex key being reused, which is every launch after the first, and it
+  // returned early: `if (/^[0-9a-f]{64}$/.test(existing)) return existing;`
+  // sat above the chmod. A key left world-readable by an older build, a
+  // umask, a restore-from-backup or a sync client stayed that way for the
+  // life of the install, and both checks above passed throughout — they only
+  // ever fed the function a file it would reject.
+  //
+  // Measured on the packaged bundle: 0666 -> 0666 before the fix,
+  // 0666 -> 0600 after, with the key unchanged.
+  //
+  // Found by the 9router reviewer on this branch; the repair I shipped first
+  // was on the branch the guard happened to exercise, not the one that runs.
+  await stop(srv);
+  srv = null;
+  const priorKey = readFileSync(secretFile, 'utf-8').trim();
+  chmodSync(secretFile, 0o666);
+  const validModeBefore = (statSync(secretFile).mode & 0o777).toString(8);
+  port += 1;
+  srv = await boot(userData, port);
+  const validModeAfter = (statSync(secretFile).mode & 0o777).toString(8);
+  record('an EXISTING VALID auth-secret that is world-writable is repaired to 0600',
+    validModeAfter === '600', `${validModeBefore} -> ${validModeAfter}`);
+  // The repair must not be a rewrite in disguise: replacing the key would log
+  // every user out on upgrade, so "0600" reached by minting a new secret is
+  // the wrong fix passing the right check.
+  record('CONTROL: the repair kept the existing key (0600 by rotating it would log everyone out)',
+    readFileSync(secretFile, 'utf-8').trim() === priorKey && /^[0-9a-f]{64}$/.test(priorKey),
+    readFileSync(secretFile, 'utf-8').trim() === priorKey
+      ? 'same 64-hex key before and after'
+      : 'THE KEY WAS ROTATED — every existing session is now invalid');
+
+  // auth-secret AS A SYMLINK — an arbitrary-file OVERWRITE, not a disclosure.
+  //
+  // writeFileSync follows a symlink, so `auth-secret -> <any path the user can
+  // write>` had the app write a fresh 64-hex key THROUGH it, and the chmod that
+  // follows set the TARGET to 0600. `mode: 0o600` protects the bytes, never the
+  // location. Reproduced against the shipped dist/server.cjs before the fix: a
+  // 644 file outside the data dir came back 600 holding the session key.
+  // A directory in the same place threw EISDIR out of desktopAuthSecret
+  // entirely, which silently downgraded every session to a per-process secret
+  // (sessions dropped on restart, with only a console line to say so).
+  await stop(srv);
+  srv = null;
+  // SR-54, found by mutation-testing this very block: with only symlink and
+  // directory here, deleting the `unlinkSync` + `flag: "wx"` from the create
+  // path left all 30 checks PASSING. Those two lines are the defense against a
+  // link re-created after the lstat — and against a HARDLINK, which lstat
+  // cannot see at all: `lstat(auth-secret).isFile()` is TRUE for one, so the
+  // refusal above never fires, and a plain write goes straight through to the
+  // target (measured: 'original-content' became 64 f's, mode stayed 644).
+  // The unlink drops the link before the write, so the target survives. A
+  // hardlink is therefore the case that makes that line load-bearing.
+  for (const [label, make] of [
+    ['symlink', (dir, target) => symlinkSync(target, path.join(dir, 'auth-secret'))],
+    ['hardlink', (dir, target) => linkSync(target, path.join(dir, 'auth-secret'))],
+    ['directory', (dir) => mkdirSync(path.join(dir, 'auth-secret'))],
+  ]) {
+    const poisoned = mkdtempSync(path.join(tmpdir(), `nash-desktop-secret-${label}-`));
+    const outside = path.join(poisoned, 'ESCAPED-target');
+    writeFileSync(outside, 'original-content', { mode: 0o644 });
+    chmodSync(outside, 0o644);
+    make(poisoned, outside);
+    port += 1;
+    srv = await boot(poisoned, port);
+    const sf = path.join(poisoned, 'auth-secret');
+    const st = lstatSync(sf);
+    // readFileSync THROWS EISDIR on the unfixed tree, and a crashed harness is
+    // not a verdict — it reports as a stack trace with none of the vocabulary
+    // of the assertion it hides, and takes the two checks below with it.
+    // Read defensively so the mutant FAILS BY NAME.
+    let body = null;
+    try { body = readFileSync(sf, 'utf-8').trim(); } catch (e) { body = `<unreadable: ${e.code}>`; }
+    record(`an auth-secret that is a ${label} is replaced with a real 0600 file`,
+      st.isFile() && (st.mode & 0o777).toString(8) === '600' && /^[0-9a-f]{64}$/.test(body),
+      `isFile=${st.isFile()} mode=${(st.mode & 0o777).toString(8)} body=${body.slice(0, 16)}`);
+    // THE ONE THAT MATTERS for the symlink case, and a control for the other:
+    // whatever the link pointed at must be untouched.
+    record(`a ${label} auth-secret does not overwrite the file outside the data dir`,
+      readFileSync(outside, 'utf-8') === 'original-content'
+        && (statSync(outside).mode & 0o777).toString(8) === '644',
+      `content=${JSON.stringify(readFileSync(outside, 'utf-8').slice(0, 20))} `
+      + `mode=${(statSync(outside).mode & 0o777).toString(8)}`);
+    // …and the app must still WORK. Refusing to boot, or falling back to a
+    // per-process secret, would satisfy both checks above while breaking
+    // session persistence — the EISDIR path did exactly that.
+    const again = await (async () => {
+      await stop(srv); srv = null; port += 1;
+      let key1 = null; let key2 = null;
+      try { key1 = readFileSync(sf, 'utf-8').trim(); } catch { key1 = null; }
+      srv = await boot(poisoned, port);
+      try { key2 = readFileSync(sf, 'utf-8').trim(); } catch { key2 = null; }
+      return key1 !== null && key1 === key2 && /^[0-9a-f]{64}$/.test(key1);
+    })();
+    record(`CONTROL: after the ${label} is replaced, the new key PERSISTS across a restart`,
+      again, again ? 'same key on the next boot' : 'the key was rotated — sessions do not survive');
+    await stop(srv); srv = null;
+    rmSync(poisoned, { recursive: true, force: true });
+  }
+  port += 1;
+  srv = await boot(userData, port);
+
+  // The CREATE path, on its own: no file at all, and the umask must not widen
+  // it. A default 022 umask turns a 0666 request into 0644, so a mode argument
+  // dropped from the create call would go unnoticed without this.
+  await stop(srv);
+  srv = null;
+  const freshUserData = mkdtempSync(path.join(tmpdir(), 'nash-desktop-secret-create-'));
+  port += 1;
+  srv = await boot(freshUserData, port);
+  const freshSecret = path.join(freshUserData, 'auth-secret');
+  const freshMode = existsSync(freshSecret)
+    ? (statSync(freshSecret).mode & 0o777).toString(8) : 'no file';
+  record('a newly created auth-secret is 0600', freshMode === '600', `mode ${freshMode}`);
+  rmSync(freshUserData, { recursive: true, force: true });
 
   // ───────────────────────────────────────────────────────────────────────────
   // 2. AN UNREADABLE DATABASE IS PRESERVED, NOT OVERWRITTEN
@@ -284,11 +486,146 @@ try {
   const strays = readdirSync(userData).filter((f) => f.includes('db.json.tmp-'));
   record('no scratch file is left behind after the writes settle', strays.length === 0, strays.join(', '));
   if (leftoverTmp > 0) console.log(`  (note: the temp file was observed mid-write ${leftoverTmp} time(s) — that is the mechanism working)`);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // A REFUSED SECOND INSTANCE MUST NOT TOUCH THE OWNER'S SESSION KEY.
+  //
+  // AUTH_SECRET used to be a module-level const, so `desktopAuthSecret()` — a
+  // function that WRITES — ran at import time, before `startServer()` could
+  // call `acquireDesktopLock()`. The process the lock exists to refuse had
+  // already rewritten the live owner's key by the time it was turned away.
+  //
+  // MEASURED as a live race first: two instances launched together on a fresh
+  // data directory, 1 of 6 trials left the surviving server signing tokens
+  // with a secret that no longer matched the file on disk — every session it
+  // then issued was dead at the next launch, which is the exact defect
+  // persisting the secret was added to fix. A race is not a CI check, so the
+  // guard below forces the same state deterministically: an INVALID key file
+  // puts desktopAuthSecret() on its replace-the-file branch, which is the
+  // write that used to escape the lock, and the second instance is refused.
+  // ─────────────────────────────────────────────────────────────────────────
+  {
+    const shared = mkdtempSync(path.join(tmpdir(), 'nash-lockwrite-'));
+    const ownerPort = ++port;
+    let owner = null;
+    try {
+      owner = await boot(shared, ownerPort);
+      const keyFile = path.join(shared, 'auth-secret');
+      // Put the owner's key on disk in the state that forces the WRITE branch,
+      // then read what the owner is actually holding. The owner is already
+      // running, so its in-memory secret is fixed from here on; anything that
+      // changes this file now is the intruder, not the owner.
+      writeFileSync(keyFile, 'not-a-key');
+      const poisoned = readFileSync(keyFile, 'utf-8');
+
+      // The intruder: a second instance on the SAME data directory. The lock
+      // must refuse it, and it must leave the key alone.
+      const intruder = spawn('node', [BUNDLE], {
+        cwd: shared,
+        env: {
+          PATH: process.env.PATH, HOME: shared, NODE_ENV: 'production',
+          PORT: String(++port), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: shared,
+          NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let ilog = '';
+      intruder.stdout.on('data', (d) => { ilog += d; });
+      intruder.stderr.on('data', (d) => { ilog += d; });
+      const code = await new Promise((res) => intruder.once('exit', res));
+
+      // CONTROL: the intruder really was refused BY THE LOCK. Without this the
+      // key check below would also pass for an intruder that died of a port
+      // clash, a missing bundle, or anything else that never reached the
+      // secret code at all — i.e. for the wrong reason entirely.
+      record('CONTROL: the second instance is refused by the desktop lock',
+        code !== 0 && /another|already|lock/i.test(ilog),
+        `exit ${code}; log: ${ilog.slice(-160).replace(/\s+/g, ' ')}`);
+
+      const after = readFileSync(keyFile, 'utf-8');
+      record('THE DEFECT: a REFUSED second instance does not rewrite the running '
+        + "owner's session key (desktopAuthSecret ran at import, before the lock)",
+        after === poisoned,
+        after === poisoned ? 'unchanged'
+          : `key changed under the owner: ${poisoned.slice(0, 12)}... -> ${after.slice(0, 12)}...`);
+
+      // …and the same property for the WHOLE directory, under every starting
+      // state that puts a startup code path on its write branch. The guard
+      // above names one file because one file is what broke; the invariant is
+      // "a process the lock refuses changes NOTHING here", and that is what
+      // has to hold when the next module-level initialiser is added. Checked
+      // as content+mode+mtime over every entry, so a rewrite with identical
+      // bytes still shows up.
+      const dirSnapshot = (d) => JSON.stringify(Object.fromEntries(readdirSync(d).sort().map((n) => {
+        const f = path.join(d, n);
+        const st = statSync(f);
+        return [n, st.isFile()
+          ? `${createHash('sha256').update(readFileSync(f)).digest('hex').slice(0, 12)}:`
+            + `${(st.mode & 0o777).toString(8)}:${st.mtimeMs}`
+          : 'dir'];
+      })));
+      for (const [label, poisonDir] of [
+        ['an invalid auth-secret (forces the replace-the-file branch)',
+          (d) => writeFileSync(path.join(d, 'auth-secret'), 'not-a-key')],
+        ['an auth-secret that is a DIRECTORY (forces the rmSync branch)',
+          (d) => { rmSync(path.join(d, 'auth-secret'), { recursive: true, force: true });
+            mkdirSync(path.join(d, 'auth-secret')); }],
+        ['a stale db.json.tmp-* scratch file (forces the startup sweep, which UNLINKS)',
+          (d) => writeFileSync(path.join(d, 'db.json.tmp-999-1'), 'x')],
+        ['a malformed db.json (forces initDB down its repair path)',
+          (d) => writeFileSync(path.join(d, 'db.json'), '{"users":')],
+      ]) {
+        poisonDir(shared);
+        const snapBefore = dirSnapshot(shared);
+        const proc = spawn('node', [BUNDLE], {
+          cwd: shared,
+          env: {
+            PATH: process.env.PATH, HOME: shared, NODE_ENV: 'production',
+            PORT: String(++port), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: shared,
+            NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let plog = '';
+        proc.stdout.on('data', (d) => { plog += d; });
+        proc.stderr.on('data', (d) => { plog += d; });
+        const pcode = await new Promise((res) => proc.once('exit', res));
+        const snapAfter = dirSnapshot(shared);
+        record(`a refused instance changes NOTHING in the data directory, given ${label}`,
+          pcode !== 0 && snapBefore === snapAfter,
+          pcode === 0 ? `the intruder was NOT refused (exit 0) — ${plog.slice(-120)}`
+            : snapBefore === snapAfter ? 'directory byte-identical'
+              : `mutated:\n    before ${snapBefore}\n    after  ${snapAfter}`);
+      }
+
+      // …and the owner is still serving, so "unchanged" is not the reading for
+      // an owner that died and took the whole scenario with it.
+      const health = await fetch(`http://127.0.0.1:${ownerPort}/api/health`)
+        .then((r) => r.status).catch((e) => String(e.message));
+      record('CONTROL: the owner is still up and holding the directory',
+        health === 200, `health ${health}`);
+    } finally {
+      await stop(owner);
+      try { rmSync(shared, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
 } finally {
   await stop(srv);
   try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 
+// SR-47: a suite that SILENTLY SKIPS a block still prints "N/N checks passed"
+// and exits 0, because N is counted, not expected. Measured on this file's own
+// ancestor: filtering one data array to empty removed six checks and the run
+// said "37/37 checks passed". The red probe that had aborted for three sweeps
+// was the same shape. So the count is DECLARED: fewer means a block did not
+// run, which is a failure even when every check that did run passed.
+const EXPECTED_CHECKS = 40;
+if (results.length < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — `
+    + 'a block was skipped. Raise EXPECTED_CHECKS deliberately when adding checks.');
+  process.exit(1);
+}
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length) {

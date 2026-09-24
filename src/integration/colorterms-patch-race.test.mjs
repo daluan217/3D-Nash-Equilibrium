@@ -40,6 +40,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const PORT = process.env.COLORTERMS_RACE_PORT || '3182';
 const BASE = `http://localhost:${PORT}`;
@@ -85,11 +86,8 @@ async function freshUserAndGame(tag) {
 // ── boot the production server ───────────────────────────────────────────
 const userData = mkdtempSync(path.join(tmpdir(), 'nash-ctrace-'));
 async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${BASE}/api/health`); if (r.ok) return true; } catch { /* not up */ }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return false;
+  try { await waitForOwnServer(server, BASE); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const server = spawn('node', [path.join(serverDir, 'dist/server.cjs')], {

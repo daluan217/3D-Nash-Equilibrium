@@ -242,7 +242,94 @@ function republishGuarded(yml: string): boolean {
   if (republishGuarded(lenient)) fail('known-positive fixture "malformed manifest read as unpublished" was NOT flagged');
 }
 
+/* ---------------------------------------------------------------- check 6
+ * The packaging audit must RUN, and run BEFORE the upload.
+ *
+ * `src/desktop/audit-packaged-asar.cjs` is what stands between a leaked
+ * account store and a published DMG, and two separate defects in it were found
+ * by hand this round. Neither would have mattered if the step invoking it were
+ * deleted — and it could be: the audit step was removed from both workflows and
+ * every test in this repo, this file included, still passed green. A comment in
+ * the YAML saying "BEFORE the upload, not after" is not a check.
+ *
+ * Ordering is the half that is easy to lose silently. An audit that runs after
+ * `gcloud storage cp` fails a workflow whose artifact is already public.
+ */
+function auditRunsBeforeUpload(yml: string): boolean {
+  const audit = yml.indexOf('node src/desktop/audit-packaged-asar.cjs');
+  const upload = yml.indexOf('gcloud storage cp');
+  return audit !== -1 && upload !== -1 && audit < upload;
+}
+{
+  const yml = read('release-desktop.yml');
+  if (!auditRunsBeforeUpload(yml)) {
+    fail('release-desktop.yml must run src/desktop/audit-packaged-asar.cjs BEFORE the first '
+      + '`gcloud storage cp`. After the upload is too late: the artifact is already public.');
+  }
+  const deleted = yml.replace(/\n[^\n]*node src\/desktop\/audit-packaged-asar\.cjs[^\n]*\n/, '\n');
+  if (deleted === yml) fail('known-positive fixture for the audit step did not land (the invocation moved)');
+  if (auditRunsBeforeUpload(deleted)) fail('known-positive fixture "release workflow with the audit step deleted" was NOT flagged');
+  // Reordered rather than removed — the case a "does it appear anywhere" check misses.
+  const after = yml.replace(/\n([^\n]*node src\/desktop\/audit-packaged-asar\.cjs[^\n]*)\n/, '\n')
+    + '\n      - name: Audit too late\n        run: node src/desktop/audit-packaged-asar.cjs\n';
+  if (auditRunsBeforeUpload(after)) fail('known-positive fixture "audit moved after the upload" was NOT flagged');
+
+  // …and the release audit must cover the SHIPPED artifacts, not the staging
+  // directory. electron-builder emits dist-electron/*.dmg and *.zip separately
+  // from dist-electron/mac-*/X.app, and the upload step takes the .dmg — so the
+  // two can diverge. Reproduced: a DMG whose app.asar carried an inlined
+  // `sk-proj-...` key uploaded while the audit reported 140/140 green on the
+  // untouched staging dir. AUDIT_REQUIRE_SHIPPED=1 makes "no shipped artifact
+  // to audit" a failure instead of a quieter pass.
+  if (!/AUDIT_REQUIRE_SHIPPED:\s*['"]?1/.test(yml)) {
+    fail('release-desktop.yml must set AUDIT_REQUIRE_SHIPPED=1 on the packaging audit step, or '
+      + 'the audit can pass having looked only at dist-electron/mac-*/X.app while a different '
+      + '.dmg is uploaded.');
+  }
+  // …on the audit step ITSELF, not merely somewhere in the file: a GitHub
+  // Actions `env:` block only reaches the step it belongs to. Matched as the
+  // ASSIGNMENT (`AUDIT_REQUIRE_SHIPPED: '1'`), never the bare word — the first
+  // spelling used indexOf on the name and hit the explanatory COMMENT above the
+  // step, then measured distance from there, so it failed on a correct file and
+  // would have passed on one where only a comment mentioned the flag.
+  const auditStep = /\n(\s+)- name:[^\n]*\n(?:\1\s[^\n]*\n)*?\1\s+run:[^\n]*audit-packaged-asar\.cjs/
+    .exec(yml);
+  if (!auditStep || !/^\s*AUDIT_REQUIRE_SHIPPED:\s*['"]?1['"]?\s*$/m.test(auditStep[0])) {
+    fail('AUDIT_REQUIRE_SHIPPED: \'1\' must be in the env block of the step that RUNS '
+      + 'audit-packaged-asar.cjs — an env block on another step, or the name in a comment, '
+      + 'does not reach it.');
+  }
+
+  // Same step in the PR-time workflow: without it, the audit first runs on a
+  // release, where failing is expensive and the tempting fix is to switch it off.
+  const test = read('test.yml');
+  if (!/node src\/desktop\/audit-packaged-asar\.cjs/.test(test)) {
+    fail('test.yml must run src/desktop/audit-packaged-asar.cjs (the package-audit job) so a '
+      + 'packaging leak is caught on the PR, not first discovered mid-release.');
+  }
+  // …and it must actually package something first, or it audits nothing and exits 2.
+  // `--publish never` (the full dmg+zip build) or `--dir` both produce a bundle;
+  // the PR job now uses the full build so that the .dmg/.zip code path — the one
+  // that guards the artifact the release actually uploads — is exercised before
+  // a release rather than during one. 6s vs 40s, measured.
+  if (!/electron-builder (--dir|--publish never)/.test(test)) {
+    fail('test.yml runs the audit without packaging anything (`electron-builder --dir` or '
+      + '`--publish never`), so there is no artifact to audit and the job cannot pass for the '
+      + 'right reason.');
+  }
+  // The PR job must check what the RELEASE checks. Without the flag, a build
+  // that produced no .dmg/.zip audits the staging directory alone and passes,
+  // and the divergence between the two is the defect this guards.
+  const testAuditStep = /\n(\s+)- name:[^\n]*\n(?:\1\s[^\n]*\n)*?\1\s+run:[^\n]*audit-packaged-asar\.cjs/
+    .exec(test);
+  if (!testAuditStep || !/^\s*AUDIT_REQUIRE_SHIPPED:\s*['"]?1['"]?\s*$/m.test(testAuditStep[0])) {
+    fail('test.yml must set AUDIT_REQUIRE_SHIPPED: \'1\' in the env block of the step that runs '
+      + 'audit-packaged-asar.cjs, so the PR audits the shipped .dmg/.zip and not just the staging '
+      + 'directory.');
+  }
+}
+
 console.log(
-  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on Deploy site's merged-head check gate (no Test rerun on main), workflow_run triggers filtered to main, `
+  `✓ deploy chain: DMG gated on Live smoke (workflow_run only), Cloud Build gated on Deploy site's merged-head check gate (no Test rerun on main), workflow_run triggers filtered to main, packaging audit runs before the upload, `
   + `${MUST_FLAG.length} known-positive fixtures flagged, 2 controls clean`,
 );

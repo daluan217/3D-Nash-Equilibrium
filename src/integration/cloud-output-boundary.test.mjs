@@ -14,6 +14,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
@@ -91,11 +92,8 @@ const child = spawn('node', [BUNDLE], {
 let serverLog = ''; child.stdout.on('data', (d) => { serverLog += d; }); child.stderr.on('data', (d) => { serverLog += d; });
 
 try {
-  let ready = false;
-  for (let i = 0; i < 80; i++) {
-    try { const r = await fetch(`${BASE}/api/health`); if (r.ok) { ready = true; break; } } catch { /* boot */ }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  const ready = await waitForOwnServer(child, BASE, { timeoutMs: 8000 })
+    .then(() => true, (err) => { serverLog += `\n${err.message}`; return false; });
   record('fixture: production bundle starts from an empty cwd', ready, serverLog.slice(-400));
   if (!ready) throw new Error(`server did not become ready\n${serverLog}`);
 

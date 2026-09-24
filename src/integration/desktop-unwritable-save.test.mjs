@@ -28,9 +28,10 @@
  *   node src/integration/desktop-unwritable-save.test.mjs
  */
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { waitForOwnServer } from './ownserver.mjs';
 
 const PORT = process.env.UNWRITABLE_SAVE_PORT || '3117';
 const BASE = `http://localhost:${PORT}`;
@@ -91,8 +92,9 @@ async function waitReady() {
       // never completed the response (CodeRabbit, 2026-09-02 re-review —
       // same shape as the 798s-hang class this repo already guards
       // elsewhere, e.g. dmg-download.test.mjs's own bounded health fetch).
+      // S58: the pid check is the point: IS_ELECTRON makes the server WALK to the next port on EADDRINUSE while BASE stays fixed, so a stray listener (another suite's server, or macOS ControlCenter on 5000) answers `ok` and the whole run measures a process it never spawned.
       const r = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
+      if (r.ok && (await r.json())?.pid === server.pid) return true;
     } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((res) => setTimeout(res, 500));
   }
@@ -144,7 +146,7 @@ try {
   record('a GET right after the failed POST does not show the phantom game (no rollback needed — nothing was ever committed)',
     afterFailedPost.status === 200 && Array.isArray(afterFailedPost.json)
       && !afterFailedPost.json.some((g) => g.name === 'Unwritable dir test'),
-    `status=${afterFailedPost.status} names=${JSON.stringify((afterFailedPost.json ?? []).map((g) => g.name))}`);
+    `status=${afterFailedPost.status} body=${JSON.stringify(afterFailedPost.json).slice(0, 120)}`);
 
   // ══ 3. the SAME failure mode on update/delete of a game that already
   //      exists in memory (created before the directory went read-only, the
@@ -178,8 +180,9 @@ async function waitReady2() {
   for (let i = 0; i < 60; i++) {
     try {
       // Bounded — see waitReady's own comment above.
+      // S58: the pid check is the point: IS_ELECTRON makes the server WALK to the next port on EADDRINUSE while BASE stays fixed, so a stray listener (another suite's server, or macOS ControlCenter on 5000) answers `ok` and the whole run measures a process it never spawned.
       const r = await fetch(`${BASE2}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
+      if (r.ok && (await r.json())?.pid === server2.pid) return true;
     } catch { /* not up yet, or the health check itself timed out */ }
     await new Promise((res) => setTimeout(res, 500));
   }
@@ -221,7 +224,8 @@ try {
   // ORIGINAL name in place, visible to the very next GET — not silently
   // applied in memory while the write itself failed.
   const afterFailedPatch = await call2('GET', '/api/games');
-  const stillOriginal = (afterFailedPatch.json ?? []).find((g) => g.id === gid);
+  const stillOriginal = Array.isArray(afterFailedPatch.json)
+    ? afterFailedPatch.json.find((g) => g.id === gid) : undefined;
   record('a GET right after the failed PATCH still shows the ORIGINAL name, not the rejected rename',
     afterFailedPatch.status === 200 && stillOriginal?.name === 'Will go read-only',
     `status=${afterFailedPatch.status} name=${JSON.stringify(stillOriginal?.name)}`);
@@ -240,8 +244,9 @@ try {
   const afterFailedDelete = await call2('GET', '/api/games');
   record('a GET right after the failed DELETE still shows the game (nothing was actually removed)',
     afterFailedDelete.status === 200
-      && (afterFailedDelete.json ?? []).some((g) => g.id === gid),
-    `status=${afterFailedDelete.status} ids=${JSON.stringify((afterFailedDelete.json ?? []).map((g) => g.id))}`);
+      && Array.isArray(afterFailedDelete.json)
+      && afterFailedDelete.json.some((g) => g.id === gid),
+    `status=${afterFailedDelete.status} body=${JSON.stringify(afterFailedDelete.json).slice(0, 120)}`);
 } finally {
   server2.kill('SIGKILL');
   await reaped(server2);
@@ -281,15 +286,8 @@ async function call3(method, url, body, token) {
   return { status: r.status, json };
 }
 async function waitReady3() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      // Bounded — see waitReady's own comment above.
-      const r = await fetch(`${BASE3}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
-    } catch { /* not up yet, or the health check itself timed out */ }
-    await new Promise((res) => setTimeout(res, 500));
-  }
-  return false;
+  try { await waitForOwnServer(server3, BASE3); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 const server3 = spawn('node', [BUNDLE], {
   cwd: userData3,
@@ -340,9 +338,16 @@ try {
   record('the session still works right after the refused deletion (nothing was committed in memory)',
     meAfter.status === 200 && meAfter.json?.email === email, `status=${meAfter.status} body=${JSON.stringify(meAfter.json).slice(0, 120)}`);
   const gamesAfter = await call3('GET', '/api/games', undefined, token);
+  // `?? []` guards a MISSING body, not a non-array one: when the session is
+  // gone the body is `{error: 'Invalid session.'}` and `.map` threw, killing
+  // the whole suite mid-run. MEASURED — with saveDB mutated to swallow its
+  // write error, this line crashed the process at check 17 of 55 and every
+  // later block, including case K, silently never ran. A test file must
+  // REPORT a failure, not die of one.
+  const listAfter = Array.isArray(gamesAfter.json) ? gamesAfter.json : null;
   record('the account\'s saved game is still listed after the refused deletion',
-    gamesAfter.status === 200 && (gamesAfter.json ?? []).some((g) => g.name === 'Keepsake'),
-    `status=${gamesAfter.status} names=${JSON.stringify((gamesAfter.json ?? []).map((g) => g.name))}`);
+    gamesAfter.status === 200 && !!listAfter && listAfter.some((g) => g.name === 'Keepsake'),
+    `status=${gamesAfter.status} body=${JSON.stringify(gamesAfter.json).slice(0, 120)}`);
 
   // CONTROL: the route can still really delete. Without this, every check
   // above would also pass on a build where deletion never works at all.
@@ -394,15 +399,8 @@ async function call4(method, url, body) {
   return { status: r.status, json };
 }
 async function waitReady4() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      // Bounded — see waitReady's own comment above.
-      const r = await fetch(`${BASE4}/api/health`, { signal: AbortSignal.timeout(2000) });
-      if (r.ok) return true;
-    } catch { /* not up yet, or the health check itself timed out */ }
-    await new Promise((res) => setTimeout(res, 500));
-  }
-  return false;
+  try { await waitForOwnServer(server4, BASE4); return true; }
+  catch (err) { console.error(err.message); return false; }
 }
 const server4 = spawn('node', [BUNDLE], {
   cwd: userData4,
@@ -469,6 +467,425 @@ try {
   rmSync(userData4, { recursive: true, force: true });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BLUE-LOOP-DESKTOP-22, invented angle J — the data directory pulled out from
+// under a RUNNING app.
+//
+// The cases above all hold the directory in one state for the whole session.
+// The data dir lives in ~/Library/Application Support: users clean it out,
+// sync tools relocate it, and "reset the app" advice tells people to delete
+// it. The app holds `inMemoryDb` for the whole process lifetime, so the
+// question none of the cases above ask is whether a save AFTER the rug-pull
+// still tells the truth.
+//
+// THE INVARIANT, one line: a save either lands on disk or reports failure.
+// A 200 "Game saved successfully!" with nothing on disk is the defect —
+// the same class as the RED-DESKTOP-4 finding at the top of this file, in a
+// shape that file never reached.
+//
+// MEASURED (_gen/b22-angleJ-rugpull.mjs, 0.0.224): deleted -> the write path
+// recreates the dir and the game really lands; replaced-by-a-file -> honest
+// 500; deleted-then-recreated -> lands, with the owner row; unwritable then
+// writable again -> honest 500, then recovers. No case claimed success with
+// nothing on disk. This block is what keeps that true.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // 3123, not 3122: PORT4 already defaults to 3122 AND the workflow pins
+  // UNWRITABLE_SAVE_PORT4 to it, so the original default collided in both the
+  // local and the CI configuration (reviewer finding, verified: PORT4 line 384
+  // and test.yml's env block both read 3122). Phase 4's server is killed before
+  // this block, so the collision would have surfaced only as a flake.
+  const PORT5 = process.env.UNWRITABLE_SAVE_PORT5 || '3123';
+  const BASE5 = `http://localhost:${PORT5}`;
+  // One extra level: the data directory sits inside a PRIVATE parent, so case
+  // E below can take write permission off that parent without touching the
+  // shared system temp dir (which would break every other process on the
+  // machine, including suites running in parallel in CI).
+  const rugpullRoot = mkdtempSync(path.join(tmpdir(), 'nash-rugpull-'));
+  const userData5 = path.join(rugpullRoot, 'data');
+  mkdirSync(userData5);
+  const call5 = async (method, url, body) => {
+    const r = await fetch(`${BASE5}${url}`, {
+      method,
+      headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    let json = null;
+    try { json = await r.json(); } catch { /* non-JSON */ }
+    return { status: r.status, json };
+  };
+  const server5 = spawn('node', [BUNDLE], {
+    cwd: userData5,
+    env: {
+      PATH: process.env.PATH, HOME: userData5, NODE_ENV: 'production',
+      PORT: PORT5, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: userData5,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let log5 = '';
+  server5.stdout.on('data', (d) => { log5 += d; });
+  server5.stderr.on('data', (d) => { log5 += d; });
+  try {
+    const ready = await waitForOwnServer(server5, BASE5, { timeoutMs: 20000 })
+      .then(() => true, (err) => { log5 += `\n${err.message}`; return false; });
+    record('rug-pull: the server booted', ready, ready ? '' : log5.slice(-300));
+
+    const dbOnDisk = () => {
+      const f = path.join(userData5, 'db.json');
+      if (!existsSync(f)) return null;
+      try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return 'unparseable'; }
+    };
+    const has = (name) => { const d = dbOnDisk(); return !!d && d !== 'unparseable' && (d.games ?? []).some((g) => g.name === name); };
+    // The judgement, in one place: a 200 with success:true MUST be on disk.
+    const honest = (label, res, name) => {
+      const claimed = res.status === 200 && res.json?.success === true;
+      record(`rug-pull ${label}: the save claim matches the disk`, !claimed || has(name),
+        `status=${res.status} claimedSaved=${claimed} onDisk=${has(name)}`);
+      return claimed;
+    };
+
+    // CONTROL FIRST. Without it, every "no false success" below would also
+    // pass on a build where saving never works at all.
+    const control = await call5('POST', '/api/games', { name: 'J-control', description: 'rugpull', payoffs: MP });
+    record('rug-pull CONTROL: an ordinary save succeeds and lands on disk',
+      control.status === 200 && control.json?.success === true && has('J-control'),
+      `status=${control.status} onDisk=${has('J-control')}`);
+
+    // A. Directory deleted outright underneath the running process.
+    rmSync(userData5, { recursive: true, force: true });
+    const afterDelete = await call5('POST', '/api/games', { name: 'J-after-delete', description: 'rugpull', payoffs: MP });
+    honest('after the directory was deleted', afterDelete, 'J-after-delete');
+    // Honesty is the floor, not the whole bar. A build that answers 500
+    // forever after the user cleans out Application Support is honest and
+    // still broken: every later save fails for the rest of the session with
+    // no way back short of a restart. The write path recreates a missing data
+    // directory (`if (!fs.existsSync(dbDir)) mkdirSync`), and that recovery is
+    // what this asserts — the honesty checks above pass with or without it,
+    // so without this line the mkdir could be deleted silently.
+    record('rug-pull: the app RECREATES a deleted data directory and the save really lands',
+      afterDelete.status === 200 && has('J-after-delete'),
+      `status=${afterDelete.status} onDisk=${has('J-after-delete')}`);
+
+    // B. Directory replaced by a regular FILE of the same name (the shape a
+    // sync tool or a careless script produces). Nothing can be written there,
+    // so the only honest answer is a failure.
+    rmSync(userData5, { recursive: true, force: true });
+    writeFileSync(userData5, 'not a directory');
+    const afterSwap = await call5('POST', '/api/games', { name: 'J-after-swap', description: 'rugpull', payoffs: MP });
+    honest('after the directory became a file', afterSwap, 'J-after-swap');
+    record('rug-pull: a save into a dir-turned-file FAILS rather than claiming success',
+      afterSwap.status >= 500 && afterSwap.json?.success !== true, `status=${afterSwap.status}`);
+
+    // C. Deleted and recreated empty — the "reset the app" shape. The write
+    // can succeed again here, so the bar is that whatever lands is coherent:
+    // a game on disk must have its owner row on disk.
+    rmSync(userData5, { force: true });
+    mkdirSync(userData5, { recursive: true });
+    const afterRecreate = await call5('POST', '/api/games', { name: 'J-after-recreate', description: 'rugpull', payoffs: MP });
+    honest('after the directory was recreated', afterRecreate, 'J-after-recreate');
+    if (has('J-after-recreate')) {
+      const d = dbOnDisk();
+      record('rug-pull: a game written after a recreate still has its owner row',
+        (d?.users ?? []).some((u) => u.id === 'local-owner'),
+        `users=${JSON.stringify((d?.users ?? []).map((u) => u.id))}`);
+    }
+
+    // D. Unwritable mid-session, then writable again: honest failure, then
+    // real recovery. The recovery half is the control for the failure half.
+    chmodSync(userData5, 0o555);
+    const whileLocked = await call5('POST', '/api/games', { name: 'J-locked', description: 'rugpull', payoffs: MP });
+    honest('while the directory is read-only', whileLocked, 'J-locked');
+    record('rug-pull: a save into a read-only dir FAILS rather than claiming success',
+      whileLocked.status >= 500 && whileLocked.json?.success !== true, `status=${whileLocked.status}`);
+    chmodSync(userData5, 0o755);
+    const recovered = await call5('POST', '/api/games', { name: 'J-recovered', description: 'rugpull', payoffs: MP });
+    record('rug-pull CONTROL: the app recovers once the directory is writable again',
+      recovered.status === 200 && has('J-recovered'),
+      `status=${recovered.status} onDisk=${has('J-recovered')}`);
+
+    // E. THE DIRECTORY CANNOT BE RECREATED (BLUE-LOOP-DESKTOP-22, sweep 21).
+    //
+    // Case A above passes because saveDB recreates a missing data directory.
+    // "It recreates it" is only an answer while mkdir can SUCCEED. Delete the
+    // directory AND take write permission off its PARENT and mkdirSync fails
+    // EACCES — the one branch where the recovery that makes A honest is not
+    // available. Nothing in this suite reached it: every other unwritable case
+    // leaves the directory itself in place. Measured on the real bundle
+    // (_gen probe, sweep 21): the save answers
+    // {"error":"Could not save your changes. Please try again."} and the log
+    // names the cause. The failure mode being guarded is the opposite — a 200
+    // "Game saved successfully!" for a write that cannot physically happen.
+    //
+    // `rugpullRoot` is this block's own private parent (see its creation
+    // above), never the shared system temp dir.
+    let parentLocked = false;
+    try {
+      rmSync(userData5, { recursive: true, force: true });
+      chmodSync(rugpullRoot, 0o555);
+      parentLocked = true;
+    } catch { /* fall through to the setup check below */ }
+    // Never bank a silent skip: if the OS would not let this fixture exist,
+    // say so instead of recording a pass for a case that never ran.
+    record('rug-pull setup: the data directory is gone and its parent is unwritable',
+      parentLocked && !existsSync(userData5), `parentLocked=${parentLocked} dirExists=${existsSync(userData5)}`);
+    if (parentLocked) {
+      try {
+        // Proof the fixture really is unrecreatable — otherwise the refusal
+        // below could be coming from something else entirely.
+        let mkdirBlocked = false;
+        try { mkdirSync(userData5); } catch { mkdirBlocked = true; }
+        record('rug-pull setup: mkdir into the locked parent really fails',
+          mkdirBlocked && !existsSync(userData5), `mkdirBlocked=${mkdirBlocked}`);
+
+        const unrecreatable = await call5('POST', '/api/games', { name: 'J-unrecreatable', description: 'rugpull', payoffs: MP });
+        record('rug-pull: a save that CANNOT recreate its directory fails instead of claiming success',
+          unrecreatable.status >= 500 && unrecreatable.json?.success !== true,
+          `status=${unrecreatable.status} body=${JSON.stringify(unrecreatable.json)}`);
+        record('rug-pull: that refusal tells the user the change was not saved',
+          typeof unrecreatable.json?.error === 'string' && /could not save|try again/i.test(unrecreatable.json.error),
+          JSON.stringify(unrecreatable.json));
+
+        // And the failed write must not have emptied the library the app is
+        // still serving: the user's existing games stay readable through an
+        // outage they did not cause.
+        const stillServed = await call5('GET', '/api/games');
+        record('rug-pull: the games already in memory are still served after the refused write',
+          Array.isArray(stillServed.json) && stillServed.json.some((g) => g.name === 'J-recovered'),
+          `status=${stillServed.status} names=${JSON.stringify(Array.isArray(stillServed.json) ? stillServed.json.map((g) => g.name) : stillServed.json)}`);
+      } finally {
+        chmodSync(rugpullRoot, 0o755);
+      }
+      // CONTROL: with the parent writable again the very same request works,
+      // so the refusal above was about the locked parent and nothing else.
+      const afterUnlock = await call5('POST', '/api/games', { name: 'J-after-unlock', description: 'rugpull', payoffs: MP });
+      record('rug-pull CONTROL: the same save succeeds once the parent is writable again',
+        afterUnlock.status === 200 && has('J-after-unlock'),
+        `status=${afterUnlock.status} onDisk=${has('J-after-unlock')}`);
+    }
+
+    // F. CONCURRENCY (BLUE-LOOP-DESKTOP-22, sweep 24). Everything above is
+    // sequential. desktop-concurrent-lock covers two PROCESSES fighting over
+    // the lock file; nothing covered many in-flight requests inside ONE
+    // process, which is the ordinary desktop case — a user mashing Save, an
+    // autosave firing during a rename, the renderer retrying a slow response.
+    // The write path is a read-modify-write of one shared inMemoryDb.games
+    // array, so the shapes that matter are a LOST UPDATE and a POISONED
+    // QUEUE: one write fails while others are queued behind it.
+    const names = Array.from({ length: 24 }, (_, i) => `J-conc-${i}`);
+    const burst = await Promise.all(names.map((n) =>
+      call5('POST', '/api/games', { name: n, description: 'rugpull', payoffs: MP })));
+    const claimed = burst.filter((r) => r.status === 200 && r.json?.success === true).length;
+    const landed = names.filter(has).length;
+    record('concurrency: every concurrent save that CLAIMED success is on disk',
+      claimed === landed, `claimed=${claimed} onDisk=${landed} — a shortfall is silently lost work`);
+    record('concurrency CONTROL: the burst really did save (not all refused)',
+      claimed === names.length, `${claimed}/${names.length} claimed success`);
+    const dAll = dbOnDisk();
+    const ids = (dAll && dAll !== 'unparseable' ? dAll.games : []).map((g) => g.id);
+    record('concurrency: no duplicate game ids were produced',
+      new Set(ids).size === ids.length, `${ids.length} games, ${new Set(ids).size} unique ids`);
+
+    // POISONED QUEUE: fire a burst, pull writability out from under it
+    // mid-flight, give it back. Nothing may claim a success it did not get.
+    // MUTATION-PROVEN: making saveDB swallow its error and return true leaves
+    // 8 of 12 claimed-but-absent and fails this check by name.
+    //
+    // THE WINDOW IS RETRIED UNTIL IT BITES, not timed and hoped for. A fixed
+    // "fire 12, sleep 40ms, chmod" is a race by construction, and CI ran it on
+    // a faster disk than this laptop: all 12 saves completed before the chmod
+    // landed, the poison window never opened, and the control below caught it
+    // (0/12 refused) exactly as designed — a red CI check for a vacuous
+    // fixture, which is the control doing its job rather than a product
+    // defect. Escalating attempts make the window real instead of likely: more
+    // in-flight saves take longer to drain, and a shorter delay chmods earlier.
+    // The no-phantom property is asserted over EVERY attempt, so a save that
+    // lies about success in an attempt that did not bite still fails the suite.
+    const poisonAttempt = async (count, delayMs) => {
+      const names = Array.from({ length: count }, (_, i) => `J-poison-${delayMs}-${i}`);
+      const burst = names.map((n) =>
+        call5('POST', '/api/games', { name: n, description: 'rugpull', payoffs: MP }));
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      chmodSync(userData5, 0o555);
+      const res = await Promise.all(burst);
+      chmodSync(userData5, 0o755);
+      return { names, res };
+    };
+    const phantom = [];
+    let poisonResults = [];
+    let poisonTried = 0;
+    for (const [count, delayMs] of [[12, 40], [48, 5], [200, 0]]) {
+      const { names, res } = await poisonAttempt(count, delayMs);
+      poisonTried++;
+      poisonResults = res;
+      phantom.push(...names.filter((n, i) =>
+        res[i].status === 200 && res[i].json?.success === true && !has(n)));
+      if (res.filter((r) => r.status >= 500).length > 0) break;
+    }
+    record('concurrency: no queued save claimed success while the directory was unwritable',
+      phantom.length === 0, `phantom saves: ${JSON.stringify(phantom)}`);
+    // THE CONTROL THAT MAKES THE CHECK ABOVE MEAN SOMETHING (reviewer finding,
+    // 2026-09-20). Without it, a run where every save finished before the
+    // chmod landed legitimately succeeds, `phantom` is empty, and the check
+    // passes with the unwritable window never having been open. It fired for
+    // real on CI at 12-saves/40ms, which is why the attempts above escalate
+    // instead of being timed once. If this ever fires again, widen the
+    // escalation — never weaken the assertion above.
+    const refused = poisonResults.filter((r) => r.status >= 500).length;
+    record('concurrency CONTROL: the poison window really bit (some save was refused)',
+      refused > 0,
+      `${refused}/${poisonResults.length} refused after ${poisonTried} attempt(s) — 0 means every `
+      + 'save completed before the chmod landed, so the phantom check above proved nothing this run');
+    const postPoison = await call5('POST', '/api/games', { name: 'J-post-poison', description: 'rugpull', payoffs: MP });
+    record('concurrency CONTROL: the app recovers after the mid-burst outage',
+      postPoison.status === 200 && has('J-post-poison'), `status=${postPoison.status}`);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CASE K (sweep 35) — the FILE is swapped by an OUTSIDE WRITER mid-session.
+    //
+    // Everything above moves or locks the DIRECTORY. A sync client (iCloud
+    // hosts this very repo), a backup restore or a cleanup script rewrites
+    // db.json UNDER the running app, which is holding `inMemoryDb` and will
+    // overwrite the whole file on its next save. Same invariant, new cause:
+    // a save either lands or reports failure.
+    //
+    // NOTE WHAT IS *NOT* ASSERTED: that the outside writer's content is
+    // preserved. It is not, and that is the documented single-owner design —
+    // asserting it would be inventing a requirement. The check is honesty.
+    for (const [label, sabotage] of [
+      ['truncated to zero bytes', () => writeFileSync(path.join(userData5, 'db.json'), '')],
+      ['replaced with foreign JSON', () => writeFileSync(path.join(userData5, 'db.json'),
+        JSON.stringify({ hello: 'world' }))],
+      ['replaced with a DIRECTORY', () => {
+        rmSync(path.join(userData5, 'db.json'), { force: true });
+        mkdirSync(path.join(userData5, 'db.json'));
+      }],
+    ]) {
+      sabotage();
+      const name = `K-${label.replace(/\W+/g, '-')}`;
+      const res = await call5('POST', '/api/games', { name, description: 'outside-writer', payoffs: MP });
+      honest(`case K (${label})`, res, name);
+      // Repair for the next iteration: the directory case leaves a directory
+      // where db.json belongs, which every later case would trip over.
+      try { rmSync(path.join(userData5, 'db.json'), { recursive: true, force: true }); } catch { /* gone */ }
+    }
+    // CONTROL: saving must work again once the outside writer stops, or every
+    // "honest" verdict above is the reading for an app that can no longer
+    // save at all.
+    const postK = await call5('POST', '/api/games', { name: 'K-control', description: 'outside-writer', payoffs: MP });
+    record('case K CONTROL: the app saves again once the file is left alone',
+      postK.status === 200 && has('K-control'), `status=${postK.status} onDisk=${has('K-control')}`);
+  } finally {
+    server5.kill('SIGKILL');
+    await reaped(server5);
+    // Unlock the private parent FIRST: case E leaves it 0555 if it threw, and
+    // an rm inside a read-only parent cannot remove anything.
+    try { chmodSync(rugpullRoot, 0o755); } catch { /* already gone */ }
+    try { chmodSync(userData5, 0o755); } catch { /* may be a file or gone */ }
+    rmSync(rugpullRoot, { recursive: true, force: true });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Review #14: the ACCOUNT routes. register/verify/forgot/delete-request mutated
+// the shared user object, ignored saveDB's result and answered 200. On a
+// read-only data folder a desktop registration said "Local account created"
+// and nothing reached disk. Each route now builds a candidate and commits it
+// only when saveDB lands it; every one is driven here against a read-only
+// folder, each followed by a writable CONTROL, so a route that refuses
+// everything cannot pass.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const PORT6 = process.env.UNWRITABLE_SAVE_PORT6 || '3124';
+  const BASE6 = `http://localhost:${PORT6}`;
+  const userData6 = mkdtempSync(path.join(tmpdir(), 'nash-unwritable-acct-'));
+  const call6 = async (method, url, body, token) => {
+    const headers = {};
+    if (body !== undefined) headers['content-type'] = 'application/json';
+    if (token) headers.authorization = `Bearer ${token}`;
+    const r = await fetch(`${BASE6}${url}`, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    let json = null; try { json = await r.json(); } catch { /* non-JSON */ }
+    return { status: r.status, json };
+  };
+  const onDisk = () => { try { return JSON.parse(readFileSync(path.join(userData6, 'db.json'), 'utf8')); } catch { return null; } };
+  // verify: desktop registration auto-verifies, so the pending user is seeded
+  // (legacy base64 password hash, which login still accepts).
+  writeFileSync(path.join(userData6, 'db.json'), JSON.stringify({ games: [], users: [{ id: 'u_pending6', username: 'pending6',
+    email: 'pending6@desk.local', passwordHash: Buffer.from('TestPass123').toString('base64'), isVerified: false,
+    verificationCode: '246810', verificationCodeExpires: Date.now() + 10 * 60 * 1000 }] }));
+  const server6 = spawn('node', [BUNDLE], { cwd: userData6, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { PATH: process.env.PATH, HOME: userData6, NODE_ENV: 'production', PORT: PORT6, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: userData6 } });
+  try {
+    await waitForOwnServer(server6, BASE6, { timeoutMs: 20000 });
+    const readOnly = async (fn) => { chmodSync(userData6, 0o555); try { return await fn(); } finally { chmodSync(userData6, 0o755); } };
+    const refused = (r) => r.status >= 500 && r.json?.success !== true && /nothing was saved/i.test(r.json?.error || '');
+
+    // verify: a verification the server could not store must not unlock login
+    const pending = { email: 'pending6@desk.local', password: 'TestPass123' };
+    const ver = await readOnly(() => call6('POST', '/api/auth/verify', { email: pending.email, code: '246810' }));
+    const verLogin = await call6('POST', '/api/auth/login', pending);
+    record('account: verify on a read-only folder answers 500, and login still asks for verification (memory and disk agree)',
+      refused(ver) && verLogin.status === 403 && verLogin.json?.needVerification === true
+        && (onDisk()?.users ?? []).some((u) => u.email === pending.email && u.isVerified === false),
+      `verify=${ver.status} ${JSON.stringify(ver.json)} login=${verLogin.status}`);
+    const verOk = await call6('POST', '/api/auth/verify', { email: pending.email, code: '246810' });
+    const verOkLogin = await call6('POST', '/api/auth/login', pending);
+    record('account CONTROL: the same code verifies once writable, lands on disk, and login then works',
+      verOk.status === 200 && verOkLogin.status === 200
+        && (onDisk()?.users ?? []).some((u) => u.email === pending.email && u.isVerified === true),
+      `verify=${verOk.status} login=${verOkLogin.status}`);
+
+    // register (new desktop user)
+    const reg = await readOnly(() => call6('POST', '/api/auth/register', { username: 'acct6', email: 'acct6@desk.local', password: 'TestPass123' }));
+    record('account: register on a read-only folder answers 500 and says nothing was saved',
+      refused(reg), `status=${reg.status} body=${JSON.stringify(reg.json)}`);
+    const regLogin = await call6('POST', '/api/auth/login', { email: 'acct6@desk.local', password: 'TestPass123' });
+    record('account: the refused registration left no account behind, in memory or on disk',
+      regLogin.status !== 200 && !(onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local'), `login=${regLogin.status}`);
+    const regOk = await call6('POST', '/api/auth/register', { username: 'acct6', email: 'acct6@desk.local', password: 'TestPass123' });
+    record('account CONTROL: the same registration succeeds once the folder is writable, and lands on disk',
+      regOk.status === 200 && (onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local'), `status=${regOk.status}`);
+
+    // forgot-password: a code the server could not store must not be handed out
+    const forgot = await readOnly(() => call6('POST', '/api/auth/forgot-password', { email: 'acct6@desk.local' }));
+    record('account: forgot-password on a read-only folder answers 500 and hands out no code',
+      refused(forgot) && !forgot.json?.recoveryCode, `status=${forgot.status} body=${JSON.stringify(forgot.json)}`);
+    const forgotOk = await call6('POST', '/api/auth/forgot-password', { email: 'acct6@desk.local' });
+    record('account CONTROL: forgot-password succeeds once writable, and its code is the one on disk',
+      forgotOk.status === 200 && !!forgotOk.json?.recoveryCode
+        && (onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local' && u.recoveryCode === forgotOk.json.recoveryCode),
+      `status=${forgotOk.status}`);
+
+    // delete-request: same rule for the deletion code
+    const token = (await call6('POST', '/api/auth/login', { email: 'acct6@desk.local', password: 'TestPass123' })).json?.token;
+    const delReq = await readOnly(() => call6('POST', '/api/auth/delete-request', undefined, token));
+    record('account: delete-request on a read-only folder answers 500 and hands out no code',
+      !!token && refused(delReq) && !delReq.json?.deleteCode, `status=${delReq.status} body=${JSON.stringify(delReq.json)}`);
+    const delReqOk = await call6('POST', '/api/auth/delete-request', undefined, token);
+    record('account CONTROL: delete-request succeeds once writable, and its code is the one on disk',
+      delReqOk.status === 200 && !!delReqOk.json?.deleteCode
+        && (onDisk()?.users ?? []).some((u) => u.email === 'acct6@desk.local' && u.deleteCode === delReqOk.json.deleteCode),
+      `status=${delReqOk.status}`);
+  } catch (e) {
+    record('account phase completed without an exception', false, String(e?.stack || e).slice(0, 300));
+  } finally {
+    server6.kill('SIGKILL');
+    try { chmodSync(userData6, 0o755); } catch { /* gone */ }
+    rmSync(userData6, { recursive: true, force: true });
+  }
+}
+
+// SR-47: a suite that SILENTLY SKIPS a block still prints "N/N checks passed"
+// and exits 0, because N is counted, not expected. Measured on this file's own
+// ancestor: filtering one data array to empty removed six checks and the run
+// said "37/37 checks passed". The red probe that had aborted for three sweeps
+// was the same shape. So the count is DECLARED: fewer means a block did not
+// run, which is a failure even when every check that did run passed.
+const EXPECTED_CHECKS = 64;
+if (results.length < EXPECTED_CHECKS) {
+  console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — `
+    + 'a block was skipped. Raise EXPECTED_CHECKS deliberately when adding checks.');
+  process.exit(1);
+}
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DESKTOP UNWRITABLE-SAVE: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {
