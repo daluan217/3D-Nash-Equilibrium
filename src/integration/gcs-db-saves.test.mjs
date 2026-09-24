@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 91;
+const EXPECTED_CHECKS = 97;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -571,9 +571,9 @@ try {
   // the write trigger: even without SMTP
   // configured (this hosted path 500s on the email step), server.ts's own
   // register handler calls saveDB() to ADD the new user BEFORE attempting
-  // to send the verification email, then calls saveDB() AGAIN to remove it
-  // once the email step fails — two real writes, both exercising the fix,
-  // regardless of the outer HTTP response being a 500.
+  // to send the verification email. The pending row stays after the failed
+  // send (sweep 6: a retry re-sends its code), so that write must land
+  // merged with what GCS already held.
   await fakeGcsDeferred.listen();
 
   const regZ = await fetch(`http://127.0.0.1:${portZ}/api/auth/register`, {
@@ -593,8 +593,8 @@ try {
   } catch { /* see the try/catch note in section 1 */ }
   record('THE DEFECT: the pre-existing game (that this process never read) SURVIVES the save, not silently erased',
     JSON.stringify(finalZNames) === JSON.stringify(['Preexisting-Game']), JSON.stringify(finalZNames));
-  record('the failed registration\'s user was still correctly removed again (the SECOND save is not itself broken by the merge)',
-    JSON.stringify(finalZUsernames) === JSON.stringify(['userz']), JSON.stringify(finalZUsernames));
+  record('the failed registration\'s pending row is kept and merged beside the GCS-only account (the write is not broken by the merge)',
+    JSON.stringify(finalZUsernames) === JSON.stringify(['freshz', 'userz']), JSON.stringify(finalZUsernames));
   const loginBack = await fetch(`http://127.0.0.1:${portZ}/api/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'userz@example.test', password: 'Sup3rSecret!23' }),
@@ -1048,18 +1048,22 @@ try {
     const fake2 = await trackFake(startFakeGcsDb({ port: fGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
     const Y2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-foldy-'))), fY, fGcs, mailEnv)), fY);
     const X2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-foldx-'))), fX, fGcs)), fX);
-    fake2.setUploadDelayMs(2500);
+    // 4.5s hold: X must re-read before Y's fold lands. At 2.5s the margin was
+    // ~100ms and verify's password hashing (sweep 6) ate it: X saw the fold.
+    fake2.setUploadDelayMs(4500);
     await fetch(`http://127.0.0.1:${fY}/api/auth/me`); // Y re-checks GCS now: its 2s freshness window starts
+    const foldT0 = Date.now();
     fake2.peerWrite(JSON.stringify({ users: [{ ...seededUser('u_A', 'annie', 'fold@example.test', 'Sup3rSecretA'),
       isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 }], games: [] }));
     await call(fY, '/api/auth/register', { username: 'bella', email: 'fold@example.test', password: 'Sup3rSecretB' });
     const vB = await call(fY, '/api/auth/verify', { email: 'fold@example.test', code: codes.at(-1), password: 'Sup3rSecretB' });
     // X booted before A existed; its own 2s window must lapse so it re-reads
-    // and sees A (Y's fold is still held by the 2.5s upload delay).
+    // and sees A (Y's fold is still held by the 4.5s upload delay).
     await new Promise((r) => setTimeout(r, 2100));
     const vA = await call(fX, '/api/auth/verify', { email: 'fold@example.test', code: '111111', password: 'Sup3rSecretA' });
     const tA = (await (await call(fX, '/api/auth/login', { email: 'fold@example.test', password: 'Sup3rSecretA' })).json()).token;
     const late = await call(fX, '/api/games', { name: 'A-Late', payoffs: pay }, tA);
+    const foldMargin = 4500 - (Date.now() - foldT0); // > 0: A-Late was saved before Y's fold could land
     const onGcs2 = () => { try { return JSON.parse(fake2.getStored()); } catch { return { users: [], games: [] }; } };
     // Settled = the fold has landed (u_A gone) and A-Late is on GCS. A fixed
     // wait read the TRANSIENT state (X's write, A still there) and passed with
@@ -1073,7 +1077,7 @@ try {
     const savedForA = fake2.uploadLog().some((u) => { try { return JSON.parse(u.body).games.some((g) => g.name === 'A-Late' && g.userId === 'u_A'); } catch { return false; } });
     record('fixture: B verified on Y; A verified and saved A-Late on X under u_A; the fold of u_A landed',
       vB.status === 200 && vA.status === 200 && typeof tA === 'string' && late.status === 200 && savedForA && settled,
-      `verify B ${vB.status}, verify A ${vA.status}, game ${late.status}, sent under u_A ${savedForA}, settled ${settled}; users ${JSON.stringify(fin2.users.map((u) => u.id))}`);
+      `verify B ${vB.status}, verify A ${vA.status}, game ${late.status}, sent under u_A ${savedForA}, settled ${settled}, margin ${foldMargin}ms; users ${JSON.stringify(fin2.users.map((u) => u.id))}`);
     record('THE DEFECT: a game saved under the folded account is owned by the surviving one',
       owners.length === 1 && owners[0].id !== 'u_A' && aLate?.userId === owners[0].id,
       `accounts ${owners.length}; A-Late owner ${aLate?.userId} vs ${owners[0]?.id}`);
@@ -1250,7 +1254,7 @@ try {
       sock.on('error', () => {});
     });
     await new Promise((r) => smtp.listen(qSmtp, '127.0.0.1', r));
-    const fake = await trackFake(startFakeGcsDb({ port: qGcs, initialContent: JSON.stringify({ users: [seededUser('u_q', 'quiet', 'q@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const fake = await trackFake(startFakeGcsDb({ port: qGcs, initialContent: JSON.stringify({ users: [seededUser('u_q', 'quiet', 'q@example.test', 'Sup3rSecret!23'), seededUser('u_q2', 'quiet2', 'q2@example.test', 'Sup3rSecret!23')], games: [] }) }));
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-smtp-'))), qApp, qGcs,
       { SMTP_HOST: '127.0.0.1', SMTP_PORT: String(qSmtp), SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'x@example.invalid', SMTP_DEADLINE_MS: '1500' })), qApp);
     const timed = async (route, body) => {
@@ -1292,6 +1296,9 @@ try {
       `statuses ${JSON.stringify(hostileStatus)} mails ${mails.length} rcpts ${JSON.stringify(mails.map((m) => m.rcpts))}`);
     silent = true;
     const hung = [];
+    // A second account: q@ was just mailed, and a recovery mail per address per
+    // minute is the cooldown (sweep 6), so a repeat there never reaches SMTP.
+    routes[1][1] = () => ({ email: 'q2@example.test' });
     for (const [route, body] of routes) hung.push(await timed(route, body()));
     record('CONTROL: against an answering mail server, register / forgot-password / feedback are 200 and fast',
       ok.every((r) => r.status === 200 && r.ms < 5000), JSON.stringify(ok));
@@ -1704,9 +1711,9 @@ try {
       (p) => call(p, '/api/auth/reset-password', { email: base.email, code: '000000', newPassword: 'N3wSecret!pass' }),
       (p) => call(p, '/api/auth/reset-password', { email: base.email, code: '000001', newPassword: 'N3wSecret!pass' }));
     await c.done();
-    record('fixture: in each case X\'s change landed first, Y answered from its stale copy (wrong code / re-register accepted) and Y\'s upload 412\'d',
+    record('fixture: X\'s change landed first and Y answered from its stale copy (wrong code / re-register accepted); a/c uploads 412\'d, b\'s re-register wrote nothing',
       a.out.rx === 200 && a.out.ry === 400 && /Incorrect recovery code/.test(a.out.ryError) && a.out.refused
-        && b.out.rx === 200 && b.out.ry === 200 && b.out.refused && c.out.rx === 400 && c.out.ry === 400 && /Incorrect/.test(c.out.ryError) && c.out.refused,
+        && b.out.rx === 200 && b.out.ry === 200 && !b.out.refused && c.out.rx === 400 && c.out.ry === 400 && /Incorrect/.test(c.out.ryError) && c.out.refused,
       JSON.stringify([a, b, c].map((x) => [x.out.rx, x.out.ry, x.out.ryError.slice(0, 40), x.out.refused])));
     record('THE DEFECT: the acked reset stands, the intruder cannot sign in to the verified account, and attempts on both instances add up to the lockout',
       aNew === 200 && aOld === 401 && a.out.stored.tokenVersion === 1 && !a.out.stored.recoveryCode
@@ -1722,90 +1729,191 @@ try {
     const dCode = mailed.slice(mails0).find((m) => m.to === base.email)?.code;
     const dReset = (await call(aX, '/api/auth/reset-password', { email: base.email, code: dCode, newPassword: 'N3wSecret!pass' })).status;
     await d.done();
-    // (e) pending account: the owner re-registers with a NEW password on X (new
-    // code mailed), a wrong code is tried on Y: the new code with the new
-    // password must verify (sweep 5). Same password would let a code carried
-    // onto Y's record pass by coincidence (M37 survived that).
-    const mails1 = mailed.length;
-    const e = await run('e', { ...base, isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 },
-      (p) => call(p, '/api/auth/register', { username: 'acct', email: base.email, password: 'N3wOwner!pass' }),
-      (p) => call(p, '/api/auth/verify', { email: base.email, code: '000000', password: 'Sup3rSecret!23' }));
-    const eCode = mailed.slice(mails1).find((m) => m.to === base.email)?.code;
-    const eVerify = (await call(aX, '/api/auth/verify', { email: base.email, code: eCode, password: 'N3wOwner!pass' })).status;
+    // (e) the ATTACKER registered first; the owner verifies on X (setting their
+    // password and name), a wrong code is tried on Y: the owner's credentials
+    // must win the merge (a verify is a credential change, sweep 6).
+    const e = await run('e', { ...base, username: 'att', passwordHash: Buffer.from('Att4cker!pass').toString('base64'), isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 },
+      (p) => call(p, '/api/auth/verify', { email: base.email, code: '111111', password: 'N3wOwner!pass', username: 'acct-owner' }),
+      (p) => call(p, '/api/auth/verify', { email: base.email, code: '000000', password: 'Att4cker!pass', username: 'att3' }));
+    const eOwner = await e.out.login('N3wOwner!pass'), eAtt = await e.out.login('Att4cker!pass');
     await e.done();
-    record('fixture: (d) forgot and (e) resend each mailed a code, and Y\'s stale answer 412\'d',
+    record('fixture: (d) forgot mailed a code, (e) the owner verified on X and Y\'s wrong code was answered stale; both of Y\'s uploads 412\'d',
       d.out.rx === 200 && d.out.ry === 200 && d.out.refused && /^\d{6}$/.test(dCode ?? '')
-        && e.out.rx === 200 && e.out.ry === 400 && e.out.refused && /^\d{6}$/.test(eCode ?? ''),
-      JSON.stringify([[d.out.rx, d.out.ry, d.out.refused, !!dCode], [e.out.rx, e.out.ry, e.out.refused, !!eCode]]));
-    record('THE DEFECT: a code mailed on one instance still works after the other instance\'s change merged (recovery; new verification code)',
-      dReset === 200 && eVerify === 200, `d reset ${dReset} stored ${d.out.stored.recoveryCode ? 'code' : 'none'}; e verify ${eVerify} stored ${e.out.stored.verificationCode}`);
+        && e.out.rx === 200 && e.out.ry === 400 && /Incorrect/.test(e.out.ryError) && e.out.refused,
+      JSON.stringify([[d.out.rx, d.out.ry, d.out.refused, !!dCode], [e.out.rx, e.out.ry, e.out.ryError.slice(0, 20), e.out.refused]]));
+    record('THE DEFECT: a recovery code mailed on X works after Y\'s change merged; the owner\'s verify on X (password, name) survives Y\'s attempt',
+      dReset === 200 && eOwner === 200 && eAtt === 401 && e.out.stored.isVerified === true && e.out.stored.username === 'acct-owner',
+      `d reset ${dReset} stored ${d.out.stored.recoveryCode ? 'code' : 'none'}; e owner ${eOwner} attacker ${eAtt} verified ${e.out.stored.isVerified} name ${e.out.stored.username}`);
 
-    // s22 — one instance, the pending-account family (sweep 4/5). The owner's
-    // code verified an ATTACKER's re-register password (pre-hijack); a username
-    // login could not verify; a username equal to someone's email shadowed that
-    // account. FIXTURE: every step's code is read from the mail actually sent.
+    // s22 — one instance, the pending-account family (sweeps 4-6). The owner's
+    // code verified an ATTACKER's re-register password (pre-hijack), then each
+    // re-register replaced the owner's code (loop DoS), a username login could
+    // not verify, a username equal to someone's email shadowed them, and one
+    // "email" could mail a code to a list or a Bcc. The code holder now owns the
+    // account; a re-register only re-sends. FIXTURE: every code is read from the
+    // mail actually sent, and every mail is counted per address.
     {
       const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
-      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-pend-'))), aX, aGcs, mail)), aX);
+      let S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-pend-'))), aX, aGcs, mail)), aX);
       const j = async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) });
-      const codeFor = (to, from) => mailed.slice(from).filter((m) => m.to === to).at(-1)?.code;
+      const codeFor = (to, from = 0) => mailed.slice(from).filter((m) => m.to === to).at(-1)?.code;
+      const mailsTo = (to, from) => mailed.slice(from).filter((m) => m.to === to).length;
+      const reg = async (u, email, pw) => j(await call(aX, '/api/auth/register', { username: u, email, password: pw }));
+      const ver = async (body) => j(await call(aX, '/api/auth/verify', body));
       const login = async (email, password) => j(await call(aX, '/api/auth/login', { email, password }));
       const OWN = 'OwnerPass!23', ATT = 'Att4cker!pass';
-      const order = async (tag, first, second) => {
+      // Both orders; the attacker also re-registers AFTER the owner (the loop).
+      const order = async (tag, attackerFirst) => {
         const email = `${tag}@example.test`, m0 = mailed.length;
-        await call(aX, '/api/auth/register', { username: `${tag}-${first.u}`, email, password: first.pw });
-        await call(aX, '/api/auth/register', { username: `${tag}-${second.u}`, email, password: second.pw });
-        const code = codeFor(email, m0), v = await j(await call(aX, '/api/auth/verify', { email, code, password: OWN }));
-        return { mails: mailed.slice(m0).filter((m) => m.to === email).length, v, own: await login(email, OWN), att: await login(email, ATT) };
+        if (attackerFirst) await reg(`${tag}-att`, email, ATT);
+        const own = await reg(`${tag}-owner`, email, OWN);
+        const again = await reg(`${tag}-att2`, email, ATT);
+        // Still pending: the owner's own password must reach verify (403), not
+        // die as a 401 because a stranger's re-register replaced the hash.
+        const pend = attackerFirst ? null : { o: (await login(email, OWN)).status, a: (await login(email, ATT)).status };
+        const v = await ver({ email, code: codeFor(email, m0), password: OWN, username: `${tag}-owner` });
+        return { mails: mailsTo(email, m0), own: own.status, again: again.status, pend, v, o: await login(email, OWN), a: await login(email, ATT) };
       };
-      const ownerFirst = await order('of', { u: 'owner', pw: OWN }, { u: 'att', pw: ATT });
-      const attFirst = await order('af', { u: 'att', pw: ATT }, { u: 'owner', pw: OWN });
-      // After the owner verified (af), a re-register is refused and changes nothing.
-      const reAfter = await j(await call(aX, '/api/auth/register', { username: 'late-att', email: 'af@example.test', password: ATT }));
-      const ownAfter = await login('af@example.test', OWN);
-      // Fresh process for the rest: register is rate-limited to 8/min per IP.
-      await stop(S.child);
-      const S2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-pend2-'))), aX, aGcs, mail)), aX);
-      // Right code + wrong password: counts as an attempt; 5 of them lock the code.
+      const ownerFirst = await order('of', false);
+      const attFirst = await order('af', true);
+      const reAfter = await reg('late-att', 'af@example.test', ATT);
+      const verOnVerified = await ver({ email: 'af@example.test', code: codeFor('af@example.test'), password: ATT, username: 'late-att' });
+      const afterBoth = { o: await login('af@example.test', OWN), a: await login('af@example.test', ATT) };
+      const noPassword = await ver({ email: 'of@example.test', code: '123456' });
+      const m5 = mailed.length;
+      const fp1 = await j(await call(aX, '/api/auth/forgot-password', { email: 'of@example.test' }));
+      const fp2 = await j(await call(aX, '/api/auth/forgot-password', { email: 'of@example.test' }));
+      const fpMails = mailsTo('of@example.test', m5);
+      await stop(S.child); // fresh process: register is limited to 8/min per IP
+      S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-pend2-'))), aX, aGcs, mail)), aX);
+      // Five wrong codes lock it; the right one then fails, and a re-register
+      // inside the minute mails nothing (locking must not buy a fresh mail).
       const lk = 'lock@example.test', m1 = mailed.length;
-      await call(aX, '/api/auth/register', { username: 'locker', email: lk, password: OWN });
+      await reg('locker', lk, OWN);
       const lkCode = codeFor(lk, m1), tries = [];
-      for (let i = 0; i < 5; i++) tries.push(await j(await call(aX, '/api/auth/verify', { email: lk, code: lkCode, password: ATT })));
-      const lkAfter = await j(await call(aX, '/api/auth/verify', { email: lk, code: lkCode, password: OWN }));
-      // Verify by username (login's 403 opens the verify screen with what was typed).
-      const un = 'uname@example.test', m2 = mailed.length;
-      await call(aX, '/api/auth/register', { username: 'Unamed', email: un, password: OWN });
+      for (let i = 0; i < 5; i++) tries.push(await ver({ email: lk, code: lkCode === '000000' ? '000001' : '000000', password: OWN }));
+      const lkAfter = await ver({ email: lk, code: lkCode, password: OWN });
+      const lkResend = await reg('locker', lk, OWN);
+      const lkMails = mailsTo(lk, m1);
+      // A NEW password at verify meets the policy and names the account; both
+      // are checked before the code, so neither costs an attempt.
+      const po = 'policy@example.test', m2 = mailed.length;
+      await reg('pol-att', po, ATT);
+      const poCode = codeFor(po, m2);
+      const weak = await ver({ email: po, code: poCode, password: 'weakpass', username: 'pol-owner' });
+      const noName = await ver({ email: po, code: poCode, password: OWN });
+      const poOk = await ver({ email: po, code: poCode, password: OWN, username: 'pol-owner' });
+      // Verify by the username login used (login's 403 path sends no name).
+      const un = 'uname@example.test', m3 = mailed.length;
+      await reg('Unamed', un, OWN);
       const l403 = await login('unamed', OWN);
-      const vByName = await j(await call(aX, '/api/auth/verify', { email: 'unamed', code: codeFor(un, m2), password: OWN }));
-      // A username set to another person's email must not shadow that person.
-      const sh = 'shadow@example.test', m3 = mailed.length;
-      await call(aX, '/api/auth/register', { username: sh, email: 'squatter@example.test', password: ATT });
-      await call(aX, '/api/auth/register', { username: 'shadowed', email: sh, password: OWN });
-      const vSh = await j(await call(aX, '/api/auth/verify', { email: sh, code: codeFor(sh, m3), password: OWN }));
+      const vByName = await ver({ email: 'unamed', code: codeFor(un, m3), password: OWN });
+      // A username set to someone else's email does not shadow them.
+      const sh = 'shadow@example.test', m4 = mailed.length;
+      await reg(sh, 'squatter@example.test', ATT);
+      await reg('shadowed', sh, OWN);
+      const vSh = await ver({ email: sh, code: codeFor(sh, m4), password: OWN, username: 'shadowed' });
       const lSh = await login(sh, OWN);
-      // Forgot-password on a pending account mails nothing (reset would bypass verify).
-      const m4 = mailed.length; const fp = await j(await call(aX, '/api/auth/forgot-password', { email: lk }));
-      const fpMails = mailed.slice(m4).filter((m) => m.to === lk).length;
-      const missing = await j(await call(aX, '/api/auth/verify', { email: un, code: '123456' }));
+      // One mailbox per address: a list, an angle-addr or a CRLF Bcc is a 400 and mails nothing.
+      const m6 = mailed.length;
+      const shapes = [];
+      for (const bad of ['x@example.test, e@evil.test', '<e@evil.test>']) shapes.push((await reg('shape', bad, OWN)).status);
+      shapes.push((await j(await call(aX, '/api/auth/forgot-password', { email: 'x@example.test\r\nBcc: e@evil.test' }))).status);
+      const shapeMails = mailed.length - m6;
+      await stop(S.child); await fake.close();
+      record('fixture: every contested address got exactly ONE mail and its code; the lock loop ran 5 verifies; the username login got its 403',
+        ownerFirst.mails === 1 && attFirst.mails === 1 && /^\d{6}$/.test(lkCode ?? '') && /^\d{6}$/.test(poCode ?? '') && tries.length === 5
+          && l403.status === 403 && l403.body.needVerification === true,
+        JSON.stringify({ of: ownerFirst.mails, af: attFirst.mails, lk: !!lkCode, po: !!poCode, l403: l403.status }));
+      record('THE DEFECT (pre-hijack, loop): in both orders the code holder owns the account with their name; re-registers in between change nothing',
+        [ownerFirst, attFirst].every((r) => r.own === 200 && r.again === 200 && r.v.status === 200 && r.o.status === 200 && r.a.status === 401)
+          && ownerFirst.o.body.user?.username === 'of-owner' && attFirst.o.body.user?.username === 'af-owner'
+          && ownerFirst.pend.o === 403 && ownerFirst.pend.a === 401,
+        JSON.stringify([ownerFirst, attFirst].map((r) => [r.own, r.again, r.pend, r.v.status, r.o.status, r.o.body.user?.username, r.a.status])));
+      record('THE DEFECT: after verify, re-register is refused and verify sets nothing (no reset path); verify without a password is a 400',
+        reAfter.status === 400 && verOnVerified.status === 400 && /already verified/.test(verOnVerified.body.error ?? '')
+          && afterBoth.o.status === 200 && afterBoth.a.status === 401 && noPassword.status === 400 && /password/.test(noPassword.body.error ?? ''),
+        JSON.stringify({ reAfter: reAfter.status, verOnVerified: verOnVerified.status, owner: afterBoth.o.status, attacker: afterBoth.a.status, noPassword: noPassword.status }));
+      record('THE DEFECT: 5 wrong codes lock it (then the right one fails) and a re-register inside the minute mails nothing (429)',
+        tries.slice(0, 4).every((t) => /Incorrect/.test(t.body.error ?? '')) && /Too many/.test(tries[4].body.error ?? '')
+          && lkAfter.status === 400 && lkResend.status === 429 && lkMails === 1,
+        JSON.stringify({ tries: tries.map((t) => (t.body.error ?? '').slice(0, 12)), after: lkAfter.status, resend: lkResend.status, lkMails }));
+      record('THE DEFECT: a new password at verify must meet the policy and bring a name, checked before the code (the code still verifies after)',
+        weak.status === 400 && /at least 8 characters/.test(weak.body.error ?? '') && noName.status === 400 && /username/.test(noName.body.error ?? '')
+          && poOk.status === 200 && poOk.body.username === 'pol-owner',
+        JSON.stringify({ weak: [weak.status, (weak.body.error ?? '').slice(0, 30)], noName: noName.status, ok: [poOk.status, poOk.body.username] }));
+      record('THE DEFECT: verify accepts the username login used; a username equal to another\'s email does not shadow them',
+        vByName.status === 200 && vSh.status === 200 && lSh.status === 200 && lSh.body.user?.username === 'shadowed',
+        JSON.stringify({ byName: vByName.status, shadowVerify: vSh.status, shadowLogin: [lSh.status, lSh.body.user?.username] }));
+      record('THE DEFECT: one recovery mail per minute (second request 200, no mail); malformed addresses are a 400 and mail nothing',
+        fp1.status === 200 && fp2.status === 200 && fpMails === 1 && shapes.every((st) => st === 400) && shapeMails === 0,
+        JSON.stringify({ fp: [fp1.status, fp2.status], fpMails, shapes, shapeMails }));
+    }
+
+    // s23 — pending rows outlive a failed send now (sweep 6). (a) A squatter
+    // registers the owner's email while mail is down: once mail is back the
+    // owner's register re-sends at once, and the code holder owns the account.
+    // (b) New sign-ups sweep pending rows whose code died a day ago and own no
+    // games (db.json cannot grow without bound). (c) Locking a code and letting
+    // the sweep take it does not buy a second mail inside the minute.
+    {
+      const day = 86400000, dead = Date.now() - 2 * day;
+      const pend = (id, extra = {}) => ({ ...seededUser(id, id, `${id}@example.test`, 'Sup3rSecret!23'), isVerified: false, verificationCode: '1', verificationCodeExpires: dead, ...extra });
+      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify({
+        users: [pend('p_old'), pend('p_game'), pend('p_recent', { verificationCodeExpires: Date.now() - 1000 }), seededUser('p_ver', 'p_ver', 'p_ver@example.test', 'Sup3rSecret!23'),
+          // Live codes this process never mailed (its cooldown is free), so a
+          // re-register reaches the re-send path, not the cooldown (isolates it).
+          pend('p_live', { verificationCode: '222222', verificationCodeExpires: Date.now() + 600000 }),
+          pend('p_tried', { verificationCode: '333333', verificationCodeExpires: Date.now() + 600000, verificationCodeAttempts: 4 })],
+        games: [{ id: 'g_p', userId: 'p_game', name: 'Kept', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' }],
+      }) }));
+      // Mail "down": a closed port. The server answers 500 fast (connection refused).
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-squat-'))), aX, aGcs, { ...mail, SMTP_PORT: String(gcsPortA + 53) })), aX); // nothing binds it: mail down
+      const reg = (p, u, email, pw) => call(p, '/api/auth/register', { username: u, email, password: pw });
+      const jv = async (body) => { const r = await call(aX, '/api/auth/verify', body); return { status: r.status, error: (await r.json().catch(() => ({}))).error ?? '' }; };
+      const V = 'squatted@example.test';
+      const squat = await reg(aX, 'squatter', V, 'Att4cker!pass');
+      await stop(S.child);
+      const S2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-squat2-'))), aX, aGcs, mail)), aX);
+      // A stranger's re-register re-sends the SAME live code and leaves its attempts: the holder still verifies, 4 + 1 still locks.
+      const liveM0 = mailed.length;
+      const reLive = (await reg(aX, 'stranger', 'p_live@example.test', 'Att4cker!pass')).status;
+      const reTried = (await reg(aX, 'stranger2', 'p_tried@example.test', 'Att4cker!pass')).status;
+      const resent = mailed.slice(liveM0).map((m) => m.code);
+      // Past the cooldown (this process never mailed p_live), a re-send still
+      // changes no credential: the stored password reaches verify, the stranger's does not.
+      const liveLogins = [(await call(aX, '/api/auth/login', { email: 'p_live@example.test', password: 'Sup3rSecret!23' })).status,
+        (await call(aX, '/api/auth/login', { email: 'p_live@example.test', password: 'Att4cker!pass' })).status];
+      const takenName = await jv({ email: 'p_live@example.test', code: '222222', password: 'OwnerPass!23', username: 'p_ver' });
+      const liveOk = await jv({ email: 'p_live@example.test', code: '222222', password: 'OwnerPass!23', username: 'p_live-owner' });
+      const triedLock = await jv({ email: 'p_tried@example.test', code: '000000', password: 'OwnerPass!23', username: 'p_tried-owner' });
+      const m0 = mailed.length;
+      const own = await reg(aX, 'squat-owner', V, 'OwnerPass!23');
+      const vCode = mailed.slice(m0).filter((m) => m.to === V).at(-1)?.code;
+      const v = await call(aX, '/api/auth/verify', { email: V, code: vCode, password: 'OwnerPass!23', username: 'squat-owner' });
+      const lo = await call(aX, '/api/auth/login', { email: V, password: 'OwnerPass!23' }); const lj = await lo.json().catch(() => ({}));
+      const la = (await call(aX, '/api/auth/login', { email: V, password: 'Att4cker!pass' })).status;
+      await waitUntil(() => JSON.parse(fake.getStored()).users.some((u) => u.email === V && u.isVerified), 5000);
+      const ids = JSON.parse(fake.getStored()).users.map((u) => u.id);
+      const L = 'relock@example.test', m1 = mailed.length;
+      await reg(aX, 'relock', L, 'OwnerPass!23');
+      for (let i = 0; i < 5; i++) await call(aX, '/api/auth/verify', { email: L, code: '000000', password: 'OwnerPass!23' });
+      const again = (await reg(aX, 'relock2', L, 'OwnerPass!23')).status;
+      const lMails = mailed.slice(m1).filter((m) => m.to === L).length;
       await stop(S2.child); await fake.close();
-      record('fixture: every registration mailed its code (2 per contested email, 1 each for lock/uname/shadow), and the lock loop ran 5 verifies',
-        ownerFirst.mails === 2 && attFirst.mails === 2 && /^\d{6}$/.test(lkCode ?? '') && tries.length === 5 && l403.status === 403 && l403.body.needVerification === true,
-        JSON.stringify({ of: ownerFirst.mails, af: attFirst.mails, lk: !!lkCode, l403: l403.status }));
-      record('THE DEFECT (pre-hijack): with the owner\'s newest code, whoever registered last owns the pending account; the attacker never signs in',
-        ownerFirst.v.status === 400 && /different password/.test(ownerFirst.v.body.error ?? '') && ownerFirst.own.status === 401 && ownerFirst.att.status === 403
-          && attFirst.v.status === 200 && attFirst.own.status === 200 && attFirst.att.status === 401,
-        JSON.stringify({ of: [ownerFirst.v.status, ownerFirst.own.status, ownerFirst.att.status], af: [attFirst.v.status, attFirst.own.status, attFirst.att.status] }));
-      record('THE DEFECT: a right code with a wrong password counts toward the lockout (5 -> code dead) and says so honestly',
-        tries.slice(0, 4).every((t) => t.status === 400 && /different password/.test(t.body.error ?? '')) && /Too many/.test(tries[4].body.error ?? '')
-          && lkAfter.status === 400 && lkAfter.body.success !== true, // the owner's own pair no longer verifies
-        JSON.stringify({ tries: tries.map((t) => (t.body.error ?? '').slice(0, 20)), after: [lkAfter.status, (lkAfter.body.error ?? '').slice(0, 30)] }));
-      record('THE DEFECT: verify accepts the username login used; a username equal to another\'s email does not shadow them; no password -> 400',
-        vByName.status === 200 && vSh.status === 200 && lSh.status === 200 && lSh.body.user?.username === 'shadowed'
-          && missing.status === 400 && /password/.test(missing.body.error ?? ''),
-        JSON.stringify({ byName: vByName.status, shadowVerify: vSh.status, shadowLogin: [lSh.status, lSh.body.user?.username], missing: missing.status }));
-      record('THE DEFECT: a verified account refuses re-registration; a pending account gets no recovery code',
-        reAfter.status === 400 && ownAfter.status === 200 && fp.status === 200 && fpMails === 0,
-        JSON.stringify({ reAfter: reAfter.status, ownAfter: ownAfter.status, fp: fp.status, fpMails }));
+      record('fixture: the squat register failed its send (500), the row stayed, and the owner\'s register mailed a code at once',
+        squat.status === 500 && own.status === 200 && /^\d{6}$/.test(vCode ?? ''), JSON.stringify({ squat: squat.status, own: own.status, code: !!vCode }));
+      record('THE DEFECT: a row squatted while mail was down never holds the owner: they verify and own it; the squatter\'s password never signs in',
+        v.status === 200 && lo.status === 200 && lj.user?.username === 'squat-owner' && la === 401,
+        JSON.stringify({ verify: v.status, owner: [lo.status, lj.user?.username], squatter: la }));
+      record('THE DEFECT: a stranger\'s re-register re-sends the same live code (holder verifies) and keeps its attempts (4 + 1 locks); a taken name is refused first',
+        reLive === 200 && reTried === 200 && JSON.stringify(resent) === '["222222","333333"]' && JSON.stringify(liveLogins) === '[403,401]'
+          && takenName.status === 400 && /already taken/.test(takenName.error)
+          && liveOk.status === 200 && /Too many/.test(triedLock.error),
+        JSON.stringify({ reLive, reTried, resent, liveLogins, takenName: takenName.status, liveOk: liveOk.status, triedLock: triedLock.error.slice(0, 20) }));
+      record('THE DEFECT: a sign-up sweeps pending rows dead a day with no games; recent, game-owning and verified rows stay; a locked code buys no second mail',
+        !ids.includes('p_old') && ids.includes('p_game') && ids.includes('p_recent') && ids.includes('p_ver') && again === 429 && lMails === 1,
+        JSON.stringify({ old: ids.includes('p_old'), game: ids.includes('p_game'), recent: ids.includes('p_recent'), ver: ids.includes('p_ver'), again, lMails }));
     }
   }
 

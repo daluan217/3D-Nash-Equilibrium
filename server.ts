@@ -2188,14 +2188,12 @@ function loadDB(): DB {
  * password (owner verified on X, attacker re-registered on Y); plain local-wins
  * reverted a peer's acked password reset (sweep 4). A credential rotation
  * wins; two rotations keep the one GCS already holds (first landed, as on one
- * instance); then verified; then re-registered; then local. A code used up on
- * either side stays so; failed attempts on one code add up to the lockout.
+ * instance); then verified; then local. A code used up on either side stays
+ * so; failed attempts on one code add up to the lockout.
  */
 function pickAccount(mine: User, theirs: User, was: User): User {
   const tv = (u: User) => u.tokenVersion ?? 0;
-  // Rank: a reset, then verified, then a re-register (new hash, new code
-  // mailed) over a side that only counted a wrong code (sweep 5).
-  const rank = (u: User) => [tv(u), u.isVerified ? 1 : 0, u.passwordHash !== was.passwordHash ? 1 : 0];
+  const rank = (u: User) => [tv(u), u.isVerified ? 1 : 0]; // a reset, then verified
   const d = rank(theirs).map((v, i) => v - rank(mine)[i]).find((v) => v !== 0) ?? 0;
   const theirsWins = (tv(theirs) === tv(mine) && tv(mine) > tv(was)) || d > 0; // two resets: first landed
   const win = (theirsWins ? theirs : mine) as unknown as Record<string, unknown>;
@@ -2513,29 +2511,26 @@ const CODE_FIELDS = {
 // refuses every save; accepted, not a defect. ensureLocalOwner (idempotent), the login
 // rehash (the old hash still verifies) and the hosted-only register/email paths
 // (GCS saveDB returns true) are the other bare calls, each left deliberately.
-// `alsoOk` false = the code matched but the request fails another check: it
-// still costs an attempt, so a right code never buys unlimited retries.
-function verifyOneTimeCode(user: User, kind: keyof typeof CODE_FIELDS, submitted: string, alsoOk = true): { ok: boolean; locked: boolean; codeOk: boolean } {
+function verifyOneTimeCode(user: User, kind: keyof typeof CODE_FIELDS, submitted: string): { ok: boolean; locked: boolean } {
   const f = CODE_FIELDS[kind];
   const u = user as unknown as Record<string, unknown>;
   const stored = u[f.code];
   if (typeof stored !== "string" || stored.length === 0) {
-    return { ok: false, locked: false, codeOk: false };
+    return { ok: false, locked: false };
   }
-  const codeOk = safeEqual(stored, submitted);
-  if (codeOk && alsoOk) {
+  if (safeEqual(stored, submitted)) {
     u[f.attempts] = undefined;
-    return { ok: true, locked: false, codeOk };
+    return { ok: true, locked: false };
   }
   const attempts = ((u[f.attempts] as number) ?? 0) + 1;
   if (attempts >= MAX_CODE_ATTEMPTS) {
     u[f.code] = kind === "verification" ? "" : undefined;
     u[f.expires] = kind === "verification" ? 0 : undefined;
     u[f.attempts] = undefined;
-    return { ok: false, locked: true, codeOk };
+    return { ok: false, locked: true };
   }
   u[f.attempts] = attempts;
-  return { ok: false, locked: false, codeOk };
+  return { ok: false, locked: false };
 }
 
 function makeId(prefix: "u" | "g"): string {
@@ -2550,6 +2545,25 @@ function hashPassword(password: string): string {
 
 // Login/verify identifier: an email match wins over a username match, so a
 // username set to someone else's email no longer shadows them (sweep 5).
+// WHATWG input[type=email]: one address, no display name, list or header.
+const EMAIL_SHAPE = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+// One code mail per kind per address per minute (per instance; max-instances
+// =1): every re-register re-sends, so without it anyone could flood a pending
+// owner's inbox from many IPs (sweep 6). 0 = sent now (slot taken); a failed
+// send hands the slot back (releaseCodeMail).
+const MAIL_COOLDOWN_MS = 60_000;
+const PENDING_TTL_MS = 24 * 60 * 60 * 1000; // a dead pending row is swept this long after its code expired
+let lastCodeMail = new Map<string, number>();
+function mailCooldownLeft(kind: "verification" | "recovery", email: string): number {
+  const now = Date.now(), key = `${kind}:${email}`;
+  if (lastCodeMail.size > 1000) lastCodeMail = new Map([...lastCodeMail].filter(([, t]) => now - t < MAIL_COOLDOWN_MS));
+  const left = MAIL_COOLDOWN_MS - (now - (lastCodeMail.get(key) ?? -Infinity));
+  if (left <= 0) lastCodeMail.set(key, now);
+  return Math.max(0, left);
+}
+const releaseCodeMail = (kind: "verification" | "recovery", email: string) => { lastCodeMail.set(`${kind}:${email}`, -Infinity); };
+
 function findByIdentifier(users: User[], id: string): User | undefined {
   return users.find((u) => u.email === id) ?? users.find((u) => u.username.toLowerCase() === id);
 }
@@ -4570,6 +4584,12 @@ async function startServer() {
     }
 
     const emailTrimmed = email.trim().toLowerCase();
+    // One mailbox (the input[type=email] shape): nodemailer read "a@x, b@y",
+    // "<b@y>" or a CRLF "Bcc:" as more recipients, so one sign-up mailed its
+    // code to addresses the account does not own (sweep 6).
+    if (emailTrimmed.length > 254 || !EMAIL_SHAPE.test(emailTrimmed)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
     const db = loadDB();
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
 
@@ -4602,14 +4622,30 @@ async function startServer() {
         });
       }
 
-      // If of the unverified user on the website, refresh code
-      const updatedCode = makeCode();
-      existingUser.username = usernameTrimmed;
-      existingUser.passwordHash = hashPassword(password);
-      existingUser.verificationCode = updatedCode;
-      existingUser.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-      existingUser.verificationCodeAttempts = undefined; // fresh code → fresh attempt budget
-      saveDB(db);
+      // Pending on the website: re-send the code, never the credentials. Verify
+      // sets the password and name of whoever holds the code (the mailbox), so
+      // a stranger's re-register changes nothing, and a live code is re-sent,
+      // not replaced, so it cannot kill the owner's code or reset its attempts.
+      // Every resend (live, expired or locked code) waits out the cooldown:
+      // locking a code with 5 wrong tries then re-registering mailed again. A
+      // live code is already in the inbox: send the user on to enter it (a 429
+      // there left the owner stuck on the form while an attacker re-registered).
+      const live = !!existingUser.verificationCode && existingUser.verificationCodeExpires >= Date.now();
+      if (mailCooldownLeft("verification", emailTrimmed) > 0) {
+        if (live) {
+          return res.json({ success: true, email: emailTrimmed, via: "smtp", previewUrl: null,
+            message: "A code for this email was sent less than a minute ago. Enter the 6-digit code from your inbox; if nothing arrives, register again in a minute." });
+        }
+        res.setHeader("Retry-After", "60");
+        return res.status(429).json({ error: "A code for this email went out less than a minute ago. Please try again in a minute." });
+      }
+      const updatedCode = live ? existingUser.verificationCode : makeCode();
+      if (!live) {
+        existingUser.verificationCode = updatedCode;
+        existingUser.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+        existingUser.verificationCodeAttempts = undefined; // fresh code → fresh attempt budget
+        saveDB(db);
+      }
 
       let emailResult;
       let emailErrorMsg = null;
@@ -4620,12 +4656,15 @@ async function startServer() {
       }
 
       if (emailErrorMsg) {
+        releaseCodeMail("verification", emailTrimmed); // nothing went out: do not make them wait
         return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
       }
 
       return res.json({
         success: true,
-        message: "Unverified user exists. Sent a new 6-digit verification code to your email address.",
+        message: live
+          ? "This email is waiting for verification. We sent its 6-digit code to your email address again."
+          : "Unverified user exists. Sent a new 6-digit verification code to your email address.",
         email: emailTrimmed,
         via: emailResult?.via || "smtp",
         previewUrl: emailResult?.previewUrl || null
@@ -4653,13 +4692,24 @@ async function startServer() {
       });
     }
 
+    // Every verification mail, first or resend, takes the address's slot: a
+    // swept (e.g. locked) row must not buy a fresh mail inside the minute.
+    if (mailCooldownLeft("verification", emailTrimmed) > 0) {
+      res.setHeader("Retry-After", "60");
+      return res.status(429).json({ error: "A code for this email went out less than a minute ago. Please try again in a minute." });
+    }
     const verificationCode = makeCode();
-    const passwordHash = hashPassword(password); // freshly salted: identifies THIS request's row (rollback below)
+    // Pending rows now survive a failed send (no rollback), so each new sign-up
+    // sweeps pending rows whose code died a day ago and own no games: db.json
+    // cannot grow without bound from abandoned or junk registrations (sweep 6).
+    const stale = Date.now() - PENDING_TTL_MS;
+    const owners = new Set(db.games.map((g) => g.userId));
+    db.users = db.users.filter((u) => u.isVerified || owners.has(u.id) || !(u.verificationCodeExpires < stale));
     const newUser: User = {
       id: makeId("u"),
       username: usernameTrimmed,
       email: emailTrimmed,
-      passwordHash,
+      passwordHash: hashPassword(password),
       isVerified: false,
       verificationCode,
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
@@ -4677,14 +4727,10 @@ async function startServer() {
     }
 
     if (emailErrorMsg) {
-      // Discard the unverified registration if SMTP is failing completely,
-      // so we do not block subsequent attempts when SMTP config is updated.
-      // Review #15: re-read AFTER the await; writing the pre-send `db` back undid
-      // other routes' commits. Remove the row only while it is still ours: a retry
-      // re-hashes (new salt; a 6-digit code can repeat, review #16) and owns it, and
-      // a mail that was delivered before the error may already have verified it.
-      const now = loadDB();
-      saveDB({ users: now.users.filter((u) => !(u.id === newUser.id && u.passwordHash === passwordHash && !u.isVerified)), games: now.games });
+      // The pending row stays: a retry now re-sends its code instead of being
+      // blocked, so the old rollback's reason is gone, and it deleted the row a
+      // retry had just been told to verify (sweep 6). The slot is handed back.
+      releaseCodeMail("verification", emailTrimmed);
       return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
     }
 
@@ -4699,10 +4745,10 @@ async function startServer() {
 
   // Verify Endpoint
   app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), (req, res) => {
-    const { email, code, password } = req.body;
-    // Hosted: the code alone proved only the mailbox, so a stranger who
-    // re-registered a pending email got THEIR password verified by the
-    // owner's code (pre-hijack, sweep 4). The pending password must match too.
+    const { email, code, password, username } = req.body;
+    // Hosted: the code proves the mailbox, so its holder's password (and name)
+    // become the account's. Verifying whatever the LAST registrant stored let a
+    // stranger's re-register take the owner's code (pre-hijack, sweeps 4-6).
     // Desktop auto-verifies on register; its legacy pending path is unchanged.
     const hosted = !process.env.ELECTRON_USER_DATA_PATH;
     if (!email || !code || (hosted && !password)) {
@@ -4730,28 +4776,45 @@ async function startServer() {
       return res.status(400).json({ error: "Verification code has expired. Please register again to get a new code." });
     }
 
-    const passwordOk = !hosted || verifyPassword(password, user.passwordHash);
-    const verifyCheck = verifyOneTimeCode(user, "verification", code, passwordOk);
+    // A new password (not the stored one: someone else registered this email
+    // first) meets the register policy and comes with a name, never keeping a
+    // stranger's pick. The UI always has both: register sends them, and
+    // login's 403 path sends the stored password. Checked before any attempt.
+    const name = hosted ? cleanText(username, 40) : "";
+    const newPassword = hosted && !verifyPassword(password, user.passwordHash);
+    if (newPassword && !/^(?=.*[a-z])(?=.*[A-Z]).{8,}$/.test(password)) {
+      return res.status(400).json({
+        error: "Password must be at least 8 characters long and contain at least one uppercase and one lowercase letter."
+      });
+    }
+    if (newPassword && !name) {
+      return res.status(400).json({ error: "Please choose a username for your account." });
+    }
+    if (name && db.users.some((u) => u.id !== user.id && u.username.trim().toLowerCase() === name.toLowerCase())) {
+      return res.status(400).json({ error: "That username is already taken. Please choose a different one." });
+    }
+
+    const verifyCheck = verifyOneTimeCode(user, "verification", code);
     if (!verifyCheck.ok) {
       saveDB(db);
       return res.status(400).json({
         error: verifyCheck.locked
           ? "Too many incorrect attempts. Please register again to get a new code."
-          : verifyCheck.codeOk
-            ? "That code is right, but this email's pending registration was made with a different password. Register again with your password to get a new code."
-            : "Incorrect verification code."
+          : "Incorrect verification code."
       });
     }
 
     // Mark verified — in memory only once it is on disk (STRUCT-DESKTOP-19's order).
-    if (!saveDB({ users: db.users.map((u) => (u === user ? { ...user, isVerified: true } : u)), games: db.games })) {
+    const owned = { ...(newPassword ? { passwordHash: hashPassword(password) } : {}), ...(name ? { username: name } : {}) };
+    const verified = { ...user, ...owned, isVerified: true };
+    if (!saveDB({ users: db.users.map((u) => (u === user ? verified : u)), games: db.games })) {
       return res.status(500).json({ error: "Could not verify your account: nothing was saved. Please try again." });
     }
 
     res.json({
       success: true,
       message: "Email verified successfully! You can now log in.",
-      username: user.username
+      username: verified.username
     });
   });
 
@@ -4829,15 +4892,29 @@ async function startServer() {
     }
 
     const emailTrimmed = email.trim().toLowerCase();
+    if (emailTrimmed.length > 254 || !EMAIL_SHAPE.test(emailTrimmed)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
     const db = loadDB();
     const user = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
 
     // Always return a success-looking response to prevent email enumeration
+    const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
     if (!user || !user.isVerified) {
       return res.json({
         success: true,
         message: "If an account with that email exists, a recovery code has been sent."
       });
+    }
+
+    // One recovery mail per address per minute (no inbox flood). Register
+    // already tells whether an address has an account, so this adds no oracle.
+    if (!isElectron && mailCooldownLeft("recovery", emailTrimmed) > 0) {
+      if (user.recoveryCode && (user.recoveryCodeExpires ?? 0) >= Date.now()) {
+        return res.json({ success: true, message: "A recovery code went out less than a minute ago. Enter the 6-digit code from your inbox." });
+      }
+      res.setHeader("Retry-After", "60");
+      return res.status(429).json({ error: "A recovery code went out less than a minute ago. Please try again in a minute." });
     }
 
     const recoveryCode = makeCode();
@@ -4846,7 +4923,6 @@ async function startServer() {
       return res.status(500).json({ error: "Could not start the password reset: nothing was saved. Please try again." });
     }
 
-    const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
     let emailErrorMsg = null;
 
     if (!isElectron) {
@@ -4858,6 +4934,7 @@ async function startServer() {
     }
 
     if (emailErrorMsg && !isElectron) {
+      releaseCodeMail("recovery", emailTrimmed);
       return res.status(500).json({ error: "Could not send recovery email. Please try again later." });
     }
 
