@@ -732,6 +732,15 @@ for (const neg of NEGATIVES) {
     check(`an unlisted payoff comparison is refused: "${phrase}"`,
       !v.ok && v.screen === 'claim-free', v.ok ? 'SERVED' : `${v.screen}: ${v.reason}`);
   }
+  // CLAIM-FREE BY DESIGN: a TRUE comparison is refused too, exactly as the
+  // listed "better" always was (the solver states payoffs; a story states
+  // none). Row 2 does earn more here, and both spellings get the same answer.
+  // Reach of any comparison in served text: 0 (bank, corpus, 40 live draws).
+  for (const truePhrase of ['earns more profit with Closed Window than with Open Window', 'finds Closed Window better than Open Window']) {
+    const v = screenScenario({ ...dock, description: `A dispatcher ${truePhrase} while a receiver chooses Ship or Hold.` } as SuggestedScenario, PD, opts());
+    check(`a TRUE comparison is refused as well (claim-free by design, same as "better"): "${truePhrase}"`,
+      PD.a21 > PD.a11 && PD.a22 > PD.a12 && !v.ok && v.screen === 'claim-free', v.ok ? 'SERVED' : `${v.screen}: ${v.reason}`);
+  }
   for (const innocent of ['A dispatcher makes more trips in summer and picks Open Window or Closed Window while a receiver chooses Ship or Hold.',
     'A dispatcher hopes to beat the rush with Open Window or Closed Window while a superior officer at the receiver chooses Ship or Hold.']) {
     const v = screenScenario({ ...dock, description: innocent } as SuggestedScenario, PD, opts());
