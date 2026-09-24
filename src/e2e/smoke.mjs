@@ -1461,9 +1461,13 @@ try {
   section('22', 'Escape closes topmost layer', async () => {
     const escPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await escPage.goto(BASE, { waitUntil: 'networkidle' });
-    // Tour auto-opens on a fresh anonymous load — do NOT exit it here.
+    // Tour auto-opens on a fresh anonymous load — do NOT exit it here. It opens 700 ms after
+    // mount, so read it only once the app has published its decision (data-tour-auto, H6):
+    // an unwaited read failed 2/2 on CI (36023553844, 36023499379) and at 11x CPU.
     const tourOpen = async () => escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Guided tour"]'));
-    record('tour is open on a fresh anonymous load (precondition)', await tourOpen());
+    const tourDecision = await escPage.waitForFunction(() => document.documentElement.dataset.tourAuto || false, null, { timeout: 180000 })
+      .then((h) => h.jsonValue()).catch(() => null);
+    record('tour is open on a fresh anonymous load (precondition)', tourDecision === 'shown' && await tourOpen(), `decision=${tourDecision}`);
 
     // CodeRabbit finding (this branch): poll for the tour's own step counter
     // ("N / M") to actually change after each click, instead of a flat sleep

@@ -264,6 +264,10 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
   assert(m100.length > 0 && !/timeout: 20000 \}\)\.then\(\(\) => true\)/.test(m100), '§100 measure has no 20 s bound on its settle');
   assert.match(m100, /if \(stable >= 30\) resolve\(true\); else if \(frames >= 600\) resolve\(false\);/, '§100 settle: 30 stable frames, unsettled only after 600 frames');
 }
+// TASK-18 sweep 8: §22 reads "the tour is open" only after the app's tour decision (it opens
+// 700 ms after mount; an unwaited read failed 2/2 on CI at f843600).
+assert.match(sectionBodies.get('22') ?? '', /const tourDecision = await escPage\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto/,
+  '§22 waits for the app\'s tour decision before reading that the tour is open');
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
