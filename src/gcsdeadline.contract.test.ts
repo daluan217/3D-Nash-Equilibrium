@@ -341,6 +341,54 @@ check('SELF-TEST: an element-access site reports its resolved method name',
 check('SELF-TEST: a computed site is labelled rather than crashing the walk',
   analyse('async function f(){ const m = "x"; await file[m](); }').methods.join().startsWith('[computed]'));
 
+// Every route that reads or writes the DB sits behind the GCS store gate: an
+// ungated reader on hosted serves an unread (empty) or blocked store (sweep 1).
+const gatedRoutes = (file: ts.SourceFile) => {
+  let gate: { pos: number; prefixes: string[] } | null = null;
+  const routes: { path: string; pos: number; db: boolean }[] = [];
+  // DB readers are loadDB/saveDB and, to a fixpoint, every top-level function that calls one (getAuthUser).
+  const readers = new Set(['loadDB', 'saveDB']);
+  const touchesDb = (n: ts.Node): boolean => (ts.isCallExpression(n) && ts.isIdentifier(n.expression)
+    && readers.has(n.expression.text)) || (ts.forEachChild(n, touchesDb) ?? false);
+  const fns = file.statements.filter(ts.isFunctionDeclaration).filter((f) => f.name && f.body);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const f of fns) if (!readers.has(f.name!.text) && touchesDb(f.body!)) { readers.add(f.name!.text); grew = true; }
+  }
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.expression)
+      && n.expression.expression.text === 'app') {
+      const verb = n.expression.name.text, [first, ...rest] = n.arguments;
+      if (verb === 'use' && rest.some((a) => ts.isIdentifier(a) && a.text === 'requireGcsStore') && first && ts.isArrayLiteralExpression(first)) {
+        gate = { pos: n.getStart(), prefixes: first.elements.filter(ts.isStringLiteral).map((e) => e.text) };
+      } else if (['get', 'post', 'put', 'patch', 'delete'].includes(verb) && first && ts.isStringLiteral(first)) {
+        routes.push({ path: first.text, pos: n.getStart(), db: rest.some(touchesDb) });
+      }
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(file);
+  const g = gate as { pos: number; prefixes: string[] } | null;
+  const ungated = routes.filter((r) => r.db && !(g && r.pos > g.pos && g.prefixes.some((p) => r.path === p || r.path.startsWith(`${p}/`))));
+  return { dbRoutes: routes.filter((r) => r.db).length, ungated: ungated.map((r) => r.path) };
+};
+const gated = gatedRoutes(sf);
+check('the route scan found the DB routes (auth, games, admin)', gated.dbRoutes >= 15, `found ${gated.dbRoutes}`);
+check('every route that reads or writes the DB is registered behind requireGcsStore',
+  gated.ungated.length === 0, gated.ungated.join(', '));
+const gateOf = (src: string) => gatedRoutes(ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)).ungated.join();
+const GATE = 'app.use(["/api/games"], requireGcsStore);';
+check('SELF-TEST: a DB route outside the gated prefixes is REPORTED',
+  gateOf(`${GATE} app.get("/api/report", (q, r) => { const db = loadDB(); });`) === '/api/report');
+check('SELF-TEST: a DB route registered BEFORE the gate is REPORTED',
+  gateOf(`app.get("/api/games", (q, r) => saveDB(x)); ${GATE}`) === '/api/games');
+check('SELF-TEST: a gated DB route and an ungated non-DB route are accepted',
+  gateOf(`${GATE} app.get("/api/games/:id", async (q, r) => { await f(); loadDB(); }); app.get("/api/health", (q, r) => r.json(1));`) === '');
+check('SELF-TEST: a route reaching the DB through a helper (getAuthUser) is REPORTED',
+  gateOf(`function who() { return loadDB().users; } function getAuthUser() { return who()[0]; } ${GATE} app.get("/api/me", (q, r) => getAuthUser(q));`) === '/api/me');
+check('SELF-TEST: a prefix match needs a path boundary ("/api/gamesX" is not "/api/games")',
+  gateOf(`${GATE} app.get("/api/gamesX", (q, r) => loadDB());`) === '/api/gamesX');
+
 console.log(failures === 0
   ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`
   : `\n${failures} check(s) failed`);
