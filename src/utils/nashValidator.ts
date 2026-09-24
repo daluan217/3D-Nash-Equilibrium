@@ -1342,6 +1342,12 @@ export function scenarioIsClaimFree(sc: SuggestedScenario): { ok: boolean; reaso
     // `equilibrium` stays claimy on sight: naming where the equilibrium is IS
     // an assertion, and a scenario has no business making it.
     [/\b(?:better|worse|best|worst|prefers?|favou?rs?|dominant|dominates?|optimal|advantage|equilibri(?:um|a)|indifferent|gains?\s+more|loses?\s+more)\b/i, 'a comparative or payoff word'],
+    // The same assertion without the listed words: "earns more with X than Y",
+    // "more profitable", "outperforms", "superior to" all served, false ones
+    // included (sweep 3, constructed; 0 real). Needs a "than"/"to" object, so
+    // "makes more trips", "beat the rush", "a superior officer" stay legal.
+    // 0 fires on 2,442 bank rows, 3,104 raw bank rows, 4,418 corpus stories.
+    [/\b(?:earns?|makes?|nets?|wins?|collects?|pockets?|brings?\s+in|yields?|pays?|costs?)\b[^.;]{0,40}?\b(?:more|less|fewer)\b[^.;]{0,60}?\bthan\b|\b(?:more|less)\s+(?:profit|money|income|revenue|earnings?|profitable|lucrative)\b|\b(?:outperforms?|superior\s+to|inferior\s+to)\b/i, 'a comparative or payoff word'],
     [/\b(?:payoffs?|returns?|rewards?)\b[^.;]{0,40}?\b(?:higher|lower|greater|larger|smaller|bigger|more|less|equal|same|highest|lowest|maximis\w*|maximiz\w*|minimis\w*|minimiz\w*|exceed\w*|outweigh\w*)\b|\b(?:higher|lower|greater|larger|smaller|bigger|highest|lowest|equal|same)\b[^.;]{0,40}?\b(?:payoffs?|returns?|rewards?)\b/i, 'a payoff word attached to a comparison'],
     // A CLAIM ABOUT ANSWERING — and three of its members were pure cost.
     //

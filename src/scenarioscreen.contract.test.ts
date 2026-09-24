@@ -33,6 +33,7 @@
 import { SCENARIO_SCREENS, screenScenario, type ScreenOptions } from './utils/scenarioScreen';
 import { allBankRows } from './utils/bankSource';
 import { colorTermKey } from './utils/colorTerms';
+import { stripUnsafeText } from './utils/textSafety';
 import { SERVE_PROBES } from './utils/scenarioBank';
 import type { GamePayoffs, SuggestedScenario } from './types';
 
@@ -706,6 +707,36 @@ for (const neg of NEGATIVES) {
     description: 'A dispatcher picks an Open Door or Shut Door while a receiver raises (!) at the dock.' } as SuggestedScenario, G, opts());
   check('006: the same pair in the COLUMN labels is refused too',
     !v006c.ok && /column labels are not distinct/.test(v006c.reason ?? ''), v006c.ok ? 'SERVED' : `${v006c.screen}: ${v006c.reason}`);
+
+  // A claim word split by an invisible character slips the claim-free fold
+  // (NFKC keeps U+00AD/U+200B/U+2060) and survives stripUnsafeText, so the
+  // script screen is the only thing that refuses it. Sweep 3: widening that
+  // screen to allow \p{Cf} left every test green. Fixture = shipping order.
+  for (const [name, ch] of [['soft hyphen', '\u00AD'], ['zero-width space', '\u200B'], ['word joiner', '\u2060']] as const) {
+    const desc = stripUnsafeText(`A dispatcher finds Open Window bet${ch}ter than Closed Window while a receiver waits.`);
+    const hidden = { ...emptyFoldRows, row1: 'Open Window', row2: 'Closed Window', col1: 'Ship', col2: 'Hold', description: desc } as SuggestedScenario;
+    const vh = screenScenario(hidden, G, opts());
+    check(`invisible ${name} inside a claim word survives cleaning and is refused by the script screen`,
+      desc.includes(ch) && !vh.ok && vh.screen === 'declarations' && /outside the expected script/.test(vh.reason ?? ''),
+      `kept=${desc.includes(ch)} ${vh.ok ? 'SERVED' : `${vh.screen}: ${vh.reason}`}`);
+  }
+
+  // A payoff comparison without the listed words used to serve, false ones
+  // included: on this matrix row 2 strictly dominates, so each sentence below
+  // is FALSE for A (sweep 3, constructed; 0 real in 2,442 + 3,104 + 4,418).
+  const PD: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const dock = { name: 'Dock Choice', row1: 'Open Window', row2: 'Closed Window', col1: 'Ship', col2: 'Hold' };
+  for (const phrase of ['earns more profit with Open Window than with Closed Window', 'makes more money from Open Window than from Closed Window',
+    'finds Open Window more profitable than Closed Window', 'says Open Window outperforms Closed Window', 'calls Open Window superior to Closed Window']) {
+    const v = screenScenario({ ...dock, description: `A dispatcher ${phrase} while a receiver chooses Ship or Hold.` } as SuggestedScenario, PD, opts());
+    check(`an unlisted payoff comparison is refused: "${phrase}"`,
+      !v.ok && v.screen === 'claim-free', v.ok ? 'SERVED' : `${v.screen}: ${v.reason}`);
+  }
+  for (const innocent of ['A dispatcher makes more trips in summer and picks Open Window or Closed Window while a receiver chooses Ship or Hold.',
+    'A dispatcher hopes to beat the rush with Open Window or Closed Window while a superior officer at the receiver chooses Ship or Hold.']) {
+    const v = screenScenario({ ...dock, description: innocent } as SuggestedScenario, PD, opts());
+    check(`control: "more"/"beat"/"superior" with no comparison between options is served: "${innocent.slice(0, 50)}…"`, v.ok, v.ok ? '' : `${v.screen}: ${v.reason}`);
+  }
 
   /**
    * WHAT THE ADDED HALF COSTS on output this project already judged good: the
