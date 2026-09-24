@@ -56,11 +56,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 9 merge (7, 7b, 7c) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 11 merge (7, 7b, 7c, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 58;
+const EXPECTED_CHECKS = 60;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -972,6 +972,61 @@ try {
     record('THE DEFECT: one username shared by two people ends as two accounts with distinct names',
       carols.length === 2 && new Set(carols.map((u) => u.username.toLowerCase())).size === 2, JSON.stringify(carols.map((u) => u.username)));
     await stop(X.child); await stop(Y.child); await fake.close(); smtp.close();
+
+    // 7d. THE FOLDED ID STILL OWNS WHAT ITS INSTANCE SAVES NEXT. Account A is
+    // on GCS unverified; Y registers the same email as B and verifies it
+    // before its merge, so the merge keeps verified B and folds A. X, which
+    // still holds A, verifies A and saves a game in the same window. That
+    // game must end up owned by the surviving account, not by an id that no
+    // longer exists. CONTROL: X accepted the game (200).
+    const fGcs = gcsPortA + 34, fX = port1 + 34, fY = port1 + 36;
+    const smtp2 = net.createServer((sock) => {
+      let inData = false, buf = '';
+      sock.write('220 t ESMTP\r\n');
+      sock.on('data', (c) => {
+        for (const line of c.toString().split(/\r?\n/)) {
+          if (inData) { if (line === '.') { inData = false; codes.push(buf.match(/\b(\d{6})\b/)?.[1]); buf = ''; sock.write('250 ok\r\n'); } else buf += `${line}\n`; continue; }
+          const v = line.split(' ')[0].toUpperCase();
+          if (!v) continue;
+          if (v === 'EHLO' || v === 'HELO') sock.write('250-t\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (v === 'AUTH') sock.write('235 ok\r\n');
+          else if (v === 'DATA') { inData = true; sock.write('354 go\r\n'); }
+          else if (v === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); }
+          else sock.write('250 ok\r\n');
+        }
+      });
+      sock.on('error', () => {});
+    });
+    await new Promise((r) => smtp2.listen(smtpPort, '127.0.0.1', r));
+    const fake2 = await trackFake(startFakeGcsDb({ port: fGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
+    const Y2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-foldy-'))), fY, fGcs, mailEnv)), fY);
+    fake2.peerWrite(JSON.stringify({ users: [{ ...seededUser('u_A', 'annie', 'fold@example.test', 'Sup3rSecretA'),
+      isVerified: false, verificationCode: '111111', verificationCodeExpires: Date.now() + 600000 }], games: [] }));
+    const X2 = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-foldx-'))), fX, fGcs)), fX);
+    fake2.setUploadDelayMs(2500);
+    await call(fY, '/api/auth/register', { username: 'bella', email: 'fold@example.test', password: 'Sup3rSecretB' });
+    const vB = await call(fY, '/api/auth/verify', { email: 'fold@example.test', code: codes.at(-1) });
+    const vA = await call(fX, '/api/auth/verify', { email: 'fold@example.test', code: '111111' });
+    const tA = (await (await call(fX, '/api/auth/login', { email: 'fold@example.test', password: 'Sup3rSecretA' })).json()).token;
+    const late = await call(fX, '/api/games', { name: 'A-Late', payoffs: pay }, tA);
+    const onGcs2 = () => { try { return JSON.parse(fake2.getStored()); } catch { return { users: [], games: [] }; } };
+    // Settled = the fold has landed (u_A gone) and A-Late is on GCS. A fixed
+    // wait read the TRANSIENT state (X's write, A still there) and passed with
+    // no fold at all — so the fixture below also requires the fold to happen.
+    const settled = await waitUntil(() => { const db = onGcs2(); return !db.users.some((u) => u.id === 'u_A') && db.games.some((g) => g.name === 'A-Late'); }, 30000);
+    fake2.setUploadDelayMs(0);
+    await new Promise((r) => setTimeout(r, 1500));
+    const fin2 = onGcs2();
+    const owners = fin2.users.filter((u) => u.email.toLowerCase() === 'fold@example.test');
+    const aLate = fin2.games.find((g) => g.name === 'A-Late');
+    const savedForA = fake2.uploadLog().some((u) => { try { return JSON.parse(u.body).games.some((g) => g.name === 'A-Late' && g.userId === 'u_A'); } catch { return false; } });
+    record('fixture: B verified on Y; A verified and saved A-Late on X under u_A; the fold of u_A landed',
+      vB.status === 200 && vA.status === 200 && typeof tA === 'string' && late.status === 200 && savedForA && settled,
+      `verify B ${vB.status}, verify A ${vA.status}, game ${late.status}, sent under u_A ${savedForA}, settled ${settled}; users ${JSON.stringify(fin2.users.map((u) => u.id))}`);
+    record('THE DEFECT: a game saved under the folded account is owned by the surviving one',
+      owners.length === 1 && owners[0].id !== 'u_A' && aLate?.userId === owners[0].id,
+      `accounts ${owners.length}; A-Late owner ${aLate?.userId} vs ${owners[0]?.id}`);
+    await stop(X2.child); await stop(Y2.child); await fake2.close(); smtp2.close();
   }
 
   // ───────────────────────────────────────────────────────────────────────────
