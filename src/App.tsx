@@ -2641,6 +2641,19 @@ export default function App() {
     if (stepLogs.length > 0) setLogEntries(prev => [...prev, ...stepLogs]);
   };
 
+  // A timer step's position, log lines and ref advance only once a commit carries it. Its
+  // arrays are fresh, so identity is the test: a pause spread on top ({...next, running:false})
+  // still carries it; a dropped step never commits and the next timer overwrites it.
+  const pendingStepRef = useRef<{ next: SimState; pos: number; logs: string[] } | null>(null);
+  useLayoutEffect(() => {
+    const step = pendingStepRef.current;
+    if (!step || simState.pathSegmentsA !== step.next.pathSegmentsA) return;
+    pendingStepRef.current = null;
+    simStateRef.current = simState;
+    scrubPosRef.current = step.pos;
+    if (step.logs.length > 0) setLogEntries((prev) => [...prev, ...step.logs]);
+  }, [simState]);
+
   // Recursive play runner trigger
   useEffect(() => {
     if (!simState.running) return;
@@ -2673,11 +2686,13 @@ export default function App() {
       const fc = runCtx ?? { payoffs, firstMover, shrinkStep, stepMode, allNE, committedNE };
       doStep(fc.payoffs, next, fc.firstMover, fc.shrinkStep, fc.allNE, fc.committedNE,
         (msg) => stepLogs.push(msg), () => {}, () => { next.running = false; }, fc.stepMode);
-      simStateRef.current = next;
-      setSimState(next);
-      const nextPos = pos + 1;
-      scrubPosRef.current = nextPos;
-      if (stepLogs.length > 0) setLogEntries(prev => [...prev, ...stepLogs]);
+      // Invariant: a step never lands on a paused run. A pause queued before this timer fired
+      // (zoom, Pause, exhausted history, the tour's first-find stop, a jump) may not have
+      // rendered on a slow frame, so `prev` can still say running. So the step applies only if,
+      // in update order, the state is still running on the step it was built from; its ref,
+      // position and log advance in the layout effect above, only once a commit carries it.
+      pendingStepRef.current = { next, pos: pos + 1, logs: stepLogs };
+      setSimState((cur) => (cur.running && cur.stepCount === prev.stepCount ? next : cur));
     }, intervalMs);
 
     return () => clearTimeout(timer);

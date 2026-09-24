@@ -54,7 +54,7 @@ const expectedIds = [
   '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
   '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96',
   '100a', '100b', '100c', '100d', '102a', '102b', '102c', '102d', '102e', '102f',
-  '101a', '101b', '101c', '101d', '101e', '101f', '101g', '103a', '103b', '103c', '104', '97',
+  '101a', '101b', '101c', '101d', '101e', '101f', '101g', '103a', '103b', '103c', '105', '104', '97',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
@@ -201,6 +201,25 @@ assert.match(footer103, /if \(stable >= 10\) resolve\(true\)/, '§103c waits for
 // the row at 10.8 s against the old 8 s bound; 11x CPU throttle measures 12.6 s).
 assert.match(sectionBodies.get('39') ?? '', /await flapPage\.reload\(\{ waitUntil: 'networkidle' \}\);[\s\S]{0,420}?getByRole\('button', \{ name: editedName, exact: true \}\)\.first\(\)\n\s+\.waitFor\(\{ state: 'visible', timeout: 30000 \}\)/,
   '§39 waits up to 30 s for the reloaded row before counting it');
+// TASK-18 H4 (App.tsx): the play loop's timer may not commit a step over a queued pause, and a
+// dropped step advances nothing. §105 is the browser proof; this pins the mechanism.
+{
+  const runner = app.slice(app.indexOf('// Recursive play runner trigger'), app.indexOf('}, [simState.running, simState.stepCount, speed]);'));
+  assert(runner.length > 0, 'the play runner effect is found');
+  assert.match(runner, /setSimState\(\(cur\) => \(cur\.running && cur\.stepCount === prev\.stepCount \? next : cur\)\);/,
+    'the timer commits its step only if the run is still running on the step it was built from');
+  assert(!/setSimState\(next\)|simStateRef\.current = next|scrubPosRef\.current = |setLogEntries\(/.test(runner),
+    'the timer advances no ref, position or log line before a commit carries its step');
+  assert.match(app, /if \(!step \|\| simState\.pathSegmentsA !== step\.next\.pathSegmentsA\) return;\n\s+pendingStepRef\.current = null;\n\s+simStateRef\.current = simState;\n\s+scrubPosRef\.current = step\.pos;\n\s+if \(step\.logs\.length > 0\) setLogEntries/,
+    'a timer step\'s ref, position and log advance only in the layout effect, once its step is committed');
+}
+// TASK-18 H5: §42/§44 read their hint after the render settles, not within a fixed 3 s (32x
+// CPU throttle missed it every time; §93 had the same class, 70f5cec).
+for (const id of ['42', '44']) {
+  const body = sectionBodies.get(id) ?? '';
+  assert(!/timeout: 3000 \}\)\.then\(\(\) => true\)/.test(body), `§${id} does not bound its hint on a fixed 3 s wait`);
+  assert.match(body, /requestAnimationFrame\(\(\) => requestAnimationFrame\(r\)\)/, `§${id} reads its hint two frames after the last keystroke`);
+}
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────

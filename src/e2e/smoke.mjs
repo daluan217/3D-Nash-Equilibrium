@@ -294,8 +294,9 @@ const $ = {
   x0: page.locator('xpath=//label[contains(text(),"Row Start Point")]/following-sibling::div//input'),
   logLines: page.locator('div.overflow-y-auto.font-mono p'),
 };
-async function setSpeed(v) {
-  return page.evaluate((val) => {
+async function setSpeed(v) { return setSpeedOn(page, v); }
+async function setSpeedOn(p, v) {
+  return p.evaluate((val) => {
     const el = [...document.querySelectorAll('input[type="range"]')].find((e) => e.min === '1');
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(el, String(val));
@@ -3017,6 +3018,12 @@ try {
     const matrixSelector = 'input[inputmode="decimal"][class*="text-center"]';
     const matrix = commaPage.locator(matrixSelector);
     const payoffHint = commaPage.locator('[data-testid="payoff-input-hint"]');
+    // TASK-18: §93's render-settled wait (70f5cec), not a fixed 3 s -- 32x CPU throttle
+    // missed this hint every time. Two frames after the last keystroke React has committed.
+    const payoffHintAfterRender = async () => {
+      await commaPage.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      return payoffHint.isVisible().catch(() => false);
+    };
     const HINT_TEXT = 'Use a dot for decimals, not a comma.';
     await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
 
@@ -3053,7 +3060,7 @@ try {
       const midTyping = await cell.inputValue();
       record(`${label}: the cell shows exactly what was typed (no live truncation while a comma is present)`,
         midTyping === commaInput, `got "${midTyping}"`);
-      const hintDuringTyping = await payoffHint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintDuringTyping = await payoffHintAfterRender();
       const hintTextDuringTyping = hintDuringTyping ? await payoffHint.textContent().catch(() => null) : null;
       record(`${label}: the hint appears with the exact guidance text while the field holds the rejected input`,
         hintDuringTyping && hintTextDuringTyping === expectedHint, `visible=${hintDuringTyping} text=${JSON.stringify(hintTextDuringTyping)}`);
@@ -3305,6 +3312,11 @@ try {
     const box = stepPage.getByLabel('Initial Domain Shrink Step Size', { exact: true });
     const slider = stepPage.getByLabel('Initial Domain Shrink Step Size slider', { exact: true });
     const hint = stepPage.locator('[data-testid="step-input-hint"]');
+    // TASK-18: render-settled, not a fixed 3 s (same class as §93, 70f5cec).
+    const hintAfterRender = async () => {
+      await stepPage.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      return hint.isVisible().catch(() => false);
+    };
     const HINT_TEXT = 'Use a dot for decimals, not a comma.';
     await box.waitFor({ state: 'visible', timeout: 20000 });
     const settle = async (pred) => {
@@ -3322,7 +3334,7 @@ try {
       await stepPage.keyboard.type(commaInput, { delay: 20 });
       const midTyping = await box.inputValue();
       record(`${label}: the box shows exactly what was typed`, midTyping === commaInput, `got "${midTyping}"`);
-      const hintShown = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintShown = await hintAfterRender();
       const hintText = hintShown ? await hint.textContent().catch(() => null) : null;
       record(`${label}: the hint appears with the exact guidance text`, hintShown && hintText === HINT_TEXT, `visible=${hintShown} text=${JSON.stringify(hintText)}`);
       const restored = await settle(async () => (await slider.inputValue()) === sliderBefore);
@@ -11587,6 +11599,169 @@ const suggestedScenario = {
     }
   });
 
+
+  // §105 (TASK-18 H4, App.tsx): a pause queued before the play loop's timer fired must win.
+  // On a slow frame the timer used to rebuild the step from a ref that still said running and
+  // overwrite the pause -- a zoom (and CI's §16) left the run going. The hold below is that slow
+  // frame, made deterministic: one pause, then the main thread busy 700 ms in the same task.
+  // MUTANT (measured): restoring `setSimState(next)` in the timer fails the zoom rows only. A
+  // click is a discrete event, flushed before any timer, so the Pause rows stay green on it;
+  // they and the tour rows are regression rows for the fix.
+  section('105', 'a pause wins over a step already due: zoom and Pause both stop the run on a slow frame', async () => {
+    // Progress is read from `span.font-mono` ("12 / 57"): the tour's own "13 / 19" counter
+    // matches the same text shape and was read instead on the first draft.
+    const pp = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
+    await pp.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(pp, 'setup: clear the tour before the pause-race checks', { timeout: 20000 });
+    const btn = (name) => pp.getByRole('button', { name, exact: true }).first();
+    const running = () => pp.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+    const progress = () => pp.evaluate(() => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e ? Number(e.textContent.trim().split(' / ')[0]) : -1;
+    });
+    const stepLines = () => pp.evaluate(() => [...document.querySelectorAll('div.overflow-y-auto.font-mono p')]
+      .filter((p) => /^Step \d+/.test((p.textContent || '').trim())).length);
+    // One pause gesture + a 700 ms busy main thread in the SAME task, then let every timer run.
+    const pauseOnSlowFrame = async (kind) => {
+      await pp.evaluate((k) => {
+        if (k === 'zoom') {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const r = gd.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+          document.elementFromPoint(x, y).dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: x, clientY: y, deltaY: -150 }));
+        } else {
+          [...document.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === 'Pause').click();
+        }
+        const t = performance.now(); while (performance.now() - t < 700) { /* a slow software-GL frame */ }
+      }, kind);
+      await pp.waitForTimeout(1500);
+    };
+    const startRun = async () => {
+      await btn('Reset').click();
+      await btn('Spy vs. Analyst').click();
+      await setSpeedOn(pp, 1);
+      await btn('Run').click();
+      return pp.waitForFunction(() => {
+        const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+        return e && Number(e.textContent.trim().split(' / ')[0]) >= 2
+          && [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause');
+      }, null, { timeout: 60000 }).then(() => true).catch(() => false);
+    };
+    // A plain run still steps at its speed: at 1x the loop waits 550 ms per step.
+    record('§105 fixture guard: a plain run steps (reaches step 2 and is still running)', await startRun());
+    const s0 = await progress(); const t0 = Date.now();
+    await pp.waitForFunction((from) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) >= from + 4;
+    }, s0, { timeout: 60000 }).catch(() => {});
+    const perStep = (Date.now() - t0) / Math.max(1, (await progress()) - s0);
+    record('§105 a normal run still steps at the set speed (1x: ~550 ms per step, not stalled, not doubled)',
+      perStep >= 450 && perStep <= 5000, `${Math.round(perStep)} ms per step`);
+    for (const kind of ['zoom', 'Pause']) {
+      // Each site from a fresh run, so one site's failure cannot hide the next.
+      if (await running()) await btn('Pause').click().catch(() => {});
+      await startRun();
+      await pauseOnSlowFrame(kind);
+      const stoppedAt = await progress();
+      record(`§105 ${kind} on a slow frame: the run is paused, not still going`, !(await running()), `running=${await running()}`);
+      await pp.waitForTimeout(1500);
+      record(`§105 ${kind} on a slow frame: no step lands after the pause`, (await progress()) === stoppedAt, `at ${stoppedAt}, then ${await progress()}`);
+      record(`§105 ${kind} on a slow frame: the log holds exactly one line per step taken`, (await stepLines()) === stoppedAt,
+        `progress ${stoppedAt}, Step lines ${await stepLines()}`);
+      // Resume continues from the exact step it stopped on.
+      if (await running()) await btn('Pause').click().catch(() => {});
+      await btn('Run').click();
+      await pp.waitForFunction((from) => {
+        const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+        return e && Number(e.textContent.trim().split(' / ')[0]) >= from + 1;
+      }, stoppedAt, { timeout: 20000 }).catch(() => {});
+      await btn('Pause').click().catch(() => {});
+      await pp.waitForTimeout(800);
+      const lines = await pp.evaluate(() => [...document.querySelectorAll('div.overflow-y-auto.font-mono p')]
+        .map((p) => (p.textContent || '').trim()).filter((t) => /^Step \d+/.test(t)).map((t) => Number(/^Step (\d+)/.exec(t)[1])));
+      record(`§105 ${kind}: resuming continues from the exact step it stopped on (no gap, no repeat)`,
+        lines.length > stoppedAt && lines.every((n, i) => n === i + 1), `stopped at ${stoppedAt}; Step lines ${lines.slice(Math.max(0, stoppedAt - 2), stoppedAt + 3).join(',')}`);
+    }
+    // Step and Back still move one step each on a paused run.
+    if (await running()) await btn('Pause').click().catch(() => {});
+    await pp.waitForTimeout(800);
+    const before = await progress();
+    await btn('Step').click();
+    await pp.waitForFunction((b) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) === b + 1;
+    }, before, { timeout: 20000 }).catch(() => {});
+    record('§105 Step still advances exactly one step', (await progress()) === before + 1, `${before} -> ${await progress()}`);
+    await btn('Back').click();
+    await pp.waitForFunction((b) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) === b;
+    }, before, { timeout: 20000 }).catch(() => {});
+    record('§105 Back still returns exactly one step', (await progress()) === before, `-> ${await progress()}`);
+    // Jump-to-NE from a RUNNING run lands paused on the snapshot and stays there.
+    await btn('Run').click();
+    await pp.waitForTimeout(1200);
+    const jump = pp.getByRole('button', { name: /^1st NE Coord/ }).first();
+    const jumpReady = await pp.waitForFunction(() => [...document.querySelectorAll('button')]
+      .some((b) => /^1st NE Coord \(step \d+\)/.test((b.textContent || '').trim()) && !b.disabled), null, { timeout: 30000 }).then(() => true).catch(() => false);
+    record('§105 fixture guard: the 1st NE Coord snapshot exists for this run', jumpReady);
+    const target = Number(/step (\d+)/.exec((await jump.textContent()) || '')?.[1] ?? -1);
+    await jump.click();
+    await pp.waitForTimeout(1500);
+    record('§105 Jump to 1st NE Coord still pauses on its snapshot', !(await running()) && (await progress()) === target,
+      `running=${await running()} progress=${await progress()} target=${target}`);
+    await pp.close();
+
+    // The tour's scripted pause (step 13 stops the run on the first find) and resume (step 15
+    // replays from that frame and runs on) go through the same loop.
+    const pt = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
+    await pt.goto(BASE, { waitUntil: 'networkidle' });
+    const tourUp = await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).then(() => true).catch(() => false);
+    record('§105 tour fixture guard: the guided tour opened', tourUp);
+    const counter = () => pt.evaluate(() => {
+      const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+      return c?.querySelector('.text-indigo-600')?.textContent?.trim() ?? null;
+    });
+    const tProgress = () => pt.evaluate(() => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e ? Number(e.textContent.trim().split(' / ')[0]) : -1;
+    });
+    const tRunning = () => pt.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+    const nextTo = async (label) => {
+      for (let i = 0; i < 25 && (await counter()) !== label; i++) {
+        const before = await counter();
+        await pt.getByRole('button', { name: /^next/i }).first().click({ timeout: 10000 });
+        await pt.waitForFunction((b) => {
+          const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          return (c?.querySelector('.text-indigo-600')?.textContent?.trim() ?? null) !== b;
+        }, before, { timeout: 10000 }).catch(() => {});
+      }
+      return (await counter()) === label;
+    };
+    record('§105 tour fixture guard: reached step 13 ("Watch the leans flatten")', await nextTo('13 / 19'));
+    const paused = await pt.waitForFunction(() => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) > 0
+        && ![...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause');
+    }, null, { timeout: 120000 }).then(() => true).catch(() => false);
+    const firstFind = Number(/step (\d+)/.exec((await pt.getByRole('button', { name: /^1st NE Coord/ }).first().textContent().catch(() => '')) || '')?.[1] ?? -1);
+    const at13 = await tProgress();
+    await pt.waitForTimeout(1500);
+    record('§105 tour step 13: the scripted pause lands on the first-find step and holds (no step after it)',
+      paused && at13 === firstFind && (await tProgress()) === at13 && !(await tRunning()),
+      `paused=${paused} at=${at13} firstFind=${firstFind} after=${await tProgress()}`);
+    record('§105 tour fixture guard: reached step 15 ("Now watch the second coordinate")', await nextTo('15 / 19'));
+    const resumed = await pt.waitForFunction((from) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) >= from + 2;
+    }, firstFind, { timeout: 60000 }).then(() => true).catch(() => false);
+    const lines = await pt.evaluate(() => [...document.querySelectorAll('div.overflow-y-auto.font-mono p')]
+      .map((p) => (p.textContent || '').trim()).filter((t) => /^Step \d+/.test(t)).map((t) => Number(/^Step (\d+)/.exec(t)[1])));
+    const resumedLines = lines.filter((n) => n > firstFind);
+    record('§105 tour step 15: the scripted resume continues from the first-find step (next Step line is firstFind+1, no gap)',
+      resumed && resumedLines.length >= 2 && resumedLines.every((n, i) => n === firstFind + 1 + i),
+      `resumed=${resumed} firstFind=${firstFind} Step lines after it: ${resumedLines.slice(0, 5).join(',')}`);
+    await pt.close();
+  });
 
   // §97 promotes the browser-only empty-sweep angles out of _gen/ (Amendment 2):
   // blregen-s11-interleave (staleness under an abandoned in-flight answer),
