@@ -91,8 +91,9 @@ export const tourTargetScrollDelta = (targetTop: number, targetHeight: number, s
     ? targetTop - stripTop
     : (targetTop + targetHeight / 2) - (stripTop + stripHeight / 2);
 
-/** Absolute scroll target for a delta measured at `scrollY` (clamped at the page top). */
-export const tourScrollTarget = (scrollY: number, delta: number) => Math.max(0, Math.round(scrollY + delta));
+/** Absolute scroll target for a delta measured at `scrollY` (clamped at the page top). Unrounded (H21): a 0.22px
+ *  re-layout straddled .5 and two rounded keys differed by 1, so the same placement scrolled twice. */
+export const tourScrollTarget = (scrollY: number, delta: number) => Math.max(0, scrollY + delta);
 
 /** A re-run for the same step that computes the same target (within 1px) must not scroll again. */
 export const tourScrollIsRepeat = (issued: { i: number; top: number } | null, i: number, top: number) =>

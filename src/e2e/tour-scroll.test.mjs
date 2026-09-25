@@ -1,9 +1,9 @@
-// TASK-18 H19/H20: the tour's step-1 scroll is IDEMPOTENT. The effect re-runs mid-scroll when rect/cardH are
+// TASK-18 H19-H21: the tour's step-1 scroll is IDEMPOTENT. The effect re-runs mid-scroll when rect/cardH are
 // measured; WebKit stacked a relative scrollBy (y=996) and cancelled a repeated smooth scrollIntoView (y=0).
-// Chromium + webkit, normal and 550 ms frames, every branch: landscape strip (+ mid-scroll re-target), portrait
-// scrollIntoView (1024x1366), bottom sheet (390x844) and a sheet shorter than the target (320x568). Asserts are
-// model-derived (target in the usable strip, card clear of it); no scroll call may repeat the previous target.
-// MUTANTS: the pre-H19 effect fails 22 checks; dropping the strip skip 18; dropping the scrollIntoView skip 5.
+// Chromium + webkit, normal and 550 ms frames: landscape strip (+ mid-scroll re-target), portrait scrollIntoView,
+// bottom sheet, and a sheet shorter than the target. Model-derived asserts: target in the usable strip, card clear.
+// ONE call per placement (two with the shift). MUTANTS, each failing by name: the pre-H19 effect, dropping either
+// skip, rounding the key (H21: Chromium portrait scrolled twice, to 522.30 then 522.52).
 import { spawn } from 'node:child_process';
 import { chromium, webkit } from 'playwright';
 import { waitForOwnServer } from '../integration/ownserver.mjs';
@@ -19,10 +19,14 @@ const hog = (ms) => { window.__hogMs = ms; (function f() { const t = performance
 const instrument = (shift) => {
   window.__tourScrolls = 0; window.__tourTargets = [];
   const record = (target) => {
-    window.__tourTargets.push(Math.max(0, Math.round(target)));
-    if (++window.__tourScrolls === 1 && shift) setTimeout(() => {
-      const s = document.createElement('div'); s.style.height = '51px';
-      document.querySelector('[data-tour="matrix"]').closest('main > div > div').before(s);
+    window.__tourTargets.push(Math.max(0, target));
+    const card = () => document.querySelector('[data-tour="matrix"]').closest('main > div > div');
+    if (++window.__tourScrolls === 1 && shift === true) setTimeout(() => {
+      const s = document.createElement('div'); s.style.height = '51px'; card().before(s);
+    }, 100);
+    // H21: move the target by < 1px across a .5 boundary; a rounded key would call this a new placement.
+    if (window.__tourScrolls === 1 && shift === 'subpx') setTimeout(() => {
+      const f = target - Math.floor(target); card().style.marginTop = `${f < 0.5 ? 0.55 - f : 0.45 - f}px`;
     }, 100);
   };
   const by = { scrollTo: (a) => a[0].top, scrollBy: (a) => scrollY + a[0].top };
@@ -61,7 +65,8 @@ const check = (ok, name) => { if (!ok) { failures.push(name); console.error(`  �
 const LAND = { width: 1440, height: 900 }, PORTRAIT = { width: 1024, height: 1366 }, SHEET = { width: 390, height: 844 }, SHORT = { width: 320, height: 568 };
 const cases = [['normal frames', 0, false, LAND], ['550 ms frames', 550, false, LAND], ['mid-scroll re-target', 0, true, LAND],
   ['portrait normal frames', 0, false, PORTRAIT], ['portrait 550 ms frames', 550, false, PORTRAIT],
-  ['sheet normal frames', 0, false, SHEET], ['sheet 550 ms frames', 550, false, SHEET], ['short sheet 550 ms frames', 550, false, SHORT]];
+  ['sheet normal frames', 0, false, SHEET], ['sheet 550 ms frames', 550, false, SHEET], ['short sheet 550 ms frames', 550, false, SHORT],
+  ['sub-pixel re-layout', 0, 'subpx', LAND], ['portrait sub-pixel re-layout', 550, 'subpx', PORTRAIT]];
 try {
   await waitForOwnServer(server, base);
   for (const [engineName, engine] of [['chromium', chromium], ['webkit', webkit]]) {
@@ -93,9 +98,9 @@ try {
         else check((cBottom <= tTop + 1 || cTop >= tBottom - 1) && Math.abs((tTop + tBottom) / 2 - s.vh / 2) <= 2,
           `${tag} the target is centred with the card clear of it (target ${tTop}..${tBottom}, viewport ${s.vh}, card ${cTop}..${cBottom}, scrollY ${s.y})`);
         const repeats = s.targets.filter((t, k) => k > 0 && Math.abs(t - s.targets[k - 1]) < 1).length;
-        check(repeats === 0 && s.calls <= (shift ? 2 : viewport === PORTRAIT ? 3 : 1),
-          `${tag} the tour issues one scroll per placement (${s.calls} calls to [${s.targets}]; a re-run for the same target must not scroll again)`);
-        console.log(`  · ${tag} scrollY ${s.y}, target ${Math.round(tTop)}..${Math.round(tBottom)}, card top ${Math.round(cTop)}, ${s.calls} scroll call(s) to [${s.targets}]`);
+        check(repeats === 0 && s.calls <= (shift === true ? 2 : 1),
+          `${tag} the tour issues one scroll per placement (${s.calls} calls to [${s.targets.map((t) => t.toFixed(2))}]; a re-run for the same target must not scroll again)`);
+        console.log(`  · ${tag} scrollY ${s.y}, target ${Math.round(tTop)}..${Math.round(tBottom)}, card top ${Math.round(cTop)}, ${s.calls} scroll call(s) to [${s.targets.map(Math.round)}]`);
       }
     } finally { await browser.close(); }
   }

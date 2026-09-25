@@ -3955,8 +3955,11 @@ function testWalkthroughInputContracts() {
     'H19 fixture: dropping the repeat skip must fail the idempotence contract');
   assert(contractFails(source.replace('if (tourScrollIsRepeat(issuedScrollRef.current, i, centreTop)) return;', '')),
     'H20 fixture: dropping the scrollIntoView repeat skip must fail the idempotence contract');
-  assert(tourScrollTarget(0, 498.234375) === 498 && tourScrollTarget(40, -120) === 0,
+  assert(tourScrollTarget(0, 498.234375) === 498.234375 && tourScrollTarget(40, -120) === 0,
     'H19 the scroll target is absolute and clamped at the page top');
+  // H21 (Chromium 1024x1366): a 0.22px re-layout moved the centre 522.297 -> 522.516; rounded keys differed by 1.
+  assert(tourScrollIsRepeat({ i: 0, top: tourScrollTarget(0, 522.296875) }, 0, tourScrollTarget(0, 522.515625)),
+    'H21 a sub-pixel re-layout is the same placement: the key is the unrounded target, not a rounded one that straddles .5');
   assert(tourScrollIsRepeat({ i: 0, top: 498 }, 0, 498) && !tourScrollIsRepeat({ i: 0, top: 498 }, 1, 498)
       && !tourScrollIsRepeat({ i: 0, top: 498 }, 0, 549) && !tourScrollIsRepeat(null, 0, 498),
     'H19 a repeat is the same step AND the same target: a step change or a moved target still scrolls');
