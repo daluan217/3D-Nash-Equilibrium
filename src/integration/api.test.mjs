@@ -520,6 +520,20 @@ try {
     record('a suffix-attack host is not caught by a loose www match', r4.status !== 301, `status=${r4.status}`);
   }
 
+  // ══ 12c. One game, many spellings, one report (sweep 16): the report and its
+  //      cache key both read cleanPayoffs' rounded numbers, so "-0", "2", 2e0,
+  //      2.0 and a11=2.0004 are the same game and must get byte-identical answers.
+  //      Mixed NE (x=3/4, y=1/3): unrounded, a11 alone moves y (a uniform shift would not).
+  {
+    const P = { a11: 2, a12: 0, a21: 0, a22: 1, b11: 0, b12: 1, b21: 3, b22: 0 };
+    const post = async (raw) => (await fetch(`${BASE}/api/report`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: raw })).text();
+    const as = (f) => `{"payoffs":{${Object.entries(P).map(([k, v]) => `"${k}":${f(v, k)}`).join(',')}}}`;
+    const canon = await post(JSON.stringify({ payoffs: P }));
+    const spelled = await Promise.all([as((v) => (v ? `"${v}"` : '-0')), as((v) => `${v}e0`), as((v) => `${v}.0`), as((v, k) => String(k === 'a11' ? v + 0.0004 : v))].map(post));
+    record('one game in four spellings gets the byte-identical report',
+      /"groundTruth"/.test(canon) && /0\.75|0\.333/.test(canon) && spelled.every((t) => t === canon), spelled.map((t) => (t === canon ? 'same' : t.slice(0, 80))).join(' | '));
+  }
+
   // ══ 13. SECURITY — rate limiting (the brute-force surface of login and
   //      registration; run LAST because it burns the register bucket)
   {
