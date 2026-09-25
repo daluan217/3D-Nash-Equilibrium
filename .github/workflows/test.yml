@@ -818,8 +818,9 @@ jobs:
           name: dist-e2e
           path: dist
 
-      - name: Install headless Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install headless Chromium and WebKit
+        # WebKit for the tour-scroll check below: its double-scroll defect was WebKit-only.
+        run: npx playwright install --with-deps chromium webkit
 
       - name: Run the AI-surface suite
         # The controls that CONSUME a model response — "Explain this game" and
@@ -851,6 +852,18 @@ jobs:
         # A throttle that silently skipped ctx.newPage() pages voided every local
         # "green at 11x" for those sections (TASK-18 H16). Measured busy-loop ratio.
         run: node src/e2e/throttle.test.mjs
+
+      - name: The guided tour scrolls to its target once, in chromium and webkit (TASK-18 H19)
+        # The step-1 scroll re-ran mid-flight; WebKit stacked the two relative scrolls (y=996, target off
+        # screen, card clamped to the top) at normal and 550 ms frames. The script exits non-zero on any
+        # failed check; the grep proves every case actually ran, so a silent early exit cannot pass.
+        run: |
+          set -o pipefail
+          node src/e2e/tour-scroll.test.mjs | tee "$RUNNER_TEMP/tour-scroll.log"
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 6
+          grep -q '^✓ tour scroll: idempotent in chromium and webkit' "$RUNNER_TEMP/tour-scroll.log"
+        env:
+          TOUR_SCROLL_PORT: '3099'
 
   # Branch protection requires the exact context "e2e". Keep that stable
   # while the implementation fans out behind it. The deploy gate therefore

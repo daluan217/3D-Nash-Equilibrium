@@ -328,6 +328,17 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
 }
 assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
   'CI runs the CPU-throttle reach guard in a job that has chromium');
+// TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the
+// step on a non-zero exit (pipefail through tee), and proves all six engine x frame cases ran.
+{
+  const job = workflowJob('e2e_ai_surface');
+  const install = job.indexOf('npx playwright install --with-deps chromium webkit');
+  const step = job.indexOf('node src/e2e/tour-scroll.test.mjs');
+  assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour-scroll check');
+  const body = job.slice(step - 200, step + 400);
+  assert.match(body, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
+  assert.match(body, /-eq 6/, 'CI requires all six tour-scroll cases to have run');
+}
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────

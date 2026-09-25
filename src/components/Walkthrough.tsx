@@ -91,6 +91,13 @@ export const tourTargetScrollDelta = (targetTop: number, targetHeight: number, s
     ? targetTop - stripTop
     : (targetTop + targetHeight / 2) - (stripTop + stripHeight / 2);
 
+/** Absolute scroll target for a delta measured at `scrollY` (clamped at the page top). */
+export const tourScrollTarget = (scrollY: number, delta: number) => Math.max(0, Math.round(scrollY + delta));
+
+/** A re-run for the same step that computes the same target (within 1px) must not scroll again. */
+export const tourScrollIsRepeat = (issued: { i: number; top: number } | null, i: number, top: number) =>
+  !!issued && issued.i === i && Math.abs(issued.top - top) < 1;
+
 /** Bottom edge of the sticky header, which overlays the top of the page. */
 function headerOffset(): number {
   // Called during render (the Exit pill's top): no DOM outside a browser.
@@ -353,8 +360,10 @@ export function Walkthrough({
    * pointing at. Small screens instead centre the target in the strip of
    * screen left above the sheet.
   */
+  // H19: the last scroll this effect issued, so a re-run for the same step and target is a no-op.
+  const issuedScrollRef = useRef<{ i: number; top: number } | null>(null);
   useEffect(() => {
-    if (!open || !step) return;
+    if (!open || !step) { issuedScrollRef.current = null; return; }
     const frame = requestAnimationFrame(() => {
       const el = document.querySelector(`[data-tour="${step.target}"]`);
       if (!el) return;
@@ -389,7 +398,13 @@ export function Walkthrough({
       // its top off screen at once. Align the top instead, so the part of the
       // picture being described is the part that stays visible.
       const delta = tourTargetScrollDelta(r0.top, r0.height, top, room);
-      window.scrollBy({ top: delta, behavior });
+      // Idempotent (TASK-18 H19): the effect re-runs when rect/cardH are measured, often mid-scroll.
+      // A relative scrollBy stacked on the pending one in WebKit (two runs -> y=996, target off-screen)
+      // and a repeated smooth scrollTo cancelled it (y=0). Absolute target; same target = no call.
+      const targetTop = tourScrollTarget(window.scrollY, delta);
+      if (tourScrollIsRepeat(issuedScrollRef.current, i, targetTop)) return;
+      issuedScrollRef.current = { i, top: targetTop };
+      window.scrollTo({ top: targetTop, behavior });
     });
     return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
