@@ -16,6 +16,7 @@
  * part of `npm test` and runs in the CI `unit` job.
  */
 
+import { seededRandom } from './testing/prng.ts';
 import { GamePayoffs } from './types';
 import {
   payoffTexRhs,
@@ -3573,7 +3574,7 @@ function payoffDisplayTests() {
   // stand-in for it: an earlier count using `p === q` in place of the real
   // tolerance read 19,719 instead of 28 — 33x high.
   let contradictions = 0, sampled = 0;
-  const rnd = (() => { let z = 4242; return () => ((z = (z * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff); })();
+  const rnd = seededRandom(4242);
   for (let i = 0; i < 1200; i++) {
     const sc2 = [0.5, 2, 10, 50][i % 4];
     const g: GamePayoffs = { a11: (rnd()*2-1)*sc2, a12: (rnd()*2-1)*sc2, a21: (rnd()*2-1)*sc2, a22: (rnd()*2-1)*sc2,

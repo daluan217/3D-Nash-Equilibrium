@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { seededRandom } from './testing/prng.ts';
 import { GamePayoffs, SimState, NashEquilibrium, PathSegment, LlmReport, MismatchKind, SuggestedScenario } from './types';
 import { doStep, PRESETS, precomputeThinHistory, DEFAULT_MAX_STEPS, computeAllNE, computeIndifference, regretA, regretB, describeContinua, neTolerance, neTolerancePlayer, profileConcept, resolveProfile, indifferenceAt, computeMixedNE, fmtProb, texProb, equilibriumSet, kindOf, EA, EB, r3, parseNumericInput, commitPayoffInput, commitStartCoordinate, commitStepIndex, normalizeProseMinus } from './utils/gameEngine';
 import { readFileSync } from 'node:fs';
@@ -255,8 +256,7 @@ function testGhostCorridorInvariant() {
  * the bad formula gets wrong, so the fuzz below fails immediately if it returns.
  */
 function testGeometryOracleAgreesWithSolver() {
-  let seed = 20260812;
-  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const rnd = seededRandom(20260812);
   const pick = () => Math.round((rnd() * 20 - 10));
 
   let interiorChecked = 0;
@@ -1200,7 +1200,7 @@ function testEquilibriumSet() {
   //   2. on games with no within-player tie it agrees exactly with
   //      computeAllNE — so adding it to the report can only add equilibria the
   //      shipped list is missing, never change an existing answer.
-  const rnd = (() => { let s = 20260829; return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648; })();
+  const rnd = seededRandom(20260829);
   const isNE = (g: GamePayoffs, x: number, y: number) => {
     const epA = (xx: number) => xx * (y * g.a11 + (1 - y) * g.a12) + (1 - xx) * (y * g.a21 + (1 - y) * g.a22);
     const epB = (yy: number) => yy * (x * g.b11 + (1 - x) * g.b21) + (1 - yy) * (x * g.b12 + (1 - x) * g.b22);
@@ -1519,8 +1519,9 @@ function testRedTeamFindings10() {
 
   // Sweep the pairing generally: simulate one game, render against a perturbed
   // one, and require the box to stay self-consistent for BOTH games.
-  let seed = 90210, checked = 0;
-  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  let checked = 0;
+
+  const rnd = seededRandom(90210);
   const q = () => Math.floor(rnd() * 19) - 9;
   for (let t = 0; t < 400; t++) {
     const g1: GamePayoffs = { a11: q(), a12: q(), a21: q(), a22: q(), b11: q(), b12: q(), b21: q(), b22: q() };
@@ -1571,8 +1572,7 @@ function testRedTeamFindings9() {
   // Sweep the REAL sim and assert the cross-panel invariant directly: whatever
   // the box reports must BE an equilibrium, and its concept must match it.
   let checked = 0;
-  let seed = 4242;
-  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const rnd = seededRandom(4242);
   const shapes: (() => GamePayoffs)[] = [
     () => { const P = 5 + Math.floor(rnd() * 60), e = Math.round(rnd() * 60) / 1000 + 0.001;
             return { a11: P, a12: 0, a21: -P, a22: e, b11: 0, b12: e, b21: P, b22: -P }; },
@@ -2001,7 +2001,7 @@ function testTieProse() {
   // the generated sentences are pushed through the SAME validators the model's
   // prose must pass. A flag means either the renderer is wrong or the gate has
   // a false positive, and both must be fixed before a reader ever sees it.
-  const rnd = (() => { let s = 424242; return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648; })();
+  const rnd = seededRandom(424242);
   const LABELS: (TieLabels | null)[] = [
     { row1: 'Premium launch', row2: 'Budget launch', col1: 'Broad campaign', col2: 'Targeted campaign' },
     { row1: 'Full schedule', row2: 'Light schedule', col1: 'Full schedule', col2: 'Light schedule' },  // shared words
