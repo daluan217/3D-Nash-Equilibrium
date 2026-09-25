@@ -382,6 +382,11 @@ export function Walkthrough({
         floatHRef.current, tourFloatingCardWidth(window.innerWidth),
       );
       if (!willSheet && !isLand) {
+        // H20: the same repeat key (the centred target in page coordinates) — WebKit cancelled a repeated
+        // smooth scrollIntoView mid-scroll (1024x1366, 550 ms frames: y=0, target under the card).
+        const centreTop = tourScrollTarget(window.scrollY, r0.top + r0.height / 2 - window.innerHeight / 2);
+        if (tourScrollIsRepeat(issuedScrollRef.current, i, centreTop)) return;
+        issuedScrollRef.current = { i, top: centreTop };
         el.scrollIntoView({ behavior, block: 'center' });
         return;
       }

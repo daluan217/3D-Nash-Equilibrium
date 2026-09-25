@@ -3910,6 +3910,10 @@ function testWalkthroughInputContracts() {
     assert(/const targetTop = tourScrollTarget\(window\.scrollY, delta\);\s*if \(tourScrollIsRepeat\(issuedScrollRef\.current, i, targetTop\)\) return;\s*issuedScrollRef\.current = \{ i, top: targetTop \};\s*window\.scrollTo\(\{ top: targetTop, behavior \}\);/.test(scrollEffect)
       && !/scrollBy\(/.test(scrollEffect),
       'H19 the tour scroll is idempotent: an absolute target, skipped when this step already issued it (src/e2e/tour-scroll.test.mjs is the browser proof)');
+    // TASK-18 H20: the portrait scrollIntoView branch shares the key (WebKit cancelled a repeat: 1024x1366, y=0).
+    assert(/const centreTop = tourScrollTarget\(window\.scrollY, r0\.top \+ r0\.height \/ 2 - window\.innerHeight \/ 2\);\s*if \(tourScrollIsRepeat\(issuedScrollRef\.current, i, centreTop\)\) return;\s*issuedScrollRef\.current = \{ i, top: centreTop \};\s*el\.scrollIntoView\(\{ behavior, block: 'center' \}\);/.test(scrollEffect)
+      && (scrollEffect.match(/scrollIntoView\(/g) || []).length === 1 && (scrollEffect.match(/scrollTo\(/g) || []).length === 1,
+      'H20 both tour-scroll branches are idempotent: the centring scrollIntoView is skipped when this step already issued the same centred target');
     // CodeRabbit on #173: the scroll effect decides the layout family from the
     // spotlight's POST-centring position, through the same predicate render uses.
     // STRUCT-APP-19/001: both call sites now carry the MEASURED floating card
@@ -3949,6 +3953,8 @@ function testWalkthroughInputContracts() {
     'H19 fixture: restoring the relative scrollBy must fail the idempotence contract');
   assert(contractFails(source.replace('if (tourScrollIsRepeat(issuedScrollRef.current, i, targetTop)) return;', '')),
     'H19 fixture: dropping the repeat skip must fail the idempotence contract');
+  assert(contractFails(source.replace('if (tourScrollIsRepeat(issuedScrollRef.current, i, centreTop)) return;', '')),
+    'H20 fixture: dropping the scrollIntoView repeat skip must fail the idempotence contract');
   assert(tourScrollTarget(0, 498.234375) === 498 && tourScrollTarget(40, -120) === 0,
     'H19 the scroll target is absolute and clamped at the page top');
   assert(tourScrollIsRepeat({ i: 0, top: 498 }, 0, 498) && !tourScrollIsRepeat({ i: 0, top: 498 }, 1, 498)

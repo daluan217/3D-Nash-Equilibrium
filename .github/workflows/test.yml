@@ -853,14 +853,15 @@ jobs:
         # "green at 11x" for those sections (TASK-18 H16). Measured busy-loop ratio.
         run: node src/e2e/throttle.test.mjs
 
-      - name: The guided tour scrolls to its target once, in chromium and webkit (TASK-18 H19)
+      - name: The guided tour scrolls to its target once, in chromium and webkit (TASK-18 H19, H20)
         # The step-1 scroll re-ran mid-flight; WebKit stacked the two relative scrolls (y=996, target off
-        # screen, card clamped to the top) at normal and 550 ms frames. The script exits non-zero on any
+        # screen, card clamped to the top) and cancelled a repeated portrait scrollIntoView (y=0, H20).
+        # Landscape, portrait and both sheet shapes, at normal and 550 ms frames. The script exits non-zero on any
         # failed check; the grep proves every case actually ran, so a silent early exit cannot pass.
         run: |
           set -o pipefail
           node src/e2e/tour-scroll.test.mjs | tee "$RUNNER_TEMP/tour-scroll.log"
-          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 6
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 16
           grep -q '^✓ tour scroll: idempotent in chromium and webkit' "$RUNNER_TEMP/tour-scroll.log"
         env:
           TOUR_SCROLL_PORT: '3099'
