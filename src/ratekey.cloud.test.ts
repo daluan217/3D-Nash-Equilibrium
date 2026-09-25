@@ -34,6 +34,25 @@ for (const [ip, want] of [['203.0.113.7', '203.0.113.7'], ['::ffff:203.0.113.7',
   eq(ip, want);
 assert.notStrictEqual(key('::ffff:203.0.113.7'), key('::ffff:203.0.113.8'), 'two mapped IPv4 clients must not share a bucket'); n++;
 eq('unknown', 'unknown');
+// Seeded fuzz: any IPv6 address, its /56 sibling, and the same address with a
+// zero run of any length at any position written as '::', share one 4-group key.
+let seed = 20260924;
+const r16 = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 16; // exact 32-bit LCG, high bits
+const hex = (g: number[]) => g.map((x) => x.toString(16)).join(':');
+let fuzzed = 0;
+for (let i = 0; i < 20000; i++) {
+  const g = Array.from({ length: 8 }, r16);
+  const at = r16() % 8, len = 1 + (r16() % (8 - at));
+  for (let j = at; j < at + len; j++) g[j] = 0;
+  if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) continue; // mapped / IPv4-compatible
+  const sib = [...g.slice(0, 3), (g[3] & 0xff00) | (r16() & 0xff), r16(), r16(), r16(), r16()];
+  const comp = `${hex(g.slice(0, at))}::${hex(g.slice(at + len))}`;
+  const k1 = key(hex(g));
+  assert(/^([0-9a-f]{1,4}:){4}:\/56$/.test(k1) && k1 === key(hex(sib)) && k1 === key(comp),
+    `fuzz ${hex(g)} | ${comp} | ${hex(sib)}: ${k1} ${key(comp)} ${key(hex(sib))}`);
+  fuzzed++;
+}
+assert(fuzzed > 15000, `fuzz ran only ${fuzzed}`); n++;
 
 // Contract: one key function. The limiter keys with rateKey(req), and no other
 // line in server.ts reads req.ip / remoteAddress to build a throttle key.

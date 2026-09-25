@@ -397,7 +397,10 @@ function* exhaustive(values: number[]): Generator<GamePayoffs> {
 }
 
 let seed = 20260829;
-const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+// Exact 32-bit LCG. `seed * 1103515245` in doubles passes 2^53 and rounds: that
+// form cycles every 10,466 draws, so 300,000 "random" games were 20,185 distinct.
+const rnd = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296;
+if (N >= 100000) { const s0 = seed, seen = new Set<number>(); for (let i = 0; i < 100000; i++) seen.add(rnd()); if (seen.size < 99000) throw new Error(`PRNG repeats: ${seen.size} distinct of 100000`); seed = s0; }
 
 let checked = 0, ties = 0, continua = 0, areas = 0, multi = 0;
 const failures: { g: GamePayoffs; labels: TieLabels | null; text: string; why: string }[] = [];
