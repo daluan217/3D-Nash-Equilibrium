@@ -6,7 +6,7 @@
  * step after a forced GC is deterministic: fixed 1.58 -> 1.19 KB/step, M73
  * 76.5 -> 526 KB/step. Needs --expose-gc and FAILS without it.
  *
- *   node --expose-gc --import tsx src/breakaheap.test.ts
+ *   tsx --expose-gc src/breakaheap.test.ts   (tsx forwards the flag to node)
  */
 import assert from 'node:assert';
 import { computeAllNE, doStep } from './utils/gameEngine';
