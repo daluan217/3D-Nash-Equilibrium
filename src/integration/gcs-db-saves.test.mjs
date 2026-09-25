@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 99;
+const EXPECTED_CHECKS = 100;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1904,6 +1904,10 @@ try {
       const liveLogins = [(await call(aX, '/api/auth/login', { email: 'p_live@example.test', password: 'Sup3rSecret!23' })).status,
         (await call(aX, '/api/auth/login', { email: 'p_live@example.test', password: 'Att4cker!pass' })).status];
       const takenName = await jv({ email: 'p_live@example.test', code: '222222', password: 'OwnerPass!23', username: 'p_ver' });
+      // Case variants of the verified p_ver (sweep 13 probe): a same-case repeat cannot tell a folded compare from an exact one.
+      const errOf = async (r) => `${r.status} ${(await r.json().catch(() => ({}))).error ?? ''}`;
+      const dupCase = [await errOf(await reg(aX, 'P_Ver', 'fresh-case@example.test', 'Sup3rSecret!23')),
+        await errOf(await reg(aX, 'fresh-case', ' P_VER@Example.TEST ', 'Sup3rSecret!23'))];
       const liveOk = await jv({ email: 'p_live@example.test', code: '222222', password: 'OwnerPass!23', username: 'p_live-owner' });
       const triedLock = await jv({ email: 'p_tried@example.test', code: '000000', password: 'OwnerPass!23', username: 'p_tried-owner' });
       const m0 = mailed.length;
@@ -1930,6 +1934,8 @@ try {
           && takenName.status === 400 && /already taken/.test(takenName.error)
           && liveOk.status === 200 && /Too many/.test(triedLock.error),
         JSON.stringify({ reLive, reTried, resent, liveLogins, takenName: takenName.status, liveOk: liveOk.status, triedLock: triedLock.error.slice(0, 20) }));
+      record('register folds case: P_Ver is a taken name and P_VER@Example.TEST an existing account (400 with that reason, not a new row)',
+        /^400 .*already taken/.test(dupCase[0]) && /^400 .*already exists/.test(dupCase[1]), JSON.stringify(dupCase));
       record('THE DEFECT: a sign-up sweeps pending rows dead a day with no games; recent, game-owning and verified rows stay; a locked code buys no second mail',
         !ids.includes('p_old') && ids.includes('p_game') && ids.includes('p_recent') && ids.includes('p_ver') && again === 429 && lMails === 1,
         JSON.stringify({ old: ids.includes('p_old'), game: ids.includes('p_game'), recent: ids.includes('p_recent'), ver: ids.includes('p_ver'), again, lMails }));
