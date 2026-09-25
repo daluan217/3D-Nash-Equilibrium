@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 112;
+const EXPECTED_CHECKS = 114;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1295,18 +1295,35 @@ try {
         && /&lt;script&gt;/.test(htmlOf(mails[1])) && !/<script>/i.test(htmlOf(mails[1])),
       `statuses ${JSON.stringify(hostileStatus)} mails ${mails.length} rcpts ${JSON.stringify(mails.map((m) => m.rcpts))}`);
     // Size bounds (sweep 12 probe, held on main): blank is refused, the cap is
-    // on the TRIMMED text, so 5000 chars padded with spaces still sends. 9 of the 10/min.
+    // on the TRIMMED text, so 5000 chars padded with spaces still sends. 8 of the 10/min.
     const fb = async (message) => { const r = await fetch(`http://127.0.0.1:${qApp}/api/feedback`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) });
       return [r.status, (await r.json().catch(() => ({}))).error ?? ''].join(' '); };
     const bounds = [await fb('  \n '), await fb('y'.repeat(5001)), await fb(`  ${'z'.repeat(5000)} `)];
     record('feedback: blank and 5001 chars are 400 with their reason; exactly 5000 after trim is 200',
       /^400 .*cannot be empty/.test(bounds[0]) && /^400 .*too long/.test(bounds[1]) && bounds[2] === '200 ', JSON.stringify(bounds));
+    // Sweep 16. A rating Number() cannot coerce was a 500 (9th of 10/min; bad JSON never reaches the limiter).
+    // Bad JSON / 413 bodies are the client's error: no "Unhandled error" stack echoing their bytes
+    // (a raw newline forged a separate log line). The limiter's 429 names its real wait.
+    const post = (body) => fetch(`http://127.0.0.1:${qApp}/api/feedback`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    const poison = await post(JSON.stringify({ message: 'rated oddly', rating: { toString: 1, valueOf: 1 } }));
+    const l0 = boot.log().length;
+    const junk = [(await post('nul\nFORGED-S16 admin ok')).status, (await post('x'.repeat(200 * 1024))).status];
+    await new Promise((r) => setTimeout(r, 200));
+    const junkLog = boot.log().slice(l0);
+    record('THE DEFECT (sweep 16): an uncoercible rating is ignored (200); bad-JSON and 413 bodies log no "Unhandled error" and no line of theirs',
+      poison.status === 200 && JSON.stringify(junk) === '[400,413]' && !/Unhandled error|FORGED|xxxxxxxx/.test(junkLog),
+      JSON.stringify({ poison: poison.status, junk, junkLog: junkLog.slice(0, 300) }));
     silent = true;
     const hung = [];
     // A second account: q@ was just mailed, and a recovery mail per address per
     // minute is the cooldown (sweep 6), so a repeat there never reaches SMTP.
     routes[1][1] = () => ({ email: 'q2@example.test' });
     for (const [route, body] of routes) hung.push(await timed(route, body()));
+    let over; // the 11th feedback this minute; a blank one is refused fast if the count ever drifts low
+    for (let i = 0; i < 3 && over?.status !== 429; i++) over = await post('{"message":""}');
+    const ra = over.headers.get('retry-after');
+    record('THE DEFECT (sweep 16): the rate limiter\'s 429 carries Retry-After, whole seconds inside its 60s window',
+      over.status === 429 && /^\d+$/.test(ra ?? '') && Number(ra) >= 1 && Number(ra) <= 60, `status ${over.status} retry-after ${ra}`);
     record('CONTROL: against an answering mail server, register / forgot-password / feedback are 200 and fast',
       ok.every((r) => r.status === 200 && r.ms < 5000), JSON.stringify(ok));
     record('THE DEFECT: a silent mail server gets an honest 500 inside the client\'s 22s, on every mail route',

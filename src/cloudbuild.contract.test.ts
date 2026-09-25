@@ -240,6 +240,19 @@ if (!/^ENV NODE_ENV=production\s*$/m.test(dockerfile)) {
   );
 }
 
+// ── the build context must not carry local state into the image ──────────────
+// The static host serves everything under dist/ except the server bundle. A
+// local dist/ (a stray bundle, sweep 16), .env or db.json must never reach the
+// image: no stage copies the whole context, the runtime's dist/ comes only from
+// the builder, and .dockerignore keeps them out of the context as a second wall.
+if (/^COPY[ \t]+(?!--from)(?:--\S+[ \t]+)*\.\/?[ \t]/m.test(dockerfile)) fail('Dockerfile must not COPY the whole build context: local dist/, .env and db.json would ship.');
+const distCopies = dockerfile.match(/^COPY\b[^\n]*\bdist\/?[ \t][^\n]*$/gm) ?? [];
+if (distCopies.length !== 1 || !/^COPY --from=builder \/app\/dist\/ \.\/dist\/$/.test(distCopies[0].trim())) fail(`the runtime dist/ must come only from the builder stage, got ${JSON.stringify(distCopies)}`);
+const dockerignore = new Set(readFileSync('.dockerignore', 'utf8').split(/\r?\n/).map((l) => l.trim()));
+for (const name of ['dist', '.env', 'db.json', 'node_modules', '.git']) {
+  if (!dockerignore.has(name)) fail(`.dockerignore must list "${name}" on its own line (the second wall behind the named COPYs).`);
+}
+
 // ── the deploy must cap at ONE instance ──────────────────────────────────────
 // Two standing single-process assumptions make a second Cloud Run instance an
 // active correctness hazard: AUTH_SECRET falls back to a random PER-PROCESS
@@ -272,5 +285,5 @@ console.log(
   `✓ cloudbuild contract: ${actual.size} env names match deploy/cloudrun-env-manifest.txt; `
   + 'rung-3 flags literal, REPORT_MODEL non-empty, substitutions declared, images: tags built, '
   + 'no secret-shaped defaults, image is NODE_ENV=production by construction, '
-  + 'deploy capped at --max-instances=1',
+  + 'deploy capped at --max-instances=1, local dist/.env/db.json kept out of the build context',
 );

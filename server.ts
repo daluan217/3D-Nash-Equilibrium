@@ -3093,6 +3093,7 @@ function rateLimit(
     }
     bucket.count++;
     if (bucket.count > max) {
+      res.setHeader("Retry-After", String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
       return res.status(429).json({ error: "Too many attempts. Please wait a minute and try again." });
     }
     return next();
@@ -4512,7 +4513,8 @@ async function startServer() {
     // Rating is optional; clamp to 1–5 if present.
     let ratingValue: number | null = null;
     if (rating !== undefined && rating !== null && rating !== 0) {
-      const r = Math.round(Number(rating));
+      // Number() throws on an object with no usable toString/valueOf (sweep 16: a 500).
+      const r = typeof rating === "number" || typeof rating === "string" ? Math.round(Number(rating)) : NaN;
       if (!Number.isNaN(r) && r >= 1 && r <= 5) ratingValue = r;
     }
 
@@ -5635,12 +5637,13 @@ async function startServer() {
   // here via `next(err)`; a plain synchronous handler that throws lands here
   // through Express's own built-in behavior. One logged, generic 500 instead
   // of a hung/reset connection and a crashed or silently poisoned process.
+  const logUnhandled = (err: unknown, req: express.Request) =>
+    console.error(`Unhandled error on ${req.method} ${req.path}:`, err instanceof Error ? (err.stack || err.message) : String(err));
   app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const cause = err instanceof Error ? (err.stack || err.message) : String(err);
-    console.error(`Unhandled error on ${req.method} ${req.path}:`, cause);
     if (res.headersSent) {
       // A response already started streaming; Express's own guidance is to
       // delegate to the default handler rather than try to send a second one.
+      logUnhandled(err, req);
       next(err);
       return;
     }
@@ -5658,10 +5661,13 @@ async function startServer() {
     // middleware; anything else still collapses to a logged, generic 500.
     const upstreamStatus = (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.status
       ?? (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.statusCode;
+    // Not logged: the client's own error, and body-parser's message echoes its
+    // raw bytes (a newline in a bad body forged a separate log line, sweep 16).
     if (typeof upstreamStatus === "number" && upstreamStatus >= 400 && upstreamStatus < 500) {
       res.status(upstreamStatus).json({ error: "Invalid request." });
       return;
     }
+    logUnhandled(err, req);
     res.status(500).json({ error: "Internal server error." });
   });
 
