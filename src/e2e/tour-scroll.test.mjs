@@ -2,8 +2,8 @@
 // measured; WebKit stacked a relative scrollBy (y=996) and cancelled a repeated smooth scrollIntoView (y=0).
 // Chromium + webkit, normal and 550 ms frames: landscape strip (+ mid-scroll re-target), portrait scrollIntoView,
 // bottom sheet, and a sheet shorter than the target. Model-derived asserts: target in the usable strip, card clear.
-// ONE call per placement (two with the shift). MUTANTS, each failing by name: the pre-H19 effect, dropping either
-// skip, rounding the key (H21: Chromium portrait scrolled twice, to 522.30 then 522.52).
+// ONE call per placement (two with the shift), also after a < 1px re-layout across .5 or a whole pixel. MUTANTS
+// (each fails by name): pre-H19 effect, either skip dropped, a round/floor/trunc/|0 key (H21: 522.30 -> 522.52).
 import { spawn } from 'node:child_process';
 import { chromium, webkit } from 'playwright';
 import { waitForOwnServer } from '../integration/ownserver.mjs';
@@ -20,13 +20,14 @@ const instrument = (shift) => {
   window.__tourScrolls = 0; window.__tourTargets = [];
   const record = (target) => {
     window.__tourTargets.push(Math.max(0, target));
-    const card = () => document.querySelector('[data-tour="matrix"]').closest('main > div > div');
-    if (++window.__tourScrolls === 1 && shift === true) setTimeout(() => {
-      const s = document.createElement('div'); s.style.height = '51px'; card().before(s);
-    }, 100);
-    // H21: move the target by < 1px across a .5 boundary; a rounded key would call this a new placement.
-    if (window.__tourScrolls === 1 && shift === 'subpx') setTimeout(() => {
-      const f = target - Math.floor(target); card().style.marginTop = `${f < 0.5 ? 0.55 - f : 0.45 - f}px`;
+    if (++window.__tourScrolls > 1) return;
+    const el = document.querySelector('[data-tour="matrix"]');
+    // The model's unquantised key (Walkthrough's centring target) at the moment the first scroll was issued.
+    window.__modelKey = () => { const r = el.getBoundingClientRect(), hd = document.querySelector('header').getBoundingClientRect().bottom;
+      return scrollY + r.top + r.height / 2 - (innerWidth > innerHeight ? hd + Math.max(120, innerHeight - 16 - hd) / 2 : innerHeight / 2); };
+    window.__key0 = window.__modelKey();
+    if (shift === true) setTimeout(() => {
+      const s = document.createElement('div'); s.style.height = '51px'; el.closest('main > div > div').before(s);
     }, 100);
   };
   const by = { scrollTo: (a) => a[0].top, scrollBy: (a) => scrollY + a[0].top };
@@ -63,10 +64,11 @@ const settled = (page) => page.evaluate(() => new Promise((resolve) => {
 const failures = [];
 const check = (ok, name) => { if (!ok) { failures.push(name); console.error(`  ✗ ${name}`); } };
 const LAND = { width: 1440, height: 900 }, PORTRAIT = { width: 1024, height: 1366 }, SHEET = { width: 390, height: 844 }, SHORT = { width: 320, height: 568 };
+const SUBPX = [['half', 'across .5'], ['up', 'up across a whole pixel'], ['down', 'down across a whole pixel']];
 const cases = [['normal frames', 0, false, LAND], ['550 ms frames', 550, false, LAND], ['mid-scroll re-target', 0, true, LAND],
   ['portrait normal frames', 0, false, PORTRAIT], ['portrait 550 ms frames', 550, false, PORTRAIT],
   ['sheet normal frames', 0, false, SHEET], ['sheet 550 ms frames', 550, false, SHEET], ['short sheet 550 ms frames', 550, false, SHORT],
-  ['sub-pixel re-layout', 0, 'subpx', LAND], ['portrait sub-pixel re-layout', 550, 'subpx', PORTRAIT]];
+  ...SUBPX.flatMap(([k, what]) => [[`sub-pixel re-layout ${what}`, 0, k, LAND], [`portrait sub-pixel re-layout ${what}`, 550, k, PORTRAIT]])];
 try {
   await waitForOwnServer(server, base);
   for (const [engineName, engine] of [['chromium', chromium], ['webkit', webkit]]) {
@@ -79,9 +81,25 @@ try {
         if (hogMs) await page.addInitScript(hog, hogMs);
         await page.goto(base, { waitUntil: 'networkidle' });
         await page.getByRole('dialog', { name: /guided tour/i }).waitFor({ state: 'visible', timeout: 180000 });
-        const s = await settled(page);
-        await ctx.close();
+        let s = await settled(page);
         const tag = `[${engineName} ${label}]`;
+        if (typeof shift === 'string' && s) {
+          // H21: re-lay the target out by < 1px so the issued key crosses a boundary a quantised key would see:
+          // .5 (Math.round), or a whole pixel up or down (floor/trunc/|0). The move is measured after layout.
+          const mv = await page.evaluate(async (kind) => {
+            const key0 = window.__key0, f = key0 - Math.floor(key0), base = Math.floor(key0);
+            const want = kind === 'half' ? base + (f < 0.5 ? 0.55 : 0.45) : kind === 'up' ? base + 1 + Math.min(0.05, f / 2) : base - Math.min(0.05, (1 - f) / 2);
+            document.querySelector('[data-tour="matrix"]').closest('main > div > div').style.marginTop = `${want - window.__modelKey()}px`;
+            await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+            return { key0, issued: window.__tourTargets[0], k1: window.__modelKey() };
+          }, shift);
+          const cross = shift === 'half' ? Math.round(mv.k1) !== Math.round(mv.key0)
+            : Math.floor(mv.k1) !== Math.floor(mv.key0) && (shift === 'up') === (mv.k1 > mv.key0);
+          check(Math.abs(mv.k1 - mv.key0) < 1 && cross && Math.abs(mv.issued - mv.key0) < 1,
+            `${tag} fixture: the re-layout moved the key by < 1px across the boundary (model ${mv.key0} -> ${mv.k1}, issued ${mv.issued})`);
+          s = await settled(page);
+        }
+        await ctx.close();
         check(s && s.c, `${tag} the tour settles with its card on screen (${JSON.stringify(s)})`);
         if (!s || !s.c) continue;
         // A throwing init script silently skips every later one in WebKit, which would turn this case into normal frames.

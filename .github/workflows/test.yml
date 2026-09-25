@@ -861,7 +861,7 @@ jobs:
         run: |
           set -o pipefail
           node src/e2e/tour-scroll.test.mjs | tee "$RUNNER_TEMP/tour-scroll.log"
-          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 20
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 28
           grep -q '^✓ tour scroll: idempotent in chromium and webkit' "$RUNNER_TEMP/tour-scroll.log"
         env:
           TOUR_SCROLL_PORT: '3099'
