@@ -534,6 +534,25 @@ try {
       /"groundTruth"/.test(canon) && /0\.75|0\.333/.test(canon) && spelled.every((t) => t === canon), spelled.map((t) => (t === canon ? 'same' : t.slice(0, 80))).join(' | '));
   }
 
+  // ══ 12d. A body nested past the stack's depth (sweep 16) in every game field
+  //      saves as cleaned primitives. Stored as-is, every JSON.stringify of the
+  //      store (each save, each GCS upload, the list) would throw from then on.
+  {
+    const deep = '['.repeat(40000) + ']'.repeat(40000);
+    const fields = ['description', 'row1Label', 'colorTermsA', 'clientRequestId'];
+    const st = [];
+    for (const f of fields) {
+      const raw = `{"name":"deep ${f}","payoffs":${JSON.stringify(MP)},"${f}":${deep}}`;
+      st.push((await fetch(`${BASE}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: raw })).status);
+    }
+    const list = await call('GET', '/api/games', { token }); // serializes every stored row
+    const mine = (Array.isArray(list.json) ? list.json : []).filter((g) => /^deep /.test(g.name));
+    const flat = mine.length === 4 && mine.every((g) => [g.description, g.row1Label, g.clientRequestId].every((v) => v == null || typeof v === 'string')
+      && (g.colorTermsA ?? []).every((t) => typeof t === 'string'));
+    record('a 40000-deep array in any game field saves as primitives, each save re-serializing the whole store, and the list still serializes',
+      st.every((x) => x === 200) && list.status === 200 && flat, JSON.stringify({ st, list: list.status, n: mine.length, flat }));
+  }
+
   // ══ 13. SECURITY — rate limiting (the brute-force surface of login and
   //      registration; run LAST because it burns the register bucket)
   {
