@@ -2074,7 +2074,7 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
     gcsGeneration = '0'; // GCS's own "must not exist yet" precondition
     return;
   }
-  const baseline = structuredClone(remote.db); // routes mutate records in place; the baseline must not follow
+  const baseline = jsonClone(remote.db) as DB; // routes mutate records in place; the baseline must not follow
   // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
   // without it, a game created in it and deleted since came back (main too).
   applyMergedDb(unionMergeDb(remote.db, loadDB(), gcsBaselineDb, gcsUnackedDb));
@@ -2159,6 +2159,23 @@ async function initDB(): Promise<boolean> {
 }
 
 // Returns the in-memory DB (always synchronous after initDB resolves)
+/**
+ * JSON.parse(JSON.stringify(v)), without copying a single string: strings are
+ * immutable, so the GCS baseline can share them with the live store. A parsed or
+ * structuredClone'd baseline was a second full copy of db.json on the heap; with
+ * the upload's own copies, four copies OOM'd a 128 MB heap at ~23 MB (S14-1).
+ */
+function jsonClone(v: unknown): any {
+  if (v !== null && typeof v === "object" && typeof (v as { toJSON?: unknown }).toJSON === "function") return jsonClone((v as { toJSON: () => unknown }).toJSON());
+  if (Array.isArray(v)) return v.map((x) => (x === undefined || typeof x === "function" || typeof x === "symbol" ? null : jsonClone(x)));
+  if (v !== null && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) if (x !== undefined && typeof x !== "function" && typeof x !== "symbol") out[k] = jsonClone(x);
+    return out;
+  }
+  return typeof v === "number" ? (Number.isFinite(v) ? v + 0 : null) : v; // -0 -> 0, NaN/Infinity -> null
+}
+
 function loadDB(): DB {
   return inMemoryDb ?? { users: [], games: [] };
 }
@@ -2370,6 +2387,7 @@ async function uploadDbToGcs(): Promise<void> {
     // The CURRENT state, serialized at send time: routes commit while this
     // awaits, and uploading an older snapshot wrote it back over them (#208).
     const bodyStr = JSON.stringify(loadDB(), null, 2);
+    const sent = jsonClone(loadDB()); // what bodyStr carries, sharing the store's strings: not a second full copy
     try {
       await withDeadline(file.save(bodyStr, {
         contentType: 'application/json', resumable: false, validation: false,
@@ -2381,14 +2399,14 @@ async function uploadDbToGcs(): Promise<void> {
       // follow-up getMetadata() that could adopt another writer's (CodeRabbit).
       const generation = file.metadata?.generation;
       gcsGeneration = generation != null ? String(generation) : null;
-      gcsBaselineDb = JSON.parse(bodyStr); // a real copy, not a live reference
+      gcsBaselineDb = sent; // a real copy, not a live reference
       gcsUnackedDb = null; // an older write can no longer land: its precondition is now stale
       gcsAckEpoch += 1;
       return;
     } catch (err: any) {
       // Anything but a definite refusal (a deadline, a reset socket) may still
       // have landed; `unionMergeDb` needs to know what it carried.
-      if (err?.code !== 412) gcsUnackedDb = overlayDb(gcsUnackedDb ?? { users: [], games: [] }, JSON.parse(bodyStr));
+      if (err?.code !== 412) gcsUnackedDb = overlayDb(gcsUnackedDb ?? { users: [], games: [] }, sent);
       if (err?.code !== 412 || attempt >= 2) throw err;
       // Someone else wrote first: merge their state, retry. A sync already in
       // flight may predate their write, so run a fresh one after it.
