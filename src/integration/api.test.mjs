@@ -539,7 +539,7 @@ try {
   //      store (each save, each GCS upload, the list) would throw from then on.
   {
     const deep = '['.repeat(40000) + ']'.repeat(40000);
-    const fields = ['description', 'row1Label', 'colorTermsA', 'clientRequestId'];
+    const fields = ['description', 'row1Label', 'colorTermsA']; // 12d + 12e = the last 4 of 20 games writes/min
     const st = [];
     for (const f of fields) {
       const raw = `{"name":"deep ${f}","payoffs":${JSON.stringify(MP)},"${f}":${deep}}`;
@@ -547,10 +547,26 @@ try {
     }
     const list = await call('GET', '/api/games', { token }); // serializes every stored row
     const mine = (Array.isArray(list.json) ? list.json : []).filter((g) => /^deep /.test(g.name));
-    const flat = mine.length === 4 && mine.every((g) => [g.description, g.row1Label, g.clientRequestId].every((v) => v == null || typeof v === 'string')
+    const flat = mine.length === 3 && mine.every((g) => [g.description, g.row1Label].every((v) => v == null || typeof v === 'string')
       && (g.colorTermsA ?? []).every((t) => typeof t === 'string'));
     record('a 40000-deep array in any game field saves as primitives, each save re-serializing the whole store, and the list still serializes',
       st.every((x) => x === 200) && list.status === 200 && flat, JSON.stringify({ st, list: list.status, n: mine.length, flat }));
+  }
+
+  // ══ 12e. Prototype keys in a body (sweep 16) never reach an object the
+  //      server keeps: a game saved with "__proto__"/"constructor" fields stores
+  //      only its known keys, and no later object inherits "polluted".
+  {
+    const raw = `{"name":"proto","payoffs":${JSON.stringify(MP)},"__proto__":{"polluted":"yes","userId":"u_other"},`
+      + `"constructor":{"prototype":{"polluted":"yes"}},"row1Label":"Up","extra":"x"}`;
+    const r = await fetch(`${BASE}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: raw });
+    const game = (await r.json().catch(() => ({})))?.game ?? {};
+    const KNOWN = ['clientRequestId', 'colorTermsA', 'colorTermsB', 'col1Label', 'col2Label', 'createdAt', 'description', 'id', 'name', 'payoffs', 'row1Label', 'row2Label', 'userId'];
+    const me = await call('GET', '/api/auth/me', { token });
+    record('a body carrying __proto__ / constructor keys saves only the known game keys under its own owner; nothing is polluted',
+      r.status === 200 && Object.keys(game).every((k) => KNOWN.includes(k)) && game.userId === me.json?.id && !('polluted' in game)
+        && !JSON.stringify(me.json ?? {}).includes('polluted'),
+      JSON.stringify({ status: r.status, keys: Object.keys(game), owner: game.userId, me: me.json?.id }));
   }
 
   // ══ 13. SECURITY — rate limiting (the brute-force surface of login and
