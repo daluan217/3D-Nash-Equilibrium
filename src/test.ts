@@ -30,7 +30,7 @@ function assertNE(nes: NashEquilibrium[], type: 'pure' | 'mixed', x: number, y: 
   assert(ne, `${label}: missing ${type} NE at (${x.toFixed(3)}, ${y.toFixed(3)})`);
 }
 
-function createInitialState(startX: number, startY: number, g: GamePayoffs): SimState {
+export function createInitialState(startX: number, startY: number, g: GamePayoffs): SimState {
   return {
     cx: startX,
     cy: startY,
@@ -3042,7 +3042,11 @@ function runTests() {
   console.log('All game-engine regression tests passed.');
 }
 
-try {
+// Runs as the entry point; breakaheap.test.ts imports createInitialState and
+// nothing else. Any other importer is refused, so a mis-fire cannot pass silently.
+const entry = import.meta.filename === process.argv[1];
+if (!entry && !/breakaheap\.test\.ts$/.test(process.argv[1] ?? '')) throw new Error(`src/test.ts loaded by ${process.argv[1]} without running`);
+if (entry) try {
   runTests();
 } catch (err: any) {
   console.error('Test suite failure:');
