@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 105;
+const EXPECTED_CHECKS = 109;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1984,6 +1984,59 @@ try {
           && !/passwordHash|Code|tokenVersion/.test(JSON.stringify([me.body, la.body])),
         JSON.stringify({ me: keys(me.body), login: keys(la.body.user), top: keys(la.body) }));
       record('adopt-local does not exist hosted: 404 signed in and signed out', JSON.stringify(adopt) === '[404,404]', JSON.stringify(adopt));
+    }
+
+    // s25 — hosted growth bounds (S14-1: a game flood OOM-crashed a 128 MB heap at
+    // ~23 MB of db.json). (a) An account at the cap gets 409 with the reason; a
+    // clientRequestId retry of an existing row still saves. (b) The store boots
+    // ALREADY over budget (1000 bytes under the measured seed): a new game, a growing
+    // edit and a sign-up are 507; a shrinking edit, a delete, login and a verify still
+    // work while it stays over budget, and they reach GCS.
+    {
+      const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const capRows = Array.from({ length: 200 }, (_, i) => ({ id: `g_cap_${i}`, userId: 'u_cap', name: `Cap ${i}`, description: 'd', payoffs: pay,
+        ...(i === 0 ? { clientRequestId: 'req_retry_0' } : {}), createdAt: '2026-01-01T00:00:00Z' }));
+      const seed = { users: [seededUser('u_cap', 'capper', 'cap@example.test', 'Sup3rSecret!23'), seededUser('u_b', 'budget', 'b@example.test', 'Sup3rSecret!23'),
+        { ...seededUser('u_pv', 'pendv', 'pv@example.test', 'Sup3rSecret!23'), isVerified: false, verificationCode: '424242', verificationCodeExpires: Date.now() + 600000 }],
+        games: [...capRows, { id: 'g_b1', userId: 'u_b', name: 'B-one', description: 'x'.repeat(400), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }] };
+      const seedBytes = Buffer.byteLength(JSON.stringify(seed, null, 2));
+      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify(seed) }));
+      // Over budget from boot; the shrink (~395 B) and the delete (~250 B) leave it over, so an
+      // absolute "size > budget" check (not "grows past it") refuses them and fails this section.
+      const budget = seedBytes - 1000;
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-budget-'))), aX, aGcs, { ...mail, DB_MAX_BYTES: String(budget) })), aX);
+      const req = async (method, route, token, body) => {
+        const r = await fetch(`http://127.0.0.1:${aX}${route}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        return { status: r.status, error: (await r.json().catch(() => ({}))).error ?? '' };
+      };
+      const tokOf = async (email) => (await (await fetch(`http://127.0.0.1:${aX}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) })).json()).token;
+      const tCap = await tokOf('cap@example.test'), tB = await tokOf('b@example.test');
+      const capNew = await req('POST', '/api/games', tCap, { name: 'One too many', payoffs: pay });
+      const capRetry = await req('POST', '/api/games', tCap, { name: 'Cap 0', description: 'd', payoffs: pay, clientRequestId: 'req_retry_0' }); // same size: not growth
+      const fullNew = await req('POST', '/api/games', tB, { name: 'B-two', description: 'y'.repeat(400), payoffs: pay });
+      const grow = await req('PATCH', '/api/games/g_b1', tB, { description: 'z'.repeat(800) });
+      const m0 = mailed.length;
+      const signUp = await req('POST', '/api/auth/register', null, { username: 'late', email: 'late@example.test', password: 'Sup3rSecret!23' });
+      const signUpMails = mailed.length - m0;
+      const shrink = await req('PATCH', '/api/games/g_b1', tB, { description: 'short' });
+      const del = await req('DELETE', '/api/games/g_cap_5', tCap);
+      const login = (await req('POST', '/api/auth/login', null, { email: 'b@example.test', password: 'Sup3rSecret!23' })).status;
+      const verify = await req('POST', '/api/auth/verify', null, { email: 'pv@example.test', code: '424242', password: 'Sup3rSecret!23' });
+      const onGcs = await waitUntil(() => { try { const d = JSON.parse(fake.getStored()); return !d.games.some((g) => g.id === 'g_cap_5') && d.games.find((g) => g.id === 'g_b1')?.description === 'short'; } catch { return false; } }, 5000);
+      const endBytes = Buffer.byteLength(JSON.stringify(JSON.parse(fake.getStored()), null, 2));
+      await stop(S.child); await fake.close();
+      record('fixture: the store booted and ended over budget (the shrink and delete ran while it was full); the cap account held exactly 200 games',
+        seedBytes > budget && endBytes > budget && endBytes < seedBytes && capRows.length === 200, JSON.stringify({ seedBytes, budget, endBytes }));
+      record('THE DEFECT (per-account cap): the 201st game is 409 with the limit named; a clientRequestId retry of an existing row still saves',
+        capNew.status === 409 && /200 saved-game limit/.test(capNew.error) && /Delete a saved game/.test(capNew.error) && capRetry.status === 200,
+        JSON.stringify({ capNew, capRetry: capRetry.status }));
+      record('THE DEFECT (storage budget): past the budget a new game and a growing edit are 507 with the reason, and a sign-up is 507 and mails nothing',
+        fullNew.status === 507 && /storage is full/.test(fullNew.error) && /Delete a saved game/.test(fullNew.error)
+          && grow.status === 507 && /storage is full/.test(grow.error) && signUp.status === 507 && /sign-ups are paused/.test(signUp.error) && signUpMails === 0,
+        JSON.stringify({ fullNew, grow, signUp, signUpMails }));
+      record('over budget a shrinking edit, a delete, login and a verify still work, and the acked changes reach GCS',
+        shrink.status === 200 && del.status === 200 && login === 200 && verify.status === 200 && onGcs,
+        JSON.stringify({ shrink: shrink.status, del: del.status, login, verify: verify.status, onGcs }));
     }
   }
 

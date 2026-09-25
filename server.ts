@@ -778,6 +778,11 @@ interface DB {
 
 const PASSWORD_ITERATIONS = 210_000;
 const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Hosted growth bounds (S14-1): a game flood OOM-crashed a 128 MB heap at ~23 MB
+// of db.json and crash-looped at ~31 MB. 8 MB of pretty JSON is ~40% of the lowest
+// measured crash point; the per-account cap keeps one account from filling it.
+const MAX_GAMES_PER_USER = 200;
+const DB_MAX_BYTES = (() => { const n = Number(process.env.DB_MAX_BYTES || 8 * 1024 * 1024); return Number.isFinite(n) && n > 0 ? n : 8 * 1024 * 1024; })();
 
 /**
  * THE DESKTOP'S SESSION SECRET, persisted beside its database.
@@ -3236,7 +3241,22 @@ function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
  * ~17 OTHER `saveDB` call sites, still untouched) is never silently undone
  * by a game write that started before it and finishes after.
  */
-async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
+/**
+ * Content growth past the hosted budget is refused; a write that does not grow
+ * the database (delete, shrinking edit) always passes, so a full store can drain.
+ * Account upkeep (codes, attempts, resets) is not gated: it is bounded per row.
+ * ponytail: one full stringify per game write (~7 ms at 8 MB); cache it if writes get hot.
+ */
+function wouldExceedDbBudget(candidate: DB): boolean {
+  if (isDesktop()) return false;
+  const bytes = (d: DB) => Buffer.byteLength(JSON.stringify(d, null, 2));
+  const next = bytes(candidate);
+  return next > DB_MAX_BYTES && next > bytes(loadDB());
+}
+const STORAGE_FULL = "Saved-game storage is full right now. Delete a saved game to make room, then save again.";
+
+async function saveDBAwaited(games: SavedGame[]): Promise<boolean | "full"> {
+  if (wouldExceedDbBudget({ users: inMemoryDb?.users ?? [], games })) return "full";
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
     inMemoryDb = { users: inMemoryDb?.users ?? [], games };
     scheduleGcsSave(); // #85's coalescing pump — see this function's own comment for why this branch cannot also await a per-request result
@@ -3268,7 +3288,9 @@ async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
  * once handed off, exactly like every other `saveDB` call site.
  */
 async function saveDBOrFail(games: SavedGame[], res: express.Response): Promise<boolean> {
-  if (await saveDBAwaited(games)) return true;
+  const saved = await saveDBAwaited(games);
+  if (saved === "full") { res.status(507).json({ error: STORAGE_FULL }); return false; }
+  if (saved) return true;
   res.status(500).json({ error: "Could not save your changes. Please try again." });
   return false;
 }
@@ -4739,6 +4761,10 @@ async function startServer() {
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
     };
 
+    if (wouldExceedDbBudget({ users: [...db.users, newUser], games: db.games })) {
+      releaseCodeMail("verification", emailTrimmed); // nothing went out
+      return res.status(507).json({ error: "New sign-ups are paused because account storage is full. Please try again later." });
+    }
     db.users.push(newUser);
     saveDB(db);
 
@@ -5236,6 +5262,9 @@ async function startServer() {
         }
       }
 
+      if (!isDesktop() && db.games.filter((g) => g.userId === user.id).length >= MAX_GAMES_PER_USER) {
+        return res.status(409).json({ error: `You have reached the ${MAX_GAMES_PER_USER} saved-game limit. Delete a saved game to save a new one.` });
+      }
       const newGame: SavedGame = {
         id: makeId("g"),
         userId: user.id,
