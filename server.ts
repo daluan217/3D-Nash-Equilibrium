@@ -7,6 +7,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import net from "net";
 import { isDeepStrictEqual } from "util";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
@@ -3012,6 +3013,23 @@ function pruneRateBuckets(now: number) {
   }
 }
 
+// The throttle's client key, from req.ip (after TRUST_PROXY). IPv4 as-is, an
+// IPv4-mapped address as its IPv4; IPv6 by its /56: one subscriber holds a /64
+// or more, and a per-address key let one client rotate through fresh buckets
+// (live, sweep 9). ponytail: /56 is the common ISP delegation (express-rate-limit
+// v8's default); a /48 holder still gets 256 buckets.
+function rateKey(req: express.Request): string {
+  const ip = (req.ip || req.socket.remoteAddress || "unknown").replace(/%.*$/, "");
+  if (!net.isIPv6(ip)) return ip;
+  const q = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip); // a trailing dotted quad is two groups
+  const hex = q ? `${ip.slice(0, q.index)}${((+q[1] << 8) | +q[2]).toString(16)}:${((+q[3] << 8) | +q[4]).toString(16)}` : ip;
+  const [head, tail] = hex.split("::");
+  const h = head ? head.split(":") : [], t = tail ? tail.split(":") : [];
+  const g = (tail === undefined ? h : [...h, ...Array(8 - h.length - t.length).fill("0"), ...t]).map((x) => parseInt(x, 16));
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return [g[6] >> 8, g[6] & 255, g[7] >> 8, g[7] & 255].join(".");
+  return `${[g[0], g[1], g[2], g[3] & 0xff00].map((x) => x.toString(16)).join(":")}::/56`;
+}
+
 /**
  * Per-IP throttle for the hosted service.
  *
@@ -3040,8 +3058,7 @@ function rateLimit(
   const liftedForDesktop = scope === 'hosted-only' && process.env.IS_ELECTRON === 'true';
   return (req, res, next) => {
     if (liftedForDesktop) return next();
-    const ip = req.ip || req.socket.remoteAddress || "unknown";
-    const key = `${label}:${ip}`;
+    const key = `${label}:${rateKey(req)}`;
     const now = Date.now();
     pruneRateBuckets(now);
     const bucket = rateBuckets.get(key);

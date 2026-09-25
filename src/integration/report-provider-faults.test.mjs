@@ -9,7 +9,8 @@
  * Mutation-proven: M54 (no scenario deadline), M55 (no bank fallback), M56c
  * (provider logs the upstream error, key included), M57 (regenerate refuses
  * the bank fallback), M58 (trust every X-Forwarded-For hop), M59 (proxy not
- * trusted: every client shares one bucket) each fail a check below.
+ * trusted: every client shares one bucket), M64 (IPv6 keyed per address), M65 (IPv4-mapped
+ * keyed as an IPv6 /56) each fail a check below.
  *
  *   node src/integration/report-provider-faults.test.mjs
  */
@@ -112,10 +113,23 @@ try {
   const other = await post('203.0.113.1, 198.51.100.8');
   record(`THE DEFECT: a rotated spoofed X-Forwarded-For hop does not reset the report limit (TRUST_PROXY=${TRUST_PROXY} from cloudbuild)`,
     spoofed.slice(0, 20).every((s) => s === 400) && spoofed[20] === 429 && other === 400, `spoofed=${spoofed.join(',')} otherClient=${other}`);
+  // IPv6 (live, sweep 9): the real client is keyed by its /56, not its address.
+  const burst = async (hops) => { const out = []; for (const h of hops) out.push(await post(h)); return out; };
+  const n21 = [...Array(21).keys()];
+  const v6 = await burst(n21.map((i) => `2001:db8:1:1${i.toString(16).padStart(2, '0')}::${i + 1}`));
+  const v6other = await post('2001:db8:1:200::1');
+  const v6spoof = await burst(n21.map((i) => `2001:db8:${i + 10}::1, 2001:db8:2:100::1`));
+  const mapped = await burst(n21.slice(0, 20).map(() => '::ffff:198.51.100.9'));
+  const mappedOther = await post('::ffff:198.51.100.10');
+  record('THE DEFECT: an IPv6 client rotating addresses inside its /56 shares one report limit; another /56 does not',
+    v6.slice(0, 20).every((s) => s === 400) && v6[20] === 429 && v6other === 400, `v6=${v6.join(',')} other56=${v6other}`);
+  record('THE DEFECT: a spoofed IPv6 hop cannot pick its own /56; IPv4-mapped clients stay per-IPv4',
+    v6spoof.slice(0, 20).every((s) => s === 400) && v6spoof[20] === 429 && mapped.every((s) => s === 400) && mappedOther === 400,
+    `spoof=${v6spoof.join(',')} mapped=${mapped.join(',')} mappedOther=${mappedOther}`);
   record('CONTROL: an answering provider is fast (the fault timings are the faults, not the harness)', ok.ms < 5000, `ok ${ok.ms}ms`);
 } finally {
   await stop(child); await new Promise((r) => stub.close(r)); rmSync(cwd, { recursive: true, force: true });
 }
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-if (failed.length || results.length !== 7) process.exit(1);
+if (failed.length || results.length !== 9) process.exit(1);
