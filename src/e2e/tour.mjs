@@ -29,6 +29,7 @@
  * Both helpers return `{ closed, via }`, where `via` is 'click' | 'escape' |
  * 'absent'.  The strict helper never returns `via: 'escape'`.
  */
+const TOUR_DECISION_BOUND_MS = 180000;
 const attemptTourClose = async (page, { timeout = 20000, allowEscapeFallback = false } = {}) => {
   const dialog = page.getByRole('dialog', { name: /guided tour/i });
   const x = page.getByRole('button', { name: /close tour/i });
@@ -46,11 +47,17 @@ const attemptTourClose = async (page, { timeout = 20000, allowEscapeFallback = f
   // 4x-CPU-throttled arm longer still, so the helper answered "absent" while
   // the tour was still coming and every later click died under its scrim
   // (shards 3/21/18/19 + mobile, all on the merged head). So: wait for React
-  // to mount first (bounded by `timeout`), THEN give the 700 ms timer a buffer
-  // sized for a throttled runner. A page where the tour never opens pays the
-  // buffer once; a page where it does pays nothing extra.
+  // to mount first (bounded by `timeout`), THEN for the app's tour decision.
   await page.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0, null, { timeout })
     .catch(() => {});
+  // TASK-18 H6: never proceed while the tour can still open. A fixed wait for the dialog lost
+  // at 32x CPU throttle ("absent" 51 s in; the tour opened just after). App.tsx publishes its
+  // decision as data-tour-auto: 'skip' (will not open) or 'shown' (opened, in that commit).
+  // A dialog seen before it may be a manual open the auto timer can still re-open over.
+  const decision = await page.waitForFunction(() => document.documentElement.dataset.tourAuto || false,
+    null, { timeout: TOUR_DECISION_BOUND_MS }).then((handle) => handle.jsonValue()).catch(() => null);
+  if (!decision) throw new Error('the app never published its tour decision (no data-tour-auto on <html>)');
+  if (!(await dialog.count())) return { closed: false, via: 'absent' };
   // The DIALOG, not its Close control, decides whether the tour is absent. If
   // the dialog is visible but the button is missing/hidden, that is precisely
   // a broken product control: strict callers must fail, while setup callers

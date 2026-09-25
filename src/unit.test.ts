@@ -24,7 +24,7 @@ import {
   numericInputProblem,
 } from './utils/gameEngine';
 import { isCameraRelayout } from './components/PlotlyView';
-import { tourBlockedOriginAfterPointerDown, tourClickSharesBlockedOrigin, tourControlClickAllowed, tourFloatingFits, tourPortraitUsesSheet, tourRectAfterCentering, tourScrollBehavior, tourTargetPlacementKey, tourTargetScrollDelta } from './components/Walkthrough';
+import { tourBlockedOriginAfterPointerDown, tourClickSharesBlockedOrigin, tourControlClickAllowed, tourFloatingFits, tourPortraitUsesSheet, tourRectAfterCentering, tourScrollBehavior, tourScrollIsRepeat, tourScrollTarget, tourTargetPlacementKey, tourTargetScrollDelta } from './components/Walkthrough';
 import {
   isAgentRouterEndpoint,
   buildChatRequestBody,
@@ -3882,7 +3882,7 @@ function testWalkthroughInputContracts() {
       'H1 root gate must suppress a pointer-origin-less click before any descendant tour handler, while preserving keyboard activation');
     assert(/const behavior = tourScrollBehavior\(!!window\.matchMedia\?\.\('\(prefers-reduced-motion: reduce\)'\)\.matches\);/.test(source)
       && /scrollIntoView\(\{ behavior, block: 'center' \}\)/.test(source)
-      && /scrollBy\(\{ top: delta, behavior \}\)/.test(source),
+      && /window\.scrollTo\(\{ top: targetTop, behavior \}\)/.test(source),
     'H4 both tour-scroll paths must share the reduced-motion policy rather than hard-code smooth behavior');
     // STRUCT-APP-19/003 (Daniel, 2026-09-08): the tour had THREE controls doing
     // the same thing — Skip, the card's X, and a viewport-anchored "Exit tour"
@@ -3906,6 +3906,14 @@ function testWalkthroughInputContracts() {
       && /\}, \[open, placementKey\]\);/.test(scrollEffect)
       && !source.includes('document.body.style.paddingBottom'),
     'H5 target placement must rerun with the actual one-gap usable strip when measured card height or document geometry changes, without mutating global body padding');
+    // TASK-18 H19: a re-run must be a no-op, not a second relative scroll (WebKit stacked two: y=996).
+    assert(/const targetTop = tourScrollTarget\(window\.scrollY, delta\);\s*if \(tourScrollIsRepeat\(issuedScrollRef\.current, i, targetTop\)\) return;\s*issuedScrollRef\.current = \{ i, top: targetTop \};\s*window\.scrollTo\(\{ top: targetTop, behavior \}\);/.test(scrollEffect)
+      && !/scrollBy\(/.test(scrollEffect),
+      'H19 the tour scroll is idempotent: an absolute target, skipped when this step already issued it (src/e2e/tour-scroll.test.mjs is the browser proof)');
+    // TASK-18 H20: the portrait scrollIntoView branch shares the key (WebKit cancelled a repeat: 1024x1366, y=0).
+    assert(/const centreTop = tourScrollTarget\(window\.scrollY, r0\.top \+ r0\.height \/ 2 - window\.innerHeight \/ 2\);\s*if \(tourScrollIsRepeat\(issuedScrollRef\.current, i, centreTop\)\) return;\s*issuedScrollRef\.current = \{ i, top: centreTop \};\s*el\.scrollIntoView\(\{ behavior, block: 'center' \}\);/.test(scrollEffect)
+      && (scrollEffect.match(/scrollIntoView\(/g) || []).length === 1 && (scrollEffect.match(/scrollTo\(/g) || []).length === 1,
+      'H20 both tour-scroll branches are idempotent: the centring scrollIntoView is skipped when this step already issued the same centred target');
     // CodeRabbit on #173: the scroll effect decides the layout family from the
     // spotlight's POST-centring position, through the same predicate render uses.
     // STRUCT-APP-19/001: both call sites now carry the MEASURED floating card
@@ -3941,6 +3949,20 @@ function testWalkthroughInputContracts() {
     'H1 fixture: leaving pointer listeners live while the tour is closed must fail the lifecycle contract');
   assert(contractFails(source.replace('cancelAnimationFrame(releaseFrame);', '')),
     'H1 fixture: allowing a queued release frame to survive cleanup must fail the lifecycle contract');
+  assert(contractFails(source.replace('window.scrollTo({ top: targetTop, behavior });', 'window.scrollBy({ top: delta, behavior });')),
+    'H19 fixture: restoring the relative scrollBy must fail the idempotence contract');
+  assert(contractFails(source.replace('if (tourScrollIsRepeat(issuedScrollRef.current, i, targetTop)) return;', '')),
+    'H19 fixture: dropping the repeat skip must fail the idempotence contract');
+  assert(contractFails(source.replace('if (tourScrollIsRepeat(issuedScrollRef.current, i, centreTop)) return;', '')),
+    'H20 fixture: dropping the scrollIntoView repeat skip must fail the idempotence contract');
+  assert(tourScrollTarget(0, 498.234375) === 498.234375 && tourScrollTarget(40, -120) === 0,
+    'H19 the scroll target is absolute and clamped at the page top');
+  // H21 (Chromium 1024x1366): a 0.22px re-layout moved the centre 522.297 -> 522.516; rounded keys differed by 1.
+  assert(tourScrollIsRepeat({ i: 0, top: tourScrollTarget(0, 522.296875) }, 0, tourScrollTarget(0, 522.515625)),
+    'H21 a sub-pixel re-layout is the same placement: the key is the unrounded target, not a rounded one that straddles .5');
+  assert(tourScrollIsRepeat({ i: 0, top: 498 }, 0, 498) && !tourScrollIsRepeat({ i: 0, top: 498 }, 1, 498)
+      && !tourScrollIsRepeat({ i: 0, top: 498 }, 0, 549) && !tourScrollIsRepeat(null, 0, 498),
+    'H19 a repeat is the same step AND the same target: a step change or a moved target still scrolls');
   assert(contractFails(source.replace("scrollIntoView({ behavior, block: 'center' })", "scrollIntoView({ behavior: 'smooth', block: 'center' })")),
     'H4 fixture: restoring an unconditional smooth scroll must fail the named source contract');
   // STRUCT-APP-19/003: H2's fixture mutated the pill's `top` offset; with the

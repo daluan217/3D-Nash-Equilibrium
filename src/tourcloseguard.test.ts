@@ -275,19 +275,25 @@ const fakeTourPage = ({
   closeVisible = true,
   clickSucceeds = true,
   waitOutcomes = [true, true],
+  decision = 'shown' as string | null,
+  calls = [] as string[],
 } = {}): FakeTourPage => {
   const outcomes = [...waitOutcomes];
   let escapes = 0;
   const page = {
     getByRole: (role: string) => role === 'dialog' ? {
-      waitFor: ({ state }: { state: string }) => state === 'visible'
+      count: async () => { calls.push('dialog.count'); return dialogVisible ? 1 : 0; },
+      waitFor: ({ state }: { state: string }) => (calls.push(`dialog.${state}`), state === 'visible')
         ? (dialogVisible ? Promise.resolve() : Promise.reject(new Error('tour absent')))
         : (outcomes.shift() ? Promise.resolve() : Promise.reject(new Error('still visible'))),
     } : {
       waitFor: () => closeVisible ? Promise.resolve() : Promise.reject(new Error('close control unavailable')),
       click: () => clickSucceeds ? Promise.resolve() : Promise.reject(new Error('overlay intercepted click')),
     },
-    waitForFunction: () => (outcomes.shift() ? Promise.resolve() : Promise.reject(new Error('still visible'))),
+    // TASK-18 H6: the helper's decision wait reads App.tsx's data-tour-auto marker.
+    waitForFunction: (fn: () => unknown) => String(fn).includes('tourAuto')
+      ? (calls.push('decision'), decision ? Promise.resolve({ jsonValue: async () => decision }) : Promise.reject(new Error('timeout')))
+      : (outcomes.shift() ? Promise.resolve() : Promise.reject(new Error('still visible'))),
     keyboard: { press: async () => { escapes++; } },
   };
   return { page, escapePresses: () => escapes };
@@ -331,7 +337,58 @@ const fakeTourPage = ({
 
   await assert.rejects(() => dismissTourForSetup(clickPage.page, ''), /non-empty setup reason/);
   check('setup-only helper rejects an unreasoned fallback request', true);
+
+  // TASK-18 H6: never proceed while the tour can still open. The browser proof is smoke §108.
+  const order: string[] = [];
+  await dismissTourForSetup(fakeTourPage({ calls: order }).page, 'fixture: decision first');
+  check('the helper reads the app\'s tour decision before it looks for the dialog',
+    order[0] === 'decision' && order.indexOf('decision') < order.indexOf('dialog.visible'), order.join(','));
+  const skipCalls: string[] = [];
+  const skipResult = await dismissTourForSetup(fakeTourPage({ dialogVisible: false, decision: 'skip', calls: skipCalls }).page, 'fixture: signed in');
+  check('a "skip" decision with no dialog answers absent without waiting on the dialog',
+    skipResult.via === 'absent' && !skipCalls.includes('dialog.visible'), skipCalls.join(','));
+  for (const helper of [closeTour, (p: any) => dismissTourForSetup(p, 'fixture: no decision')]) {
+    await assert.rejects(() => helper(fakeTourPage({ decision: null }).page), /never published its tour decision/,
+      'no decision published = a loud failure from both helpers, never a silent "absent"');
+  }
+  check('no decision published = a loud failure from both helpers, never a silent "absent"', true);
 }
+
+// TASK-18 H6: data-tour-auto is test-facing only. Nothing under src/ may read it except the
+// App.tsx hook that writes it, the e2e helper and suite, and the two static guards that pin them.
+const tourAutoReaders = (files: Map<string, string>): string[] => {
+  const out: string[] = [];
+  const allowed = new Set(['src/e2e/tour.mjs', 'src/e2e/smoke.mjs', 'src/tourcloseguard.test.ts', 'src/e2esharding.test.ts']);
+  for (const [file, text] of files) {
+    if (allowed.has(file) || !/tour-?auto/i.test(text)) continue;
+    if (file === 'src/App.tsx') {
+      const a = text.indexOf('// Test-facing only (e2e/tour.mjs;');
+      const end = '}, [tourOpen, tourAutoFired]);';
+      const b = text.indexOf(end);
+      const outside = a < 0 || b < a ? text : text.slice(0, a) + text.slice(b + end.length);
+      if (!/tour-?auto/i.test(outside)) continue;
+    }
+    out.push(file);
+  }
+  return out;
+};
+const srcFiles = new Map(readdirSync('src', { recursive: true })
+  .filter((entry): entry is string => typeof entry === 'string' && /\.(tsx?|mjs|js|css|html)$/.test(entry) && !/ \d+\./.test(entry))
+  .map((entry) => path.join('src', entry)).map((file) => [file, readFileSync(file, 'utf8')]));
+check('only the App.tsx hook, the e2e helper and suite, and the two static guards reference data-tour-auto',
+  tourAutoReaders(srcFiles).length === 0, tourAutoReaders(srcFiles).join(','));
+{
+  const planted = new Map(srcFiles);
+  planted.set('src/index.css', (planted.get('src/index.css') ?? '') + '\nhtml[data-tour-auto="shown"] .x { display: none; }');
+  planted.set('src/App.tsx', (planted.get('src/App.tsx') ?? '') + '\nconst leak = document.documentElement.dataset.tourAuto;');
+  check('mutation: a CSS rule and app code reading data-tour-auto are both caught by name',
+    tourAutoReaders(planted).join(',') === 'src/App.tsx,src/index.css', tourAutoReaders(planted).join(','));
+}
+const appSrc = srcFiles.get('src/App.tsx') ?? '';
+check('App.tsx publishes "skip" on both no-open branches and "shown" only for the auto-open',
+  /everAuthedRef\.current = true;\n\s+document\.documentElement\.dataset\.tourAuto = 'skip';/.test(appSrc)
+    && /if \(everAuthedRef\.current\) \{ document\.documentElement\.dataset\.tourAuto = 'skip'; return; \}/.test(appSrc)
+    && /if \(tourOpen && tourAutoFired\) document\.documentElement\.dataset\.tourAuto = 'shown';/.test(appSrc));
 
 if (failures > 0) { console.error(`✗ tour-close guard: ${failures} failed`); process.exit(1); }
 console.log(`✓ tour-close guard: ${census.setupCalls} explicit setup dismissals, ${census.strict.length} strict click assertion(s), full e2e census`);

@@ -19,7 +19,9 @@ import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.m
 import { chromium, devices, webkit } from 'playwright';
 import { selectSmokeSections, SHARD_COUNT } from './selection.js';
 import { closeTour, dismissTourForSetup } from './tour.mjs';
+import { throttleEveryPage } from './throttle.mjs';
 import { waitForStableGeometry } from './settled-geometry.mjs';
+import { SPLIT_PARTS, WIDEST_PAYOFFS } from './split-parts.mjs';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -28,8 +30,11 @@ const results = [];
 const sections = [];
 let activeSection = null;
 let activeAttempt = 1;
+let failureEvidence = null;
 let executedShard = null;
 function record(name, pass, detail) {
+  // Evidence of the FIRST failure in an attempt, taken now: the section goes on and closes its pages.
+  if (!pass && activeSection && !failureEvidence) failureEvidence = captureFailureEvidence();
   results.push({ name, pass, detail, sectionId: activeSection?.id ?? null, attempt: activeAttempt });
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
@@ -99,7 +104,7 @@ if (!(reuseServerAllowed() && await fetch(`${BASE}/`).then((r) => r.ok, () => fa
 // measure 4s and a busy frame can stall one for 30s+. All waits below are
 // poll-based or generously bounded; the defect classes this suite guards
 // ("never responds", "never converges", "wrong text") fail ANY bound.
-const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
+const browser = throttleEveryPage(await chromium.launch({ args: ['--disable-dev-shm-usage'] }));
 const consoleErrors = [];
 
 /**
@@ -125,11 +130,30 @@ const consoleErrors = [];
  * `browser` directly — that page must still go through `trackPage` so it is
  * not a second, silent blind spot of exactly the kind this fix closes.
  */
+// Failure evidence shows the page the failing section drove: the shared page is parked at
+// about:blank after §16, so shooting it gave blank evidence (TASK-18 H8). A thrown section's
+// finally closes its pages before the catch records, so each page's HTML is kept as it closes.
+const sectionPages = [];
+let lastClosedHtml = null;
+const htmlWithin = (pg) => Promise.race([pg.content().catch(() => null), new Promise((r) => setTimeout(() => r(null), 5000))]);
+async function keepHtmlBeforeClose(pg) {
+  if (activeSection && !pg.isClosed()) lastClosedHtml = (await htmlWithin(pg)) ?? lastClosedHtml;
+}
 function trackPage(p) {
+  if (activeSection) sectionPages.push(p);
+  const closePage = p.close.bind(p);
+  p.close = async (...args) => { await keepHtmlBeforeClose(p); return closePage(...args); };
+  const ctx = p.context();
+  if (!ctx.keepsEvidence) {
+    ctx.keepsEvidence = true;
+    const closeContext = ctx.close.bind(ctx);
+    ctx.close = async (...args) => { for (const pg of ctx.pages()) await keepHtmlBeforeClose(pg); return closeContext(...args); };
+  }
   p.on('console', (m) => {
     if (m.type() === 'error') {
       consoleErrors.push({
         text: m.text().slice(0, 200),
+        url: m.location()?.url ?? '',
         sectionId: activeSection?.id ?? null,
         attempt: activeAttempt,
       });
@@ -142,13 +166,18 @@ function trackPage(p) {
   }));
   return p;
 }
+// Coordinates read while a surface is still animating in are stale: §76's drawer was mid-slide
+// on CI (35979484351), so the "Next" point hit the backdrop and closed it. Wait until every
+// finite animation inside a ModalSurface has finished (infinite spinners are not entrances).
+async function surfacesSettled(p) {
+  await p.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'
+    || a.effect?.getComputedTiming().endTime === Infinity
+    || !a.effect?.target?.closest?.('[data-modal-surface]')), null, { timeout: 30000 });
+}
+const surfacesAnimating = (p) => p.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running'
+  && a.effect?.getComputedTiming().endTime !== Infinity && a.effect?.target?.closest?.('[data-modal-surface]')).length);
 async function newTrackedPage(opts) {
-  const p = trackPage(await browser.newPage(opts));
-  // E2E_CPU_THROTTLE=<n>: slow the page's CPU n-fold (chromium) to replay a loaded
-  // CI runner locally. Off unless set. S93's race reproduced at 32.
-  const rate = Number(process.env.E2E_CPU_THROTTLE || 0);
-  if (rate > 1) await (await p.context().newCDPSession(p)).send('Emulation.setCPUThrottlingRate', { rate }).catch(() => {});
-  return p;
+  return trackPage(await browser.newPage(opts));
 }
 
 /**
@@ -192,10 +221,13 @@ async function captureFailureEvidence() {
   const suffix = `section-${activeSection?.id ?? 'suite'}-attempt-${activeAttempt}`;
   const failurePng = `${failureBase}_${suffix}.png`;
   const failureHtml = `${failureBase}_${suffix}.html`;
-  await page.screenshot({ path: failurePng, fullPage: true }).catch(() => {});
+  const live = [...sectionPages].reverse().find((pg) => !pg.isClosed())
+    ?? (!activeSection || primaryPageSection(activeSection.id) ? page : null);
+  if (live) await live.screenshot({ path: failurePng, fullPage: true }).catch(() => {});
   try {
     const fs = await import('node:fs');
-    fs.writeFileSync(failureHtml, await page.content().catch(() => '<unavailable>'));
+    fs.writeFileSync(failureHtml, (live ? await htmlWithin(live) : null)
+      ?? lastClosedHtml ?? '<unavailable: the section closed its pages and kept no HTML>');
   } catch { /* evidence capture must never mask the original failure */ }
 }
 
@@ -207,6 +239,9 @@ function primaryPageSection(id) {
 async function runSection(definition, attempt) {
   activeSection = definition;
   activeAttempt = attempt;
+  sectionPages.length = 0;
+  lastClosedHtml = null;
+  failureEvidence = null;
   const resultStart = results.length;
   const startedAt = Date.now();
   console.log(`\n════ SECTION ${definition.id} [shard ${definition.shard}/${SHARD_COUNT}] ${definition.name}${attempt > 1 ? ' (retry)' : ''} ════`);
@@ -231,10 +266,19 @@ async function runSection(definition, attempt) {
   const passed = attemptResults.length > 0 && attemptResults.every((result) => result.skip || result.pass);
   finalAttemptBySection.set(definition.id, attempt);
   console.log(`SECTION-${passed ? 'PASS' : 'FAIL'} ${definition.id} ${definition.name} (${Date.now() - startedAt}ms)`);
-  if (!passed) await captureFailureEvidence();
+  if (!passed) await (failureEvidence ?? captureFailureEvidence());
   activeSection = null;
   activeAttempt = 1;
   return passed;
+}
+
+// TASK-18: once no primary section is left, park the shared page. Left open it spins the
+// idle 3D plot for the rest of the shard, and on CI's software GL that took §101a from 35 s
+// to 129 s in a shard that had run a primary section earlier. Only §1-§16 use this page
+// (primaryPageSection); every other section opens its own.
+async function parkSharedPageWhenDone(remaining) {
+  if (remaining.some((definition) => primaryPageSection(definition.id))) return;
+  if (page.url() !== 'about:blank') await page.goto('about:blank').catch(() => {});
 }
 
 async function executeSections() {
@@ -249,7 +293,8 @@ async function executeSections() {
   }
 
   const failed = [];
-  for (const definition of selected) {
+  for (const [index, definition] of selected.entries()) {
+    await parkSharedPageWhenDone(selected.slice(index));
     const passed = await runSection(definition, 1);
     if (!passed) {
       failed.push(definition);
@@ -262,7 +307,8 @@ async function executeSections() {
 
   if (failed.length > 0) {
     console.log(`\n════ RETRYING ONLY FAILED SECTIONS: ${failed.map((definition) => `${definition.id} ${definition.name}`).join(', ')} ════`);
-    for (const definition of failed) {
+    for (const [index, definition] of failed.entries()) {
+      await parkSharedPageWhenDone(failed.slice(index));
       if (primaryPageSection(definition.id)) await gotoHome().catch(() => {});
       const passed = await runSection(definition, 2);
       if (passed) console.log(`pass-after-section-retry: ${definition.id} ${definition.name}`);
@@ -282,8 +328,9 @@ const $ = {
   x0: page.locator('xpath=//label[contains(text(),"Row Start Point")]/following-sibling::div//input'),
   logLines: page.locator('div.overflow-y-auto.font-mono p'),
 };
-async function setSpeed(v) {
-  return page.evaluate((val) => {
+async function setSpeed(v) { return setSpeedOn(page, v); }
+async function setSpeedOn(p, v) {
+  return p.evaluate((val) => {
     const el = [...document.querySelectorAll('input[type="range"]')].find((e) => e.min === '1');
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(el, String(val));
@@ -319,6 +366,11 @@ async function waitForInputValue(p, selector, nth, expected, timeout = 3000) {
     { timeout },
   ).then(() => true).catch(() => false);
 }
+// The app's own tour decision (data-tour-auto on <html>, H6): 'shown' once the auto tour is open,
+// 'skip' when it will not open, null if it never decided. Every read of the tour after a load goes
+// through it: fixed waits for the dialog lost at CI load (§22, §69, §83, §85, §87, §88 at 11x, H15).
+const awaitTourDecision = (p) => p.waitForFunction(() => document.documentElement.dataset.tourAuto || false, null,
+  { timeout: 180000 }).then((h) => h.jsonValue()).catch(() => null);
 async function gotoHome() {
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await dismissTour();
@@ -1411,9 +1463,12 @@ try {
   section('22', 'Escape closes topmost layer', async () => {
     const escPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await escPage.goto(BASE, { waitUntil: 'networkidle' });
-    // Tour auto-opens on a fresh anonymous load — do NOT exit it here.
+    // Tour auto-opens on a fresh anonymous load — do NOT exit it here. It opens 700 ms after
+    // mount, so read it only once the app has published its decision (data-tour-auto, H6):
+    // an unwaited read failed 2/2 on CI (36023553844, 36023499379) and at 11x CPU.
+    const tourDecision = await awaitTourDecision(escPage);
     const tourOpen = async () => escPage.evaluate(() => !!document.querySelector('[role="dialog"][aria-label="Guided tour"]'));
-    record('tour is open on a fresh anonymous load (precondition)', await tourOpen());
+    record('tour is open on a fresh anonymous load (precondition)', tourDecision === 'shown' && await tourOpen(), `decision=${tourDecision}`);
 
     // CodeRabbit finding (this branch): poll for the tour's own step counter
     // ("N / M") to actually change after each click, instead of a flat sleep
@@ -2301,6 +2356,7 @@ try {
     // the tour dialog itself decides. Escape is the fallback dismissTour() uses,
     // and a tour that survives both is recorded as a failed precondition rather
     // than silently left on top of the checks below.
+    await awaitTourDecision(shortPage);
     const exitTourShort = shortPage.locator('[aria-label="Close tour"]');
     try { await exitTourShort.click({ timeout: 20000 }); } catch { /* decided by the dialog below */ }
     let shortTourGone = await shortPage.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'),
@@ -2505,6 +2561,7 @@ try {
       await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
 
       await tabB.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(tabB);
       const exitTourB = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
       await tabB.waitForTimeout(500);
@@ -2541,6 +2598,7 @@ try {
       await tabA.waitForSelector('[role="dialog"][aria-label="Edit saved game"]', { timeout: 12000 });
 
       await tabB.reload({ waitUntil: 'networkidle' });
+      await awaitTourDecision(tabB);
       const exitTourB2 = tabB.getByRole('button', { name: /close tour/i });
       if (await exitTourB2.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB2.click();
       await tabB.waitForTimeout(500);
@@ -2632,10 +2690,11 @@ try {
 
     await flapPage.reload({ waitUntil: 'networkidle' });
     // Poll rather than a fixed sleep: a fresh reload re-runs the
-    // auth/me + games fetch effects from scratch, which can take longer
-    // than a short sleep on a busy CI runner.
+    // auth/me + games fetch effects from scratch. 30 s, not 8 s (TASK-18): a CI shard
+    // listed the row at 10.8 s and a healthy run failed (edited=0 stale=0); 11x CPU
+    // throttle measures 12.6 s. A missing or duplicate row still fails on the counts.
     await flapPage.getByRole('button', { name: editedName, exact: true }).first()
-      .waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      .waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
     const uiCountAfterReload = await flapPage.getByRole('button', { name: editedName, exact: true }).count();
     const staleUiCount = await flapPage.getByRole('button', { name: gameName, exact: true }).count();
     record('FIX: exactly one row (the edited name) visible after a reload too — no duplicate, no stale name reaches the user',
@@ -3004,6 +3063,12 @@ try {
     const matrixSelector = 'input[inputmode="decimal"][class*="text-center"]';
     const matrix = commaPage.locator(matrixSelector);
     const payoffHint = commaPage.locator('[data-testid="payoff-input-hint"]');
+    // TASK-18: §93's render-settled wait (70f5cec), not a fixed 3 s -- 32x CPU throttle
+    // missed this hint every time. Two frames after the last keystroke React has committed.
+    const payoffHintAfterRender = async () => {
+      await commaPage.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      return payoffHint.isVisible().catch(() => false);
+    };
     const HINT_TEXT = 'Use a dot for decimals, not a comma.';
     await matrix.first().waitFor({ state: 'visible', timeout: 20000 });
 
@@ -3040,7 +3105,7 @@ try {
       const midTyping = await cell.inputValue();
       record(`${label}: the cell shows exactly what was typed (no live truncation while a comma is present)`,
         midTyping === commaInput, `got "${midTyping}"`);
-      const hintDuringTyping = await payoffHint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintDuringTyping = await payoffHintAfterRender();
       const hintTextDuringTyping = hintDuringTyping ? await payoffHint.textContent().catch(() => null) : null;
       record(`${label}: the hint appears with the exact guidance text while the field holds the rejected input`,
         hintDuringTyping && hintTextDuringTyping === expectedHint, `visible=${hintDuringTyping} text=${JSON.stringify(hintTextDuringTyping)}`);
@@ -3292,6 +3357,11 @@ try {
     const box = stepPage.getByLabel('Initial Domain Shrink Step Size', { exact: true });
     const slider = stepPage.getByLabel('Initial Domain Shrink Step Size slider', { exact: true });
     const hint = stepPage.locator('[data-testid="step-input-hint"]');
+    // TASK-18: render-settled, not a fixed 3 s (same class as §93, 70f5cec).
+    const hintAfterRender = async () => {
+      await stepPage.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      return hint.isVisible().catch(() => false);
+    };
     const HINT_TEXT = 'Use a dot for decimals, not a comma.';
     await box.waitFor({ state: 'visible', timeout: 20000 });
     const settle = async (pred) => {
@@ -3309,7 +3379,7 @@ try {
       await stepPage.keyboard.type(commaInput, { delay: 20 });
       const midTyping = await box.inputValue();
       record(`${label}: the box shows exactly what was typed`, midTyping === commaInput, `got "${midTyping}"`);
-      const hintShown = await hint.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      const hintShown = await hintAfterRender();
       const hintText = hintShown ? await hint.textContent().catch(() => null) : null;
       record(`${label}: the hint appears with the exact guidance text`, hintShown && hintText === HINT_TEXT, `visible=${hintShown} text=${JSON.stringify(hintText)}`);
       const restored = await settle(async () => (await slider.inputValue()) === sliderBefore);
@@ -3376,7 +3446,7 @@ try {
       let up = false;
       up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       const deskErrors = [];
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
@@ -3491,6 +3561,7 @@ try {
     await tabA.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Save custom game"]'), null, { timeout: 12000 });
     const tabB = trackPage(await twoTab.newPage());
     await tabB.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(tabB);
     const exitTourB = tabB.getByRole('button', { name: /close tour/i });
     if (await exitTourB.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourB.click();
     const rowB = tabB.getByRole('button', { name: gameName, exact: true });
@@ -3546,6 +3617,7 @@ try {
 
     // 003: Delete while offline must SAY something.
     await tabA.reload({ waitUntil: 'networkidle' });
+    await awaitTourDecision(tabA);
     const exitTourA = tabA.getByRole('button', { name: /close tour/i });
     if (await exitTourA.isVisible({ timeout: 3000 }).catch(() => false)) await exitTourA.click();
     await tabA.getByRole('button', { name: gameName, exact: true }).waitFor({ state: 'visible', timeout: 12000 });
@@ -3810,7 +3882,7 @@ try {
         body: JSON.stringify({ username: `b${Date.now().toString(36)}`, email, password: 'TestPass123' }) });
       record('precondition: a brand-new account exists on this device', reg.ok, `status ${reg.status}`);
 
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       const deskErrors = [];
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       // The two induced 500s below legitimately log "Failed to load resource";
@@ -3904,7 +3976,7 @@ try {
   section('51', 'pinch drifting off the plot never becomes a native page zoom', async () => {
     const ctx = await browser.newContext({ ...devices['Pixel 7'] });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before scenario rendering'); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
@@ -3954,7 +4026,7 @@ try {
   section('52', 'the first drag on a running simulation rotates the camera', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before scenario rendering'); /* may not show */
       const plot = p.locator('[data-tour="plot"]');
@@ -4015,7 +4087,7 @@ try {
   section('53', 'a double-click on Delete while offline sends one request and one alert', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       const uniq = await registerAndLogin(p, 'del');
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
       record('precondition: signed in with a stored token', typeof token === 'string' && token.length > 0);
@@ -4082,7 +4154,7 @@ try {
   section('54', 'closing a dialog returns focus to the control that opened it', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       const uniq = await registerAndLogin(p, 'foc');
       const token = await p.evaluate(() => localStorage.getItem('nash_sim_token_local') || localStorage.getItem('nash_sim_token_cloud'));
       const name = `Focus-${uniq}`;
@@ -4128,7 +4200,7 @@ try {
   section('56', 'a closed dialog whose opener vanished still hands focus to a landmark', async () => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctx.newPage();
+      const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before focus persistence'); /* may not show */
       const uniq = `foc2${Date.now()}`;
@@ -4217,7 +4289,7 @@ try {
     const tiny = await browser.newContext({ viewport: { width: 320, height: 200 } });
     const normal = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await tiny.newPage();
+      const p = trackPage(await tiny.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(p, 'setup: clear a possible tour before header interaction'); /* may not show */
       await p.keyboard.press('Escape').catch(() => {});
@@ -4228,7 +4300,7 @@ try {
       for (let i = 0; i < 20 && (await p.evaluate(() => window.scrollY)) < 50; i++) await p.waitForTimeout(50);
       const hit = await p.evaluate(() => { const el = document.elementFromPoint(160, 100); const h = document.querySelector('header'); return { tag: el?.tagName ?? null, inHeader: !!(el && h && h.contains(el)), scrollY: Math.round(window.scrollY) }; });
       record('FIX: after scrolling, the point at the centre of the viewport is NOT inside the header (the page is reachable)', hit.tag !== null && !hit.inHeader, JSON.stringify(hit));
-      const q = await normal.newPage();
+      const q = trackPage(await normal.newPage());
       await q.goto(BASE, { waitUntil: 'networkidle' });
       await dismissTourForSetup(q, 'setup: clear a possible tour before header-position control'); /* may not show */
       const pos = await q.evaluate(() => getComputedStyle(document.querySelector('header')).position);
@@ -5344,7 +5416,7 @@ try {
       let up = false;
       up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: the desktop local-owner server is up', up);
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
       await dismissTourForSetup(dp, 'setup: clear a possible tour before desktop-account checks'); /* may not appear */
       await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).catch(() => {});
@@ -5468,7 +5540,7 @@ try {
     // predicate) must hold here too, not just for the desktop local owner. ──
     const ctxB = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {
-      const p = await ctxB.newPage();
+      const p = trackPage(await ctxB.newPage());
       const uniq = await registerAndLogin(p, 'sgl68');
       const nameC = `LG-C-${uniq}`;
       const nameD = `LG-D-${uniq}`;
@@ -5495,15 +5567,15 @@ try {
   section('69', 'keys typed inside an open dialog never reach the guided tour', async () => {
     const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    const decision = await awaitTourDecision(p);
     const tourSel = '[role="dialog"][aria-label="Guided tour"]';
-    await p.waitForSelector(tourSel, { timeout: 15000 });
     const readTour = () => p.evaluate((sel) => {
       const t = document.querySelector(sel);
       const m = (t?.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
       return { step: m ? Number(m[1]) : null, matrix: [...document.querySelectorAll('input[inputmode="decimal"][class*="text-center"]')].map((i) => i.value).join(',') };
     }, tourSel);
     const start = await readTour();
-    record('precondition: the tour auto-opened on step 1', start.step === 1, JSON.stringify(start));
+    record('precondition: the tour auto-opened on step 1', start.step === 1, JSON.stringify({ ...start, decision }));
     await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     await p.waitForSelector('[role="dialog"][aria-label="Account"]', { timeout: 8000 });
     const email = p.getByPlaceholder(/example\.com or username/i);
@@ -5579,7 +5651,7 @@ try {
       await fetch(deskBase + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: `t${Date.now().toString(36)}`, email, password: 'TestPass123' }) });
 
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       await dp.goto(deskBase, { waitUntil: 'networkidle' });
       await dismissTourForSetup(dp, 'setup: clear a possible tour before desktop sign-in'); /* may not show */
       await dp.getByRole('button', { name: /sign in.*sign up/i }).first().click();
@@ -7498,6 +7570,7 @@ try {
     await p.getByRole('button', { name: /sign in.*sign up/i }).first().click();
     const dlg = p.locator('[role="dialog"][aria-label="Account"]'); await dlg.waitFor({ state: 'visible', timeout: 8000 });
     const field = p.getByPlaceholder(/example\.com or username/i); await field.fill('drag me');
+    await surfacesSettled(p);
     const fb = await field.boundingBox(); const db = await dlg.boundingBox();
     await p.mouse.move(fb.x + 10, fb.y + fb.height / 2); await p.mouse.down();
     await p.mouse.move(db.x + db.width + 120, fb.y + fb.height / 2, { steps: 8 }); await p.mouse.up();
@@ -7727,22 +7800,27 @@ try {
     // subtree, not document.body.innerText — an unrelated "n / m" string
     // elsewhere on the page would otherwise be indistinguishable from the
     // tour's step counter.
+    const decision = await awaitTourDecision(p);
     const TOUR_SEL = '[role="dialog"][aria-label="Guided tour"]';
     const tourStep = () => p.evaluate((sel) => {
       const t = document.querySelector(sel);
       return (t?.textContent || '').match(/(\d+)\s*\/\s*\d+/)?.[1] || null;
     }, TOUR_SEL);
-    // Wait for the tour dialog itself before the first read: the tour opens
-    // after mount, and reading the counter straight after networkidle raced
-    // it on the runner (CI 2026-09-08 shard 30 on #175: step0=null while the
-    // very next read of the same page said "1"). The waitFor makes step0 a
-    // real reading of the opened tour, not of the page's load timing.
-    await p.locator(TOUR_SEL).waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+    // Read the counter only after the app's tour decision (above): straight after networkidle it
+    // raced the tour on the runner (CI 2026-09-08 shard 30 on #175: step0=null, then "1").
     const step0 = await tourStep();
-    record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0}`);
+    record('precondition: the guided tour opened on first visit', step0 !== null, `step=${step0} decision=${decision}`);
 
+    // The drawer's 300 ms slide-in runs at 1/20 speed here, so a coordinate read before it has
+    // settled lands on the backdrop every time, not once in 60 runs (TASK-18 sweep 3).
+    const anim = await p.context().newCDPSession(p);
+    await anim.send('Animation.setPlaybackRate', { playbackRate: 0.05 });
     await p.getByRole('button', { name: /open workspace menu/i }).first().click();
     await p.getByRole('button', { name: /close menu/i }).first().waitFor({ state: 'visible', timeout: 8000 });
+    await surfacesSettled(p);
+    const animatingAtRead = await surfacesAnimating(p);
+    await anim.send('Animation.setPlaybackRate', { playbackRate: 1 });
+    record('precondition: the drawer has finished sliding in before the Next button\'s point is read', animatingAtRead === 0, `running=${animatingAtRead}`);
     const next = p.locator('button', { hasText: /^Next\s*$/ }).first();
     const nb = await next.boundingBox();
     // OPUS-REVIEW-MODAL16 N (§76): `hit` used to be computed and then only
@@ -7967,7 +8045,7 @@ try {
       let up = false;
       up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
       record('precondition: a desktop-shaped server (IS_ELECTRON=true, no credentials) is up on its own port', up);
-      const dp = await deskCtx.newPage();
+      const dp = trackPage(await deskCtx.newPage());
       const deskErrors = [];
       dp.on('pageerror', (e) => deskErrors.push(String(e)));
       dp.on('console', (m) => { if (m.type() === 'error') deskErrors.push(m.text()); });
@@ -8539,11 +8617,11 @@ try {
       // — a dropped ArrowRight would otherwise leave this on the wrong step
       // and the old `!== null` precondition would still (wrongly) pass
       // (CodeRabbit CLI).
-      let stepBefore = await tourStepOf(p);
-      for (let i = 0; i < 20 && stepBefore !== expectedStep; i++) {
-        await p.waitForTimeout(100);
-        stepBefore = await tourStepOf(p);
-      }
+      // Bounded by the condition, not 2 s: each step's onEnter re-renders the board and plot,
+      // which at CI load takes longer than a fixed poll allowed (TASK-18 H15).
+      await p.waitForFunction(([sel, want]) => (document.querySelector(sel)?.textContent || '')
+        .match(/(\d+)\s*\/\s*\d+/)?.[1] === want, [TOUR_SEL, expectedStep], { timeout: 60000 }).catch(() => {});
+      const stepBefore = await tourStepOf(p);
       record(`[${label}] precondition: the tour is open at the expected step ${expectedStep}`, stepBefore === expectedStep, `step=${stepBefore}`);
 
       // Capture the tour control's coordinate BEFORE the surface opens,
@@ -8693,7 +8771,7 @@ try {
           const p = trackPage(await ctx.newPage());
           try {
             await p.goto(BASE, { waitUntil: 'networkidle' });
-            await p.waitForSelector(TOUR_SEL, { state: 'visible', timeout: 8000 }).catch(() => {});
+            await awaitTourDecision(p);
             await runScenario(p, `${engineLabel} ${scenario.name}`, scenario);
           } finally {
             await p.close().catch(() => {});
@@ -8863,6 +8941,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(p);
       const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
@@ -8916,6 +8995,7 @@ try {
       const { allHits, sweep } = axSweepHelpers(p, cdp);
 
       await p.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(p);
       const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
@@ -8978,6 +9058,7 @@ try {
     try {
       const p = trackPage(await ctx.newPage());
       await p.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(p);
       const exitTour = p.getByRole('button', { name: /close tour/i });
       if (await exitTour.isVisible({ timeout: 3000 }).catch(() => false)) {
         await exitTour.click();
@@ -9111,6 +9192,7 @@ try {
   section('87', 'tour keys belong to the focused control', async () => {
     const p = await newTrackedPage({ viewport: { width: 1440, height: 900 } });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(p);
     const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
     await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(600);
     const stepOf = async () => { const t = (await tour.textContent().catch(() => '')) || ''; const m = /(\d+)\s*(?:\/|of)\s*(\d+)/.exec(t); return m ? Number(m[1]) : null; };
@@ -9175,6 +9257,7 @@ try {
   section('88', 'tour card never sits inside its own spotlight (912x1368 dsf2)', async () => {
     const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(p);
     const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
     await tour.waitFor({ state: 'visible', timeout: 10000 }); await p.waitForTimeout(800);
     const steps = [];
@@ -9379,6 +9462,7 @@ try {
   section('90', 'tour layout family comes from a measured card, not an estimate (enlarged captions)', async () => {
     const p = await newTrackedPage({ viewport: { width: 912, height: 1368 }, deviceScaleFactor: 2 });
     await p.goto(BASE, { waitUntil: 'networkidle' });
+    await awaitTourDecision(p);
     const tour = p.locator('[role="dialog"][aria-label="Guided tour"]');
     await tour.waitFor({ state: 'visible', timeout: 15000 });
     // The condition under test: every caption paragraph in the tour (the real
@@ -9511,6 +9595,7 @@ try {
     for (const [cw, ch] of [[320, 256], [900, 300]]) {
       const cp = await newTrackedPage({ viewport: { width: cw, height: ch } });
       await cp.goto(BASE, { waitUntil: 'networkidle' });
+      await awaitTourDecision(cp);
       const closeBtn = cp.getByRole('button', { name: /close tour/i });
       const up = await closeBtn.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false);
       record(`precondition ${cw}x${ch}: the tour is open and its close button is visible`, up, `visible=${up}`);
@@ -10553,13 +10638,14 @@ const suggestedScenario = {
   // reflow fix that keys on width is invisible to it. Real zoom divides the
   // layout viewport, which is exactly how WCAG 1.4.10 is stated: 1280px at
   // 400% IS a 320px layout viewport. CDP device metrics reproduce that.
-  section('100', 'no width and zoom a user can reach makes the page scroll sideways', async () => {
-    // 280px is the narrowest phone still sold; 300% is mid-range for the 400%
-    // the SC requires. 280/3 = a 93px layout viewport — the hardest point.
-    // 390@1.45x = 269px and 390@1.63x = 239px bracket the band where the matrix
-    // collapses to 0px inputs (221-261 measured). 1.5x lands on 260 -- inside
-    // the band -- and swept green only because the oracles skipped 0px boxes.
-    const COMBOS = [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5], [390, 1.45], [390, 1.63]];
+  // Split 100 -> 100a/b/c along COMBOS (378 s on CI whole; each runs every phase over its third,
+  // 100c also the drawer) + 100d, the scrolled sweep. 280px is the narrowest phone still sold;
+  // 300% is mid-range for the 400% the SC requires: 280/3 = a 93px layout viewport, the hardest
+  // point. 390@1.45x = 269px and 390@1.63x = 239px bracket the band where the matrix collapses
+  // to 0px inputs (221-261 measured); 1.5x lands on 260 -- inside the band -- and swept green
+  // only because the oracles skipped 0px boxes.
+  const reflowAt = (sid) => async () => {
+    const { combos: COMBOS, drawerHeights = [] } = SPLIT_PARTS[sid];
     const measure = async (p, cdp, w, z) => {
       await cdp.send('Emulation.setDeviceMetricsOverride', {
         width: Math.round(w / z), height: Math.round(844 / z), deviceScaleFactor: z, mobile: false });
@@ -10569,13 +10655,16 @@ const suggestedScenario = {
       // unfixed tree settles at 191px and still fails, so this cannot mask it.
       // Swallowed, this turns a slow machine into a width failure with no way to
       // tell them apart; it is returned instead and asserted on its own row.
-      const settled = await p.waitForFunction(() => new Promise((resolve) => {
-        let last = document.documentElement.scrollWidth, stable = 0;
-        const tick = () => { const v = document.documentElement.scrollWidth;
+      // Bounded in FRAMES, not seconds (TASK-18 sweep 6): at 11x CPU (about CI) a frame takes
+      // 0.4-0.7 s, so 30 stable frames took 12.7-22.4 s and a 20 s bound read a slow runner as
+      // "never held". Unsettled now means the width still changed within 600 frames.
+      const settled = await p.evaluate(() => new Promise((resolve) => {
+        let last = document.documentElement.scrollWidth, stable = 0, frames = 0;
+        const tick = () => { const v = document.documentElement.scrollWidth; frames++;
           stable = v === last ? stable + 1 : 0; last = v;
-          if (stable >= 30) resolve(true); else requestAnimationFrame(tick); };
+          if (stable >= 30) resolve(true); else if (frames >= 600) resolve(false); else requestAnimationFrame(tick); };
         requestAnimationFrame(tick);
-      }), null, { timeout: 20000 }).then(() => true).catch(() => false);
+      })).catch(() => false);
       return p.evaluate(() => {
         const de = document.documentElement, vw = de.clientWidth, vh = de.clientHeight;
         window.scrollTo(10000, 0); const maxScrollX = window.scrollX; window.scrollTo(0, 0);
@@ -10803,7 +10892,7 @@ const suggestedScenario = {
     // layout viewport, every row below would pass by measuring zoom 1.
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 93, height: 281, deviceScaleFactor: 3, mobile: false });
     const lv = await p97.evaluate(() => document.documentElement.clientWidth);
-    record('§100 fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)',
+    record(`§${sid} fixture guard: browser zoom really divides the layout viewport (280px at 300% lays out at 93px, not 280px)`,
       lv <= 95, `clientWidth=${lv}`);
     const sweep = async (phase) => {
       for (const [w, z] of COMBOS) {
@@ -10812,25 +10901,25 @@ const suggestedScenario = {
         // Per-condition, not once up front: if setDeviceMetricsOverride ever
         // no-opped, every row below would silently measure an unzoomed page
         // and pass (ds-rev finding 3).
-        record(`§100 ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
+        record(`§${sid} ${at} fixture guard: the layout viewport really is ${Math.round(w / z)}px, so this row measured the zoom it claims`,
           Math.abs(m.vw - Math.round(w / z)) <= 2, `measured=${m.vw} expected=${Math.round(w / z)}`);
-        record(`§100 ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
-        record(`§100 ${at} fixture guard: the width held still before it was read (a slow runner is not a reflow failure)`,
-          m.settled, 'scrollWidth never held for 30 frames within 20 s');
-        record(`§100 ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
+        record(`§${sid} ${at} fixture guard: the page is fully rendered (plot + log header present)`, m.rendered, JSON.stringify(m));
+        record(`§${sid} ${at} fixture guard: the width held still before it was read (a slow runner is not a reflow failure)`,
+          m.settled, 'scrollWidth never held for 30 frames within 600');
+        record(`§${sid} ${at}: the document is no wider than the layout viewport (no sideways scroll)`,
           m.docScrollWidth <= m.vw && m.maxScrollX === 0, JSON.stringify(m));
-        record(`§100 ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
-        record(`§100 ${at}: no text was shredded to one character per line to buy the width`,
+        record(`§${sid} ${at}: nothing bleeds past the viewport outside a scrollable box`, m.bleed.length === 0, JSON.stringify(m.bleed));
+        record(`§${sid} ${at}: no text was shredded to one character per line to buy the width`,
           m.readable.length === 0, JSON.stringify(m.readable));
-        record(`§100 ${at}: an input's whole VALUE is visible, not just one character of it`,
+        record(`§${sid} ${at}: an input's whole VALUE is visible, not just one character of it`,
           m.clippedValues.length === 0, JSON.stringify(m.clippedValues));
-        record(`§100 ${at}: nothing is painted on top of an input's value`,
+        record(`§${sid} ${at}: nothing is painted on top of an input's value`,
           m.overlaidValues.length === 0, JSON.stringify(m.overlaidValues));
-        record(`§100 ${at}: every input is still wide enough to read one character of its own value`,
+        record(`§${sid} ${at}: every input is still wide enough to read one character of its own value`,
           m.tinyInputs.length === 0, JSON.stringify(m.tinyInputs));
-        record(`§100 ${at}: every box the fix made scrollable is reachable from the keyboard`,
+        record(`§${sid} ${at}: every box the fix made scrollable is reachable from the keyboard`,
           m.unreachableScrollers.length === 0, JSON.stringify(m.unreachableScrollers));
-        record(`§100 ${at}: no control is painted entirely outside the viewport`,
+        record(`§${sid} ${at}: no control is painted entirely outside the viewport`,
           m.unreachableControls.length === 0, JSON.stringify(m.unreachableControls));
         // Inside the viewport but under something: a `fixed`/`sticky` overlay
         // holds its corner no matter what reflows beneath it. The feedback pill
@@ -10838,7 +10927,7 @@ const suggestedScenario = {
         // a 93px layout viewport -- both on screen, neither clickable, and every
         // scroll-based check green. Nine sample points per control; a control is
         // only a failure when NONE of them reach it.
-        record(`§100 ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
+        record(`§${sid} ${at}: every on-screen control can actually be clicked (nothing overlays it)`,
           m.coveredControls.length === 0, JSON.stringify(m.coveredControls));
       }
     };
@@ -10850,7 +10939,7 @@ const suggestedScenario = {
     await p97.getByRole('button', { name: 'Search Game' }).first().click();
     await p97.getByRole('button', { name: /^Run$/ }).click();
     await p97.waitForSelector('text=Converged', { timeout: 240000 });
-    record('§100 fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page',
+    record(`§${sid} fixture guard: the run reached a mixed equilibrium, so the post-run rows really are on the page`,
       await p97.getByText(/A indifferent:|A strictly prefers:/).first().isVisible().catch(() => false));
     await sweep('post-run');
     // Dark mode renders the same boxes, but Plotly re-fits later in dark — the
@@ -10858,7 +10947,7 @@ const suggestedScenario = {
     await p97.evaluate(() => { const b = [...document.querySelectorAll('button')]
       .find((x) => /theme|dark|light/i.test(x.getAttribute('aria-label') || '')); b && b.click(); });
     await p97.waitForTimeout(700);
-    record('§100 fixture guard: dark mode is actually on for the rows below',
+    record(`§${sid} fixture guard: dark mode is actually on for the rows below`,
       await p97.evaluate(() => document.documentElement.classList.contains('dark')));
     await sweep('dark post-run');
     // The modals are the surface a `main`-scoped fix and a `main`-scoped oracle
@@ -10872,7 +10961,7 @@ const suggestedScenario = {
     // containing it -- it silently marked MenuDrawer's never-pressed "Sign In to
     // Your Account" as covered and evicted its allowlist entry (ds-rev finding
     // D). The dialog's aria-label is exactly "Account", so nothing is lost.
-    record('§100 fixture guard: the Account dialog is open, so the rows below measure a real modal',
+    record(`§${sid} fixture guard: the Account dialog is open, so the rows below measure a real modal`,
       await p97.getByRole('dialog', { name: 'Account', exact: true }).isVisible().catch(() => false));
     // TYPE into them: an empty field has no glyphs, so every value-overlap check
     // skips it and the gutter icon painting over "ga<icon>me_t" was invisible to
@@ -10892,9 +10981,10 @@ const suggestedScenario = {
       }
       return n;
     });
-    record('§100 fixture guard: the Account fields hold a value, so the overlap rows below have glyphs to measure',
+    record(`§${sid} fixture guard: the Account fields hold a value, so the overlap rows below have glyphs to measure`,
       acctFilled > 0, `filled ${acctFilled} inputs`);
     await sweep('account dialog');
+    if (!drawerHeights.length) { await cdp.send('Emulation.clearDeviceMetricsOverride'); await p97.close(); return; }
     // The workspace drawer is a second modal shape with its own header row:
     // `flex-nowrap` + `justify-between`, whose children default to
     // `min-width:auto` and so refuse to shrink -- the close button was pushed to
@@ -10912,18 +11002,18 @@ const suggestedScenario = {
     // panel with `overflow-y: visible`, which can never scroll back -- passed
     // it while the drawer was uncloseable at 281 and 400.
     let drawerClosed = true;
-    for (const dh of [281, 400, 700]) {
+    for (const dh of drawerHeights) {
       await cdp.send('Emulation.setDeviceMetricsOverride', {
         width: 93, height: dh, deviceScaleFactor: 3, mobile: false });
       await p97.getByRole('button', { name: /open workspace menu/i }).first()
         .click({ timeout: 8000 }).catch(() => {});
       await p97.waitForTimeout(900);
-      record(`§100 drawer fixture guard: the workspace drawer is open at 93x${dh}`,
+      record(`§${sid} drawer fixture guard: the workspace drawer is open at 93x${dh}`,
         await p97.evaluate(() => [...document.querySelectorAll('[role="dialog"]')]
           .some((d) => d.getBoundingClientRect().width > 0
             && [...d.querySelectorAll('button')]
               .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))));
-      record(`§100 drawer at 93x${dh}: its close control is fully inside the viewport`,
+      record(`§${sid} drawer at 93x${dh}: its close control is fully inside the viewport`,
         await p97.evaluate(() => {
           const b = [...document.querySelectorAll('button')]
             .find((x) => /close menu/i.test(x.getAttribute('aria-label') || ''));
@@ -10948,15 +11038,22 @@ const suggestedScenario = {
             && [...d.querySelectorAll('button')]
               .some((b) => /close menu/i.test(b.getAttribute('aria-label') || '')))))
         .catch(() => false);
-      record(`§100 drawer at 93x${dh}: it can actually be closed again (not a trap)`, shut);
+      record(`§${sid} drawer at 93x${dh}: it can actually be closed again (not a trap)`, shut);
       drawerClosed = drawerClosed && shut;
       await p97.keyboard.press('Escape').catch(() => {});
       await p97.waitForTimeout(300);
     }
-    record('§100 drawer: closeable at EVERY height swept, not just the tallest', drawerClosed);
+    record(`§${sid} drawer: closeable at EVERY height swept, not just the tallest`, drawerClosed);
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await p97.close();
+  };
+  // The `async () => ...` shape is load-bearing: e2esharding.test.ts parses it (see §101).
+  section('100a', 'no width and zoom a user can reach makes the page scroll sideways (280-320px)', async () => { await reflowAt('100a')(); });
+  section('100b', 'no width and zoom a user can reach makes the page scroll sideways (360-390px at 200-300%)', async () => { await reflowAt('100b')(); });
+  section('100c', 'no width and zoom a user can reach makes the page scroll sideways (390px at 145-163%, drawer)', async () => { await reflowAt('100c')(); });
 
+  section('100d', 'no width and zoom a user can reach makes the page scroll sideways (93x700 scrolled under fixed overlays)', async () => {
+    const sid = '100d';
     // A TALL narrow viewport, SCROLLED. Every condition above is short (844/z),
     // where the header is already static and the page barely scrolls -- so none
     // of them can see an overlay that holds its corner while content moves
@@ -10967,10 +11064,10 @@ const suggestedScenario = {
     const ps = await newTrackedPage({ viewport: { width: 93, height: 700 } });
     await ps.goto(BASE, { waitUntil: 'networkidle' });
     await dismissTourForSetup(ps, 'setup: clear the tour before the scrolled overlay sweep', { timeout: 20000 });
-    record('§100 scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner',
+    record(`§${sid} scrolled-overlay fixture guard: the page is long enough to scroll controls under a fixed corner`,
       await ps.evaluate(() => document.documentElement.scrollHeight > innerHeight * 3),
       await ps.evaluate(() => `docH=${document.documentElement.scrollHeight} vh=${innerHeight}`));
-    record('§100 scrolled-overlay fixture guard: no element covers the viewport from a stuck position',
+    record(`§${sid} scrolled-overlay fixture guard: no element covers the viewport from a stuck position`,
       await ps.evaluate(() => {
         for (const el of document.querySelectorAll('body *')) {
           const cs = getComputedStyle(el);
@@ -11012,26 +11109,28 @@ const suggestedScenario = {
       window.scrollTo(0, 0);
       return [...out];
     });
-    record('§100 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset',
+    record(`§${sid} 93x700 scrolled: no control is swallowed by a fixed or sticky overlay at any scroll offset`,
       dead.length === 0, dead.slice(0, 5).join(' | '));
     // And the ground truth a geometric check cannot give: press them.
     for (const nm of [/search game/i, /open workspace menu/i, /^sign in/i]) {
       const l = ps.getByRole('button', { name: nm }).first();
+      // 60 s, as the tour walker: "can it be pressed", not "how fast" (TASK-18 H10, 11x CPU).
       const pressed = await l.count()
-        ? await l.click({ timeout: 10000 }).then(() => true).catch(() => false) : false;
-      record(`§100 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
+        ? await l.click({ timeout: 60000 }).then(() => true).catch(() => false) : false;
+      record(`§${sid} 93x700 scrolled: "${String(nm)}" can actually be pressed`, pressed);
       await ps.keyboard.press('Escape').catch(() => {});
       await ps.waitForTimeout(300);
     }
     await ps.close();
-
   });
 
   // Split out of §100 (2026-09-16): §100 measured 225.0s against a 225.0s
   // per-section budget once the payoff checks landed. These three share one
   // subject -- the number a payoff FIELD actually shows -- so they split
   // cleanly rather than being trimmed.
-  section('102', 'a payoff always renders as the number it holds', async () => {
+  // Split 102 -> 102a-d (legibility, a quarter of the viewports each), 102e (minimum font
+  // size) and 102f (target size): 735 s on CI whole.
+  const payoffLegibilityAt = (sid) => async () => {
     // A payoff that PRINTS as a different number is the worst defect this
     // surface can carry: "-99.999" rendered "-99." and "-100" rendered "-10".
     // The field clamps to PAYOFF_RANGE quantised to 3dp, so the widest legal
@@ -11041,8 +11140,7 @@ const suggestedScenario = {
     // write and the read are separate tasks: they canonicalise on commit
     // ("-99.9999" and "-100.0000" both settle to "-100"), so the value the
     // user is left reading is the SETTLED one, never the raw entry.
-    const WIDEST_PAYOFFS = ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345', '-99.9999', '-100.0000'];
-    const LEGIBILITY_VIEWPORTS = [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1], [280, 3], [320, 2], [390, 3]];
+    const LEGIBILITY_VIEWPORTS = SPLIT_PARTS[sid].viewports;
     let clipRows = [];
     for (const [vw, zoom] of LEGIBILITY_VIEWPORTS) {
       const pv = await newTrackedPage({ viewport: { width: Math.round(vw / zoom), height: Math.round(900 / zoom) } });
@@ -11119,10 +11217,17 @@ const suggestedScenario = {
       await pv.close();
     }
     record(
-      `§102 payoff legibility: an unfocused field paints exactly what it holds, at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports)`,
+      `§${sid} payoff legibility: an unfocused field paints exactly what it holds, at every width and zoom (${WIDEST_PAYOFFS.length} values x ${LEGIBILITY_VIEWPORTS.length} viewports: ${LEGIBILITY_VIEWPORTS.map(([w, z]) => `${w}@${z}x`).join(' ')})`,
       clipRows.length === 0,
       clipRows.slice(0, 6).join(' | ') || 'every field painted its whole value; none zero-width; the document never scrolled sideways',
     );
+  };
+  section('102a', 'a payoff always renders as the number it holds (280-390px)', async () => { await payoffLegibilityAt('102a')(); });
+  section('102b', 'a payoff always renders as the number it holds (430-768px)', async () => { await payoffLegibilityAt('102b')(); });
+  section('102c', 'a payoff always renders as the number it holds (1024-1440px)', async () => { await payoffLegibilityAt('102c')(); });
+  section('102d', 'a payoff always renders as the number it holds (zoomed 200-300%)', async () => { await payoffLegibilityAt('102d')(); });
+
+  section('102e', 'a payoff always renders as the number it holds (minimum font size preference)', async () => {
 
     // A browser MINIMUM FONT SIZE (an accessibility preference) raises the
     // payoff text no matter what the CSS asks, so a px-sized box always loses;
@@ -11132,13 +11237,13 @@ const suggestedScenario = {
     // needs its own browser instance.
     let minFontRows = [];
     for (const minFs of [15, 18, 24]) {
-      const fontBrowser = await chromium.launch({
+      const fontBrowser = throttleEveryPage(await chromium.launch({
         args: ['--disable-dev-shm-usage', `--blink-settings=minimumFontSize=${minFs}`],
-      });
+      }));
       try {
         for (const fw of [320, 1280]) {
         const fctx = await fontBrowser.newContext({ viewport: { width: fw, height: 900 } });
-        const pf = await fctx.newPage();
+        const pf = trackPage(await fctx.newPage());
         await pf.goto(BASE, { waitUntil: 'networkidle' });
         await dismissTourForSetup(pf, 'setup: clear the tour before the minimum-font-size payoff check', { timeout: 20000 });
         const r = await pf.evaluate(() => {
@@ -11170,10 +11275,13 @@ const suggestedScenario = {
       }
     }
     record(
-      '§102 payoff legibility: a real minimum-font-size preference does not clip a payoff (15/18/24px)',
+      '§102e payoff legibility: a real minimum-font-size preference does not clip a payoff (15/18/24px)',
       minFontRows.length === 0,
       minFontRows.join(' | ') || 'the preference raised the payoff font at every size and nothing clipped',
     );
+  });
+
+  section('102f', 'a payoff always renders as the number it holds (24x24 pointer target)', async () => {
 
     // SC 2.5.8: the payoff field IS its own pointer target -- clicking the cell
     // padding around it does not focus it -- so the input box must clear 24px.
@@ -11198,7 +11306,7 @@ const suggestedScenario = {
       await pt.close();
     }
     record(
-      '§102 payoff fields meet the 24x24 target minimum (SC 2.5.8) in BOTH axes at every width',
+      '§102f payoff fields meet the 24x24 target minimum (SC 2.5.8) in BOTH axes at every width',
       targetRows.length === 0,
       targetRows.join(' | ') || 'every payoff field clears 24x24 at all six widths',
     );
@@ -11213,7 +11321,7 @@ const suggestedScenario = {
   // Split because adding the landscape trio took §101 to 259,112ms against the
   // 225,000ms per-section budget -- the same split §100 -> §102 took, and the
   // budget is never raised to fit.
-  const walkTourAt = (sid, SIZES) => async () => {
+  const walkTourAt = (sid, SIZES = SPLIT_PARTS[sid].sizes) => async () => {
     // THE TOUR — the FIRST thing a first-time visitor sees, and the one surface
     // every other section DISMISSES before measuring (`dismissTourForSetup`), so
     // until now nothing measured it at all. It is not in `main`, it is
@@ -11236,6 +11344,7 @@ const suggestedScenario = {
       // `reload` rather than a cold `goto`: the tour must restart at step 0 for
       // each condition, but the app is already warm, which is most of the cost.
       await pt.reload({ waitUntil: 'domcontentloaded' });
+      await awaitTourDecision(pt);
       await pt.getByRole('dialog', { name: 'Guided tour' }).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
       // `visible` is not `placed`: the card anchors itself to its step's target
       // after layout, so the first frame can be measured mid-placement -- one
@@ -11367,12 +11476,11 @@ const suggestedScenario = {
           return e ? e.textContent.trim() : null;
         });
         lastCounter = before ?? lastCounter;
-        // 10s, not 3s: a real click on this control takes 1.2s alone but 2.5s
-        // with four browsers running, and a CI shard is busier than that. The
-        // check is "can it be pressed", not "how fast" — too tight a budget
-        // reports a dead control that is merely a loaded machine, and a guard
-        // that cries wolf gets ignored.
-        const advanced = await next.click({ timeout: 10000 }).then(() => true).catch(() => false);
+        // 60s: a real click on this control takes 1.2s alone and 11.3s at 11x CPU (about
+        // CI's load; TASK-18 sweep 5 measured 10s failing "step 0: Next could not be clicked"
+        // while the click itself succeeded). The check is "can it be pressed", not "how fast"
+        // -- too tight a budget reports a dead control that is merely a loaded machine.
+        const advanced = await next.click({ timeout: 60000 }).then(() => true).catch(() => false);
         if (!advanced) { unreachable.push(`step ${steps}: Next could not be clicked`); break; }
         // Wait on the counter actually changing, not on a fixed sleep: it is
         // both the correct signal (the step really advanced) and cheaper than
@@ -11404,15 +11512,24 @@ const suggestedScenario = {
   // The `async () => ...` shape is load-bearing: e2esharding.test.ts PARSES it
   // to enumerate the sections, so a section passed as a bare callback registers
   // nowhere and silently never runs in CI.
-  section('101', 'the guided tour can be walked to the end at every width and zoom a user can reach', async () => {
-    await walkTourAt('101', [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]])();
-  });
+  // Split 101 -> 101a-g, one size each (1086 s on CI whole: ~155 s per 19-step walk).
+  section('101a', 'the guided tour can be walked to the end at every width and zoom a user can reach (280px at 300%)', async () => { await walkTourAt('101a')(); });
+  section('101b', 'the guided tour can be walked to the end at every width and zoom a user can reach (280px at 200%)', async () => { await walkTourAt('101b')(); });
+  section('101c', 'the guided tour can be walked to the end at every width and zoom a user can reach (320px at 300%)', async () => { await walkTourAt('101c')(); });
+  section('101d', 'the guided tour can be walked to the end at every width and zoom a user can reach (390px at 200%)', async () => { await walkTourAt('101d')(); });
+  section('101e', 'the guided tour can be walked to the end at every width and zoom a user can reach (280x640 at 200%)', async () => { await walkTourAt('101e')(); });
+  section('101f', 'the guided tour can be walked to the end at every width and zoom a user can reach (390x960 at 300%)', async () => { await walkTourAt('101f')(); });
+  section('101g', 'the guided tour can be walked to the end at every width and zoom a user can reach (390px at 100%)', async () => { await walkTourAt('101g')(); });
 
   // LANDSCAPE is its own orientation class, not more widths: a short, wide
   // viewport is where the footer hid below the card's clip (60px at 844x390)
   // while every portrait size passed.
-  section('103', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide', async () => {
-    await walkTourAt('103', [[844, 390, 1], [667, 375, 1], [740, 360, 1]])();
+  // Split 103 -> 103a-c, one landscape size each (326 s on CI whole); the resting-geometry
+  // invariant below rides with 103c.
+  section('103a', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide (844x390)', async () => { await walkTourAt('103a')(); });
+  section('103b', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide (667x375)', async () => { await walkTourAt('103b')(); });
+  section('103c', 'the guided tour can be walked to the end in LANDSCAPE, where the card is short and wide (740x360, resting footer)', async () => {
+    await walkTourAt('103c')();
 
     // Promoted out of _gen/ (Amendment 2): the invariant the landscape fix was
     // CHOSEN by, stated so neither half can rot silently. Whenever the footer
@@ -11437,7 +11554,24 @@ const suggestedScenario = {
         await cdpF.send('Emulation.setDeviceMetricsOverride', {
           width: lw, height: lh, deviceScaleFactor: z, mobile: false });
         await pf.goto(BASE, { waitUntil: 'networkidle' });
-        await pf.waitForTimeout(1200);
+        await awaitTourDecision(pf);
+        // Settled, not slept (TASK-18): a fixed 1.2 s read no card at all on a loaded runner,
+        // or a body whose tabIndex/role had not yet caught up with its own overflow. Wait for
+        // the card rect to hold 10 frames AND the box's role to match its measured overflow;
+        // on timeout the check below still runs and reports what it sees.
+        await pf.waitForFunction(() => new Promise((resolve) => {
+          let last = '', stable = 0;
+          const tick = () => {
+            const card = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+            const body = card && card.querySelector('div.min-h-0');
+            const r = card && card.getBoundingClientRect();
+            const agrees = !!body && (body.scrollHeight > body.clientHeight + 1) === (body.getAttribute('role') === 'region');
+            const v = r ? `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)},${agrees}` : '';
+            stable = v && agrees && v === last ? stable + 1 : 0; last = v;
+            if (stable >= 10) resolve(true); else requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }), null, { timeout: 30000 }).catch(() => {});
         const bad = await pf.evaluate(() => {
           const btn = [...document.querySelectorAll('button')]
             .find((x) => /^(Next|Explore on your own)/.test((x.textContent || '').trim()));
@@ -11522,7 +11656,7 @@ const suggestedScenario = {
           }
           return out;
         });
-        record(`§103 ${dark ? 'dark' : 'light'} ${w}x${h}@${z}x: the walking control is visible whenever its row fits, and scroll-reachable when it cannot`,
+        record(`§103c ${dark ? 'dark' : 'light'} ${w}x${h}@${z}x: the walking control is visible whenever its row fits, and scroll-reachable when it cannot`,
           bad.length === 0, bad.join(' | ') || 'control visible or scroll-reachable; caption reachable');
         await cdpF.send('Emulation.clearDeviceMetricsOverride');
         await pf.close();
@@ -11530,6 +11664,179 @@ const suggestedScenario = {
     }
   });
 
+
+  // §105 (TASK-18 H4, App.tsx): a pause queued before the play loop's timer fired must win.
+  // On a slow frame the timer used to rebuild the step from a ref that still said running and
+  // overwrite the pause -- a zoom (and CI's §16) left the run going. The hold below is that slow
+  // frame, made deterministic: one pause, then the main thread busy 700 ms in the same task.
+  // MUTANT (measured): restoring `setSimState(next)` in the timer fails the zoom rows only. A
+  // click is a discrete event, flushed before any timer, so the Pause rows stay green on it;
+  // they and the tour rows are regression rows for the fix.
+  section('105', 'a pause wins over a step already due: zoom and Pause both stop the run on a slow frame', async () => {
+    // Progress is read from `span.font-mono` ("12 / 57"): the tour's own "13 / 19" counter
+    // matches the same text shape and was read instead on the first draft.
+    const pp = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
+    await pp.goto(BASE, { waitUntil: 'networkidle' });
+    await dismissTourForSetup(pp, 'setup: clear the tour before the pause-race checks', { timeout: 20000 });
+    const btn = (name) => pp.getByRole('button', { name, exact: true }).first();
+    const running = () => pp.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+    const progress = () => pp.evaluate(() => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e ? Number(e.textContent.trim().split(' / ')[0]) : -1;
+    });
+    const stepLines = () => pp.evaluate(() => [...document.querySelectorAll('div.overflow-y-auto.font-mono p')]
+      .filter((p) => /^Step \d+/.test((p.textContent || '').trim())).length);
+    // One pause gesture + a 700 ms busy main thread in the SAME task, then let every timer run.
+    const pauseOnSlowFrame = async (kind) => {
+      await pp.evaluate((k) => {
+        if (k === 'zoom') {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const r = gd.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+          document.elementFromPoint(x, y).dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: x, clientY: y, deltaY: -150 }));
+        } else {
+          [...document.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === 'Pause').click();
+        }
+        const t = performance.now(); while (performance.now() - t < 700) { /* a slow software-GL frame */ }
+      }, kind);
+      await pp.waitForTimeout(1500);
+    };
+    const startRun = async () => {
+      await btn('Reset').click();
+      await btn('Spy vs. Analyst').click();
+      await setSpeedOn(pp, 1);
+      await btn('Run').click();
+      return pp.waitForFunction(() => {
+        const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+        return e && Number(e.textContent.trim().split(' / ')[0]) >= 2
+          && [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause');
+      }, null, { timeout: 60000 }).then(() => true).catch(() => false);
+    };
+    // A plain run still steps at its speed: at 1x the loop waits 550 ms per step.
+    record('§105 fixture guard: a plain run steps (reaches step 2 and is still running)', await startRun());
+    const s0 = await progress(); const t0 = Date.now();
+    await pp.waitForFunction((from) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) >= from + 4;
+    }, s0, { timeout: 60000 }).catch(() => {});
+    const perStep = (Date.now() - t0) / Math.max(1, (await progress()) - s0);
+    record('§105 a normal run still steps at the set speed (1x: ~550 ms per step, not stalled, not doubled)',
+      perStep >= 450 && perStep <= 5000, `${Math.round(perStep)} ms per step`);
+    for (const kind of ['zoom', 'Pause']) {
+      // Each site from a fresh run, so one site's failure cannot hide the next.
+      if (await running()) await btn('Pause').click().catch(() => {});
+      await startRun();
+      await pauseOnSlowFrame(kind);
+      const stoppedAt = await progress();
+      record(`§105 ${kind} on a slow frame: the run is paused, not still going`, !(await running()), `running=${await running()}`);
+      await pp.waitForTimeout(1500);
+      record(`§105 ${kind} on a slow frame: no step lands after the pause`, (await progress()) === stoppedAt, `at ${stoppedAt}, then ${await progress()}`);
+      record(`§105 ${kind} on a slow frame: the log holds exactly one line per step taken`, (await stepLines()) === stoppedAt,
+        `progress ${stoppedAt}, Step lines ${await stepLines()}`);
+      // Resume continues from the exact step it stopped on.
+      if (await running()) await btn('Pause').click().catch(() => {});
+      await btn('Run').click();
+      await pp.waitForFunction((from) => {
+        const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+        return e && Number(e.textContent.trim().split(' / ')[0]) >= from + 1;
+      }, stoppedAt, { timeout: 20000 }).catch(() => {});
+      await btn('Pause').click().catch(() => {});
+      await pp.waitForTimeout(800);
+      const lines = await pp.evaluate(() => [...document.querySelectorAll('div.overflow-y-auto.font-mono p')]
+        .map((p) => (p.textContent || '').trim()).filter((t) => /^Step \d+/.test(t)).map((t) => Number(/^Step (\d+)/.exec(t)[1])));
+      record(`§105 ${kind}: resuming continues from the exact step it stopped on (no gap, no repeat)`,
+        lines.length > stoppedAt && lines.every((n, i) => n === i + 1), `stopped at ${stoppedAt}; Step lines ${lines.slice(Math.max(0, stoppedAt - 2), stoppedAt + 3).join(',')}`);
+    }
+    // Step and Back still move one step each on a paused run.
+    if (await running()) await btn('Pause').click().catch(() => {});
+    await pp.waitForTimeout(800);
+    const before = await progress();
+    await btn('Step').click();
+    await pp.waitForFunction((b) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) === b + 1;
+    }, before, { timeout: 20000 }).catch(() => {});
+    record('§105 Step still advances exactly one step', (await progress()) === before + 1, `${before} -> ${await progress()}`);
+    await btn('Back').click();
+    await pp.waitForFunction((b) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) === b;
+    }, before, { timeout: 20000 }).catch(() => {});
+    record('§105 Back still returns exactly one step', (await progress()) === before, `-> ${await progress()}`);
+    // Jump-to-NE from a RUNNING run lands paused on the snapshot and stays there.
+    await btn('Run').click();
+    await pp.waitForTimeout(1200);
+    const jump = pp.getByRole('button', { name: /^1st NE Coord/ }).first();
+    const jumpReady = await pp.waitForFunction(() => [...document.querySelectorAll('button')]
+      .some((b) => /^1st NE Coord \(step \d+\)/.test((b.textContent || '').trim()) && !b.disabled), null, { timeout: 30000 }).then(() => true).catch(() => false);
+    record('§105 fixture guard: the 1st NE Coord snapshot exists for this run', jumpReady);
+    const target = Number(/step (\d+)/.exec((await jump.textContent()) || '')?.[1] ?? -1);
+    await jump.click();
+    await pp.waitForTimeout(1500);
+    record('§105 Jump to 1st NE Coord still pauses on its snapshot', !(await running()) && (await progress()) === target,
+      `running=${await running()} progress=${await progress()} target=${target}`);
+    await pp.close();
+
+    // The tour's scripted pause (step 13 stops the run on the first find) and resume (step 15
+    // replays from that frame and runs on) go through the same loop.
+    const pt = await newTrackedPage({ viewport: { width: 1440, height: 1000 } });
+    await pt.goto(BASE, { waitUntil: 'networkidle' });
+    // Wait for the app's own decision (data-tour-auto, H6), not a fixed 20 s, which ran out at 11x.
+    const decision = await awaitTourDecision(pt);
+    const tourUp = decision === 'shown' && await pt.getByRole('dialog', { name: 'Guided tour' }).isVisible();
+    record('§105 tour fixture guard: the guided tour opened', tourUp);
+    const counter = () => pt.evaluate(() => {
+      const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+      return c?.querySelector('.text-indigo-600')?.textContent?.trim() ?? null;
+    });
+    const tProgress = () => pt.evaluate(() => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e ? Number(e.textContent.trim().split(' / ')[0]) : -1;
+    });
+    const tRunning = () => pt.evaluate(() => [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause'));
+    // Bounds for a loaded runner: at 11x CPU (about CI's load) one Next click measured 9.5-15.7 s
+    // of Playwright actionability alone (TASK-18 sweep 5), so a 10 s bound failed there.
+    // A Next that cannot be pressed, or is pressed and does not advance, stops the walk at once:
+    // "reached step N" then fails by name after one bound, not 25 (a no-op Next once ran 25 x 60 s).
+    const nextTo = async (label) => {
+      for (let i = 0; i < 25 && (await counter()) !== label; i++) {
+        const before = await counter();
+        const clicked = await pt.getByRole('button', { name: /^next/i }).first().click({ timeout: 60000 }).then(() => true).catch(() => false);
+        const moved = clicked && await pt.waitForFunction((b) => {
+          const c = document.querySelector('.fixed.inset-0.z-\\[60\\] .pointer-events-auto.absolute.rounded-2xl');
+          return (c?.querySelector('.text-indigo-600')?.textContent?.trim() ?? null) !== b;
+        }, before, { timeout: 20000 }).then(() => true).catch(() => false);
+        if (!moved) break;
+      }
+      return (await counter()) === label;
+    };
+    // A failed fixture skips the waits that depend on it; the rows below still record, as FAIL.
+    const reached13 = await nextTo('13 / 19');
+    record('§105 tour fixture guard: reached step 13 ("Watch the leans flatten")', reached13);
+    const paused = reached13 && await pt.waitForFunction(() => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) > 0
+        && ![...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === 'Pause');
+    }, null, { timeout: 120000 }).then(() => true).catch(() => false);
+    const firstFind = Number(/step (\d+)/.exec((await pt.getByRole('button', { name: /^1st NE Coord/ }).first().textContent().catch(() => '')) || '')?.[1] ?? -1);
+    const at13 = await tProgress();
+    await pt.waitForTimeout(1500);
+    record('§105 tour step 13: the scripted pause lands on the first-find step and holds (no step after it)',
+      paused && at13 === firstFind && (await tProgress()) === at13 && !(await tRunning()),
+      `paused=${paused} at=${at13} firstFind=${firstFind} after=${await tProgress()}`);
+    const reached15 = reached13 && await nextTo('15 / 19');
+    record('§105 tour fixture guard: reached step 15 ("Now watch the second coordinate")', reached15);
+    const resumed = reached15 && await pt.waitForFunction((from) => {
+      const e = [...document.querySelectorAll('span.font-mono')].find((x) => /^\d+ \/ \d+$/.test((x.textContent || '').trim()));
+      return e && Number(e.textContent.trim().split(' / ')[0]) >= from + 2;
+    }, firstFind, { timeout: 60000 }).then(() => true).catch(() => false);
+    const lines = await pt.evaluate(() => [...document.querySelectorAll('div.overflow-y-auto.font-mono p')]
+      .map((p) => (p.textContent || '').trim()).filter((t) => /^Step \d+/.test(t)).map((t) => Number(/^Step (\d+)/.exec(t)[1])));
+    const resumedLines = lines.filter((n) => n > firstFind);
+    record('§105 tour step 15: the scripted resume continues from the first-find step (next Step line is firstFind+1, no gap)',
+      resumed && resumedLines.length >= 2 && resumedLines.every((n, i) => n === firstFind + 1 + i),
+      `resumed=${resumed} firstFind=${firstFind} Step lines after it: ${resumedLines.slice(0, 5).join(',')}`);
+    await pt.close();
+  });
 
   // §97 promotes the browser-only empty-sweep angles out of _gen/ (Amendment 2):
   // blregen-s11-interleave (staleness under an abandoned in-flight answer),
@@ -11549,6 +11856,80 @@ const suggestedScenario = {
   // MUTANT (measured on the built bundle): deleting the dataParsed/success
   // clause from handleDeleteGame makes the row VANISH on a 200+HTML answer —
   // the user is told the game is gone while it is still on the server.
+  // §108 (TASK-18 H6, App.tsx + tour.mjs): a setup never proceeds while the tour can still open.
+  // The tour auto-opens 700 ms after mount; tour.mjs used to answer "absent" after a fixed 8 s,
+  // which a 32x-throttled page outlasts (51 s, then the tour opened over the section). Here the
+  // page clock is paused, so the auto-open timer cannot fire until the test says so: the old
+  // helper returns 'absent' with the timer still pending, the fixed one waits for the decision.
+  // MUTANTS (measured): tour.mjs = the fixed 8 s wait fails "the helper waits..." and "once the
+  // timer fires..."; 'shown' on any open fails the manual row; no 'skip' on sign-in fails both skip rows.
+  section('108', 'a setup never proceeds while the tour can still open; data-tour-auto reports only the auto-open', async () => {
+    const tourDialog = '[role="dialog"][aria-label="Guided tour"]';
+    // Paused before navigation: pausing after load jumps the clock and fires the due timer.
+    const CLOCK_T0 = Date.parse('2026-01-01T00:00:00Z');
+    const marker = (p) => p.evaluate(() => document.documentElement.dataset.tourAuto ?? null);
+    const hasTour = (p) => p.evaluate((sel) => !!document.querySelector(sel), tourDialog);
+    // (a) The helper waits for the decision: clock paused before the 700 ms timer can fire.
+    const pa = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await pa.clock.install({ time: CLOCK_T0 });
+    await pa.clock.pauseAt(CLOCK_T0 + 1);
+    await pa.goto(BASE, { waitUntil: 'networkidle' });
+    await pa.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0, null, { timeout: 30000 });
+    // tour-decision: exempt -- (a) reads the tour while the paused clock holds the decision back.
+    record('§108 fixture guard: with the clock paused, the tour has not opened and no decision is published',
+      !(await hasTour(pa)) && (await marker(pa)) === null, `marker=${await marker(pa)}`);
+    let settled = null;
+    const pending = dismissTourForSetup(pa, 'setup: §108 proves the helper waits for the tour decision')
+      .then((r) => { settled = r; return r; }, (e) => { settled = { error: String(e).slice(0, 120) }; return settled; });
+    await new Promise((r) => setTimeout(r, 12000));
+    record('§108 the helper waits for the app\'s decision: still pending 12 s after it started (old bound 8 s) while the auto-open timer is unfired',
+      settled === null, `settled=${JSON.stringify(settled)}`);
+    await pa.clock.runFor(1000);
+    const result = await pending;
+    record('§108 once the timer fires, the helper sees the tour open and closes it', result?.closed === true && !(await hasTour(pa)),
+      `result=${JSON.stringify(result)}`);
+    record('§108 the auto-open publishes data-tour-auto="shown"', (await marker(pa)) === 'shown', `marker=${await marker(pa)}`);
+    await pa.close();
+    // (b) A manual "Take the tour" inside the first 700 ms is not the auto-open: no 'shown'.
+    const pb = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    await pb.clock.install({ time: CLOCK_T0 });
+    await pb.clock.pauseAt(CLOCK_T0 + 1);
+    await pb.goto(BASE, { waitUntil: 'networkidle' });
+    // tour-decision: exempt -- (b) opens the tour by hand while the paused clock holds the decision back.
+    await pb.getByRole('button', { name: 'Take the tour', exact: true }).click({ timeout: 30000 });
+    await pb.locator(tourDialog).waitFor({ state: 'visible', timeout: 30000 });
+    record('§108 a manual "Take the tour" before the auto timer opens the tour without publishing a decision',
+      (await marker(pb)) === null, `marker=${await marker(pb)}`);
+    await pb.clock.runFor(1000);
+    await pb.waitForFunction(() => document.documentElement.dataset.tourAuto === 'shown', null, { timeout: 30000 }).catch(() => {});
+    record('§108 the auto timer firing over the manual tour then publishes "shown"', (await marker(pb)) === 'shown', `marker=${await marker(pb)}`);
+    await pb.close();
+    // (c) Sign-in inside the 700 ms window: the timer is cleared and the rerun publishes 'skip',
+    // never a stale 'shown', and the tour never opens.
+    const pc = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    const uniq = `e2e108${Date.now()}`;
+    const reg = await fetch(BASE + '/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: uniq, email: `${uniq}@example.com`, password: 'TestPass123' }) });
+    record('§108 precondition: an account exists', reg.ok, `status ${reg.status}`);
+    await pc.clock.install({ time: CLOCK_T0 });
+    await pc.clock.pauseAt(CLOCK_T0 + 1);
+    await pc.goto(BASE, { waitUntil: 'networkidle' });
+    await pc.getByRole('button', { name: /sign in.*sign up/i }).first().click({ timeout: 30000 });
+    const account = pc.locator('[role="dialog"][aria-label="Account"]');
+    await account.waitFor({ state: 'visible', timeout: 30000 });
+    await account.getByPlaceholder(/example\.com or username/i).fill(`${uniq}@example.com`);
+    await account.getByPlaceholder('••••••••').first().fill('TestPass123');
+    await account.getByRole('button', { name: /^login$/i }).click();
+    await pc.waitForFunction(() => document.documentElement.dataset.tourAuto === 'skip', null, { timeout: 30000 }).catch(() => {});
+    record('§108 signing in before the auto timer fires publishes "skip"', (await marker(pc)) === 'skip', `marker=${await marker(pc)}`);
+    await pc.clock.runFor(5000);
+    record('§108 after sign-in the cleared timer never opens the tour and the marker stays "skip"',
+      !(await hasTour(pc)) && (await marker(pc)) === 'skip', `tour=${await hasTour(pc)} marker=${await marker(pc)}`);
+    const absent = await dismissTourForSetup(pc, 'setup: §108 a decided "skip" page answers absent at once');
+    record('§108 on a "skip" page the helper answers absent', absent.via === 'absent', `via=${absent.via}`);
+    await pc.close();
+  });
+
   section('104', 'a captive portal answering 200+HTML never convinces the app that a write succeeded', async () => {
     const p104 = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await registerAndLogin(p104, 'e2e104portal');
@@ -11786,6 +12167,17 @@ const EXPECTED_STATUS_NOISE = {
   // panel's Refresh — the exact behavior "a visible error banner + Retry,
   // stale numbers stay on screen" verifies.
   '76': [429],
+  // TASK-18 H18: these pages were untracked, so their deliberate statuses never reached this
+  // check. Measured at 1x (h18-noise): §50 a real refused write (chmod 0500) and a mocked 500
+  // on adopt-local; §70 one mocked 500 on adopt-local; §78 four mocked 401s (Save x2, N1, Edit).
+  // Bound to the request that causes each, so an unplanned status elsewhere is never absorbed.
+  '50': [{ status: 500, url: /\/api\/games\/adopt-local$/, why: 'FIX: the refusal says the games are still on this device (chmod 0500)' },
+    { status: 500, url: /\/api\/games\/adopt-local$/, why: 'client appends the reassurance to a mocked 500' }],
+  '70': [{ status: 500, url: /\/api\/games\/adopt-local$/, why: 'held adopt-local answered with a mocked 500' }],
+  '78': [{ status: 401, url: /\/api\/games$/, why: 'RED-DESKTOP-17/002 Save gate: first mocked 401' },
+    { status: 401, url: /\/api\/games$/, why: 'RED-DESKTOP-17/002 Save gate: resumed save meets the mocked 401' },
+    { status: 401, url: /\/api\/games$/, why: 'N1: the close+reopen gate after a mocked 401' },
+    { status: 401, url: /\/api\/games\/[^/]+$/, why: 'N3: Edit PATCH meets the mocked 401' }],
 };
 const remainingStatusNoise = new Map(
   Object.entries(EXPECTED_STATUS_NOISE).map(([id, codes]) => [id, [...codes]]),
@@ -11799,7 +12191,9 @@ const relevantErrors = consoleErrors
     const m = STATUS_NOISE_RE.exec(error.text);
     if (!m) return true;
     const budget = remainingStatusNoise.get(error.sectionId);
-    const idx = budget ? budget.indexOf(Number(m[1])) : -1;
+    const path = (() => { try { return new URL(error.url).pathname; } catch { return ''; } })();
+    const idx = budget ? budget.findIndex((b) => (typeof b === 'number' ? b === Number(m[1])
+      : b.status === Number(m[1]) && b.url.test(path))) : -1;
     if (idx === -1) return true; // not a declared/budgeted diagnostic for this section — a real signal
     budget.splice(idx, 1); // consume exactly one; a surplus repeat is no longer expected
     return false;

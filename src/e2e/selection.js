@@ -11,7 +11,8 @@ import { dirname, join } from 'node:path';
  * match — e2esharding.test.ts pins both). Sections are packed into shards by
  * MEASURED duration (shard-timings.json, longest-first): a job pays ~75 s of
  * fixed overhead (checkout, dist, browsers, server boot) and must finish under
- * 300 s, so every shard holds at most 225 s of sections. 16 shards stopped
+ * 300 s, so every shard holds at most 225 s of sections (420 s / 345 s since
+ * TASK-18, below). 16 shards stopped
  * fitting on 2026-09-06 (4,040 s of sections; shards 6/7/8 at 390 s). The
  * first 20-shard run measured 4,260 s of sections on CI (CI runs ~5% slower
  * than the table it was packed from) — a 213 s mean, 288 s jobs, too close to
@@ -54,6 +55,19 @@ import { dirname, join } from 'node:path';
  * overpack again, so 32 was required. The split into 91/91b/91c (5b21f1f)
  * removed the over-budget section; 32 keeps every multi-section shard at or
  * under the line.
+ *
+ * TASK-18 (2026-09-23): the table had gone stale because the refresh refuses
+ * any over-budget section, and four were over it: §101 ran 1,086 s on CI
+ * against a 120 s entry, §102 735 s, §100 378 s, §103 326 s. Three CI runs
+ * summed 9,296 / 8,994 / 9,317 s of sections, but 35 x 225 s allows 7,875 s,
+ * so no split could make an honest table fit. The old table's ~190 s shards
+ * really ran 785-1,224 s. The ceiling is now 420 s (a 345 s budget, 310 s
+ * multi-section line) and §100-§103 are split along their viewport lists.
+ * Raising the ceiling makes the budget honest; no check was dropped to fit.
+ * 35 stays: all three runs already peaked at 40 concurrent jobs. Refreshed
+ * from runs 35952906105 + 35953748451: slowest shard 393 / 365 s (was 1,228),
+ * about 6.5 min of e2e wall clock (was 20.5). Shard 24 was the slowest in 7 of 8
+ * runs because test.yml reruns §47 there (78-96 s), so the packer now counts it.
  */
 export const SHARD_COUNT = 35;
 
@@ -93,8 +107,12 @@ export function validateTimings(sectionIds, timings = SHARD_TIMINGS) {
  * the definitions with `.shard` set plus the per-shard totals, so the runner,
  * the contract test and the timings script all see one assignment.
  */
+// test.yml's shard-24 job reruns §47 in its own step (natural simulation completion). The
+// packer counts that rerun, or shard 24 ran 60-100 s over every other shard (8 of 8 runs).
+export const EXTRA_STEP_SECTIONS = { 24: '47' };
 export function assignShards(definitions, timings = SHARD_TIMINGS, count = SHARD_COUNT) {
-  const totals = Array.from({ length: count }, () => 0);
+  const totals = Array.from({ length: count }, (_, i) => (EXTRA_STEP_SECTIONS[i + 1] && count === SHARD_COUNT
+    ? measuredMs(EXTRA_STEP_SECTIONS[i + 1], timings) : 0));
   const ordered = [...definitions].sort((a, b) => measuredMs(b.id, timings) - measuredMs(a.id, timings) || String(a.id).localeCompare(String(b.id)));
   for (const definition of ordered) {
     let lightest = 0;

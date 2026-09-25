@@ -10,8 +10,9 @@ import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
-import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
+import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './e2e/selection.js';
 import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
+import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -51,7 +52,9 @@ const expectedIds = [
   '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
   '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '50',
   '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
-  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96', '100', '102', '101', '103', '104', '97',
+  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96',
+  '100a', '100b', '100c', '100d', '102a', '102b', '102c', '102d', '102e', '102f',
+  '101a', '101b', '101c', '101d', '101e', '101f', '101g', '103a', '103b', '103c', '105', '108', '104', '97',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
@@ -74,7 +77,269 @@ assert.strictEqual(SHARD_COUNT, 35, 'the smoke suite is split into 35 CI shards 
   + 'multi-section shards back over the line, worst shard 8 = \u00a742+\u00a794 at 201s, including the '
   + 'long-standing \u00a77+\u00a742 = 200,097ms pair that sits 97ms over on its own; 33 clears every one '
   + '(simulated over the merged table before landing). Re-measuring \u00a793/\u00a794/\u00a7100/\u00a7101 on the final tree (\u00a7100 110839 -> 165141) put shard 9 = \u00a77+\u00a742 back on the line at 200,097ms; 34 clears it. '
-  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; the table carries 125,000/180,000. Adding three LANDSCAPE conditions to \u00a7101 (the orientation that hid the tour footer) took it to a MEASURED 259,112ms -- over the same per-section budget -- so the trio split out as \u00a7103 behind one shared walker; re-measured alone, \u00a7101 is 104,486ms and \u00a7103 65,779-79,621ms (tabled at 120,000/200,000). 35 is the MINIMUM that clears the 200 s multi-section line: 34 puts four multi-section shards over it (9 = \u00a770+\u00a784 at 205 s, 10 at 203 s, 33 at 205 s, 34 at 204 s). 36 also clears it and leaves no shard empty -- it is simply not needed, and test.yml pins the matrix to whatever this constant says.');
+  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; the table carries 125,000/180,000. Adding three LANDSCAPE conditions to \u00a7101 (the orientation that hid the tour footer) took it to a MEASURED 259,112ms -- over the same per-section budget -- so the trio split out as \u00a7103 behind one shared walker; re-measured alone, \u00a7101 is 104,486ms and \u00a7103 65,779-79,621ms (tabled at 120,000/200,000). 35 is the MINIMUM that clears the 200 s multi-section line: 34 puts four multi-section shards over it (9 = \u00a770+\u00a784 at 205 s, 10 at 203 s, 33 at 205 s, 34 at 204 s). 36 also clears it and leaves no shard empty -- it is simply not needed, and test.yml pins the matrix to whatever this constant says. '
+  + 'TASK-18 2026-09-23: three CI runs summed 9,296/8,994/9,317 s of sections against the 7,875 s that '
+  + '35 x 225 s allows, so the table could not be honest at 35; the per-job ceiling rose to 420 s and '
+  + '\u00a7100-\u00a7103 split along their viewport lists. 35 stays: every run already peaked at 40 concurrent jobs.');
+
+// ── §100-§103 split (TASK-18): the parts cover the pre-split loops exactly ──
+// The lists below are the pre-split sections' own literals, verbatim. Each family's parts must
+// PARTITION its list: every entry in exactly one part, none added. A part must also be registered
+// and run its OWN slice (section('101a', …) calling walkTourAt('101b') would drop 101a silently).
+type Row = readonly number[];
+const PRE_SPLIT: Record<string, Record<string, Row[]>> = {
+  '100': {
+    combos: [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5], [390, 1.45], [390, 1.63]],
+    drawerHeights: [[281], [400], [700]],
+  },
+  '101': { sizes: [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]] },
+  '102': { viewports: [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1], [280, 3], [320, 2], [390, 3]] },
+  '103': { sizes: [[844, 390, 1], [667, 375, 1], [740, 360, 1]] },
+};
+const RUNNERS: Record<string, string> = { '100': 'reflowAt', '101': 'walkTourAt', '102': 'payoffLegibilityAt', '103': 'walkTourAt' };
+function splitProblems(parts: Record<string, Record<string, (number | Row)[]>>, registered: Map<string, string>): string[] {
+  const problems: string[] = [];
+  for (const [family, lists] of Object.entries(PRE_SPLIT)) {
+    const ids = Object.keys(parts).filter((id) => id.startsWith(family) && /^[a-z]$/.test(id.slice(family.length)));
+    if (!ids.length) problems.push(`§${family} has no split parts`);
+    for (const [key, original] of Object.entries(lists)) {
+      const owner = new Map<string, string[]>();
+      for (const id of ids) {
+        for (const e of parts[id][key] ?? []) {
+          const k = JSON.stringify(Array.isArray(e) ? e : [e]);
+          owner.set(k, [...(owner.get(k) ?? []), id]);
+        }
+      }
+      for (const e of original) {
+        const k = JSON.stringify(e); const who = owner.get(k) ?? [];
+        if (!who.length) problems.push(`§${family} ${key} entry ${k} is in no part`);
+        else if (who.length > 1) problems.push(`§${family} ${key} entry ${k} is in ${who.length} parts (${who.join(', ')})`);
+      }
+      for (const [k, who] of owner) {
+        if (!original.some((e) => JSON.stringify(e) === k)) problems.push(`§${family} ${key} entry ${k} (${who.join(', ')}) was not in the pre-split list`);
+      }
+    }
+    for (const id of ids) {
+      const body = registered.get(id);
+      if (body === undefined) problems.push(`split part ${id} is not registered as a section`);
+      else if (!body.includes(`${RUNNERS[family]}('${id}')`)) problems.push(`section ${id} does not run its own slice (${RUNNERS[family]}('${id}'))`);
+    }
+  }
+  return problems;
+}
+// Section id -> the text up to the next section() call: enough to see which slice it runs.
+// The last section ends where the runner starts (`await executeSections();`), not at end of file.
+const sectionBodies = new Map([...smoke.slice(0, smoke.indexOf('\nawait executeSections();')).matchAll(/section\('([^']+)',[\s\S]*?(?=\n\s*section\('|$)/g)].map((m) => [m[1], m[0]]));
+const realSplit = splitProblems(SPLIT_PARTS, sectionBodies);
+assert.deepStrictEqual(realSplit, [], 'the §100-§103 split parts must partition the pre-split loop lists exactly');
+assert.deepStrictEqual(WIDEST_PAYOFFS, ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345', '-99.9999', '-100.0000'],
+  'every §102 legibility part writes the pre-split value list, unchanged');
+// Each runner must iterate the slice it was handed, not a list of its own.
+for (const [pattern, why] of [
+  [/const \{ combos: COMBOS, drawerHeights = \[\] \} = SPLIT_PARTS\[sid\];/, 'reflowAt reads its part'],
+  [/for \(const \[w, z\] of COMBOS\)/, 'reflowAt sweeps its combos'],
+  [/for \(const dh of drawerHeights\)/, 'reflowAt walks its drawer heights'],
+  [/const LEGIBILITY_VIEWPORTS = SPLIT_PARTS\[sid\]\.viewports;/, 'payoffLegibilityAt reads its part'],
+  [/for \(const \[vw, zoom\] of LEGIBILITY_VIEWPORTS\)/, 'payoffLegibilityAt sweeps its viewports'],
+  [/for \(const val of WIDEST_PAYOFFS\)/, 'payoffLegibilityAt writes every value'],
+  [/const walkTourAt = \(sid, SIZES = SPLIT_PARTS\[sid\]\.sizes\) =>/, 'walkTourAt reads its part'],
+  [/for \(const \[w, h, z\] of SIZES\)/, 'walkTourAt walks its sizes'],
+] as const) assert.match(smoke, pattern, `smoke.mjs: ${why}`);
+// Known positives, one per way the partition can break. Each must fail BY NAME.
+{
+  const clone = () => JSON.parse(JSON.stringify(SPLIT_PARTS));
+  const dropped = clone(); dropped['102b'].viewports = dropped['102b'].viewports.filter(([w, z]: number[]) => !(w === 768 && z === 1.5));
+  assert.deepStrictEqual(splitProblems(dropped, sectionBodies), ['§102 viewports entry [768,1.5] is in no part'], 'a viewport dropped from one part');
+  const dup = clone(); dup['102b'].viewports.push([280, 1]);
+  assert.deepStrictEqual(splitProblems(dup, sectionBodies), ['§102 viewports entry [280,1] is in 2 parts (102a, 102b)'], 'a viewport in two parts');
+  const extra = clone(); extra['101g'].sizes.push([400, 800, 1]);
+  assert.deepStrictEqual(splitProblems(extra, sectionBodies), ['§101 sizes entry [400,800,1] (101g) was not in the pre-split list'], 'a size that replaces nothing');
+  const noDrawer = clone(); delete noDrawer['100c'].drawerHeights;
+  assert.deepStrictEqual(splitProblems(noDrawer, sectionBodies), ['§100 drawerHeights entry [281] is in no part', '§100 drawerHeights entry [400] is in no part', '§100 drawerHeights entry [700] is in no part'], 'the drawer phase dropped');
+  const unregistered = new Map(sectionBodies); unregistered.delete('101e');
+  assert.deepStrictEqual(splitProblems(SPLIT_PARTS, unregistered), ['split part 101e is not registered as a section'], 'a part dropped from the registry');
+  const wrongSlice = new Map(sectionBodies); wrongSlice.set('103b', (wrongSlice.get('103b') ?? '').replace("walkTourAt('103b')", "walkTourAt('103a')"));
+  assert.deepStrictEqual(splitProblems(SPLIT_PARTS, wrongSlice), ["section 103b does not run its own slice (walkTourAt('103b'))"], 'a part running a sibling\'s slice');
+}
+// TASK-18 H1: the shared primary page is parked once no §1-§16 section is left. Left open, its
+// idle 3D spin cost later sections 4-5x on CI (101a 129 s after §6 vs 101b 35 s alone), and both
+// section loops (first pass and retry) must park before each run.
+const executeBody = smoke.slice(smoke.indexOf('async function executeSections()'), smoke.indexOf('\nconst $ = {'));
+assert.match(smoke, /async function parkSharedPageWhenDone\(remaining\) \{\n  if \(remaining\.some\(\(definition\) => primaryPageSection\(definition\.id\)\)\) return;\n  if \(page\.url\(\) !== 'about:blank'\) await page\.goto\('about:blank'\)/,
+  'parkSharedPageWhenDone parks the shared page exactly when no primary section remains');
+assert.strictEqual((executeBody.match(/await parkSharedPageWhenDone\((selected|failed)\.slice\(index\)\);\n\s+(?:if \(primaryPageSection\(definition\.id\)\) await gotoHome\(\)\.catch\(\(\) => \{\}\);\n\s+)?const passed = await runSection\(definition, [12]\);/g) || []).length, 2,
+  'both section loops park the shared page (from the current index on) right before runSection');
+// What H1 could regress: a section after §16 that silently relied on the shared page being
+// loaded would now find about:blank. None may touch it (comments and string literals stripped;
+// a local `page`/helper of the same name is its own page).
+function sharedPageUsers(bodies: Map<string, string>): string[] {
+  const out: string[] = [];
+  for (const [id, body] of bodies) {
+    if (Number.parseInt(id, 10) <= 16) continue;
+    const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+      .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, "''");
+    const local = new Set([...code.matchAll(/\b(?:const|let|function)\s+(page|startLine|dismissTour|setSpeed|gotoHome)\b/g)].map((m) => m[1]));
+    for (const m of code.matchAll(/(?<![\w.$])(page(?=\s*[.,)])|\$(?=\.[a-z])|startLine(?=\()|dismissTour(?=\()|setSpeed(?=\()|gotoHome(?=\())/g)) {
+      if (!local.has(m[1])) { out.push(`section ${id} uses the shared primary page (${m[1]})`); break; }
+    }
+  }
+  return out;
+}
+assert.deepStrictEqual(sharedPageUsers(sectionBodies), [], 'no section after §16 may use the shared page that the runner parks');
+{
+  const planted = new Map(sectionBodies).set('104', (sectionBodies.get('104') ?? '') + "\n    await page.goto(BASE);");
+  assert.deepStrictEqual(sharedPageUsers(planted), ['section 104 uses the shared primary page (page)'], 'a later section using the shared page is caught by name');
+}
+// TASK-18 H2: §103c's resting-footer check reads the card only after it settled; a fixed 1.2 s
+// sleep read "no Next/Explore control at all" on two CI runs (35671699905, 35689614157).
+const footer103 = sectionBodies.get('103c') ?? '';
+assert(!/waitForTimeout\(/.test(footer103), '§103c waits on a condition, never a fixed sleep, before reading the card');
+assert.match(footer103, /\(body\.scrollHeight > body\.clientHeight \+ 1\) === \(body\.getAttribute\('role'\) === 'region'\)/,
+  '§103c waits until the tour body\'s region role agrees with its measured overflow');
+assert.match(footer103, /if \(stable >= 10\) resolve\(true\)/, '§103c waits for the card rect to hold 10 frames');
+// TASK-18 H3: §39's post-reload row wait is bounded for a loaded runner (a healthy CI run listed
+// the row at 10.8 s against the old 8 s bound; 11x CPU throttle measures 12.6 s).
+assert.match(sectionBodies.get('39') ?? '', /await flapPage\.reload\(\{ waitUntil: 'networkidle' \}\);[\s\S]{0,420}?getByRole\('button', \{ name: editedName, exact: true \}\)\.first\(\)\n\s+\.waitFor\(\{ state: 'visible', timeout: 30000 \}\)/,
+  '§39 waits up to 30 s for the reloaded row before counting it');
+// TASK-18 H4 (App.tsx): the play loop's timer may not commit a step over a queued pause, and a
+// dropped step advances nothing. §105 is the browser proof; this pins the mechanism.
+{
+  const runner = app.slice(app.indexOf('// Recursive play runner trigger'), app.indexOf('}, [simState.running, simState.stepCount, speed]);'));
+  assert(runner.length > 0, 'the play runner effect is found');
+  assert.match(runner, /setSimState\(\(cur\) => \(cur\.running && cur\.stepCount === prev\.stepCount \? next : cur\)\);/,
+    'the timer commits its step only if the run is still running on the step it was built from');
+  assert(!/setSimState\(next\)|simStateRef\.current = next|scrubPosRef\.current = |setLogEntries\(/.test(runner),
+    'the timer advances no ref, position or log line before a commit carries its step');
+  assert.match(app, /if \(!step \|\| simState\.pathSegmentsA !== step\.next\.pathSegmentsA\) return;\n\s+pendingStepRef\.current = null;\n\s+simStateRef\.current = simState;\n\s+scrubPosRef\.current = step\.pos;\n\s+if \(step\.logs\.length > 0\) setLogEntries/,
+    'a timer step\'s ref, position and log advance only in the layout effect, once its step is committed');
+}
+// TASK-18 H5: §42/§44 read their hint after the render settles, not within a fixed 3 s (32x
+// CPU throttle missed it every time; §93 had the same class, 70f5cec).
+for (const id of ['42', '44']) {
+  const body = sectionBodies.get(id) ?? '';
+  assert(!/timeout: 3000 \}\)\.then\(\(\) => true\)/.test(body), `§${id} does not bound its hint on a fixed 3 s wait`);
+  assert.match(body, /requestAnimationFrame\(\(\) => requestAnimationFrame\(r\)\)/, `§${id} reads its hint two frames after the last keystroke`);
+}
+// TASK-18 sweep 3 (§76 retry, CI 35979484351): a coordinate read after a surface opens waits for
+// its entrance animation, or the point lands on the backdrop of a drawer still sliding in.
+assert.match(smoke, /async function surfacesSettled\(p\) \{\n  await p\.waitForFunction\(\(\) => document\.getAnimations\(\)\.every/, 'surfacesSettled waits on the page\'s own animations');
+for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74', 'const fb = await field.boundingBox();']]) {
+  const body = sectionBodies.get(id) ?? '';
+  const at = body.indexOf(read);
+  assert(at > 0 && body.lastIndexOf('await surfacesSettled(p);', at) > body.lastIndexOf('.click();', at),
+    `§${id} waits for the opened surface to settle before reading coordinates in it`);
+}
+// TASK-18 H8: failure evidence shows the failing section's own page (the shared one is parked at
+// about:blank after §16, so every later section's evidence was blank), taken at the first failure.
+{
+  const cap = smoke.slice(smoke.indexOf('async function captureFailureEvidence()'), smoke.indexOf('function primaryPageSection('));
+  assert.match(cap, /const live = \[\.\.\.sectionPages\]\.reverse\(\)\.find\(\(pg\) => !pg\.isClosed\(\)\)\n\s+\?\? \(!activeSection \|\| primaryPageSection\(activeSection\.id\) \? page : null\);/,
+    'failure evidence shoots the failing section\'s own live page, the shared page only for §1-§16 or the suite');
+  assert(!/await page\.(screenshot|content)\(/.test(cap), 'failure evidence never shoots the parked shared page unconditionally');
+  assert.match(smoke, /function record\(name, pass, detail\) \{\n.*\n\s+if \(!pass && activeSection && !failureEvidence\) failureEvidence = captureFailureEvidence\(\);/,
+    'evidence is taken at the first failing record, before the section closes its pages');
+  assert.match(smoke, /function trackPage\(p\) \{\n\s+if \(activeSection\) sectionPages\.push\(p\);/, 'every page a section opens is a candidate for its evidence');
+}
+// TASK-18 sweep 5: a tour Next click is "can it be pressed", bounded for a loaded runner. At
+// 11x CPU (about CI) one click measured 9.5-15.7 s, and 10 s bounds failed §101a and §105.
+{
+  const walker = smoke.slice(smoke.indexOf('const walkTourAt = '), smoke.indexOf("section('101a',"));
+  assert.match(walker, /const advanced = await next\.click\(\{ timeout: 60000 \}\)/, 'the §101/§103 walker gives a Next click 60 s');
+  const s105 = sectionBodies.get('105') ?? '';
+  assert.match(s105, /getByRole\('button', \{ name: \/\^next\/i \}\)\.first\(\)\.click\(\{ timeout: 60000 \}\)/, '§105 gives a tour Next click 60 s');
+  assert.match(s105, /\}, before, \{ timeout: 20000 \}\)\.then\(\(\) => true\)\.catch\(\(\) => false\);\n\s+if \(!moved\) break;/,
+    '§105 stops walking at the first Next that does not advance (one bound, not 25)');
+  assert.match(s105, /const paused = reached13 && await pt\.waitForFunction/, '§105 skips the step-13 wait when step 13 was never reached');
+  assert.match(s105, /const resumed = reached15 && await pt\.waitForFunction/, '§105 skips the step-15 wait when step 15 was never reached');
+  assert.match(walker, /if \(!advanced\) \{ unreachable\.push\(`step \$\{steps\}: Next could not be clicked`\); break; \}/, 'the walker stops at a Next that cannot be pressed');
+  assert.match(walker, /if \(!moved\) \{ unreachable\.push\(`step \$\{steps\}: Next was pressed but the tour did not advance from \$\{before\}`\); break; \}/,
+    'the walker names a Next that is pressed but does not advance');
+  assert.match(sectionBodies.get('100d') ?? '', /await l\.click\(\{ timeout: 60000 \}\)\.then\(\(\) => true\)/, '§100d gives each "can it be pressed" click 60 s');
+  assert.match(s105, /const decision = await awaitTourDecision\(pt\);/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
+}
+// TASK-18 sweep 6: §100's width settle is bounded in frames (a 20 s bound failed at 11x, where
+// 30 frames took 12.7-22.4 s; the next combo's viewport row then read 390 as a knock-on).
+{
+  const m100 = smoke.slice(smoke.indexOf('const measure = async (p, cdp, w, z) => {'), smoke.indexOf('const p97 = await newTrackedPage('));
+  assert(m100.length > 0 && !/timeout: 20000 \}\)\.then\(\(\) => true\)/.test(m100), '§100 measure has no 20 s bound on its settle');
+  assert.match(m100, /if \(stable >= 30\) resolve\(true\); else if \(frames >= 600\) resolve\(false\);/, '§100 settle: 30 stable frames, unsettled only after 600 frames');
+}
+// TASK-18 sweep 8 (H14/H15): the tour opens 700 ms after mount, so no load may reach the tour
+// before the app's decision (data-tour-auto). Fixed waits lost at CI load: §22 2/2 on CI, and §69,
+// §83, §85, §85b, §87, §88, §90, §38, §46 at 11x. Every goto/reload's first tour token must be a
+// decision-aware call; a deliberate exception names itself with `tour-decision: exempt`.
+{
+  assert.match(smoke, /const awaitTourDecision = \(p\) => p\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto \|\| false, null,\n\s+\{ timeout: 180000 \}\)/,
+    'awaitTourDecision waits on the app\'s own decision, bounded at 180 s');
+  const lines = smoke.slice(0, smoke.indexOf('\nawait executeSections();')).split('\n');
+  const baseToken = /Guided tour|guided tour|TOUR_SEL|tourSel|[Cc]lose tour|Take the tour|tourAuto|z-\\\\\[60\\\\\]|dismissTour|closeTour|gotoHome\(|awaitTourDecision|registerAndLogin\(/;
+  // A helper whose own body reads the tour is a tour read at its call site (§83's first call after
+  // its load is runScenario). Body = its definition line through the first line back at its indent.
+  const helpers = lines.flatMap((l, i) => {
+    const m = /^(\s*)(?:async function (\w+)\(|const (\w+) = (?:async )?\([^)]*\) =>)/.exec(l);
+    if (!m) return [];
+    let end = i;
+    if (!/;\s*$/.test(l)) while (end + 1 < lines.length && !(lines[end + 1].startsWith(m[1] + '}') || lines[end + 1].startsWith(m[1] + ')'))) end++;
+    return [{ name: m[2] ?? m[3], body: lines.slice(i, end + 2).join('\n') }];
+  });
+  let readers = new Set<string>();
+  for (let grew = true; grew;) {
+    const known = [...readers];
+    const next = new Set(helpers.filter(({ body }) => baseToken.test(body) || known.some((n) => body.includes(`${n}(`))).map(({ name }) => name));
+    grew = next.size > readers.size; readers = next;
+  }
+  assert.ok(['runScenario', 'walkTourAt', 'tourStepOf', 'readTour'].every((n) => readers.has(n)), `tour-reading helpers are derived (${[...readers].join(', ')})`);
+  const tourToken = new RegExp(`${baseToken.source}|\\b(?:${[...readers].join('|')})\\(`);
+  const decisionAware = /awaitTourDecision\(|dismissTourForSetup\(|closeTour\(|dismissTour\(|gotoHome\(\)|registerAndLogin\(|tourAuto|tour-decision: exempt/;
+  // Loads of the app only: about:blank carries no tour.
+  const loads = lines.flatMap((l, i) => (/\.(goto|reload)\(/.test(l) && !/about:blank|^\s*(\/\/|\*)/.test(l) ? [i] : []));
+  const racing = loads.flatMap((li, j) => {
+    for (let i = li + 1; i < (loads[j + 1] ?? lines.length); i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i]) && !/tour-decision: exempt/.test(lines[i])) continue;
+      if (tourToken.test(lines[i]) || /tour-decision: exempt/.test(lines[i])) return decisionAware.test(lines[i]) ? [] : [`line ${i + 1}: ${lines[i].trim().slice(0, 90)}`];
+    }
+    return [];
+  });
+  assert.ok(loads.length > 60, `the load census found the suite's page loads (${loads.length})`);
+  assert.deepEqual(racing, [], 'every load reaches the app\'s tour decision before it reads the tour');
+  assert.equal((smoke.match(/tour-decision: exempt/g) ?? []).length, 2, 'two exemptions, both §108 reading before the decision under a paused clock');
+}
+// TASK-18 H18: 14 ctx.newPage() pages skipped trackPage, so their page errors never reached the
+// suite's console check and failure evidence came back empty (§78: "<unavailable>", no png).
+{
+  const untracked = smoke.split('\n').map((l, i) => [l, i + 1]).filter(([l]) => /\.newPage\(/.test(l as string)
+    && !/^\s*(\/\/|\*)/.test(l as string) && !/trackPage\(await \w+\.newPage\(|browser\.newPage\(opts\)/.test(l as string));
+  assert.deepEqual(untracked.map(([l, n]) => `${n}: ${(l as string).trim()}`), [], 'every page smoke.mjs creates goes through trackPage');
+}
+// TASK-18 H18 (director condition 5): a status budget names the request that causes it. The
+// legacy bare-number entries are frozen; any new entry must carry a url pattern and a reason.
+{
+  const table = smoke.slice(smoke.indexOf('const EXPECTED_STATUS_NOISE = {'), smoke.indexOf('const remainingStatusNoise'));
+  // An entry is `'id': [` up to the `],` that closes it; a trailing // comment may follow on one line.
+  const entries = [...table.matchAll(/^  '([0-9a-z]+)': \[([\s\S]*?)\],?(?:\s*\/\/[^\n]*)?$/gm)].map((m) => ({ id: m[1], body: m[2] }));
+  const bare = entries.filter(({ body }) => /^\s*\d/.test(body)).map(({ id }) => id).sort();
+  assert.deepEqual(bare, ['31', '33', '38', '60', '66b', '76', '91c', '95', '96', '97'], 'no new bare-number status budget');
+  for (const id of ['50', '70', '78']) {
+    const body = entries.find((e) => e.id === id)?.body ?? '';
+    const n = (body.match(/\{ status: \d+, url: \/.+?\/, why: '[^']+' \}/g) ?? []).length;
+    assert.ok(n > 0 && n === (body.match(/status:/g) ?? []).length, `§${id}'s budget names the request behind every status`);
+  }
+  assert.match(smoke, /url: m\.location\(\)\?\.url \?\? '',/, 'console errors keep the failing request URL');
+}
+assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
+  'CI runs the CPU-throttle reach guard in a job that has chromium');
+// TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the
+// step on a non-zero exit (pipefail through tee), and proves all 28 engine x case runs happened (H20 portrait + sheets, H21 sub-pixel .5/up/down).
+{
+  const job = workflowJob('e2e_ai_surface');
+  const install = job.indexOf('npx playwright install --with-deps chromium webkit');
+  const step = job.indexOf('node src/e2e/tour-scroll.test.mjs');
+  assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour-scroll check');
+  const body = job.slice(step - 200, step + 400);
+  assert.match(body, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
+  assert.match(body, /-eq 28\n/, 'CI requires all 28 tour-scroll cases to have run');
+}
+console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
@@ -87,16 +352,17 @@ for (const { id } of definitions) {
 for (const id of Object.keys(SHARD_TIMINGS).filter((k) => !k.startsWith('_'))) {
   assert(definitions.some((d) => d.id === id), `shard-timings.json names section ${id}, which no longer exists — remove it`);
 }
+assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'the checked-in timings table must be complete and in budget');
 const { totals } = assignShards(definitions);
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   assert(definitions.some((definition) => definition.shard === shard), `shard ${shard} must own at least one section`);
   assert(totals[shard - 1] <= SECTION_BUDGET_MS,
     `shard ${shard} packs ${Math.round(totals[shard - 1] / 1000)} s of measured sections, over the ${SECTION_BUDGET_MS / 1000} s budget `
-    + `(300 s job ceiling minus ~75 s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
+    + `(${SHARD_TIMINGS._ceiling_ms / 1000} s job ceiling minus ~${SHARD_TIMINGS._overhead_ms / 1000} s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
 }
 // Headroom: CI ran ~5% slower than the table the first 20-shard matrix was packed from (285 s on a
-// 207 s-packed shard). Keep every MULTI-section packed shard ≤ 200 s so that slack cannot reach the
-// 225 s budget. A shard holding exactly ONE section is exempted from the 200 s line (bounded instead
+// 207 s-packed shard). Keep every MULTI-section packed shard ≤ 310 s (0.9 x the 345 s budget since
+// TASK-18; it was 200 s of 225 s) so that slack cannot reach the budget. A shard holding exactly ONE section is exempted from the 200 s line (bounded instead
 // by the per-section SECTION_BUDGET_MS assert above): the 200 s line exists to catch a PILEUP —
 // several sections landing on one shard close enough to the ceiling that CI's ~5% slop could tip it
 // over — and no amount of splitting into more shards makes one already-isolated section smaller
@@ -104,6 +370,16 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
 // there). Silently raising the 200 s line instead would have hidden the other 7 shards this same
 // repack pushed over it for ordinary multi-section reasons — those are exactly what this must still
 // catch.
+// TASK-18 sweep 4: the extra §47 step test.yml runs on shard 24 is packed, not ignored.
+assert.deepStrictEqual(EXTRA_STEP_SECTIONS, { 24: '47' }, 'the packer knows test.yml\'s one extra-step section');
+assert.match(workflow, /- name: Exercise section 47 after natural simulation completion\n\s+if: matrix\.shard == 24\n[\s\S]{0,160}?run: node src\/e2e\/smoke\.mjs\n\s+env:\n\s+E2E_SECTION: '47'/,
+  'test.yml\'s extra step is still §47 on shard 24, as EXTRA_STEP_SECTIONS says');
+{
+  const on24 = definitions.filter((d) => d.shard === 24).reduce((sum, d) => sum + measuredMs(d.id), 0);
+  assert.strictEqual(totals[23], on24 + measuredMs('47'), 'shard 24 packs its sections plus the extra §47 step it runs');
+}
+const HEADROOM_MS = 310000;
+assert.strictEqual(SECTION_BUDGET_MS, 345000, 'the per-job section budget is 345 s (420 s ceiling - 75 s overhead, TASK-18)');
 const shardMembers = new Map<number, string[]>();
 for (const { id, shard } of definitions) {
   if (shard === undefined) continue;
@@ -115,9 +391,9 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   const members = shardMembers.get(shard) ?? [];
   const total = totals[shard - 1];
   if (members.length <= 1) continue; // a single section is bounded by SECTION_BUDGET_MS above, not this line
-  assert(total <= 200000,
+  assert(total <= HEADROOM_MS,
     `shard ${shard} packs ${members.length} sections (${members.join(', ')}) totalling ${Math.round(total / 1000)} s `
-    + `— over the 200 s headroom line for a MULTI-section shard; raise SHARD_COUNT`);
+    + `— over the ${HEADROOM_MS / 1000} s headroom line for a MULTI-section shard; raise SHARD_COUNT`);
 }
 // A single-section shard is still bounded — just by SECTION_BUDGET_MS (the per-section assert
 // above), not the tighter 200 s multi-section line. Restated here as an explicit, separately-named
@@ -138,12 +414,12 @@ const again = assignShards(definitions.map(({ id, name }) => ({ id, name })));
 assert.deepStrictEqual(again.definitions.map((d) => d.shard), definitions.map((d) => d.shard), 'shard assignment must be deterministic');
 // Known positives: the budget guard fires on an over-long section and on an over-packed table.
 {
-  const fake = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 300000, a: 260000, b: 1000 };
+  const fake = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 420000, a: 360000, b: 1000 };
   const packed = assignShards([{ id: 'a' }, { id: 'b' }], fake, 2);
-  assert(Math.max(...packed.totals) > SECTION_BUDGET_MS, 'a 260 s section must exceed the 225 s budget (known positive)');
-  const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`s${i}`, 120000]));
+  assert(Math.max(...packed.totals) > SECTION_BUDGET_MS, 'a 360 s section must exceed the 345 s budget (known positive)');
+  const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`s${i}`, 180000]));
   const over = assignShards(Object.keys(many).map((id) => ({ id })), { ...fake, ...many }, 20);
-  assert(Math.max(...over.totals) > SECTION_BUDGET_MS, 'forty 120 s sections cannot fit 20 shards under budget (known positive)');
+  assert(Math.max(...over.totals) > SECTION_BUDGET_MS, 'forty 180 s sections cannot fit 20 shards under budget (known positive)');
   assert(assignShards([{ id: 'zz' }], fake, 1).totals[0] === 90000, 'an unmeasured section packs at _default');
   // validateTimings (shared with scripts/shard-timings-from-run.mjs) rejects the two bad-table shapes
   // CodeRabbit named on #157: a pre-split run's table (66 at 275 s, no 66b) and an incomplete one.
@@ -154,7 +430,12 @@ assert.deepStrictEqual(again.definitions.map((d) => d.shard), definitions.map((d
   assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000, '2': 1000 }), ['timings name section 2, which is not registered']);
   assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000 }), [], 'a complete, in-budget table is accepted');
 }
-assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'the checked-in timings table must be complete and in budget');
+// A refresh can never again write a section the budget cannot hold (TASK-18: §101 ran 1086 s on CI
+// against a 120 s entry because the refresh refused and nobody re-measured). Known positive on the
+// REAL budget: one fake 350 s entry for a registered section is refused by name.
+assert.deepStrictEqual(validateTimings(['101a'], { ...SHARD_TIMINGS, '101a': 350000 }).filter((p) => /101a/.test(p)),
+  ['section 101a measures 350 s, over the 345 s per-job section budget — split it'],
+  'a refreshed table carrying a 350 s section must be refused, naming the section');
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
@@ -172,7 +453,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2
   'a whitespace-only section list must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: `1/${SHARD_COUNT}`, E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
-assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
+assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const \[index, definition\] of failed\.entries\(\)\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
 assert.match(smoke, /pass-after-section-retry:/,
   'a recovered section retry must be visible in CI output');
