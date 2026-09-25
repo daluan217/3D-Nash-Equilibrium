@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 97;
+const EXPECTED_CHECKS = 98;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1355,6 +1355,16 @@ try {
       const r = await fetch(`http://127.0.0.1:${vApp}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${tok}` } : {}) }, body: JSON.stringify(body) });
       got.push([route, r.status]);
     }
+    // Account responses are never stored by a browser (sweep 11: live had no
+    // Cache-Control, so /api/auth/me and /api/games could sit in a shared
+    // machine's disk cache after sign-out). CONTROL: /api/health may cache.
+    const hdr = async (route, init = {}) => (await fetch(`http://127.0.0.1:${vApp}${route}`, init)).headers.get('cache-control');
+    const auth = { authorization: `Bearer ${tok}` };
+    const noStore = { me: await hdr('/api/auth/me', { headers: auth }), games: await hdr('/api/games', { headers: auth }),
+      login: await hdr('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'v@example.test', password: 'nope' }) }),
+      admin: await hdr('/api/admin/stats'), health: await hdr('/api/health') };
+    record('THE DEFECT: account responses (me, games, login, admin) are Cache-Control: no-store; the health probe is not forced',
+      ['me', 'games', 'login', 'admin'].every((k) => /\bno-store\b/.test(noStore[k] ?? '')) && !/no-store/.test(noStore.health ?? ''), JSON.stringify(noStore));
     const control = await fetch(`http://127.0.0.1:${vApp}/api/auth/delete-confirm`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` }, body: JSON.stringify({ code: '000000' }) });
     record('CONTROL: a string field on the same route gets its ordinary 4xx (wrong code -> 400)', control.status === 400, `status ${control.status}`);
     record('THE DEFECT: every non-string auth field is a 400, never a 500', got.every(([, st]) => st === 400), JSON.stringify(got));

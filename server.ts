@@ -3665,6 +3665,9 @@ async function startServer() {
     res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
     next();
   });
+  // Account data (sessions, games, admin PII) is never kept in a browser's or
+  // proxy's cache: on a shared machine it outlived sign-out (sweep 11).
+  app.use(["/api/auth", "/api/games", "/api/admin"], (req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 
   // CORS for cross-origin API access (e.g. from the local Electron client to the
   // website backend). Set CORS_ALLOWED_ORIGINS (comma-separated) to restrict to
