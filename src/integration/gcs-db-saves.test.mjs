@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 98;
+const EXPECTED_CHECKS = 99;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1294,6 +1294,13 @@ try {
         && mails.every((m) => m.rcpts.length === 1 && !/evil/.test(m.rcpts.join()) && !/^(?:bcc|cc):/im.test(headerOf(m)))
         && /&lt;script&gt;/.test(htmlOf(mails[1])) && !/<script>/i.test(htmlOf(mails[1])),
       `statuses ${JSON.stringify(hostileStatus)} mails ${mails.length} rcpts ${JSON.stringify(mails.map((m) => m.rcpts))}`);
+    // Size bounds (sweep 12 probe, held on main): blank is refused, the cap is
+    // on the TRIMMED text, so 5000 chars padded with spaces still sends. 9 of the 10/min.
+    const fb = async (message) => { const r = await fetch(`http://127.0.0.1:${qApp}/api/feedback`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) });
+      return [r.status, (await r.json().catch(() => ({}))).error ?? ''].join(' '); };
+    const bounds = [await fb('  \n '), await fb('y'.repeat(5001)), await fb(`  ${'z'.repeat(5000)} `)];
+    record('feedback: blank and 5001 chars are 400 with their reason; exactly 5000 after trim is 200',
+      /^400 .*cannot be empty/.test(bounds[0]) && /^400 .*too long/.test(bounds[1]) && bounds[2] === '200 ', JSON.stringify(bounds));
     silent = true;
     const hung = [];
     // A second account: q@ was just mailed, and a recovery mail per address per
