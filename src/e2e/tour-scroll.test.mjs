@@ -14,7 +14,7 @@ const base = `http://localhost:${PORT}`;
 const server = spawn('node', ['dist/server.cjs'], { env: { ...process.env, NODE_ENV: 'production', PORT: String(PORT) }, stdio: 'ignore' });
 
 // The shipping condition's slow device: every frame costs `ms` of main-thread time.
-const hog = (ms) => { (function f() { const t = performance.now(); while (performance.now() - t < ms) {} requestAnimationFrame(f); })(); };
+const hog = (ms) => { window.__hogMs = ms; (function f() { const t = performance.now(); while (performance.now() - t < ms) {} requestAnimationFrame(f); })(); };
 // Counts the tour's programmatic scrolls; optionally moves the target down 51px (the measured onEnter
 // shift) 100 ms after the first one, so the effect must re-target while that scroll is still moving.
 const instrument = (shift) => {
@@ -45,7 +45,7 @@ const settled = (page) => page.evaluate(() => new Promise((resolve) => {
   const tick = () => {
     const now = performance.now(); const cur = read(); const key = JSON.stringify(cur);
     if (prev === key) { frames++; } else { frames = 0; since = now; prev = key; }
-    if (frames >= 10 && now - since >= 500) { clearTimeout(done); resolve({ ...cur, calls: window.__tourScrolls }); } else requestAnimationFrame(tick);
+    if (frames >= 10 && now - since >= 500) { clearTimeout(done); resolve({ ...cur, calls: window.__tourScrolls, hogMs: window.__hogMs ?? 0 }); } else requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 }));
@@ -70,6 +70,8 @@ try {
         const tag = `[${engineName} ${label}]`;
         check(s && s.c, `${tag} the tour settles with its card on screen (${JSON.stringify(s)})`);
         if (!s || !s.c) continue;
+        // A throwing init script silently skips every later one in WebKit, which would turn this case into normal frames.
+        check(s.hogMs === hogMs, `${tag} the slow-frame hog really ran (${s.hogMs} ms, want ${hogMs})`);
         const [tTop, tBottom, , tRight] = s.t; const [cTop, cBottom, cLeft] = s.c;
         check(tTop >= s.header - 1 && tBottom <= s.vh + 1,
           `${tag} the step-1 target is inside the usable strip below the header (target ${tTop}..${tBottom}, strip ${s.header}..${s.vh}, scrollY ${s.y})`);
