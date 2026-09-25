@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 109;
+const EXPECTED_CHECKS = 111;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -2037,6 +2037,50 @@ try {
       record('over budget a shrinking edit, a delete, login and a verify still work, and the acked changes reach GCS',
         shrink.status === 200 && del.status === 200 && login === 200 && verify.status === 200 && onGcs,
         JSON.stringify({ shrink: shrink.status, del: del.status, login, verify: verify.status, onGcs }));
+    }
+
+    // s25b — the budget is counted per changed row (S15-1: a full stringify per refused write
+    // held /api/health at p50 176 ms under a /48 flood). A 41-write script (1 add, 3 shrinks,
+    // 3 deletes, 5 grows, 29 adds: the store only grows after the drain, so its peak is its end)
+    // runs three times on one seed. Pass 1 lands it and reads the true size T from GCS. Passes 2
+    // and 3 hold every upload (none lands, none re-measures) so only the row counter decides:
+    // at budget T all 41 pass; at T-1 exactly the last add is 507. Off by one byte either way fails.
+    {
+      const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const seedGames = Array.from({ length: 11 }, (_, i) => ({ id: `g_d${i}`, userId: 'u_d', name: `seed ${i}`, description: 'm'.repeat(300), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }));
+      const seed = JSON.stringify({ users: [seededUser('u_d', 'drift', 'd@example.test', 'Sup3rSecret!23')], games: seedGames });
+      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: seed }));
+      const boot = async (budget) => waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-drift-'))), aX, aGcs, { ...mail, TRUST_PROXY: '1', DB_MAX_BYTES: String(budget) })), aX);
+      let hop = 0; // a fresh /56 per request: 41 writes must not meet the 20/min write limit
+      const req = async (method, route, token, body) => {
+        const r = await fetch(`http://127.0.0.1:${aX}${route}`, { method, headers: { 'content-type': 'application/json', 'x-forwarded-for': `2001:db8:${(hop++).toString(16)}00::1`, ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        return r.status;
+      };
+      const run = async (budget, hold) => {
+        fake.setStored(seed); fake.dropUploads(false);
+        const S = await boot(budget);
+        const tok = (await (await fetch(`http://127.0.0.1:${aX}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': `2001:db9:${(hop++).toString(16)}00::1` }, body: JSON.stringify({ email: 'd@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+        if (hold) fake.dropUploads(true);
+        const st = [await req('POST', '/api/games', tok, { name: 'first', description: '界'.repeat(40), payoffs: pay })];
+        for (let i = 0; i < 3; i++) st.push(await req('PATCH', `/api/games/g_d${i}`, tok, { description: 's' }));
+        for (let i = 3; i < 6; i++) st.push(await req('DELETE', `/api/games/g_d${i}`, tok));
+        for (let i = 6; i < 11; i++) st.push(await req('PATCH', `/api/games/g_d${i}`, tok, { description: 'grown '.repeat(60 + i) }));
+        for (let i = 0; i < 29; i++) st.push(await req('POST', '/api/games', tok, { name: `d${i}`, description: '界x'.repeat(i * 7), payoffs: pay, colorTermsA: i % 3 ? [`t${i}`] : [] }));
+        return { S, st };
+      };
+      const p1 = await run(10_000_000, false);
+      const landed = await waitUntil(() => { try { return JSON.parse(fake.getStored()).games.length === 11 - 3 + 30; } catch { return false; } }, 8000);
+      const T = Buffer.byteLength(JSON.stringify(JSON.parse(fake.getStored()), null, 2));
+      await stop(p1.S.child);
+      const p2 = await run(T, true); await stop(p2.S.child);
+      const p3 = await run(T - 1, true); await stop(p3.S.child);
+      fake.dropUploads(false); await fake.close();
+      const ok = (st) => st.every((x) => x === 200);
+      record('fixture: pass 1 ran all 41 writes and landed 38 games on GCS, giving the true size T',
+        ok(p1.st) && p1.st.length === 41 && landed && T > 20000, JSON.stringify({ n: p1.st.length, bad: p1.st.filter((x) => x !== 200), landed, T }));
+      record('THE DEFECT (budget drift): with uploads held, budget T passes all 41 writes and T-1 refuses exactly the last add (507)',
+        ok(p2.st) && ok(p3.st.slice(0, 40)) && p3.st[40] === 507,
+        JSON.stringify({ atT: p2.st.filter((x) => x !== 200), atTminus1: p3.st.map((x, i) => (x !== 200 ? `${i}:${x}` : '')).filter(Boolean) }));
     }
   }
 

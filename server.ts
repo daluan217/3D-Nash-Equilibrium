@@ -2357,6 +2357,7 @@ function applyMergedDb(merged: DB): DB {
   target.users = merged.users;
   target.games = merged.games;
   inMemoryDb = target;
+  dbBytes = -1;
   return target;
 }
 
@@ -2387,6 +2388,7 @@ async function uploadDbToGcs(): Promise<void> {
     // The CURRENT state, serialized at send time: routes commit while this
     // awaits, and uploading an older snapshot wrote it back over them (#208).
     const bodyStr = JSON.stringify(loadDB(), null, 2);
+    dbBytes = Buffer.byteLength(bodyStr); // exact at send time; later writes add their deltas
     const sent = jsonClone(loadDB()); // what bodyStr carries, sharing the store's strings: not a second full copy
     try {
       await withDeadline(file.save(bodyStr, {
@@ -3160,6 +3162,8 @@ function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength:
 function saveDB(db: DB): boolean {
   if (localFileSaveBlocked()) return false;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+    const prev = inMemoryDb;
+    if (dbBytes >= 0 && prev && prev !== db) dbBytes += rowsDelta(prev.users, db.users) + rowsDelta(prev.games, db.games);
     inMemoryDb = db;
     scheduleGcsSave(); // #85's coalescing pump; the GCS write is async, so the caller's boolean cannot reflect it
     return true;
@@ -3170,6 +3174,7 @@ function saveDB(db: DB): boolean {
         fs.mkdirSync(dbDir, { recursive: true });
       }
       writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+      dbBytes = -1;
       // STRUCT-DESKTOP-19: commit in memory only once the bytes are on disk.
       // This assignment used to happen BEFORE the write, so a failed write on
       // desktop (a read-only ELECTRON_USER_DATA_PATH) left the process serving
@@ -3261,22 +3266,39 @@ function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
  */
 /**
  * Content growth past the hosted budget is refused; a write that does not grow
- * the database (delete, shrinking edit) always passes, so a full store can drain.
- * Account upkeep (codes, attempts, resets) is not gated: it is bounded per row.
- * ponytail: one full stringify per game write (~7 ms at 8 MB); cache it if writes get hot.
+ * the store (delete, shrinking edit) always passes, so a full store can drain.
+ * Cost is the changed rows only: a full stringify per refused write let a /48
+ * flood hold /api/health at p50 176 ms (S15-1). `dbBytes` is exact after every
+ * upload (its body is measured) and tracks row deltas between uploads.
  */
-function wouldExceedDbBudget(candidate: DB): boolean {
-  if (isDesktop()) return false;
-  const bytes = (d: DB) => Buffer.byteLength(JSON.stringify(d, null, 2));
-  const next = bytes(candidate);
-  return next > DB_MAX_BYTES && next > bytes(loadDB());
+let dbBytes = -1; // -1: unknown, measured on the next growth check
+function storeBytes(): number {
+  if (dbBytes < 0) dbBytes = Buffer.byteLength(JSON.stringify(loadDB(), null, 2));
+  return dbBytes;
+}
+function rowsDelta<T>(before: T[], after: T[]): number {
+  if (before === after) return 0; // same array: an in-place edit, bounded per row, exact again at the next upload
+  // Exact in the pretty store: an element of a top-level array sits at indent 4 and adds ",\n".
+  const size = (x: T) => Buffer.byteLength(JSON.stringify(x, null, 2).replace(/\n/g, "\n    ")) + 6;
+  const had = new Set(before), kept = new Set(after);
+  let delta = 0;
+  for (const x of before) if (!kept.has(x)) delta -= size(x);
+  for (const x of after) if (!had.has(x)) delta += size(x);
+  if (before.length === 0 && after.length > 0) delta += 2; // "[]" opens to "[\n ... \n  ]"
+  if (before.length > 0 && after.length === 0) delta -= 2;
+  return delta;
+}
+function growsPastBudget(delta: number): boolean {
+  return !isDesktop() && delta > 0 && storeBytes() + delta > DB_MAX_BYTES;
 }
 const STORAGE_FULL = "Saved-game storage is full right now. Delete a saved game to make room, then save again.";
 
 async function saveDBAwaited(games: SavedGame[]): Promise<boolean | "full"> {
-  if (wouldExceedDbBudget({ users: inMemoryDb?.users ?? [], games })) return "full";
+  const delta = rowsDelta(inMemoryDb?.games ?? [], games);
+  if (growsPastBudget(delta)) return "full";
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
     inMemoryDb = { users: inMemoryDb?.users ?? [], games };
+    if (dbBytes >= 0) dbBytes += delta;
     scheduleGcsSave(); // #85's coalescing pump — see this function's own comment for why this branch cannot also await a per-request result
     return true;
   }
@@ -3289,6 +3311,7 @@ async function saveDBAwaited(games: SavedGame[]): Promise<boolean | "full"> {
     const payload: DB = { users: inMemoryDb?.users ?? [], games };
     writeFileAtomicSync(DB_FILE, JSON.stringify(payload, null, 2));
     inMemoryDb = { users: inMemoryDb?.users ?? [], games };
+    dbBytes = -1;
     return true;
   } catch (err) {
     console.error("Error writing db.json:", err);
@@ -4779,12 +4802,14 @@ async function startServer() {
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
     };
 
-    if (wouldExceedDbBudget({ users: [...db.users, newUser], games: db.games })) {
+    const userDelta = rowsDelta(db.users, [...db.users, newUser]);
+    if (growsPastBudget(userDelta)) {
       releaseCodeMail("verification", emailTrimmed); // nothing went out
       return res.status(507).json({ error: "New sign-ups are paused because account storage is full. Please try again later." });
     }
     db.users.push(newUser);
     saveDB(db);
+    if (dbBytes >= 0) dbBytes += userDelta;
 
     let emailResult;
     let emailErrorMsg = null;
