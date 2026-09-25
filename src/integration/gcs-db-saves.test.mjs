@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 100;
+const EXPECTED_CHECKS = 105;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -1939,6 +1939,51 @@ try {
       record('THE DEFECT: a sign-up sweeps pending rows dead a day with no games; recent, game-owning and verified rows stay; a locked code buys no second mail',
         !ids.includes('p_old') && ids.includes('p_game') && ids.includes('p_recent') && ids.includes('p_ver') && again === 429 && lMails === 1,
         JSON.stringify({ old: ids.includes('p_old'), game: ids.includes('p_game'), recent: ids.includes('p_recent'), ver: ids.includes('p_ver'), again, lMails }));
+    }
+
+    // s24 — the hosted account surface (sweep 12/13 angles, director audit 09-24):
+    // a reset ends every earlier session; games are owner-only; /me and login
+    // serialize no secret; adopt-local does not exist hosted, signed in or not.
+    // FIXTURE: two verified seeded users and one game, the code read from the mail sent.
+    {
+      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify({
+        users: [seededUser('h_a', 'h_a', 'h_a@example.test', 'Sup3rSecret!23'), seededUser('h_b', 'h_b', 'h_b@example.test', 'Sup3rSecret!23')],
+        games: [{ id: 'g_ha', userId: 'h_a', name: 'A-own', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' }] }) }));
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-acct24-'))), aX, aGcs, mail)), aX);
+      const req = async (method, route, token, body) => {
+        const r = await fetch(`http://127.0.0.1:${aX}${route}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        return { status: r.status, body: await r.json().catch(() => ({})) };
+      };
+      const signIn = (email, password) => req('POST', '/api/auth/login', null, { email, password });
+      const la = await signIn('h_a@example.test', 'Sup3rSecret!23'), lb = await signIn('h_b@example.test', 'Sup3rSecret!23');
+      const tA = la.body.token, tB = lb.body.token;
+      const me = await req('GET', '/api/auth/me', tA);
+      const bPatch = await req('PATCH', '/api/games/g_ha', tB, { name: 'hijack' });
+      const bDelete = await req('DELETE', '/api/games/g_ha', tB);
+      const bList = await req('GET', '/api/games', tB), aList = await req('GET', '/api/games', tA);
+      const adopt = [(await req('POST', '/api/games/adopt-local', tA)).status, (await req('POST', '/api/games/adopt-local')).status];
+      const m0 = mailed.length;
+      await req('POST', '/api/auth/forgot-password', null, { email: 'h_a@example.test' });
+      const rc = mailed.slice(m0).filter((m) => m.to === 'h_a@example.test').at(-1)?.code;
+      const reset = await req('POST', '/api/auth/reset-password', null, { email: 'h_a@example.test', code: rc, newPassword: 'N3wSecret!pass' });
+      const old = [(await req('GET', '/api/auth/me', tA)).status, (await req('GET', '/api/games', tA)).status];
+      const fresh = await signIn('h_a@example.test', 'N3wSecret!pass');
+      const after = [fresh.status, (await req('GET', '/api/auth/me', fresh.body.token)).status, (await req('GET', '/api/auth/me', tB)).status];
+      await stop(S.child); await fake.close();
+      record('fixture: both seeded users signed in, the recovery mail carried a code, and the reset answered 200',
+        la.status === 200 && lb.status === 200 && /^\d{6}$/.test(rc ?? '') && reset.status === 200, JSON.stringify({ la: la.status, lb: lb.status, rc: !!rc, reset: reset.status }));
+      record('a password reset ends every earlier session (old token 401 on /me and /games); the new password signs in; the other account stays signed in',
+        JSON.stringify(old) === '[401,401]' && JSON.stringify(after) === '[200,200,200]', JSON.stringify({ old, after }));
+      record('hosted games are owner-only: another account\'s PATCH and DELETE are 403 and its list omits the game; the owner keeps it, unrenamed',
+        bPatch.status === 403 && bDelete.status === 403 && Array.isArray(bList.body) && !bList.body.some((g) => g.id === 'g_ha')
+          && Array.isArray(aList.body) && aList.body.some((g) => g.id === 'g_ha' && g.name === 'A-own'),
+        JSON.stringify({ patch: bPatch.status, del: bDelete.status, bSees: bList.body?.length, aHas: aList.body?.map?.((g) => g.name) }));
+      const keys = (o) => Object.keys(o ?? {}).sort().join();
+      record('/me and login carry only id, username, email: no hash, code or token version',
+        keys(me.body) === 'email,id,username' && keys(la.body.user) === 'email,id,username'
+          && !/passwordHash|Code|tokenVersion/.test(JSON.stringify([me.body, la.body])),
+        JSON.stringify({ me: keys(me.body), login: keys(la.body.user), top: keys(la.body) }));
+      record('adopt-local does not exist hosted: 404 signed in and signed out', JSON.stringify(adopt) === '[404,404]', JSON.stringify(adopt));
     }
   }
 
