@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 116;
+const EXPECTED_CHECKS = 123;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -2152,6 +2152,189 @@ try {
       record('THE DEFECT (budget drift): with uploads held, budget T passes all 41 writes and T-1 refuses exactly the last add (507)',
         ok(p2.st) && ok(p3.st.slice(0, 40)) && p3.st[40] === 507,
         JSON.stringify({ atT: p2.st.filter((x) => x !== 200), atTminus1: p3.st.map((x, i) => (x !== 200 ? `${i}:${x}` : '')).filter(Boolean) }));
+    }
+
+    // s26 — admin CORS & request bounds (sweep 17 angles 1 & 2).
+    // (a) Admin CORS: hostile origin gets no ACAO on 200, OPTIONS or 429; local client
+    // gets its origin echoed and Vary: Origin. Case variations (/api/ADMIN/stats) do not leak.
+    // (b) Limits: 17KB headers yield 431; 120KB body yields 413 with {"error":"Invalid request."}.
+    // (c) A slow header drip does not block other endpoints (/api/health responds promptly).
+    {
+      const sApp = port1 + 54, sGcs = gcsPortA + 54; // even offsets, as everywhere: port1 = gcsPortA + 1 in CI
+      const fake = await trackFake(startFakeGcsDb({ port: sGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s26-'))), sApp, sGcs,
+        { ADMIN_SECRET: 'super-admin-secret-2026' })), sApp);
+      const evil = 'https://evil.example', local = 'http://127.0.0.1:5173';
+      const rEvil = await fetch(`http://127.0.0.1:${sApp}/api/admin/stats`, { headers: { origin: evil, 'x-admin-secret': 'super-admin-secret-2026' } });
+      const rLocal = await fetch(`http://127.0.0.1:${sApp}/api/admin/stats`, { headers: { origin: local, 'x-admin-secret': 'super-admin-secret-2026' } });
+      const rOpt = await fetch(`http://127.0.0.1:${sApp}/api/admin/stats`, { method: 'OPTIONS', headers: { origin: evil, 'access-control-request-method': 'GET' } });
+      for (let i = 0; i < 9; i++) await fetch(`http://127.0.0.1:${sApp}/api/admin/stats`, { headers: { origin: evil, 'x-admin-secret': 'super-admin-secret-2026' } });
+      const r429Evil = await fetch(`http://127.0.0.1:${sApp}/api/admin/stats`, { headers: { origin: evil, 'x-admin-secret': 'super-admin-secret-2026' } });
+      const r429Local = await fetch(`http://127.0.0.1:${sApp}/api/admin/stats`, { headers: { origin: local, 'x-admin-secret': 'super-admin-secret-2026' } });
+      const rCasing = await fetch(`http://127.0.0.1:${sApp}/api/ADMIN/stats`, { headers: { origin: evil, 'x-admin-secret': 'super-admin-secret-2026' } });
+      const r431 = await fetch(`http://127.0.0.1:${sApp}/api/report`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-huge': 'x'.repeat(17000) }, body: '{}' });
+      const r413 = await fetch(`http://127.0.0.1:${sApp}/api/report`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, pad: 'p'.repeat(120 * 1024) }) });
+      const r413Body = await r413.json().catch(() => ({}));
+      const slowSock = net.connect(sApp, '127.0.0.1');
+      await new Promise((r) => slowSock.on('connect', r));
+      slowSock.write(`POST /api/report HTTP/1.1\r\nHost: 127.0.0.1:${sApp}\r\n`);
+      const drip = setInterval(() => { try { slowSock.write('X-Slow: d\r\n'); } catch { clearInterval(drip); } }, 200);
+      const t0 = Date.now();
+      const rHealth = await fetch(`http://127.0.0.1:${sApp}/api/health`);
+      const hLat = Date.now() - t0;
+      clearInterval(drip); slowSock.destroy();
+      await stop(S.child); await fake.close();
+
+      record('THE DEFECT (admin CORS): hostile origin receives no ACAO on 200, OPTIONS or 429, including case variations; local origin receives echo and Vary',
+        rEvil.headers.get('access-control-allow-origin') === null
+          && rOpt.headers.get('access-control-allow-origin') === null
+          && r429Evil.status === 429 && r429Evil.headers.get('access-control-allow-origin') === null
+          && rCasing.status === 429 && rCasing.headers.get('access-control-allow-origin') === null
+          && rLocal.headers.get('access-control-allow-origin') === local && /Origin/i.test(rLocal.headers.get('vary') || '')
+          && r429Local.headers.get('access-control-allow-origin') === local,
+        JSON.stringify({ evil: rEvil.headers.get('access-control-allow-origin'), opt: rOpt.headers.get('access-control-allow-origin'),
+          e429: r429Evil.headers.get('access-control-allow-origin'), casing: rCasing.headers.get('access-control-allow-origin'),
+          loc: rLocal.headers.get('access-control-allow-origin') }));
+
+      record('THE DEFECT (request limits): 17KB headers return 431, 120KB body returns 413 Invalid request, slow header drip does not block health',
+        r431.status === 431 && r413.status === 413 && r413Body.error === 'Invalid request.'
+          && rHealth.status === 200 && hLat < 2000,
+        JSON.stringify({ r431: r431.status, r413: r413.status, body: r413Body, hStatus: rHealth.status, hLat }));
+    }
+
+    // s27 — sign-up stale sweep under budget, 412 storm refusals, and SIGTERM drain (sweep 17 angles 4, 4b & 5).
+    // (a) Stale-row sweep: an over-budget measured store admits a sign-up that sweeps dead pending rows;
+    // status is 200, 1 mail is sent, stale rows are purged from GCS, counter stays consistent (HIT S17-1).
+    // (b) 412 storm during refusals and (c) SIGTERM mid-upload: see their own comments below.
+    {
+      const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const oldExp = Date.now() - 3 * 24 * 3600e3;
+      const staleUsers = Array.from({ length: 15 }, (_, i) => ({
+        id: `u_st${i}`, username: `stale${i}`, email: `st${i}@example.test`,
+        passwordHash: Buffer.from('Sup3rSecret!23').toString('base64'),
+        isVerified: false, verificationCode: '111111', verificationCodeExpires: oldExp,
+      }));
+      const seedUsers = [seededUser('u_v', 'v', 'v@example.test', 'Sup3rSecret!23'), ...staleUsers];
+      const seed = JSON.stringify({ users: seedUsers, games: [] });
+      const seedBytes = Buffer.byteLength(JSON.stringify(JSON.parse(seed), null, 2));
+      const s27Gcs = gcsPortA + 56, s27App = port1 + 56;
+      const fake = await trackFake(startFakeGcsDb({ port: s27Gcs, initialContent: seed }));
+      const budget = seedBytes - 200;
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s27-'))), s27App, s27Gcs,
+        { ...mail, DB_MAX_BYTES: String(budget) })), s27App);
+      const tok = (await (await fetch(`http://127.0.0.1:${s27App}/api/auth/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'v@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+      // Prior write measures the store: over budget -> 507
+      const g0 = await fetch(`http://127.0.0.1:${s27App}/api/games`, {
+        method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ name: 'measure', payoffs: pay }) });
+      const m0 = mailed.length;
+      // Net-shrinking sign-up: sweeps 15 stale rows, adds 1 -> shrinks store -> must succeed (200)
+      const reg = await fetch(`http://127.0.0.1:${s27App}/api/auth/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newbie', email: 'new@example.test', password: 'Sup3rSecret!23' }) });
+      const regMails = mailed.length - m0;
+      const onGcs = await waitUntil(() => {
+        try {
+          const d = JSON.parse(fake.getStored());
+          return d.users.some((u) => u.username === 'newbie') && !d.users.some((u) => u.id.startsWith('u_st'));
+        } catch { return false; }
+      }, 5000);
+      const endBytes = Buffer.byteLength(JSON.stringify(JSON.parse(fake.getStored()), null, 2));
+      await stop(S.child);
+
+      record('THE DEFECT (sign-up stale sweep budget): a sign-up that shrinks a full store by sweeping stale rows passes 200, sends mail, and purges stale rows on GCS',
+        g0.status === 507 && reg.status === 200 && regMails === 1 && onGcs && endBytes < budget,
+        JSON.stringify({ g0: g0.status, reg: reg.status, regMails, onGcs, endBytes, budget }));
+
+      const big = (id, userId) => ({ id, userId, name: id, description: 'x'.repeat(400), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' });
+      const sized = (d) => Buffer.byteLength(JSON.stringify(d, null, 2));
+      let hop = 0; // a fresh /56 per request: no write or sign-up limit is in play
+      const xff = () => `2001:db8:${(0x2700 + hop++).toString(16)}::1`;
+      const call = async (method, route, token, body) => (await fetch(`http://127.0.0.1:${s27App}${route}`, { method,
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': xff(), ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}) })).status;
+      const bootOver = async (seedDb, tag) => waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), `nash-gcs-s27${tag}-`))), s27App, s27Gcs,
+        { ...mail, TRUST_PROXY: '1', DB_MAX_BYTES: String(sized(seedDb) - 1000) })), s27App);
+      const loginAs = async (email) => (await (await fetch(`http://127.0.0.1:${s27App}/api/auth/login`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': xff() }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) })).json()).token;
+
+      // (b) 412 storm during refusals (angle 4b). Over budget, a peer appends a row every 60 ms while each
+      // upload is held 150 ms, so attempts meet stale preconditions: 412, merge, retry, back off. Writes mix
+      // 507 refusals with admitted deletes. After the storm GCS must agree with every answer and keep every
+      // peer row. Cannot pass by coincidence: the deletes leave GCS only via an upload that landed after
+      // 412s, and peer rows survive only a merge.
+      const seedB = { users: [seededUser('u_x', 'x', 'x@example.test', 'Sup3rSecret!23')], games: Array.from({ length: 8 }, (_, i) => big(`g_x${i}`, 'u_x')) };
+      fake.setStored(JSON.stringify(seedB));
+      const SB = await bootOver(seedB, 'b');
+      const tokB = await loginAs('x@example.test');
+      const n412b = fake.count412();
+      fake.setUploadDelayMs(150);
+      let peers = 0;
+      const storm = setInterval(() => {
+        const d = JSON.parse(fake.getStored()); d.games.push({ ...big(`g_peer${peers}`, 'u_peer'), description: 'p' }); peers++; fake.peerWrite(JSON.stringify(d));
+      }, 60);
+      const answers = [];
+      try {
+        for (let i = 0; i < 6; i++) {
+          answers.push(['add', `n${i}`, await call('POST', '/api/games', tokB, { name: `n${i}`, payoffs: pay })]);
+          if (i < 4) answers.push(['grow', `g_x${4 + i}`, await call('PATCH', `/api/games/g_x${4 + i}`, tokB, { description: 'y'.repeat(900) })]);
+          if (i < 4) answers.push(['del', `g_x${i}`, await call('DELETE', `/api/games/g_x${i}`, tokB)]);
+          answers.push(['reg', `r${i}`, await call('POST', '/api/auth/register', null, { username: `r${i}`, email: `r${i}@example.test`, password: 'Sup3rSecret!23' })]);
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      } finally { clearInterval(storm); }
+      const storm412 = fake.count412() - n412b;
+      fake.setUploadDelayMs(0);
+      const disagree = (d) => answers.filter(([k, id, st]) => {
+        const g = d.games.find((x) => x.id === id || x.name === id), u = d.users.find((x) => x.username === id);
+        if (k === 'add') return !(st === 507 ? !g : st === 200 && g);
+        if (k === 'grow') return !(st === 507 ? g?.description === 'x'.repeat(400) : st === 200 && g?.description === 'y'.repeat(900));
+        if (k === 'del') return !(st === 200 && !g);
+        return !(st === 507 ? !u : st === 200 && u);
+      }).map(([k, id, st]) => `${k}:${id}:${st}`);
+      const peersOn = (d) => d.games.filter((x) => x.userId === 'u_peer').length;
+      const settled = await waitUntil(() => { try { const d = JSON.parse(fake.getStored()); return disagree(d).length === 0 && peersOn(d) === peers; } catch { return false; } }, 20_000);
+      const endB = JSON.parse(fake.getStored());
+      await stop(SB.child);
+      record('fixture: the storm 412ed the uploads it met, the store refused growth (507) and admitted all 4 deletes',
+        storm412 >= 3 && answers.filter((a) => a[2] === 507).length >= 6 && answers.filter((a) => a[0] === 'del' && a[2] === 200).length === 4,
+        JSON.stringify({ storm412, answers: answers.map((a) => `${a[0]}:${a[2]}`).join(' ') }));
+      record('THE DEFECT (412 storm during refusals): after the storm GCS agrees with every answer (507 absent, 200 landed) and keeps every peer row',
+        settled, JSON.stringify({ peers, peersOnGcs: peersOn(endB), disagree: disagree(endB) }));
+
+      // (c) SIGTERM mid-upload with 507s answered meanwhile (angle 5). The first upload (the login rehash)
+      // is held 2 s; inside it a delete is acked and three growth writes are refused, then SIGTERM. The
+      // drain must land the delete, exit 0 inside the grace period and carry no refused row. Cannot pass by
+      // coincidence: no upload had landed at SIGTERM, so g_y0 leaves GCS only through the drain.
+      const seedC = { users: [seededUser('u_y', 'y', 'y@example.test', 'Sup3rSecret!23')], games: Array.from({ length: 6 }, (_, i) => big(`g_y${i}`, 'u_y')) };
+      fake.setStored(JSON.stringify(seedC));
+      const SC = await bootOver(seedC, 'c');
+      const landed = () => fake.uploadLog().filter((u) => u.landedGen).length;
+      const l0 = landed();
+      fake.setUploadDelayMs(2000);
+      const tokC = await loginAs('y@example.test');
+      const del = await call('DELETE', '/api/games/g_y0', tokC);
+      const add = await call('POST', '/api/games', tokC, { name: 'refused', payoffs: pay });
+      const grow = await call('PATCH', '/api/games/g_y1', tokC, { description: 'z'.repeat(900) });
+      const regC = await call('POST', '/api/auth/register', null, { username: 'late', email: 'late@example.test', password: 'Sup3rSecret!23' });
+      const landedAtTerm = landed() - l0;
+      const exited = new Promise((r) => SC.child.once('exit', (c, sig) => r(c ?? sig)));
+      const t0 = Date.now();
+      SC.child.kill('SIGTERM');
+      const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r('hung'), 12_000))]);
+      const exitMs = Date.now() - t0;
+      fake.setUploadDelayMs(0);
+      const endC = JSON.parse(fake.getStored());
+      await fake.close();
+      record('fixture: at SIGTERM no upload had landed, the delete was acked and three growth writes were refused',
+        landedAtTerm === 0 && del === 200 && add === 507 && grow === 507 && regC === 507, JSON.stringify({ landedAtTerm, del, add, grow, reg: regC }));
+      record('THE DEFECT (SIGTERM mid-upload with 507s): the drain lands the acked delete, exits 0 inside the grace period, and carries no refused row',
+        code === 0 && exitMs < 9000 && !endC.games.some((g) => g.id === 'g_y0') && !endC.games.some((g) => g.name === 'refused')
+          && endC.games.find((g) => g.id === 'g_y1')?.description === 'x'.repeat(400) && !endC.users.some((u) => u.username === 'late')
+          && !!endC.users.find((u) => u.id === 'u_y')?.passwordHash.startsWith('pbkdf2$'),
+        JSON.stringify({ code, exitMs, games: endC.games.map((g) => g.id), users: endC.users.map((u) => u.username) }));
     }
   }
 

@@ -68,12 +68,12 @@ assert(calls.length >= 15, `expected every route limiter via rateLimit(), found 
 // runs from source on a controlled clock: a 429 names ceil(remaining), a retry 1 s sooner is still
 // refused, and a retry after exactly Retry-After passes.
 type Mw = (req: unknown, res: unknown, next: () => void) => void;
-let clock = 0;
+let clock = 0, wall = 0; // monotonic time; the wall clock, stepped by the skew check below
 const span = src.slice(src.indexOf('const rateBuckets = new Map'), src.indexOf('\n}\n', src.indexOf('function rateLimit(')) + 2);
-const limit = new Function('net', 'process', 'Date', `${ts.transpileModule(span, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return rateLimit;`)(
-  net, { env: {} }, { now: () => clock }) as (label: string, max: number, windowMs: number) => Mw;
-const hit = (mw: Mw, t: number) => {
-  clock = t; let passed = false, code = 0, ra: string | undefined;
+const limit = new Function('net', 'process', 'performance', 'Date', `${ts.transpileModule(span, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return rateLimit;`)(
+  net, { env: {} }, { now: () => clock }, { now: () => wall }) as (label: string, max: number, windowMs: number) => Mw;
+const hit = (mw: Mw, t: number, step = 0) => {
+  clock = t; wall = t + step; let passed = false, code = 0, ra: string | undefined;
   const res = { setHeader: (k: string, v: string) => { if (k === 'Retry-After') ra = v; }, status: (c: number) => { code = c; return res; }, json: () => res };
   mw({ ip: '203.0.113.9', socket: {} }, res, () => { passed = true; });
   return { passed, code, ra };
@@ -87,4 +87,16 @@ for (const d of [0, 1, 999, 1000, 1001, 30_500, 58_999, 59_000, 59_001, 59_999])
   assert(hit(mw, T0 + d + want * 1000).passed, `+${d}: a retry after exactly Retry-After (${want}s) must pass`);
   n += 3;
 }
+
+// Clock skew (sweep 17): the window runs on the monotonic clock. A wall clock stepped back 10 min
+// after the 429 must not hold the client past 60 s; one stepped forward 10 min must not open it early.
+for (const step of [-600_000, 600_000]) {
+  const mw = limit(`skew${step}`, 2, 60_000), T = 1_000_000;
+  hit(mw, T); hit(mw, T);
+  assert.strictEqual(hit(mw, T + 5000, step).code, 429, `wall step ${step}: the 3rd hit inside the window must be refused`);
+  assert.strictEqual(hit(mw, T + 30_000, step).code, 429, `wall step ${step}: the window must not open early`);
+  assert(hit(mw, T + 60_000, step).passed, `wall step ${step}: the window must open at 60 s of real time`);
+  n += 3;
+}
+
 console.log(`ratekey.cloud.test.ts: ${n} checks passed (${calls.length} rateLimit call sites, all keyed by rateKey)`);

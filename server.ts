@@ -2020,6 +2020,10 @@ async function readGcsDb(unlessGeneration: string | null = null): Promise<{ db: 
   return { db, generation: String(meta.generation) };
 }
 
+// In-process intervals (freshness, drain, cooldown, rate windows) run on the
+// monotonic clock: a wall-clock step backward locked clients out past their
+// window, and one forward cut the SIGTERM drain short (sweep 17). Persisted or
+// cross-instance times (token exp, code expiry) stay on Date.now().
 const GCS_FRESH_MS = 2_000; // see requireGcsStore
 let gcsFreshUntil = 0;
 
@@ -2049,7 +2053,7 @@ let gcsAckEpoch = 0; // bumped when an upload of ours lands
 async function syncFromGcs(ifChanged = false): Promise<void> {
   const epoch = gcsAckEpoch;
   const remote = await readGcsDb(ifChanged ? gcsGeneration : null);
-  gcsFreshUntil = Date.now() + GCS_FRESH_MS;
+  gcsFreshUntil = performance.now() + GCS_FRESH_MS;
   // An upload of ours landed while this read was in flight, so the read may
   // predate it: merged, it restored deleted games and accounts and moved the
   // generation back (sweep 2). Our acked state is at least as new; drop the
@@ -2097,8 +2101,8 @@ function requireGcsStore(req: express.Request, res: express.Response, next: expr
   // Not skipped while the pump is busy: in backoff it can stay busy for the
   // whole outage, and reads went stale with it (sweep 4). A re-check during an
   // upload is safe: that upload's precondition then 412s and it re-merges.
-  if (!unread && Date.now() < gcsFreshUntil) return next();
-  if (!unread) gcsFreshUntil = Date.now() + GCS_FRESH_MS;
+  if (!unread && performance.now() < gcsFreshUntil) return next();
+  if (!unread) gcsFreshUntil = performance.now() + GCS_FRESH_MS;
   const sync = syncShared(!unread);
   const waited = unread ? sync : Promise.race([sync, new Promise<void>((r) => setTimeout(r, 2_000).unref?.())]);
   waited.then(
@@ -2106,11 +2110,11 @@ function requireGcsStore(req: express.Request, res: express.Response, next: expr
     (err) => {
       console.error(`GCS ${unread ? 'read' : 're-check'} before serving a DB route failed:`, err);
       if (unread || gcsStoreBlocked) return unavailable();
-      gcsFreshUntil = Date.now() + 30_000; // serve the copy we have; retry the re-check later
+      gcsFreshUntil = performance.now() + 30_000; // serve the copy we have; retry the re-check later
       next();
     },
   );
-  if (!unread) sync.catch(() => { gcsFreshUntil = Date.now() + 30_000; }); // a re-check that outlived the wait
+  if (!unread) sync.catch(() => { gcsFreshUntil = performance.now() + 30_000; }); // a re-check that outlived the wait
 }
 
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
@@ -2473,11 +2477,11 @@ function scheduleGcsSave(): void {
  * bounded under the grace period.
  */
 async function drainGcsSaves(ms: number): Promise<void> {
-  const until = Date.now() + ms;
-  while (!gcsStoreBlocked && (gcsUploadInFlight || gcsSaveRequested) && Date.now() < until) {
+  const until = performance.now() + ms;
+  while (!gcsStoreBlocked && (gcsUploadInFlight || gcsSaveRequested) && performance.now() < until) {
     wakeGcsPump?.();
     if (!gcsUploadInFlight) scheduleGcsSave();
-    await Promise.race([gcsPumpDone, new Promise((r) => setTimeout(r, Math.max(0, until - Date.now())))]);
+    await Promise.race([gcsPumpDone, new Promise((r) => setTimeout(r, Math.max(0, until - performance.now())))]);
   }
 }
 if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
@@ -2572,7 +2576,7 @@ const PENDING_TTL_MS = 24 * 60 * 60 * 1000; // a dead pending row is swept this 
 const MAIL_COOLDOWN_CAP = 1000;
 const lastCodeMail = new Map<string, number>();
 function mailCooldownLeft(kind: "verification" | "recovery", email: string): number {
-  const now = Date.now(), key = `${kind}:${email}`;
+  const now = performance.now(), key = `${kind}:${email}`;
   if (lastCodeMail.size >= MAIL_COOLDOWN_CAP) for (const [k, t] of lastCodeMail) if (now - t >= MAIL_COOLDOWN_MS) lastCodeMail.delete(k);
   const left = MAIL_COOLDOWN_MS - (now - (lastCodeMail.get(key) ?? -Infinity));
   if (left <= 0) lastCodeMail.set(key, now);
@@ -3076,7 +3080,7 @@ function rateLimit(
   return (req, res, next) => {
     if (liftedForDesktop) return next();
     const key = `${label}:${rateKey(req)}`;
-    const now = Date.now();
+    const now = performance.now();
     pruneRateBuckets(now);
     const bucket = rateBuckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
@@ -4765,7 +4769,7 @@ async function startServer() {
     // cannot grow without bound from abandoned or junk registrations (sweep 6).
     const stale = Date.now() - PENDING_TTL_MS;
     const owners = new Set(db.games.map((g) => g.userId));
-    db.users = db.users.filter((u) => u.isVerified || owners.has(u.id) || !(u.verificationCodeExpires < stale));
+    const kept = db.users.filter((u) => u.isVerified || owners.has(u.id) || !(u.verificationCodeExpires < stale));
     const newUser: User = {
       id: makeId("u"),
       username: usernameTrimmed,
@@ -4776,12 +4780,16 @@ async function startServer() {
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
     };
 
-    const userDelta = rowsDelta(db.users, [...db.users, newUser]);
+    // The sweep and the new row are ONE write, budgeted and counted together: the
+    // sweep alone was invisible to both, so a sign-up that shrank a full store was
+    // 507 and the swept bytes stayed on the counter (sweep 17).
+    const users = [...kept, newUser];
+    const userDelta = rowsDelta(db.users, users);
     if (growsPastBudget(userDelta)) {
       releaseCodeMail("verification", emailTrimmed); // nothing went out
       return res.status(507).json({ error: "New sign-ups are paused because account storage is full. Please try again later." });
     }
-    db.users.push(newUser);
+    db.users = users;
     saveDB(db);
     if (dbBytes >= 0) dbBytes += userDelta;
 

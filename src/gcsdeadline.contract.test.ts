@@ -422,18 +422,61 @@ check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
   const start = source.indexOf('const MAIL_COOLDOWN_CAP');
   const end = source.indexOf('\nconst releaseCodeMail', start);
   const MS = /const MAIL_COOLDOWN_MS = ([\d_]+);/.exec(source)?.[1]?.replace(/_/g, '');
-  let size = -1, maxSize = 0, stillCools = false;
+  let size = -1, maxSize = 0, stillCools = false, skew = '';
   if (start > 0 && end > start && MS) {
     const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    let now = 0;
-    const run = new Function('Date', 'MAIL_COOLDOWN_MS', `${js}; return { left: mailCooldownLeft, map: lastCodeMail };`);
-    const { left, map } = run({ now: () => now }, Number(MS));
+    let now = 0, wall = 0;
+    const run = new Function('performance', 'Date', 'MAIL_COOLDOWN_MS', `${js}; return { left: mailCooldownLeft, map: lastCodeMail };`);
+    const { left, map } = run({ now: () => now }, { now: () => wall }, Number(MS));
     for (let i = 0; i < 5000; i++) { now += 50; left('verification', `a${i}@example.test`); maxSize = Math.max(maxSize, map.size); }
     size = map.size;
     stillCools = left('verification', 'a4999@example.test') > 0; // a fresh entry survives pruning
+    // Clock skew (sweep 17): the cooldown runs on the monotonic clock, so a wall clock stepped
+    // back 10 min neither extends it past MAIL_COOLDOWN_MS nor, stepped forward, ends it early.
+    const got: number[] = [];
+    for (const step of [-600_000, 600_000]) {
+      const addr = `skew${step}@example.test`;
+      wall = now; left('verification', addr);
+      wall = now + step; now += 1000;
+      got.push(left('verification', addr));
+      now += Number(MS); got.push(left('verification', addr));
+    }
+    skew = got.join();
   }
+  check('a wall-clock step (-10 min, +10 min) neither extends nor ends the mail cooldown',
+    skew === `${Number(MS) - 1000},0,${Number(MS) - 1000},0`, `left after 1 s, after the cooldown: ${skew}`);
   check('the mail-cooldown map stays bounded over 5,000 distinct addresses (expired entries pruned)',
     size > 0 && maxSize <= 1000 + Number(MS) / 50 && stillCools, `size ${size}, max ${maxSize}, fresh entry still cooling ${stillCools}`);
+}
+
+// In-process intervals run on the monotonic clock (sweep 17): a wall-clock step backward
+// locked a client out past its window, and one forward cut the SIGTERM drain short. The
+// drain runs from source with a wall clock that jumps an hour ahead after its first read.
+{
+  const start = source.indexOf('async function drainGcsSaves(');
+  const end = source.indexOf('\n}\n', start) + 2;
+  let returnedAt = -1, landedAt = -1;
+  if (start > 0 && end > start) {
+    const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    const t0 = Date.now();
+    let reads = 0;
+    const hostile = { now: () => t0 + (reads++ ? 3_600_000 : 0) };
+    const drain = new Function('Date', 'performance', 'setTimeout', 'state', `
+      let gcsStoreBlocked = null, gcsUploadInFlight = true, gcsSaveRequested = false, wakeGcsPump = null;
+      const gcsPumpDone = new Promise((r) => setTimeout(() => { gcsUploadInFlight = false; state.landed(); r(); }, 300));
+      function scheduleGcsSave() {}
+      ${js}; return drainGcsSaves;`)(hostile, performance, setTimeout, { landed: () => { landedAt = performance.now(); } });
+    await drain(8_000);
+    returnedAt = performance.now();
+  }
+  check('SIGTERM drain waits for the in-flight upload through a wall-clock jump', landedAt > 0 && returnedAt >= landedAt,
+    `landed ${landedAt.toFixed(0)}, returned ${returnedAt.toFixed(0)}`);
+  const body = (name: string) => { const i = source.indexOf(`function ${name}(`); return i < 0 ? '' : source.slice(i, source.indexOf('\n}\n', i)); };
+  const onWall = ['rateLimit', 'pruneRateBuckets', 'mailCooldownLeft', 'requireGcsStore', 'syncFromGcs', 'drainGcsSaves']
+    .filter((f) => !body(f) || /Date\.now\(/.test(body(f)));
+  const wallLines = source.split('\n').filter((l) => /Date\.now\(/.test(l) && /gcsFreshUntil|resetAt|lastCodeMail|\buntil\b/.test(l));
+  check('interval state (freshness, drain, cooldown, rate windows) never reads the wall clock',
+    onWall.length === 0 && wallLines.length === 0, JSON.stringify({ onWall, wallLines }));
 }
 
 console.log(failures === 0
