@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 114;
+const EXPECTED_CHECKS = 116;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -312,6 +312,16 @@ async function stop(child) {
   await ended;
   clearTimeout(timer);
 }
+
+// A 429's Retry-After must be the server's real remaining wait, ceil(s). The window
+// opened between sent0..got0 and the 429 was answered between sent1..got1 (one clock),
+// so it lies in [lo, hi]; hi < 60 proves a hardcoded 60 cannot pass (director audit s16).
+function retryAfterIn(ra, [sent0, got0], [sent1, got1], windowMs = 60_000) {
+  const lo = Math.ceil((windowMs - (got1 - sent0)) / 1000), hi = Math.ceil((windowMs - (sent1 - got0)) / 1000);
+  return { ok: /^\d+$/.test(ra ?? '') && Number(ra) >= lo && Number(ra) <= hi && hi < windowMs / 1000, detail: `retry-after ${ra} in [${lo}, ${hi}]` };
+}
+// Sleep until `ms` past `t`, so a window-long constant is out of the bracket.
+const pastBy = async (t, ms) => { while (Date.now() < t + ms) await new Promise((r) => setTimeout(r, t + ms - Date.now())); };
 
 async function waitUntil(predicate, ms = 5000) {
   const until = Date.now() + ms;
@@ -1271,7 +1281,9 @@ try {
     ];
     silent = false;
     const ok = [];
-    for (const [route, body] of routes) ok.push(await timed(route, body()));
+    let fbSent; // feedback is the last route: its request opens the feedback bucket's window
+    for (const [route, body] of routes) { fbSent = Date.now(); ok.push(await timed(route, body())); }
+    const fbWindow = [fbSent, Date.now()];
     // Feedback is anonymous public input mailed to the project inbox: nothing a
     // sender types may add a recipient or a header, or reach the HTML part as
     // markup (sweep 4 probe; held on main too, so a guard, not a fix).
@@ -1319,11 +1331,11 @@ try {
     // minute is the cooldown (sweep 6), so a repeat there never reaches SMTP.
     routes[1][1] = () => ({ email: 'q2@example.test' });
     for (const [route, body] of routes) hung.push(await timed(route, body()));
-    let over; // the 11th feedback this minute; a blank one is refused fast if the count ever drifts low
-    for (let i = 0; i < 3 && over?.status !== 429; i++) over = await post('{"message":""}');
-    const ra = over.headers.get('retry-after');
-    record('THE DEFECT (sweep 16): the rate limiter\'s 429 carries Retry-After, whole seconds inside its 60s window',
-      over.status === 429 && /^\d+$/.test(ra ?? '') && Number(ra) >= 1 && Number(ra) <= 60, `status ${over.status} retry-after ${ra}`);
+    let over, overAt; // the 11th feedback this minute; a blank one is refused fast if the count ever drifts low
+    for (let i = 0; i < 3 && over?.status !== 429; i++) { const t = Date.now(); over = await post('{"message":""}'); overAt = [t, Date.now()]; }
+    const ra = retryAfterIn(over.headers.get('retry-after'), fbWindow, overAt);
+    record('THE DEFECT (sweep 16): the rate limiter\'s 429 names the window\'s real remaining seconds (not 1, not a window too many)',
+      over.status === 429 && ra.ok, `status ${over.status} ${ra.detail}`);
     record('CONTROL: against an answering mail server, register / forgot-password / feedback are 200 and fast',
       ok.every((r) => r.status === 200 && r.ms < 5000), JSON.stringify(ok));
     record('THE DEFECT: a silent mail server gets an honest 500 inside the client\'s 22s, on every mail route',
@@ -1817,19 +1829,34 @@ try {
       const afterBoth = { o: await login('af@example.test', OWN), a: await login('af@example.test', ATT) };
       const noPassword = await ver({ email: 'of@example.test', code: '123456' });
       const m5 = mailed.length;
+      const fpAt = [Date.now()];
       const fp1 = await j(await call(aX, '/api/auth/forgot-password', { email: 'of@example.test' }));
+      fpAt.push(Date.now());
       const fp2 = await j(await call(aX, '/api/auth/forgot-password', { email: 'of@example.test' }));
       const fpMails = mailsTo('of@example.test', m5);
+      // The recovery code locked (5 wrong resets) is not live: a request inside the minute is 429 with the real wait.
+      const fpCode = codeFor('of@example.test', m5);
+      for (let i = 0; i < 5; i++) await call(aX, '/api/auth/reset-password', { email: 'of@example.test', code: fpCode === '000000' ? '000001' : '000000', newPassword: 'N3wSecret!pass' });
+      await pastBy(fpAt[1], 1200);
+      const fp3At0 = Date.now(), fp3 = await call(aX, '/api/auth/forgot-password', { email: 'of@example.test' });
+      const fp3Ra = retryAfterIn(fp3.headers.get('retry-after'), fpAt, [fp3At0, Date.now()]);
+      const fpMails3 = mailsTo('of@example.test', m5);
       await stop(S.child); // fresh process: register is limited to 8/min per IP
       S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-pend2-'))), aX, aGcs, mail)), aX);
       // Five wrong codes lock it; the right one then fails, and a re-register
       // inside the minute mails nothing (locking must not buy a fresh mail).
       const lk = 'lock@example.test', m1 = mailed.length;
+      const lkAt = [Date.now()];
       await reg('locker', lk, OWN);
+      lkAt.push(Date.now());
       const lkCode = codeFor(lk, m1), tries = [];
       for (let i = 0; i < 5; i++) tries.push(await ver({ email: lk, code: lkCode === '000000' ? '000001' : '000000', password: OWN }));
       const lkAfter = await ver({ email: lk, code: lkCode, password: OWN });
-      const lkResend = await reg('locker', lk, OWN);
+      await pastBy(lkAt[1], 1200);
+      const lkResendAt0 = Date.now();
+      const lkResendRaw = await call(aX, '/api/auth/register', { username: 'locker', email: lk, password: OWN });
+      const lkRa = retryAfterIn(lkResendRaw.headers.get('retry-after'), lkAt, [lkResendAt0, Date.now()]);
+      const lkResend = await j(lkResendRaw);
       const lkMails = mailsTo(lk, m1);
       // A NEW password at verify meets the policy and names the account; both
       // are checked before the code, so neither costs an attempt.
@@ -1870,10 +1897,10 @@ try {
         reAfter.status === 400 && verOnVerified.status === 400 && /already verified/.test(verOnVerified.body.error ?? '')
           && afterBoth.o.status === 200 && afterBoth.a.status === 401 && noPassword.status === 400 && /password/.test(noPassword.body.error ?? ''),
         JSON.stringify({ reAfter: reAfter.status, verOnVerified: verOnVerified.status, owner: afterBoth.o.status, attacker: afterBoth.a.status, noPassword: noPassword.status }));
-      record('THE DEFECT: 5 wrong codes lock it (then the right one fails) and a re-register inside the minute mails nothing (429)',
+      record('THE DEFECT: 5 wrong codes lock it (then the right one fails) and a re-register inside the minute mails nothing (429, Retry-After = the cooldown left)',
         tries.slice(0, 4).every((t) => /Incorrect/.test(t.body.error ?? '')) && /Too many/.test(tries[4].body.error ?? '')
-          && lkAfter.status === 400 && lkResend.status === 429 && lkMails === 1,
-        JSON.stringify({ tries: tries.map((t) => (t.body.error ?? '').slice(0, 12)), after: lkAfter.status, resend: lkResend.status, lkMails }));
+          && lkAfter.status === 400 && lkResend.status === 429 && lkMails === 1 && lkRa.ok,
+        JSON.stringify({ tries: tries.map((t) => (t.body.error ?? '').slice(0, 12)), after: lkAfter.status, resend: lkResend.status, lkMails, ra: lkRa.detail }));
       record('THE DEFECT: a new password at verify must meet the policy and bring a name, checked before the code (the code still verifies after)',
         weak.status === 400 && /at least 8 characters/.test(weak.body.error ?? '') && noName.status === 400 && /username/.test(noName.body.error ?? '')
           && poOk.status === 200 && poOk.body.username === 'pol-owner',
@@ -1884,6 +1911,8 @@ try {
       record('THE DEFECT: one recovery mail per minute (second request 200, no mail); malformed addresses are a 400 and mail nothing',
         fp1.status === 200 && fp2.status === 200 && fpMails === 1 && shapes.every((st) => st === 400) && shapeMails === 0,
         JSON.stringify({ fp: [fp1.status, fp2.status], fpMails, shapes, shapeMails }));
+      record('THE DEFECT (director audit s16): a locked recovery code re-requested inside the minute is 429, mails nothing, Retry-After = the cooldown left',
+        fp3.status === 429 && fpMails3 === 1 && fp3Ra.ok, JSON.stringify({ fp3: fp3.status, fpMails3, ra: fp3Ra.detail }));
     }
 
     // s23 — pending rows outlive a failed send now (sweep 6). (a) A squatter
@@ -1986,7 +2015,21 @@ try {
       const old = [(await req('GET', '/api/auth/me', tA)).status, (await req('GET', '/api/games', tA)).status];
       const fresh = await signIn('h_a@example.test', 'N3wSecret!pass');
       const after = [fresh.status, (await req('GET', '/api/auth/me', fresh.body.token)).status, (await req('GET', '/api/auth/me', tB)).status];
+      // The new-signup cooldown: a locked row that another sign-up swept re-registers through the NEW-signup
+      // path (verify's 404 proves the row is gone), and inside the minute that is a 429 with the cooldown left.
+      const sw = 'swept@example.test', mS = mailed.length, swAt = [Date.now()];
+      await req('POST', '/api/auth/register', null, { username: 'swept', email: sw, password: 'Sup3rSecret!23' });
+      swAt.push(Date.now());
+      for (let i = 0; i < 5; i++) await req('POST', '/api/auth/verify', null, { email: sw, code: '000000', password: 'Sup3rSecret!23' }); // makeCode is never 000000
+      await req('POST', '/api/auth/register', null, { username: 'sweeper', email: 'sweeper@example.test', password: 'Sup3rSecret!23' });
+      const gone = await req('POST', '/api/auth/verify', null, { email: sw, code: '000000', password: 'Sup3rSecret!23' });
+      await pastBy(swAt[1], 1200);
+      const swT = Date.now(), swAgain = await fetch(`http://127.0.0.1:${aX}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'swept', email: sw, password: 'Sup3rSecret!23' }) });
+      const swRa = retryAfterIn(swAgain.headers.get('retry-after'), swAt, [swT, Date.now()]);
+      const swMails = mailed.slice(mS).filter((m) => m.to === sw).length;
       await stop(S.child); await fake.close();
+      record('THE DEFECT (director audit s16): a locked row swept by another sign-up re-registers inside the minute: 429 on the new-signup path, no mail, Retry-After = the cooldown left',
+        gone.status === 404 && swAgain.status === 429 && swMails === 1 && swRa.ok, JSON.stringify({ gone: gone.status, again: swAgain.status, swMails, ra: swRa.detail }));
       record('fixture: both seeded users signed in, the recovery mail carried a code, and the reset answered 200',
         la.status === 200 && lb.status === 200 && /^\d{6}$/.test(rc ?? '') && reset.status === 200, JSON.stringify({ la: la.status, lb: lb.status, rc: !!rc, reset: reset.status }));
       record('a password reset ends every earlier session (old token 401 on /me and /games); the new password signs in; the other account stays signed in',

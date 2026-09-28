@@ -3015,6 +3015,12 @@ function cleanPayoffs(value: any): GamePayoffs | null {
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
+// Every 429 names its real remaining wait, rounded UP: a client that waits
+// exactly this long is never refused again for the same window (sweep 16).
+function setRetryAfter(res: express.Response, waitMs: number): void {
+  res.setHeader("Retry-After", String(Math.max(1, Math.ceil(waitMs / 1000))));
+}
+
 // Drop expired buckets so the Map can't grow unbounded under many distinct IPs.
 // Cheap: only sweeps once the Map gets large rather than on every request.
 function pruneRateBuckets(now: number) {
@@ -3079,7 +3085,7 @@ function rateLimit(
     }
     bucket.count++;
     if (bucket.count > max) {
-      res.setHeader("Retry-After", String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+      setRetryAfter(res, bucket.resetAt - now);
       return res.status(429).json({ error: "Too many attempts. Please wait a minute and try again." });
     }
     return next();
@@ -4684,12 +4690,13 @@ async function startServer() {
       // live code is already in the inbox: send the user on to enter it (a 429
       // there left the owner stuck on the form while an attacker re-registered).
       const live = !!existingUser.verificationCode && existingUser.verificationCodeExpires >= Date.now();
-      if (mailCooldownLeft("verification", emailTrimmed) > 0) {
+      const wait = mailCooldownLeft("verification", emailTrimmed);
+      if (wait > 0) {
         if (live) {
           return res.json({ success: true, email: emailTrimmed, via: "smtp", previewUrl: null,
             message: "A code for this email was sent less than a minute ago. Enter the 6-digit code from your inbox; if nothing arrives, register again in a minute." });
         }
-        res.setHeader("Retry-After", "60");
+        setRetryAfter(res, wait);
         return res.status(429).json({ error: "A code for this email went out less than a minute ago. Please try again in a minute." });
       }
       const updatedCode = live ? existingUser.verificationCode : makeCode();
@@ -4747,8 +4754,9 @@ async function startServer() {
 
     // Every verification mail, first or resend, takes the address's slot: a
     // swept (e.g. locked) row must not buy a fresh mail inside the minute.
-    if (mailCooldownLeft("verification", emailTrimmed) > 0) {
-      res.setHeader("Retry-After", "60");
+    const wait = mailCooldownLeft("verification", emailTrimmed);
+    if (wait > 0) {
+      setRetryAfter(res, wait);
       return res.status(429).json({ error: "A code for this email went out less than a minute ago. Please try again in a minute." });
     }
     const verificationCode = makeCode();
@@ -4968,11 +4976,12 @@ async function startServer() {
 
     // One recovery mail per address per minute (no inbox flood). Register
     // already tells whether an address has an account, so this adds no oracle.
-    if (!isElectron && mailCooldownLeft("recovery", emailTrimmed) > 0) {
+    const wait = isElectron ? 0 : mailCooldownLeft("recovery", emailTrimmed);
+    if (wait > 0) {
       if (user.recoveryCode && (user.recoveryCodeExpires ?? 0) >= Date.now()) {
         return res.json({ success: true, message: "A recovery code went out less than a minute ago. Enter the 6-digit code from your inbox." });
       }
-      res.setHeader("Retry-After", "60");
+      setRetryAfter(res, wait);
       return res.status(429).json({ error: "A recovery code went out less than a minute ago. Please try again in a minute." });
     }
 

@@ -63,4 +63,28 @@ assert.deepStrictEqual(readers.map(([, l]) => l.trim()), ['const ip = (req.ip ||
   `only rateKey may read the client address: ${JSON.stringify(readers)}`); n++;
 const calls = src.match(/rateLimit\(\s*"[^"]+"/g) ?? [];
 assert(calls.length >= 15, `expected every route limiter via rateLimit(), found ${calls.length}`); n++;
+
+// Retry-After (director audit s16: "always 1" and "+60" both passed the old 1..60 range check). The limiter
+// runs from source on a controlled clock: a 429 names ceil(remaining), a retry 1 s sooner is still
+// refused, and a retry after exactly Retry-After passes.
+type Mw = (req: unknown, res: unknown, next: () => void) => void;
+let clock = 0;
+const span = src.slice(src.indexOf('const rateBuckets = new Map'), src.indexOf('\n}\n', src.indexOf('function rateLimit(')) + 2);
+const limit = new Function('net', 'process', 'Date', `${ts.transpileModule(span, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return rateLimit;`)(
+  net, { env: {} }, { now: () => clock }) as (label: string, max: number, windowMs: number) => Mw;
+const hit = (mw: Mw, t: number) => {
+  clock = t; let passed = false, code = 0, ra: string | undefined;
+  const res = { setHeader: (k: string, v: string) => { if (k === 'Retry-After') ra = v; }, status: (c: number) => { code = c; return res; }, json: () => res };
+  mw({ ip: '203.0.113.9', socket: {} }, res, () => { passed = true; });
+  return { passed, code, ra };
+};
+for (const d of [0, 1, 999, 1000, 1001, 30_500, 58_999, 59_000, 59_001, 59_999]) {
+  const mw = limit(`ra${d}`, 2, 60_000), T0 = 1_000_000, want = Math.ceil((60_000 - d) / 1000);
+  hit(mw, T0); hit(mw, T0);
+  const r = hit(mw, T0 + d);
+  assert(r.code === 429 && r.ra === String(want), `at +${d} ms: ${r.code} Retry-After ${r.ra}, want ${want}`);
+  assert.strictEqual(hit(mw, T0 + d + (want - 1) * 1000).code, 429, `+${d}: a retry 1 s before Retry-After must still be refused`);
+  assert(hit(mw, T0 + d + want * 1000).passed, `+${d}: a retry after exactly Retry-After (${want}s) must pass`);
+  n += 3;
+}
 console.log(`ratekey.cloud.test.ts: ${n} checks passed (${calls.length} rateLimit call sites, all keyed by rateKey)`);
