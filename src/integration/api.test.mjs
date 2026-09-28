@@ -520,8 +520,8 @@ try {
     record('a suffix-attack host is not caught by a loose www match', r4.status !== 301, `status=${r4.status}`);
   }
 
-  // ══ 12c. One game, many spellings, one report (sweep 16): the report and its
-  //      cache key both read cleanPayoffs' rounded numbers, so "-0", "2", 2e0,
+  // ══ 12c. One game, many spellings, one report (sweep 16): the report reads
+  //      cleanPayoffs' rounded numbers (no report cache exists), so "-0", "2", 2e0,
   //      2.0 and a11=2.0004 are the same game and must get byte-identical answers.
   //      Mixed NE (x=3/4, y=1/3): unrounded, a11 alone moves y (a uniform shift would not).
   {

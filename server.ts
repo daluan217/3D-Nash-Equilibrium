@@ -588,20 +588,6 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNou
   return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
 }
 
-// Validated-report cache. The same eight numbers always have the same
-// equilibria, and only envelopes that passed EVERY gate are stored — so a
-// hit serves certified content instantly and for free. The six standard
-// presets are the common case (identical matrix + scenario on every visitor).
-// Explicit Regenerate clicks send bypassCache so the button still rolls a
-// fresh report (the cache is then overwritten with the new validated one);
-// scenario-only invention requests never touch the cache — freshness is
-// their point. In-memory on purpose: it dies with the process, which caps
-// staleness at one deploy cycle.
-const reportCache = new Map<string, object>();
-const REPORT_CACHE_MAX = 200;
-const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number; b11: number; b12: number; b21: number; b22: number }, sc?: Scenario) =>
-  JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
-    sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair, cleanUserColorTerms } from "./src/utils/colorTerms";
 import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
@@ -4232,26 +4218,15 @@ async function startServer() {
     //     gets a template report with no story.
     //   * App.tsx's `source === 'llm' && validation?.ok === true` clause, and
     //     with it the client's whole untrusted-envelope rendering, is dead.
-    //   * THE REPORT CACHE NEVER SERVES. `reportCache` is written only under
-    //     `source === 'llm'`, so it is never populated, and the note below
-    //     about serving an identical request "instantly" describes behaviour
-    //     that no longer happens. Harmless in practice — the presets supply
-    //     their own scenario and cost zero calls anyway.
+    //   * The report cache that lived here was DELETED (BLUE-LOOP-CLOUD-22):
+    //     written only under `source === 'llm'`, it never served, and no test
+    //     could fail on its key. Clients still send `bypassCache`; it is ignored.
     //
     // NOT DELETED ON PURPOSE: rung 2 (model states the payoffs, solver still
     // states the equilibria) is on the roadmap and will need all of it.
     // Labelled instead, because the cost of this code is not that it runs — it
     // is that four guarantees look live to anyone reading the file.
     // ─────────────────────────────────────────────────────────────────────────
-
-    // Cache: serve a previously validated envelope for the identical
-    // (matrix, scenario) instantly. bypassCache comes from an explicit
-    // Regenerate click, which must roll fresh (and then overwrites the entry).
-    const cacheKey = reportCacheKey(payoffs, scenario);
-    if (req.body?.bypassCache !== true) {
-      const hit = reportCache.get(cacheKey);
-      if (hit) return res.json(hit);
-    }
 
     const groundTruth = computeAllNE(payoffs);
 
@@ -4408,17 +4383,6 @@ async function startServer() {
           groundTruth,
           fallbackReason: "validation-failed",
         };
-
-    // Only fully-verified envelopes are worth serving twice. Insertion-order
-    // eviction keeps the map bounded; the presets are re-cached on their
-    // next request if ever evicted.
-    if (envelope.source === "llm" && envelope.validation?.ok) {
-      if (reportCache.size >= REPORT_CACHE_MAX) {
-        const oldest = reportCache.keys().next().value;
-        if (oldest !== undefined) reportCache.delete(oldest);
-      }
-      reportCache.set(cacheKey, envelope);
-    }
     return res.json(envelope);
   }));
 

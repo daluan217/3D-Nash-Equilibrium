@@ -108,7 +108,6 @@ const NON_GCS_RECEIVERS = new Set([
   'res',          // express: res.download(path)
   'app',          // express: app.delete(route, ...)
   'rateBuckets',  // Map.delete
-  'reportCache',  // Map.delete
   'lastCodeMail', // Map.delete: the per-address mail cooldown prunes expired entries (BLUE-LOOP-CLOUD-22)
 ]);
 
@@ -217,15 +216,15 @@ check('createReadStream is excluded by design, and still present',
 // touching a single assertion: adding a receiver name silently un-guards
 // every call on it. Keep it tiny and force a re-justification to grow it.
 check('the non-GCS receiver allowlist stays minimal',
-  NON_GCS_RECEIVERS.size <= 5,
+  NON_GCS_RECEIVERS.size <= 4,
   `${NON_GCS_RECEIVERS.size} exempt receivers — each one un-guards every GCS-named call on it: ${
     [...NON_GCS_RECEIVERS].join(', ')}`);
 
 // A size cap alone can be satisfied by SWAPPING an entry for `file`. Pin the
 // membership too: exempting anything that could be a GCS File must fail here,
 // not silently drop call sites out of the scan.
-check('the allowlist is exactly the five known non-GCS receivers',
-  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,lastCodeMail,rateBuckets,reportCache,res',
+check('the allowlist is exactly the four known non-GCS receivers',
+  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,lastCodeMail,rateBuckets,res',
   `allowlist is now: ${[...NON_GCS_RECEIVERS].sort().join(',')}`);
 
 // SHADOWING is the attack the membership check cannot see: bind a GCS File to
@@ -238,7 +237,6 @@ const EXPECTED_BINDING: Record<string, RegExp | null> = {
   res: null,                       // express parameter only — must never be declared
   app: /^express\(\)/,
   rateBuckets: /^new Map\b/,
-  reportCache: /^new Map\b/,
   lastCodeMail: /^new Map\b/,
 };
 const shadowed: string[] = [];
@@ -333,7 +331,7 @@ check('SELF-TEST: a not-yet-used blocking method (file.delete) is REPORTED',
 check('SELF-TEST: file.setMetadata() is REPORTED',
   analyse('async function f(){ await file.setMetadata(md); }').bare === 1);
 check('SELF-TEST: allowlisted Map.delete is NOT reported',
-  analyse('function f(){ rateBuckets.delete(k); reportCache.delete(k); }').total === 0);
+  analyse('function f(){ rateBuckets.delete(k); lastCodeMail.delete(k); }').total === 0);
 check('SELF-TEST: allowlisted app.delete route registration is NOT reported',
   analyse('function f(){ app.delete("/api/games/:id", h); }').total === 0);
 // Gate review #10: the site BUILDER, not just the matcher. These name the
