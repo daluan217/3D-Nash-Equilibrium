@@ -1988,10 +1988,10 @@ function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS, peer
  * generation was adopted, so the first save replaced the bucket with an
  * empty database (BLUE-LOOP-CLOUD-22, hit a).
  */
-async function readGcsDb(unlessGeneration: string | null = null): Promise<{ db: DB; generation: string } | 'unchanged' | null> {
+async function readGcsDb(unlessGeneration: string | null = null): Promise<{ db: DB; generation: string; lineage: string } | 'unchanged' | null> {
   const { Storage } = await import('@google-cloud/storage');
   const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
-  let meta: { generation?: string | number } = {}, content: Buffer | null = null;
+  let meta: { generation?: string | number; metadata?: Record<string, unknown> } = {}, content: Buffer | null = null;
   // One metadata GET per read (404 = no object). The download is bound to that
   // generation; a peer write in between makes it 404 (buckets keep only the
   // live generation), so re-read once rather than fail the re-check.
@@ -2017,8 +2017,23 @@ async function readGcsDb(unlessGeneration: string | null = null): Promise<{ db: 
     throw err;
   }
   if (meta.generation == null) throw new Error('db.json metadata carried no generation');
-  return { db, generation: String(meta.generation) };
+  const { lineage } = meta.metadata ?? ({} as Record<string, unknown>);
+  return { db, generation: String(meta.generation), lineage: typeof lineage === 'string' && lineage !== '' ? lineage : LEGACY };
 }
+
+/**
+ * Which history db.json holds: custom metadata on every upload, minted by the
+ * upload that CREATES the object and kept by every write after (GCS's own
+ * generation and timeCreated change on every write). A remote under another id
+ * was born after our read without our rows (lifecycle delete, then a fresh
+ * instance's sign-up), so their absence is no deletion (S18-1): we union and
+ * write back. Unstamped objects read as 'legacy', the id their writers keep.
+ * A restored generation keeps its id, so it still rolls back; an uploaded file
+ * carries none. ponytail: a deliberate wipe or edit-by-upload needs the service
+ * stopped (a live instance may write its rows back into the new object).
+ */
+const LEGACY = 'legacy';
+let gcsLineage = LEGACY; // of gcsBaselineDb; set by every read and landed upload
 
 // In-process intervals (freshness, drain, cooldown, rate windows) run on the
 // monotonic clock: a wall-clock step backward locked clients out past their
@@ -2062,14 +2077,20 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   if (remote === null) {
     gcsBaselineDb = { users: [], games: [] };
     gcsGeneration = '0'; // GCS's own "must not exist yet" precondition
+    // Our rows now live only in this process: write them back now, not at the
+    // next route write, which a scale-in may never see.
+    if (loadDB().users.length + loadDB().games.length > 0) scheduleGcsSave();
     return;
   }
   const baseline = jsonClone(remote.db) as DB; // routes mutate records in place; the baseline must not follow
+  const descends = gcsBaselineDb === null || remote.lineage === gcsLineage;
   // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
   // without it, a game created in it and deleted since came back (main too).
-  applyMergedDb(unionMergeDb(remote.db, loadDB(), gcsBaselineDb, gcsUnackedDb));
+  applyMergedDb(unionMergeDb(remote.db, loadDB(), gcsBaselineDb, gcsUnackedDb, descends));
   gcsBaselineDb = baseline;
   gcsGeneration = remote.generation;
+  gcsLineage = remote.lineage;
+  if (!descends) scheduleGcsSave(); // the rows the remote lacked live only in this process until written back
 }
 
 /** One sync at a time: the gate, the refresh and the pump share it. */
@@ -2235,7 +2256,7 @@ function pickAccount(mine: User, theirs: User, was: User): User {
   return JSON.parse(JSON.stringify(out)) as User;
 }
 
-function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | null = null): DB {
+function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | null = null, descends = true): DB {
   // THREE-way, not two (BLUE-LOOP-CLOUD-22, hit c): a stale instance's
   // untouched copy of a record another instance DELETED (delete-confirm) or
   // CHANGED (a reset's hash and tokenVersion) used to overwrite that. `unacked`
@@ -2251,9 +2272,11 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
     for (const x of r) if (inLocal.has(x.id) || !(base.has(x.id) || sent.has(x.id))) out.set(x.id, x);
     for (const x of l) {
       const was = base.get(x.id);
-      if (was !== undefined && !inRemote.has(x.id)) continue; // deleted remotely
+      // A remote born without our rows (see gcsLineage) is no evidence of a
+      // deletion or an edit: our row stands (pickAccount arbitrates accounts).
+      if (descends && was !== undefined && !inRemote.has(x.id)) continue; // deleted remotely
       // Unchanged here since the baseline: remote's copy stands.
-      if (was !== undefined && isDeepStrictEqual(JSON.parse(JSON.stringify(x)), was)) continue;
+      if (descends && was !== undefined && isDeepStrictEqual(JSON.parse(JSON.stringify(x)), was)) continue;
       const theirs = out.get(x.id);
       const both = pick && was !== undefined && theirs !== undefined && !isDeepStrictEqual(theirs, was);
       out.set(x.id, both ? pick(x, theirs, was) : x); // new or changed here: local wins a same-id collision
@@ -2269,7 +2292,9 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
   const games = merge(remote.games, local.games, baseline?.games ?? [], unacked?.games ?? [])
     .map((g) => (alias.has(g.userId) ? { ...g, userId: alias.get(g.userId)! } : g))
     .filter((g) => !goneUsers.has(g.userId));
-  return dedupeAccounts({ users, games }, remote);
+  // Against a store born without our rows, the accounts we had read are the
+  // established ones: a sign-up there that took one's email or name yields.
+  return dedupeAccounts({ users, games }, descends || !baseline?.users.length ? remote : baseline);
 }
 
 /**
@@ -2380,9 +2405,13 @@ async function uploadDbToGcs(): Promise<void> {
     const bodyStr = JSON.stringify(loadDB(), null, 2);
     dbBytes = Buffer.byteLength(bodyStr); // exact at send time; later writes add their deltas
     const sent = jsonClone(loadDB()); // what bodyStr carries, sharing the store's strings: not a second full copy
+    // A create is a new history, even ours re-created after a 404: a peer that
+    // read writes it never saw must not take their absence as deletions.
+    const stamp = gcsGeneration === '0' ? crypto.randomUUID() : gcsLineage;
     try {
       await withDeadline(file.save(bodyStr, {
         contentType: 'application/json', resumable: false, validation: false,
+        metadata: { metadata: { lineage: stamp } },
         // A query parameter, not a local deadline; `withDeadline` is that.
         timeout: 30_000,
         preconditionOpts: { ifGenerationMatch: gcsGeneration! },
@@ -2392,6 +2421,7 @@ async function uploadDbToGcs(): Promise<void> {
       const generation = file.metadata?.generation;
       gcsGeneration = generation != null ? String(generation) : null;
       gcsBaselineDb = sent; // a real copy, not a live reference
+      gcsLineage = stamp;
       gcsUnackedDb = null; // an older write can no longer land: its precondition is now stale
       gcsAckEpoch += 1;
       return;

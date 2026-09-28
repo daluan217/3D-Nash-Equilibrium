@@ -60,7 +60,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 123;
+const EXPECTED_CHECKS = 127;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -96,7 +96,7 @@ function parseMultipart(contentType, rawBody) {
 const unconditionalUploads = [];
 function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferListen = false }) {
   let stored = initialContent; // null = object does not exist
-  let generation = initialGeneration;
+  let generation = initialGeneration, custom = null; // custom metadata (lineage), set by the upload that wrote it
   const uploadLog = []; // { atMs, ifGenerationMatch, body }
   let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, afterStoreOnce = null, n412 = 0;
   let readDelay = { meta: 0, media: 0 }, metaGets = 0, stale404s = 0, afterMetaOnce = null, failUploads = false;
@@ -121,7 +121,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
           return;
         }
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(media ? seen : JSON.stringify({ name: OBJECT, bucket: BUCKET, generation: String(seenGen), size: String(seen.length) }));
+        res.end(media ? seen : JSON.stringify({ name: OBJECT, bucket: BUCKET, generation: String(seenGen), size: String(seen.length), ...(custom ? { metadata: custom } : {}) }));
         if (!media && afterMetaOnce) { const f = afterMetaOnce; afterMetaOnce = null; stored = f(stored); generation += 1; }
       };
       if (media) {
@@ -165,6 +165,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
         }
         stored = content;
         generation += 1;
+        custom = JSON.parse(parts[0] || '{}').metadata ?? null; // a write replaces the object's custom metadata
         uploadLog.at(-1).landedGen = generation;
         res.writeHead(200, { 'content-type': 'application/json' });
         const answer = { name: OBJECT, bucket: BUCKET, generation: String(generation), size: String(stored.length) };
@@ -182,7 +183,8 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   const controls = {
     close: () => new Promise((r) => server.close(() => r())),
     getStored: () => stored,
-    setStored: (v) => { stored = v; },
+    setStored: (v) => { stored = v; if (v === null) custom = null; }, // null = the object was deleted, metadata with it
+    getCustom: () => custom,
     getGeneration: () => generation,
     uploadCount: () => uploadLog.length,
     uploadLog: () => uploadLog,
@@ -1933,7 +1935,7 @@ try {
         games: [{ id: 'g_p', userId: 'p_game', name: 'Kept', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' }],
       }) }));
       // Mail "down": a closed port. The server answers 500 fast (connection refused).
-      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-squat-'))), aX, aGcs, { ...mail, SMTP_PORT: String(gcsPortA + 53) })), aX); // nothing binds it: mail down
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-squat-'))), aX, aGcs, { ...mail, SMTP_PORT: String(gcsPortA + 11) })), aX); // nothing binds it (port1's +12 is unused): mail down
       const reg = (p, u, email, pw) => call(p, '/api/auth/register', { username: u, email, password: pw });
       const jv = async (body) => { const r = await call(aX, '/api/auth/verify', body); return { status: r.status, error: (await r.json().catch(() => ({}))).error ?? '' }; };
       const V = 'squatted@example.test';
@@ -2160,7 +2162,7 @@ try {
     // (b) Limits: 17KB headers yield 431; 120KB body yields 413 with {"error":"Invalid request."}.
     // (c) A slow header drip does not block other endpoints (/api/health responds promptly).
     {
-      const sApp = port1 + 54, sGcs = gcsPortA + 54; // even offsets, as everywhere: port1 = gcsPortA + 1 in CI
+      const sApp = port1 + 54, sGcs = gcsPortA + 54; // even offsets, as everywhere: CI's port1 sits one below gcsPortA, so odd ones collide
       const fake = await trackFake(startFakeGcsDb({ port: sGcs, initialContent: JSON.stringify({ users: [], games: [] }) }));
       const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s26-'))), sApp, sGcs,
         { ADMIN_SECRET: 'super-admin-secret-2026' })), sApp);
@@ -2335,6 +2337,78 @@ try {
           && endC.games.find((g) => g.id === 'g_y1')?.description === 'x'.repeat(400) && !endC.users.some((u) => u.username === 'late')
           && !!endC.users.find((u) => u.id === 'u_y')?.passwordHash.startsWith('pbkdf2$'),
         JSON.stringify({ code, exitMs, games: endC.games.map((g) => g.id), users: endC.users.map((u) => u.username) }));
+    }
+
+    // s28 — db.json deleted mid-run (sweep 18 angle 5, S18-1). A fresh instance's sign-up re-created it
+    // without X's rows, and X's three-way merge took every row it had read as a remote deletion: all
+    // accounts and games gone, X answered 401. Cannot pass by coincidence: X only READS after the delete
+    // (no route write), so rows reach GCS only through the write-back, and (c) runs a same-history delete.
+    {
+      const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const g = (id, userId) => ({ id, userId, name: id, description: '', payoffs: pay, createdAt: '2026-01-01T00:00:00Z' });
+      const seed = JSON.stringify({ users: [seededUser('u_a', 'a', 'a@example.test', 'Sup3rSecret!23'), seededUser('u_b', 'b', 'b@example.test', 'Sup3rSecret!23')],
+        games: [g('g_a', 'u_a'), g('g_b', 'u_b')] });
+      const s28Gcs = gcsPortA + 56, xApp = port1 + 56, yApp = port1 + 54; // s27's and s26's released ports
+      const req = (p, method, route, tok, body) => fetch(`http://127.0.0.1:${p}${route}`, { method,
+        headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      const loginOn = async (p, email) => (await (await call(p, '/api/auth/login', { email, password: 'Sup3rSecret!23' })).json()).token;
+      const ids = (rows) => rows.map((x) => x.id).sort().join(',');
+      const onGcs = (f) => (f.getStored() ? JSON.parse(f.getStored()) : { users: [], games: [] });
+      const bootX = async (f, tag) => {
+        const X = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), `nash-gcs-s28${tag}-`))), xApp, s28Gcs, mail)), xApp);
+        const u0 = f.uploadCount(), tok = await loginOn(xApp, 'a@example.test'); // the rehash write lands first
+        await waitUntil(() => f.uploadLog().slice(u0).some((x) => x.landedGen), 3000);
+        await new Promise((r) => setTimeout(r, 2200)); // past X's window: its next DB route re-checks
+        return { X, tok };
+      };
+      // (a) deleted; X's next re-check finds no object and writes its rows back at once.
+      const fa = await trackFake(startFakeGcsDb({ port: s28Gcs, initialContent: seed }));
+      const a = await bootX(fa, 'a');
+      fa.setStored(null);
+      const aGet = await req(xApp, 'GET', '/api/games', a.tok);
+      const aBack = await waitUntil(() => fa.getStored() !== null, 4000);
+      const aEnd = onGcs(fa), aLineage = fa.getCustom()?.lineage;
+      await stop(a.X.child); await fa.close();
+      record('THE DEFECT (db.json deleted, a): a read alone re-creates the object with every row, under a new lineage',
+        aGet.status === 200 && aBack && ids(aEnd.users) === 'u_a,u_b' && ids(aEnd.games) === 'g_a,g_b' && /^[0-9a-f-]{36}$/.test(aLineage ?? ''),
+        JSON.stringify({ get: aGet.status, aBack, users: ids(aEnd.users), games: ids(aEnd.games), aLineage }));
+      // (b) deleted; fresh instance Y boots on "no object" and a sign-up there (taking u_b's free-there
+      // username) creates it; then X re-checks. The established account keeps its name; Y's is renamed.
+      const fb = await trackFake(startFakeGcsDb({ port: s28Gcs, initialContent: seed }));
+      const b = await bootX(fb, 'b');
+      fb.setStored(null);
+      const Y = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s28y-'))), yApp, s28Gcs, mail)), yApp);
+      const reg = await call(yApp, '/api/auth/register', { username: 'b', email: 'new@example.test', password: 'Sup3rSecret!23' });
+      await waitUntil(() => fb.getStored() !== null, 3000);
+      const mid = onGcs(fb), yLineage = fb.getCustom()?.lineage;
+      record('fixture: GCS held only Y\'s sign-up under a minted lineage, and X had answered nothing since the delete',
+        reg.status === 200 && mid.users.length === 1 && mid.users[0].username === 'b' && mid.users[0].email === 'new@example.test' && mid.games.length === 0 && /^[0-9a-f-]{36}$/.test(yLineage ?? ''),
+        JSON.stringify({ reg: reg.status, users: mid.users.map((u) => u.username), games: mid.games.length, yLineage }));
+      const bGet = await req(xApp, 'GET', '/api/games', b.tok);
+      const bGames = bGet.status === 200 ? (await bGet.json()).map((x) => x.id) : [];
+      const bBack = await waitUntil(() => ids(onGcs(fb).users).split(',').length === 3 && ids(onGcs(fb).games) === 'g_a,g_b', 4000);
+      const bEnd = onGcs(fb);
+      record('THE DEFECT (db.json deleted, b): X keeps serving its rows and writes them back without a route write; its accounts keep their names, Y\'s sign-up stands renamed',
+        bGet.status === 200 && bGames.join(',') === 'g_a' && bBack && fb.getCustom()?.lineage === yLineage
+          && bEnd.users.find((u) => u.id === 'u_a')?.username === 'a' && bEnd.users.find((u) => u.id === 'u_b')?.username === 'b'
+          && /^b-.{6}$/.test(bEnd.users.find((u) => u.email === 'new@example.test')?.username ?? ''),
+        JSON.stringify({ get: bGet.status, bGames, users: bEnd.users.map((u) => u.username), games: ids(bEnd.games), lineage: fb.getCustom()?.lineage === yLineage }));
+      // (c) the histories have converged: a delete on Y is a real deletion X must honor, not a row to restore.
+      await new Promise((r) => setTimeout(r, 2200)); // past Y's window: its login re-reads the merged store
+      const yTok = await loginOn(yApp, 'a@example.test');
+      const del = await req(yApp, 'DELETE', '/api/games/g_a', yTok);
+      await waitUntil(() => !onGcs(fb).games.some((x) => x.id === 'g_a'), 3000);
+      await new Promise((r) => setTimeout(r, 2200));
+      const cGet = await req(xApp, 'GET', '/api/games', b.tok);
+      const cGames = cGet.status === 200 ? (await cGet.json()).map((x) => x.id) : [];
+      const add = await req(xApp, 'POST', '/api/games', b.tok, { name: 'A-after', payoffs: pay });
+      await waitUntil(() => onGcs(fb).games.some((x) => x.name === 'A-after'), 3000);
+      const cEnd = onGcs(fb);
+      await stop(b.X.child); await stop(Y.child); await fb.close();
+      record('THE DEFECT (same lineage, c): a delete on Y after the histories converged stays deleted on X and on GCS',
+        del.status === 200 && cGet.status === 200 && cGames.length === 0 && add.status === 200 && !cEnd.games.some((x) => x.id === 'g_a')
+          && cEnd.games.some((x) => x.id === 'g_b') && cEnd.users.length === 3,
+        JSON.stringify({ del: del.status, get: cGet.status, cGames, add: add.status, games: cEnd.games.map((x) => x.name), users: cEnd.users.length }));
     }
   }
 
