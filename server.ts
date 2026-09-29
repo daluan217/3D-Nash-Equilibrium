@@ -4590,7 +4590,16 @@ async function startServer() {
           const [metadata] = await withDeadline(file.getMetadata(), 'dmg getMetadata()');
           const size = metadata.size !== undefined && metadata.size !== null
             ? parseInt(String(metadata.size), 10) : null;
+          // A release (gcloud storage cp) replaces the object: a resume across it spliced v1's head onto v2's
+          // tail, and one landing between getMetadata() and the read sent v2's bytes under v1's length
+          // (sweep 24). The strong ETag is the generation and the read is pinned to it (a stale pin 404s ->
+          // 500); If-Match / If-Range compare strongly, so a W/ tag or a date never matches (RFC 9110 §13.1).
+          const etag = metadata.generation ? `"${metadata.generation}"` : undefined;
+          const ifMatch = req.headers['if-match'];
+          if (ifMatch !== undefined && !ifMatch.split(',').some((t) => t.trim() === '*' || t.trim() === etag)) return res.status(412).end();
+          const pinned = file.bucket.file(file.name, { generation: metadata.generation });
 
+          if (etag) res.setHeader('ETag', etag);
           res.setHeader('Content-Type', 'application/octet-stream');
           res.setHeader('Content-Disposition', 'attachment; filename="Nash Equilibrium Simulator.dmg"');
           if (size !== null && Number.isFinite(size)) res.setHeader('Accept-Ranges', 'bytes');
@@ -4610,10 +4619,14 @@ async function startServer() {
           }
 
           const streamAndPipe = (range?: { start: number; end: number }) => {
-            const stream = range ? file.createReadStream(range) : file.createReadStream();
+            const stream = range ? pinned.createReadStream(range) : pinned.createReadStream();
             stream.on('error', (err) => {
               console.error("Error streaming DMG from GCS:", err);
-              if (!res.headersSent) res.status(500).json({ error: "Internal Server Error" });
+              if (!res.headersSent) {
+                // The download's headers are already set: a JSON 500 must not go out as an octet-stream attachment.
+                for (const h of ['Content-Type', 'Content-Disposition', 'Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag']) res.removeHeader(h);
+                res.status(500).json({ error: "Internal Server Error" });
+              }
               else res.destroy();
             });
             // pipe() never ends the SOURCE when the client drops: every aborted download kept its
@@ -4627,7 +4640,8 @@ async function startServer() {
           // otherwise means starting over. `Range: bytes=start-end`,
           // `bytes=start-` (open-ended), and `bytes=-N` (last N bytes) are
           // the three forms curl/browsers/download managers actually send.
-          const rangeHeader = size !== null ? req.headers.range : undefined;
+          const ifRange = req.get('if-range');
+          const rangeHeader = size !== null && (ifRange === undefined || ifRange.trim() === etag) ? req.headers.range : undefined;
           const m = typeof rangeHeader === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim()) : null;
           if (m && (m[1] !== '' || m[2] !== '') && size !== null) {
             let start: number, end: number;
