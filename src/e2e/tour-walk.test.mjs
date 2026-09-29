@@ -1,9 +1,9 @@
 // TASK-18 H22: the whole tour, not only step 1. Every context runs with scrollend REMOVED (Safari < 26.2 has none).
 // WALK: all 19 steps at the three layout families, the page scrolled away before each Next (by key, by click) or
 // left alone (IN VIEW: a same-target step must not move the page). FLIGHT: a second Next 300 ms into a flight.
-// INTERRUPT: the visitor's PageDown stops a flight short, then Next to a same-target step must still land. LONG FRAME:
-// one 1.5 s frame after the tour's call. SLOW: 550 ms frames. HELD START: the scroll starts 2 frames late. Mutants
-// (old deps, top-only key, nostall, or, nostop, noinput; kill table in PR #211) each fail by name.
+// INTERRUPT: a visitor's key stops a flight short (in the tour's own call), then Next to a same-target step must
+// still land. LONG FRAME: one 1.5 s frame after the tour's call. SLOW: 550 ms frames. HELD START: the scroll starts
+// 2 frames late. Mutants (old deps, top-only key, nostall, or, nostop, noinput; kill table in PR #211) fail by name.
 import { spawn } from 'node:child_process';
 import { loadavg } from 'node:os';
 import { chromium, webkit } from 'playwright';
@@ -32,6 +32,12 @@ const init = (hogMs) => {
     const token = window.__held = hold ? {} : null;
     if (hold) { window.__hold = 0; for (let j = 1; j <= hold[0]; j++) later(j, () => { block(hold[1]); if (j === hold[0] && window.__held === token) call(); }); return undefined; }
     const r = call();
+    // __interrupt: once, a visitor's key (keydown, then the page scrolls halfway) stops the flight in the call's own
+    // task: polling frames for mid-flight flaked when the first frame had already arrived (CI 36524167108, WebKit).
+    if (window.__interrupt) { window.__interrupt = 0; const se = document.scrollingElement, from = window.__calls.at(-1)[0];
+      const to = Math.min(Math.max(0, top), se.scrollHeight - se.clientHeight), live = Math.round(scrollY);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: to < from ? 'PageUp' : 'PageDown', bubbles: true }));
+      se.scrollTop = Math.round((from + to) / 2); window.__interrupted = { from, top: to, live, at: Math.round(scrollY) }; }
     if (lf) { window.__longFrame = 0; for (const [k, ms] of lf) later(k, () => block(ms)); } return r; };
   const st = window.scrollTo; window.scrollTo = function (...a) { return rec(a[0].top, () => st.apply(this, a), 'to'); };
   const sb = window.scrollBy; window.scrollBy = function (...a) { return rec(scrollY + a[0].top, () => sb.apply(this, a), 'by'); };
@@ -131,13 +137,10 @@ async function pair(page, tag, portrait, kind, k, at) {
   const t = TARGETS[k], name = `${tag} ${k}->${k + 1}->${k + 2} (${TARGETS[k - 1]}->${t}->${TARGETS[k + 1]})`;
   const away = farFrom(s, t); await awayTo(page, away); s = await settled(page);
   const n0 = s.calls.length;
-  // The tour's first call after n0, then its first moved frame: the extra action lands inside the flight.
-  const moving = page.evaluate((n) => new Promise((r) => { const t0 = performance.now(); const f = () => {
-    const c = window.__calls[n]; if (c && Math.abs(scrollY - c[0]) >= 1) r({ top: c[1], y: Math.round(scrollY) });
-    else if (performance.now() - t0 > 20000) r(null); else requestAnimationFrame(f); }; requestAnimationFrame(f); }), n0);
   let n1 = 0; const second = async () => { n1 = await page.evaluate(() => window.__calls.length); await press(page, 'ArrowRight'); };
-  // Arms the next tour call: one long frame after it, or a start held for HOLD frames.
-  const arm = () => page.evaluate(([k, lf, hold]) => { if (k === 'long frame') window.__longFrame = lf; if (k === 'held start') window.__hold = hold; }, [kind, LONG, HOLD]);
+  // Arms the next tour call: one long frame after it, the visitor's key in it, or a start held for HOLD frames.
+  const arm = () => page.evaluate(([k, lf, hold]) => { if (k === 'long frame') window.__longFrame = lf;
+    if (k === 'interrupt') { window.__interrupt = 1; window.__interrupted = null; } if (k === 'held start') window.__hold = hold; }, [kind, LONG, HOLD]);
   await arm();
   await press(page, 'ArrowRight');
   if (kind === 'flight') { await page.waitForTimeout(300); await second(); }
@@ -148,13 +151,14 @@ async function pair(page, tag, portrait, kind, k, at) {
     await arm();
     await second();
   } else {
-    const m = await moving; await page.keyboard.press('PageDown'); s = await settled(page);
-    // Fixture: the PageDown really landed mid-flight and stopped it short (so a live flight is what Next meets).
-    check(m && Math.abs(m.y - m.top) >= 1 && Math.abs(s.y - m.top) >= 1 && !s.se,
-      `${name}: fixture: PageDown stopped the flight short, scrollend absent (moved at ${m?.y}, headed ${m?.top}, stopped ${s.y}, scrollend ${s.se})`);
+    const m = await page.waitForFunction(() => window.__interrupted, null, { timeout: 20000 }).then((h) => h.jsonValue()).catch(() => null);
+    s = await settled(page);
+    // Fixture: the key landed while the flight was live (not instant) and stopped it short of its target mid-way.
+    check(m && Math.abs(m.live - m.top) >= 1 && Math.abs(m.at - m.top) >= 1 && Math.abs(m.at - m.from) >= 1 && Math.abs(s.y - m.top) >= 1 && !s.se,
+      `${name}: fixture: the visitor's key stopped the flight short, scrollend absent (from ${m?.from}, live ${m?.live}, at ${m?.at}, headed ${m?.top}, stopped ${s.y}, scrollend ${s.se})`);
     // The visitor's own scroll is respected: no re-place yanks the page back while the step is unchanged.
     check(s.step === String(k + 1) && Math.abs(s.y - (m?.top ?? -9)) >= 1,
-      `${name}: the visitor's PageDown is respected, the tour does not scroll back on its own (y ${s.y}, target ${m?.top}, calls ${JSON.stringify(s.calls.slice(n0))})`);
+      `${name}: the visitor's key is respected, the tour does not scroll back on its own (y ${s.y}, target ${m?.top}, calls ${JSON.stringify(s.calls.slice(n0))})`);
     await second();
   }
   s = await settled(page);

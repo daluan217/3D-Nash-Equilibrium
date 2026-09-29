@@ -359,6 +359,11 @@ assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\
   assert.match(cases, /\['flight', LAND[^\n]*\['flight', PORTRAIT[^\n]*\['flight', SHEET/, '3 flights');
   assert.match(cases, /\[LAND, PORTRAIT, SHEET\]\.flatMap\(\(v\) => \[\['interrupt'[^\n]*\['long frame'[^\n]*\['slow'[^\n]*\n\s*\['held start'/, '12 interrupt/long/slow/held');
   assert.match(walk, /TOUR_WALK_ENGINES \|\| 'chromium,webkit'/, 'both engines by default: 2 x 24 = 48 = 6 x 8');
+  // CI 36524167108: a PageDown sent after polling for a moved frame came after arrival on WebKit (one-frame flight).
+  const rec = walk.match(/const rec = [\s\S]*?return r; \};/)?.[0] ?? '';
+  assert.match(rec, /const r = call\(\);[\s\S]*if \(window\.__interrupt\) \{[\s\S]*dispatchEvent\(new KeyboardEvent\('keydown'[\s\S]*se\.scrollTop = /,
+    'the interrupt is a keydown plus a scroll in the tour call\'s own task, never after polling frames');
+  assert.doesNotMatch(walk, /keyboard\.press\('Page(Down|Up)'\)/, 'no interrupt races the flight from outside the page');
 }
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
