@@ -4607,6 +4607,9 @@ async function startServer() {
               if (!res.headersSent) res.status(500).json({ error: "Internal Server Error" });
               else res.destroy();
             });
+            // pipe() never ends the SOURCE when the client drops: every aborted download kept its
+            // GCS read open and paused for the process's life (sweep 22: 120 of 120, still open 130 s on).
+            res.on('close', () => stream.destroy()); // a no-op once the read has ended
             stream.pipe(res);
           };
 

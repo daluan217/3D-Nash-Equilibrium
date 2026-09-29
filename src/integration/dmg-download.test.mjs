@@ -32,6 +32,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
@@ -48,16 +49,29 @@ function record(name, pass, detail) {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
 
-/** A fake GCS JSON API: only the two calls this endpoint makes. */
-function startFakeGcs({ dmgExists }) {
+/** A fake GCS JSON API: only the two calls this endpoint makes. `huge` streams HUGE bytes with backpressure. */
+const HUGE = 64 * 1024 * 1024;
+function startFakeGcs({ dmgExists, huge = false }) {
   const objectPath = `/b/${BUCKET}/o/${encodeURIComponent(DMG_OBJECT)}`;
   // Counts requests that actually fetch OBJECT BYTES (?alt=media) — the
   // thing a HEAD probe must never trigger. Exposed on the returned server so
   // the HEAD test below can assert on it directly, not infer it from timing.
-  let mediaRequests = 0;
+  let mediaRequests = 0, mediaOpen = 0;
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     if (u.pathname === objectPath && u.searchParams.get('alt') === 'media') mediaRequests++;
+    if (huge && u.pathname === objectPath) {
+      if (u.searchParams.get('alt') !== 'media') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ name: DMG_OBJECT, bucket: BUCKET, size: String(HUGE) }));
+      }
+      const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? ''), from = m ? Number(m[1]) : 0, to = m ? Number(m[2]) : HUGE - 1;
+      mediaOpen++; res.on('close', () => { mediaOpen--; });
+      res.writeHead(m ? 206 : 200, { 'content-type': 'application/octet-stream', 'content-length': to - from + 1 });
+      let left = to - from + 1; const chunk = Buffer.alloc(64 * 1024, 7);
+      const pump = () => { while (left > 0) { const c = chunk.subarray(0, Math.min(left, chunk.length)); left -= c.length; if (!res.write(c)) return res.once('drain', pump); } res.end(); };
+      return pump();
+    }
     // db.json's own exists() check at startup (initDB) — always "not found" so
     // the server falls back to a fresh in-memory DB without touching disk.
     if (u.pathname !== objectPath) {
@@ -97,6 +111,7 @@ function startFakeGcs({ dmgExists }) {
     }));
   });
   server.mediaRequestCount = () => mediaRequests;
+  server.mediaOpenCount = () => mediaOpen;
   return new Promise((resolve) => server.listen(fakeGcsPort, () => resolve(server)));
 }
 
@@ -413,6 +428,32 @@ try {
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 
+  // 1b. Sweep 22: `stream.pipe(res)` never ends the SOURCE when the client drops, so every aborted
+  // download kept its GCS read open, paused, for the process's life (120 of 120, still open 130 s on).
+  // A 64 MiB object with real backpressure; the client reads 256 KiB and hangs up.
+  fakeGcs = await startFakeGcs({ dmgExists: true, huge: true });
+  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`);
+  const abortAfter = (range) => new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1', () => s.write(`GET /api/download/dmg HTTP/1.1\r\nHost: x\r\n${range ? `Range: ${range}\r\n` : ''}\r\n`));
+    let got = 0; s.on('data', (d) => { got += d.length; if (got > 256 * 1024) s.destroy(); });
+    s.on('close', () => resolve(got)); s.on('error', () => {});
+  });
+  const drained = async () => { for (let i = 0; i < 50 && fakeGcs.mediaOpenCount() > 0; i++) await new Promise((r) => setTimeout(r, 100)); return fakeGcs.mediaOpenCount(); };
+  // Checked after EACH abort: one released read can tear down its siblings (a mutant that freed only
+  // ranged reads passed an end-of-run count), so every abort must free its own.
+  const got = [], open = [];
+  for (const range of [undefined, undefined, 'bytes=1000-']) { got.push(await abortAfter(range)); open.push(await drained()); }
+  const leftOpen = open.at(-1);
+  record('THE DEFECT: a client that hangs up mid-download releases its GCS read (full and ranged), within 5 s',
+    got.every((g) => g > 256 * 1024 && g < HUGE) && fakeGcs.mediaRequestCount() === 3 && open.every((o) => o === 0),
+    `read ${got.join('/')} bytes, ${fakeGcs.mediaRequestCount()} GCS reads opened, still open after each abort: ${open.join('/')}`);
+  const whole = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+  const wholeLen = (await whole.arrayBuffer()).byteLength;
+  record('…and a download read to the end still delivers every byte (the release is abort-only)',
+    whole.status === 200 && wholeLen === HUGE && (await drained()) <= leftOpen, `status ${whole.status}, ${wholeLen} of ${HUGE} bytes, ${fakeGcs.mediaOpenCount()} GCS reads open (${leftOpen} before)`);
+  await stop(srv); srv = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
+
   // ───────────────────────────────────────────────────────────────────────────
   // 2. GCS says the object does not exist -> the existing 404 contract holds
   // ───────────────────────────────────────────────────────────────────────────
@@ -613,7 +654,7 @@ try {
 // otherwise prints "N/N checks passed" and exits 0. Measured: filtering one
 // data array to empty in desktop-dead-token-owner removed six checks and the
 // run said "37/37 checks passed".
-const EXPECTED_CHECKS = 47;
+const EXPECTED_CHECKS = 49;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
   process.exit(1);
