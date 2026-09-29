@@ -3681,6 +3681,7 @@ async function startServer() {
   sweepStaleAtomicTmpFiles(DB_FILE, Number.isFinite(sweepMaxAgeMs) && sweepMaxAgeMs > 0 ? sweepMaxAgeMs : undefined);
 
   const app = express();
+  app.disable("x-powered-by"); // advertised the framework on every response (sweep 26)
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
   // Trust the proxy in front of us (e.g. Cloud Run) so req.ip reflects the real
@@ -3742,6 +3743,23 @@ async function startServer() {
     });
   }
 
+  // Baseline security headers. A full content CSP is intentionally omitted here
+  // because the app loads Google Analytics + inline scripts and Plotly may use
+  // eval/blob workers — tightening script/style/connect needs browser testing.
+  // Second only to the Host guard: it sat after the www 301 and express.json, so
+  // those answers and every body-parser 400/413/415 went out bare (sweep 26).
+  // HSTS is hosted-only and unconditional: UAs ignore it over http (RFC 6797 §8.1).
+  const sendHsts = process.env.IS_ELECTRON !== "true";
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+    if (sendHsts) res.setHeader("Strict-Transport-Security", "max-age=31536000");
+    next();
+  });
+
   // `www` is not a canonical host (sitemap/robots/canonical all use the bare
   // apex): 301 it straight to the apex, same shape as the existing http->https
   // redirect at the edge. Case-insensitive host match; preserves path+query.
@@ -3768,17 +3786,6 @@ async function startServer() {
       + "was running. Quit and reopen the app, then try again." });
   });
 
-  // Baseline security headers. A full content CSP is intentionally omitted here
-  // because the app loads Google Analytics + inline scripts and Plotly may use
-  // eval/blob workers — tightening script/style/connect needs browser testing.
-  app.use((req, res, next) => {
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-    res.setHeader("X-Frame-Options", "DENY");
-    res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
-    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
-    next();
-  });
   // Account data (sessions, games, admin PII) is never kept in a browser's or
   // proxy's cache: on a shared machine it outlived sign-out (sweep 11).
   app.use(["/api/auth", "/api/games", "/api/admin"], (req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });

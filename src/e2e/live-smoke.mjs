@@ -170,6 +170,18 @@ const ASSET_MIN_BYTES = 20_000;
   const xfo = r.headers.get('x-frame-options');
   record('live security headers present', nosniff === 'nosniff' && xfo === 'DENY',
     `nosniff=${nosniff} xfo=${xfo}`);
+  // Sweep 26: body-parser errors answered before the header middleware (bare 400s), no HSTS, X-Powered-By
+  // on every response. The malformed body is refused by the parser before any route, limit or write.
+  const bad = await getText('/api/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad',
+    signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) }).catch((e) => ({ status: 0, text: String(e), headers: new Headers() }));
+  const hsts = [r, bad].map((x) => x.headers.get('strict-transport-security'));
+  record('live HSTS is on (max-age of at least one year)', hsts.every((v) => Number(/max-age=(\d+)/i.exec(v ?? '')?.[1]) >= 31_536_000),
+    `health=${hsts[0]} malformed-400=${hsts[1]}`);
+  const powered = [r, bad].map((x) => x.headers.get('x-powered-by'));
+  record('live responses do not name the framework (no X-Powered-By)', powered.every((v) => v === null), `health=${powered[0]} malformed-400=${powered[1]}`);
+  const [bn, bx, bc] = ['x-content-type-options', 'x-frame-options', 'content-security-policy'].map((k) => bad.headers.get(k));
+  record('live malformed-JSON 400 carries the security headers', bad.status === 400 && bn === 'nosniff' && bx === 'DENY' && /frame-ancestors 'none'/.test(bc ?? ''),
+    `status=${bad.status} nosniff=${bn} xfo=${bx} csp=${bc}`);
 
   let health = {};
   try { health = JSON.parse(r.text); } catch { /* not json */ }
