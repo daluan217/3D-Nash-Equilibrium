@@ -5,10 +5,10 @@
  * `e2e` status context required by branch protection.
  */
 import assert from 'node:assert';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
@@ -591,7 +591,7 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   // The CLI is what CI runs: its exit status, not checkLog's string, fails the step. Run it by a symlinked path too:
   // Node's import.meta.url is the realpath, so an argv[1]-only guard skipped the check and exited 0 (sweep 15).
   const dir = mkdtempSync(join(tmpdir(), 'shard-cases-')), link = (f: string) => (symlinkSync(join(process.cwd(), 'src/e2e', f), join(dir, f)), join(dir, f));
-  const run = (script: string, args: string[], env = {}) => spawnSync(process.execPath, [script, ...args], { env: { ...process.env, ...env }, encoding: 'utf8' });
+  const run = (script: string, args: string[], env = {}, input = '') => spawnSync(process.execPath, [script, ...args], { env: { ...process.env, ...env }, input, encoding: 'utf8' });
   const cli = (script: string, text: string) => (writeFileSync(join(dir, 'walk.log'), text), run(script, ['walk', join(dir, 'walk.log')], { TOUR_WALK_SHARD: '1/9' }).status);
   for (const script of ['src/e2e/shard-cases.mjs', link('shard-cases.mjs')])
     assert.deepStrictEqual([cli(script, tour(w1)), cli(script, tour(w1.slice(1)))], [0, 1], `the shard-cases.mjs CLI (${script}) exits 0 on its own cases and 1 on a missing one`);
@@ -601,6 +601,25 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   for (const f of ['shard-cases.mjs', 'webkit-shards.mjs'])
     assert.strictEqual(spawnSync(process.execPath, ['--input-type=module', '-'], { input: `await import(${JSON.stringify(join(process.cwd(), 'src/e2e', f))});`, encoding: 'utf8' }).status, 0,
       `importing ${f} with argv[1] = '-' runs no CLI and does not throw`);
+  // Same family in the deploy audit (cloud-env-audit.yml pipes service JSON in): real and symlinked paths agree.
+  const service = JSON.stringify({ latestReadyRevision: 'projects/p/locations/l/services/s/revisions/r',
+    traffic: [{ type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST', percent: 100 }], trafficStatuses: [{ type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST', percent: 100 }] });
+  symlinkSync(join(process.cwd(), 'src/deploy/cloud-run-traffic.mjs'), join(dir, 'traffic.mjs'));
+  for (const script of ['src/deploy/cloud-run-traffic.mjs', join(dir, 'traffic.mjs')])
+    assert.deepStrictEqual([run(script, [], {}, service), run(script, [], {}, '{}')].map((r) => [r.status, r.stdout]),
+      [[0, 'projects/p/locations/l/services/s/revisions/r\n'], [1, '']], `the cloud-run-traffic.mjs CLI (${script}) prints the serving revision, and exits 1 on malformed metadata`);
+  // The family, repo-wide: a file that compares import.meta with argv[1] (the entry guard) must use this exact guard.
+  // Any other form (argv[1]-only, path.resolve, import.meta.filename, argv.at(1), destructuring) fails here by name.
+  const GUARD = 'if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {';
+  const code = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '*.mjs', '*.js', '*.cjs', '*.ts', '*.mts', '*.cts', '*.tsx'], { encoding: 'utf8' })
+    .split('\n').filter((f) => f && f !== 'src/e2esharding.test.ts' && existsSync(f));
+  const argv1 = /argv(\[1\]|\.at\(1\))|\]\s*=\s*process\.argv\b(?!\.slice\([2-9]\))/; // argv[1], argv.at(1), [, entry] = process.argv
+  const entries = code.filter((f) => { const t = readFileSync(f, 'utf8'); return /import\.meta/.test(t) && argv1.test(t); });
+  assert.deepStrictEqual(entries.sort(), ['src/deploy/cloud-run-traffic.mjs', 'src/e2e/shard-cases.mjs', 'src/e2e/webkit-shards.mjs'], 'the scan finds the three known CLI entry guards');
+  for (const f of entries) {
+    const lines = readFileSync(f, 'utf8').split('\n').filter((l) => argv1.test(l) && !/^\s*\/\//.test(l));
+    assert.deepStrictEqual(lines.map((l) => l.trim()), [GUARD], `${f}'s entry guard resolves argv[1] with realpathSync (a symlinked path would skip the CLI and exit 0)`);
+  }
   rmSync(dir, { recursive: true });
   // Each step checks its own log; the smoke step's check turns a green exit red, never red green.
   assert.match(workflowJob('e2e_smoke'), /status=\$\{PIPESTATUS\[0\]\}\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-\$\{\{ matrix\.shard \}\}\.log" \|\| \[ "\$status" -ne 0 \] \|\| status=1\n\s+set -e\n/,
