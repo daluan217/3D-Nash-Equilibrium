@@ -3738,8 +3738,12 @@ async function startServer() {
   // redirect at the edge. Case-insensitive host match; preserves path+query.
   app.use((req, res, next) => {
     const host = req.headers.host;
-    if (host && /^www\.nash-equilibrium-simulator\.com$/i.test(host)) {
-      res.redirect(301, `https://nash-equilibrium-simulator.com${req.originalUrl}`);
+    // A trailing-dot FQDN or an explicit port is still www (live, Google's edge 301s both).
+    if (host && /^www\.nash-equilibrium-simulator\.com\.?(?::\d+)?$/i.test(host)) {
+      // Only an origin-form target ("/…") is a path. Node also accepts absolute-form and "*",
+      // and appending those made `GET pany://x/` answer …simulator.company (sweep 21).
+      const target = req.originalUrl.startsWith("/") ? req.originalUrl : "/";
+      res.redirect(301, `https://nash-equilibrium-simulator.com${target}`);
       return;
     }
     next();
