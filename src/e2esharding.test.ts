@@ -408,6 +408,15 @@ assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 391]), /pack
   assert.match(walk, /nc\[0\]\[3\] === c0\[3\][\s\S]*st\.inputs === c1\[3\]/, 'page cancels proves no input but its own Next fired');
   assert.match(walk, /c1\?\.\[4\] === n0 \+ 2/, 'page cancels proves the adoption: no call of its own before the cut (D3)');
   assert.match(walk, /waitForTimeout\(3000\)[\s\S]*all\.length === 2/, 'cut-every holds 2 calls for 3x the unmoved stop (D4)');
+  // CI 36552468990: settled() returned in the held start's stillness, before the re-place. Settle after the signal, and
+  // bound stop -> re-place in frames with the stop rebuilt from literals: importing the rule lets a mutant move both sides.
+  assert.match(walk, /await replaced\(page, n0 \+ 3\);\s*st = await settled\(page\);/, 'page cancels settles only after the re-place call (CI 36552468990)');
+  assert.match(walk, /await replaced\(page, n1 \+ 2\);[^\n]*\n\s*st = await settled\(page\); await page\.waitForTimeout\(3000\);/, 'cut-every waits for its re-place, then settles and holds 3 s');
+  const wt = readFileSync(new URL('./components/Walkthrough.tsx', import.meta.url), 'utf8');
+  const rule = [...(wt.match(/moved \? stillFrames >= (\d+) && stillMs >= (\d+)/)?.slice(1) ?? []), wt.match(/if \(Math\.abs\(cy - y\) >= (\d+)\) \{ y = cy;/)?.[1]];
+  assert.deepStrictEqual(walk.match(/const STILL = \[(\d+), (\d+), (\d+)\];/)?.slice(1), rule, "page cancels rebuilds the product's stop from its literals: frames, ms (tourFlightStopped), px (the watcher)");
+  assert.doesNotMatch(walk, /tourFlightStopped\(|from '[^']*Walkthrough/, "the fixture never imports the product's stop rule");
+  assert.match(walk, /const REPLACE_FRAMES = \d+;/, 'the stop -> re-place bound is a calibrated frame count');
   // CI 36533916769: 8 cases a shard ran 1071 s of the 1200 s timeout.
   shardBudget('tour-walk', job, walkTags());
 }

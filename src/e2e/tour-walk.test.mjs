@@ -2,7 +2,8 @@
 // layout families, scrolled away before each Next (key, click) or left alone (IN VIEW: a same-target step holds still).
 // FLIGHT: a second Next 300 ms into a flight. INTERRUPT: a visitor's key stops a flight short; the next same-target step
 // still lands. LONG FRAME: one 1.5 s frame. SLOW: 550 ms frames. HELD START: 2 frames late. PAGE CANCELS: the page, no
-// input, stops flights short. Mutants (old deps, top-only key, nostall, or, nostop, noinput, D3, D4) fail by name (PR #211).
+// input, stops flights short. Mutants (old deps, top-only key, nostall, or, nostop, noinput, D3, D4, a 3 s re-place
+// delay) fail by name (PR #211).
 import { spawn } from 'node:child_process';
 import { loadavg } from 'node:os';
 import { chromium, webkit } from 'playwright';
@@ -33,11 +34,14 @@ const init = (hogMs) => {
   // frames, so the next step adopts the live flight before it is stopped. __cuts: [from, to, at, inputs, calls, step].
   window.__inputs = 0; window.__cancel = []; window.__cuts = [];
   for (const t of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(t, () => { window.__inputs++; }, { capture: true });
+  // Frames delivered: calls and cuts end [frame, ms]; while __yt is an array, each frame appends [frame, ms, scrollY].
+  window.__frame = 0; (function fr() { window.__frame++; window.__yt?.push([window.__frame, performance.now(), scrollY]); requestAnimationFrame(fr); })();
+  const now = () => [window.__frame, Math.round(performance.now())];
   const cut = (top) => { const se = document.scrollingElement, from = window.__calls.at(-1)[0], to = Math.min(Math.max(0, top), se.scrollHeight - se.clientHeight);
     const c0 = window.__cancelAll && window.__cuts[0]; // repeated cuts alternate 24 px about the first: never converge
     se.scrollTop = c0 ? c0[2] + (window.__cuts.length % 2) * 24 * Math.sign(c0[2] - c0[1]) : Math.round((from + to) / 2);
-    window.__cuts.push([from, to, Math.round(scrollY), window.__inputs, window.__calls.length, document.querySelector('[role="dialog"]')?.textContent.match(/(\d+)\s*\/\s*19/)?.[1]]); };
-  const rec = (top, call, kind) => { window.__calls.push([Math.round(scrollY), Math.max(0, top), kind, window.__inputs]); const lf = window.__longFrame;
+    window.__cuts.push([from, to, Math.round(scrollY), window.__inputs, window.__calls.length, document.querySelector('[role="dialog"]')?.textContent.match(/(\d+)\s*\/\s*19/)?.[1], ...now()]); };
+  const rec = (top, call, kind) => { window.__calls.push([Math.round(scrollY), Math.max(0, top), kind, window.__inputs, ...now()]); const lf = window.__longFrame;
     const act = window.__cancelAll ? 'cancel' : window.__cancel.shift(), go = () => { const v = call(); if (act) cut(top); return v; };
     if (act === 'next') { window.__hold = [4, 208]; document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); }
     const hold = window.__hold, token = window.__held = hold ? {} : null;
@@ -100,6 +104,18 @@ const farFrom = (s, t) => { const r = big(s, t); return r && r[1] + s.y > s.max 
 const awayTo = (page, y) => page.evaluate((v) => { document.scrollingElement.scrollTop = v; }, y); // instant, unrecorded
 const jump = (page, n) => page.evaluate((m) => { document.activeElement?.blur(); for (let j = 0; j < m; j++) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); }, n);
 const press = async (page, key) => { await page.evaluate(() => document.activeElement?.blur()); await page.keyboard.press(key); };
+// The product's signal: the n-th tour call. Timer-bounded, so a missing re-place fails by name, not by a hung rAF.
+const replaced = (page, n) => page.evaluate((m) => new Promise((res) => { const t0 = performance.now();
+  const poll = () => (window.__calls.length >= m ? res(true) : performance.now() - t0 > 30000 ? res(false) : setTimeout(poll, 20)); poll(); }), n);
+// Re-place latency [frames, ms] from the page's cut and from the product's STOP, rebuilt from literals (never imported:
+// e2esharding pins them to Walkthrough.tsx): 2 frames AND 150 ms after the last >= 1 px move since the flight's call.
+const STILL = [2, 150, 1];
+const lag = (a, call) => (a && call ? [call[4] - a[0], Math.round(call[5] - a[1])] : [NaN, NaN]); // NaN fails the bound
+const stopOf = (yt, from, cut, call) => { if (!from || !cut || !call) return null; let y = from[0], at = null;
+  for (const [f, ms, cy] of yt) if (f > cut[6] && f <= call[4]) {
+    if (Math.abs(cy - y) >= STILL[2]) { y = cy; at = [f, ms]; } else if (at && f - at[0] >= STILL[0] && ms - at[1] >= STILL[1]) return [f, ms]; }
+  return null; };
+const REPLACE_FRAMES = 5;
 
 const ENGINES = (process.env.TOUR_WALK_ENGINES || 'chromium,webkit').split(',');
 const ONLY = new RegExp(process.env.TOUR_WALK_ONLY || '.'); // local mutant runs; CI runs every case
@@ -187,10 +203,16 @@ async function cancels(page, tag, portrait, s) {
   const short = (cuts) => cuts.every(([from, to, at]) => Math.abs(at - to) >= 1 && Math.abs(at - from) >= 1);
   await awayTo(page, farFrom(st, t)); st = await settled(page);
   const n0 = st.calls.length;
-  await page.evaluate(() => { window.__cuts = []; window.__cancel = ['cancel', 'next']; });
+  await page.evaluate(() => { window.__cuts = []; window.__cancel = ['cancel', 'next']; window.__yt = []; });
   await press(page, 'ArrowRight');
+  // Settle only after the product's signal, s+1's re-place (call 3): the held start's stillness settled first (CI 36552468990).
+  const got = await replaced(page, n0 + 3);
   st = await settled(page);
+  const yt = await page.evaluate(() => window.__yt);
   const nc = st.calls.slice(n0), [c0, c1] = st.cuts, p = place(st, t, portrait), log = `calls ${JSON.stringify(nc)}, cuts ${JSON.stringify(st.cuts)}, inputs ${st.inputs}`;
+  const lat = [[nc[0], c0, nc[1]], [nc[1], c1, nc[2]]].map(([a, c, b]) => [lag(c?.slice(6), b), lag(stopOf(yt, a, c, b), b)]);
+  check(got, `${name}: page cancels: step ${s + 1} re-places after the page's cut (no 3rd call in 30 s, ${log})`);
+  check(lat.every(([, [f]]) => f <= REPLACE_FRAMES), `${name}: page cancels: each re-place follows the flight's stop within ${REPLACE_FRAMES} frames, nothing timed between (cut/stop -> re-place frames,ms ${JSON.stringify(lat)})`);
   // Inputs: none from step s's call to its cut and re-place; then only the page's own Next, before the adoption.
   check(st.cuts.length === 2 && c0[5] === String(s) && c1[5] === String(s + 1) && short(st.cuts) && nc.length >= 2
     && nc[0][3] === c0[3] && nc[1][3] === c0[3] && c1[3] === c0[3] + 1 && st.inputs === c1[3],
@@ -201,15 +223,18 @@ async function cancels(page, tag, portrait, s) {
   // 2) Every tour scroll is cut. Settled, then 3 s more (3x the unmoved stop's 1000 ms): a 3rd call would show.
   await awayTo(page, farFrom(st, TARGETS[s + 1])); st = await settled(page);
   const n1 = st.calls.length;
-  await page.evaluate(() => { window.__cuts = []; window.__cancelAll = 1; });
+  await page.evaluate(() => { window.__cuts = []; window.__cancelAll = 1; window.__yt = []; });
   await press(page, 'ArrowRight');
+  const got2 = await replaced(page, n1 + 2); // the same signal: its one re-place, then settled and 3 s more
   st = await settled(page); await page.waitForTimeout(3000);
-  const end = await page.evaluate(() => ({ calls: window.__calls.slice(), cuts: window.__cuts.slice(), inputs: window.__inputs }));
+  const end = await page.evaluate(() => ({ calls: window.__calls.slice(), cuts: window.__cuts.slice(), inputs: window.__inputs, yt: window.__yt }));
   const all = end.calls.slice(n1), log2 = `calls ${JSON.stringify(all)}, cuts ${JSON.stringify(end.cuts.slice(0, 4))}, inputs ${end.inputs}`;
+  lat.push([lag(end.cuts[0]?.slice(6), all[1]), lag(stopOf(end.yt, all[0], end.cuts[0], all[1]), all[1])]);
   check(end.cuts.length >= 2 && end.cuts[0][5] === String(s + 2) && short(end.cuts) && all.every((c) => c[3] === end.inputs) && end.cuts.every((c) => c[3] === end.inputs),
     `${name}->${s + 2}: fixture: the page cut every tour scroll short with no input (${log2})`);
+  check(got2 && lat[2][1][0] <= REPLACE_FRAMES, `${name}->${s + 2}: page cancels: step ${s + 2} re-places within ${REPLACE_FRAMES} frames of the flight's stop (cut/stop -> re-place frames,ms ${JSON.stringify(lat[2])}, ${log2})`);
   check(all.length === 2 && !st.timeout, `${name}->${s + 2}: the page cancels every tour scroll: step ${s + 2} re-places once, then leaves the page alone (settled ${!st.timeout}, ${log2})`);
-  console.log(`    ${name} adopted at call ${c1?.[4]}, ${nc.length} call(s); cut-every ${all.length} call(s), ${end.cuts.length} cut(s)`);
+  console.log(`    ${name} adopted at call ${c1?.[4]}, ${nc.length} call(s); cut-every ${all.length} call(s), ${end.cuts.length} cut(s); re-place frames/ms after cut|stop ${lat.map(([c, p]) => `${c.join('/')}|${p.join('/')}`).join(' ')}`);
 }
 
 try {
