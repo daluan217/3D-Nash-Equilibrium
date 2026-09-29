@@ -5,7 +5,10 @@
  * `e2e` status context required by branch protection.
  */
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
@@ -370,7 +373,7 @@ assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', 
   assert.match(job, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
   assert.match(job, /-eq 21\n/, 'CI requires each tour-scroll shard to have run all 21 of its cases');
   assert.match(job, /grep -q '\^✓ tour scroll: shard \$\{\{ matrix\.shard \}\}\/2, 21 cases:'/, 'each tour-scroll shard proves it was that shard');
-  assert.match(scroll, /if \(\+\+j % SHARDS !== SHARD - 1 \|\| !ONLY\.test\([^\n]*\)\) continue; ran\+\+;/, 'the round-robin counts every engine x case once');
+  assert.match(scroll, /let ran = 0, j = -1;[\s\S]{0,400}?if \(\+\+j % SHARDS !== SHARD - 1 \|\| !ONLY\.test\([^\n]*\)\) continue; ran\+\+;/, 'the round-robin counts every engine x case once');
   assert.match(scroll, /TOUR_SCROLL_ONLY \|\| '\.'/, 'the local-only filter defaults to every case');
   assert.match(scroll, /import \{ SCROLL_CASES as cases, SCROLL_VIEWPORTS \} from '\.\/tour-cases\.mjs'/, 'the scroll runs the shared case list');
   assert.match(scroll, /for \(const \[engineName, engine\] of \[\['chromium', chromium\], \['webkit', webkit\]\]\)/, 'both engines: 2 x 21 = 42 = 2 x 21');
@@ -557,6 +560,9 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
     definitions.filter((d) => d.shard === s + 1).map(({ id }) => id), `shard-cases.mjs gives smoke shard ${s + 1} its packed sections`));
   for (const [job, n, of, all] of [['walk', 9, walkShard, walkTags()], ['scroll', 2, scrollShard, scrollTags()]] as const) {
     const parts = Array.from({ length: n }, (_, s) => of(s + 1));
+    // The runners' own round-robin, pinned above (walk `j % SHARDS === SHARD - 1`, scroll `++j % SHARDS !== SHARD - 1`
+    // from j = -1), over engine-major tags: a rotated or reordered oracle would fail every CI job instead of here.
+    parts.forEach((p, s) => assert.deepStrictEqual(p, all.filter((_, j) => j % n === s), `shard-cases.mjs gives ${job} shard ${s + 1}/${n} the runner's own cases, in order`));
     assert.ok(parts.every((p) => p.length > 0), `every ${job} shard has cases: an empty list would pass an empty (crashed) log`);
     assert.deepStrictEqual(parts.flat().sort(), [...all].sort(), `the ${job} shards together run every engine x case exactly once`);
   }
@@ -572,14 +578,21 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   assert.deepStrictEqual(logCases('smoke', retried.replace('════ SECTION 76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) ════\n', '')),
     ['24', '25', '47'], 'a section that only ran as a retry did not run in the first pass');
   const s1 = shardCases('smoke', { E2E_SHARD: `1/${SHARD_COUNT}` }, smoke), log = (ids: string[]) => ids.map((id) => `════ SECTION ${id} [shard 1/${SHARD_COUNT}] x ════`).join('\n');
-  const w1 = walkShard(1), tour = (tags: string[]) => tags.map((t) => `  · ${t} 9 s, load 1.0 at start`).join('\n');
+  const w1 = walkShard(1), sc1 = scrollShard(1), tour = (tags: string[]) => tags.map((t) => `  · ${t} 9 s, load 1.0 at start`).join('\n');
   assert.strictEqual(checkLog('smoke', log(s1), { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'shard 1\'s own sections pass');
   assert.strictEqual(checkLog('walk', tour(w1), { TOUR_WALK_SHARD: '1/9' }), '', 'walk shard 1\'s own cases pass');
   for (const [why, job, text, env] of [['one section dropped', 'smoke', log(s1.slice(1)), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['an empty (crashed) log', 'smoke', '', { E2E_SHARD: `1/${SHARD_COUNT}` }],
     ['a sibling shard\'s sections', 'smoke', log(bySelector[1]), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['the last case replaced by the first', 'walk', tour([...w1.slice(0, -1), w1[0]]), { TOUR_WALK_SHARD: '1/9' }],
     ['webkit skipped', 'walk', tour(w1.filter((t) => !t.startsWith('[webkit'))), { TOUR_WALK_SHARD: '1/9' }],
-    ['two cases swapped', 'walk', tour([w1[1], w1[0], ...w1.slice(2)]), { TOUR_WALK_SHARD: '1/9' }], ['an empty (crashed) log', 'scroll', '', { TOUR_SCROLL_SHARD: '2/2' }]] as const)
+    ['two cases swapped', 'walk', tour([w1[1], w1[0], ...w1.slice(2)]), { TOUR_WALK_SHARD: '1/9' }], ['an empty (crashed) log', 'scroll', '', { TOUR_SCROLL_SHARD: '2/2' }],
+    ['one case run twice', 'walk', tour([...w1, w1[0]]), { TOUR_WALK_SHARD: '1/9' }], ['one case run twice', 'scroll', tour([...sc1, sc1[0]]), { TOUR_SCROLL_SHARD: '1/2' }],
+    ['a section run twice before the RETRYING line', 'smoke', `${log([...s1, s1[0]])}\n${retried.split('\n')[5]}`, { E2E_SHARD: `1/${SHARD_COUNT}` }]] as const)
     assert.match(checkLog(job, text, env), /the log ran \d+ case\(s\), the packing gives \d+/, `shard-cases.mjs fails a ${job} log with ${why}`);
+  // The CLI is what CI runs: its exit status, not checkLog's string, fails the step.
+  const dir = mkdtempSync(join(tmpdir(), 'shard-cases-')), cli = (text: string) => (writeFileSync(join(dir, 'walk.log'), text),
+    spawnSync(process.execPath, ['src/e2e/shard-cases.mjs', 'walk', join(dir, 'walk.log')], { env: { ...process.env, TOUR_WALK_SHARD: '1/9' } }).status);
+  assert.deepStrictEqual([cli(tour(w1)), cli(tour(w1.slice(1)))], [0, 1], 'the shard-cases.mjs CLI exits 0 on its own cases and 1 on a missing one');
+  rmSync(dir, { recursive: true });
   // Each step checks its own log; the smoke step's check turns a green exit red, never red green.
   assert.match(workflowJob('e2e_smoke'), /status=\$\{PIPESTATUS\[0\]\}\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-\$\{\{ matrix\.shard \}\}\.log" \|\| \[ "\$status" -ne 0 \] \|\| status=1\n\s+set -e\n/,
     'the smoke step checks its log before it takes the exit code');
