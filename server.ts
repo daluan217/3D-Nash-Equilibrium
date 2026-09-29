@@ -2329,11 +2329,11 @@ function dedupeAccounts(db: DB, remote: DB): DB {
   }
   const kept = db.users.filter((u) => !movedTo.has(u.id))
     .map((u) => (absorbed.has(u.id) ? { ...u, mergedFrom: [...new Set([...(u.mergedFrom ?? []), ...absorbed.get(u.id)!])] } : u));
-  const taken = new Set(kept.filter((u) => onGcs.has(u.id)).map((u) => norm(u.username)));
+  const taken = new Set(kept.filter((u) => onGcs.has(u.id)).map((u) => usernameKey(u.username)));
   const renamed = new Map<string, string>();
   for (const u of kept.filter((k) => !onGcs.has(k.id))) {
-    const name = taken.has(norm(u.username)) ? `${clampGraphemeSafe(u.username.trim(), 33)}-${u.id.slice(-6)}` : u.username;
-    taken.add(norm(name));
+    const name = taken.has(usernameKey(u.username)) ? `${clampGraphemeSafe(u.username.trim(), 33)}-${u.id.slice(-6)}` : u.username;
+    taken.add(usernameKey(name));
     if (name !== u.username) renamed.set(u.id, name);
   }
   if (movedTo.size === 0 && renamed.size === 0) return db;
@@ -2615,8 +2615,19 @@ function mailCooldownLeft(kind: "verification" | "recovery", email: string): num
 const releaseCodeMail = (kind: "verification" | "recovery", email: string) => lastCodeMail.delete(`${kind}:${email}`);
 
 function findByIdentifier(users: User[], id: string): User | undefined {
-  return users.find((u) => u.email === id) ?? users.find((u) => u.username.toLowerCase() === id);
+  const key = usernameKey(id);
+  return users.find((u) => u.email === id) ?? users.find((u) => u.username.toLowerCase() === id)
+    ?? users.find((u) => usernameKey(u.username) === key);
 }
+
+// One username, one person (sweep 19): NFD "José", fullwidth "ａｌｉｃｅ" or a
+// zero-width space made a second account under a taken name; invisible-only
+// names passed "required". One key: NFKC case fold, ignorables out, whitespace
+// runs as one space (ẞ/ß need the first lower). ponytail: Cyrillic look-alikes
+// stay distinct (only owner+admin see names); add UTS #39 if names go public.
+const nfkcBare = (s: string) => s.replace(/\p{Default_Ignorable_Code_Point}/gu, "").normalize("NFKC");
+const usernameKey = (s: string) => nfkcBare(nfkcBare(s).toLowerCase().toUpperCase().toLowerCase()).replace(/\s+/g, " ").trim();
+const cleanUsername = (v: unknown): string => { const name = cleanText(v, 40); return usernameKey(name) ? name : ""; };
 
 function verifyPassword(password: string, stored: string): boolean {
   if (stored.startsWith("pbkdf2$")) {
@@ -4663,7 +4674,7 @@ async function startServer() {
     if (!username || !email || !password) {
       return res.status(400).json({ error: "Username, email, and password are required." });
     }
-    const usernameTrimmed = cleanText(username, 40);
+    const usernameTrimmed = cleanUsername(username);
     if (!usernameTrimmed) {
       return res.status(400).json({ error: "Username is required." });
     }
@@ -4688,7 +4699,7 @@ async function startServer() {
 
     // Check for duplicate username (case-insensitive)
     const usernameTaken = db.users.find(
-      u => u.username.trim().toLowerCase() === usernameTrimmed.toLowerCase()
+      u => usernameKey(u.username) === usernameKey(usernameTrimmed)
         && u.email.trim().toLowerCase() !== emailTrimmed
     );
     if (usernameTaken) {
@@ -4885,7 +4896,7 @@ async function startServer() {
     // first) meets the register policy and comes with a name, never keeping a
     // stranger's pick. The UI always has both: register sends them, and
     // login's 403 path sends the stored password. Checked before any attempt.
-    const name = hosted ? cleanText(username, 40) : "";
+    const name = hosted ? cleanUsername(username) : "";
     const newPassword = hosted && !verifyPassword(password, user.passwordHash);
     if (newPassword && !/^(?=.*[a-z])(?=.*[A-Z]).{8,}$/.test(password)) {
       return res.status(400).json({
@@ -4895,7 +4906,7 @@ async function startServer() {
     if (newPassword && !name) {
       return res.status(400).json({ error: "Please choose a username for your account." });
     }
-    if (name && db.users.some((u) => u.id !== user.id && u.username.trim().toLowerCase() === name.toLowerCase())) {
+    if (name && db.users.some((u) => u.id !== user.id && usernameKey(u.username) === usernameKey(name))) {
       return res.status(400).json({ error: "That username is already taken. Please choose a different one." });
     }
 

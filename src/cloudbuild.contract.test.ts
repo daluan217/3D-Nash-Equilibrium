@@ -21,16 +21,36 @@
  * which uses a dedicated OIDC identity and fails closed when credentials or
  * metadata access are unavailable.
  */
-import { readFileSync } from 'node:fs';
-
-const cloudbuild = readFileSync('cloudbuild.yaml', 'utf8');
-const manifest = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8');
+import { readFileSync, readdirSync } from 'node:fs';
 
 /** Report a Cloud Build contract violation and terminate the test. */
 function fail(msg: string): never {
   console.error(`✗ cloudbuild contract: ${msg}`);
   process.exit(1);
 }
+
+// ── no lenient HTTP parser anywhere the server is built, launched or coded ──
+// Sweep 19 angle 2: 17 smuggling framings each get a 400 and a closed socket from
+// Node's strict parser (gcs-db-saves s30 pins that). What OUR code can regress is
+// opting out: --insecure-http-parser / --security-revert in a launch line or
+// NODE_OPTIONS, or insecureHTTPParser on a server. Checked first, so it fails by name.
+const LENIENT_PARSER = /insecure[-_]?http[-_]?parser|security[-_]?revert/i;
+const pkgJson = JSON.parse(readFileSync('package.json', 'utf8')) as { main: string };
+const parserScan = [...new Set(['server.ts', 'package.json', 'Dockerfile', pkgJson.main, 'electron-preload.cjs', 'afterPack.cjs',
+  ...readdirSync('.').filter((f) => /^cloudbuild.*\.ya?ml$/.test(f)),
+  ...readdirSync('.github/workflows').map((f) => `.github/workflows/${f}`),
+  ...readdirSync('src', { recursive: true }).map(String)
+    .filter((f) => /\.(ts|tsx|js|cjs|mjs)$/.test(f) && !/\.test\.|^(e2e|integration)\//.test(f)).map((f) => `src/${f}`)])];
+if (!parserScan.includes('cloudbuild.yaml') || !parserScan.includes('src/utils/providers.ts')) fail('parser scan lost a file it must cover');
+for (const f of parserScan) {
+  if (LENIENT_PARSER.test(readFileSync(f, 'utf8'))) {
+    fail(`lenient HTTP parser: ${f} mentions insecureHTTPParser / --insecure-http-parser / --security-revert. `
+      + 'That re-opens request smuggling (duplicate Content-Length, CL+TE, obs-fold) that Node rejects by default.');
+  }
+}
+
+const cloudbuild = readFileSync('cloudbuild.yaml', 'utf8');
+const manifest = readFileSync('deploy/cloudrun-env-manifest.txt', 'utf8');
 
 // ── the expected set of names, from the manifest ────────────────────────────
 const expected = new Set(
@@ -285,5 +305,6 @@ console.log(
   `✓ cloudbuild contract: ${actual.size} env names match deploy/cloudrun-env-manifest.txt; `
   + 'rung-3 flags literal, REPORT_MODEL non-empty, substitutions declared, images: tags built, '
   + 'no secret-shaped defaults, image is NODE_ENV=production by construction, '
-  + 'deploy capped at --max-instances=1, local dist/.env/db.json kept out of the build context',
+  + 'deploy capped at --max-instances=1, local dist/.env/db.json kept out of the build context, '
+  + `no lenient HTTP parser in ${parserScan.length} shipping files`,
 );

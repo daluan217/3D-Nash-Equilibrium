@@ -48,6 +48,7 @@ import { tmpdir } from 'node:os';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
+import zlib from 'node:zlib';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
 const BUNDLE = path.join(serverDir, 'dist/server.cjs');
@@ -60,7 +61,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 127;
+const EXPECTED_CHECKS = 138;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -2409,6 +2410,168 @@ try {
         del.status === 200 && cGet.status === 200 && cGames.length === 0 && add.status === 200 && !cEnd.games.some((x) => x.id === 'g_a')
           && cEnd.games.some((x) => x.id === 'g_b') && cEnd.users.length === 3,
         JSON.stringify({ del: del.status, get: cGet.status, cGames, add: add.status, games: cEnd.games.map((x) => x.name), users: cEnd.users.length }));
+    }
+
+    // s29 — one username, one person (sweep 19 angle 4, S19-1). Uniqueness compared trim+lowercase, so
+    // "José" in NFD, fullwidth "ａｌｉｃｅ", "alice"+U+200B or "a  lice" signed up a second account under a
+    // taken name, a username login in that spelling reached the impostor, a zero-width-only name passed
+    // "required" and a merge kept both. Cannot pass by coincidence: on the same server a Cyrillic
+    // look-alike, an emoji ZWJ name and "bob" are accepted and the owner's plain name verifies.
+    {
+      const s29Gcs = gcsPortA + 56, zApp = port1 + 56; // s28's released ports
+      const pw = 'Sup3rSecret!23';
+      const seed = { users: [seededUser('u_al', 'alice', 'al@example.test', pw), seededUser('u_jo', 'José', 'jo@example.test', pw),
+        seededUser('u_st', 'Straße', 'st@example.test', pw), seededUser('u_sp', 'a lice', 'sp@example.test', pw), seededUser('u_io', 'ΐ', 'io@example.test', pw),
+        { ...seededUser('u_pd', 'pend', 'pd@example.test', pw), isVerified: false, verificationCode: '123456', verificationCodeExpires: Date.now() + 6e5 }], games: [] };
+      const fz = await trackFake(startFakeGcsDb({ port: s29Gcs, initialContent: JSON.stringify(seed) }));
+      const Z = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s29-'))), zApp, s29Gcs, { ...mail, TRUST_PROXY: 'true' })), zApp);
+      let ip = 0; // register allows 8 a minute per client: each sign-up comes from its own
+      const reg = async (username) => {
+        const n = ++ip, email = `z${n}@example.test`;
+        const r = await fetch(`http://127.0.0.1:${zApp}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.29.0.${n}` },
+          body: JSON.stringify({ username, email, password: pw }) });
+        return { status: r.status, error: (await r.json().catch(() => ({}))).error ?? '', email };
+      };
+      const each = async (names) => Object.fromEntries(await Promise.all(Object.entries(names).map(async ([k, v]) => [k, await reg(v)])));
+      const plainCase = await reg('ALICE');
+      const free = await each({ cyrillic: 'alicе', zwjFamily: '\u{1F468}‍\u{1F469}', bob: 'bob' });
+      const taken = await each({ nfd: 'josé', fullwidth: 'ａｌｉｃｅ', zwsp: 'alice​', wordJoiner: 'al⁠ice',
+        halfwidthFiller: 'ﾠalice', spaceThenZw: 'alice ​', sharpS: 'STRASSE', capitalSharpS: 'STRAẞE', greekTonos: 'Ϊ́',
+        nbsp: 'a lice', doubleSpace: 'a  lice', tab: 'a\tlice' });
+      const blank = await each({ zeroWidth: '​‍', hangulFiller: 'ㅤ', joinerSpaces: ' ⁠ ' });
+      const loginAs = async (id) => { const r = await call(zApp, '/api/auth/login', { email: id, password: pw }); return `${r.status}:${(await r.json().catch(() => ({}))).user?.id ?? ''}`; };
+      const logins = {};
+      for (const [k, [id, owner]] of Object.entries({ nfd: ['José', 'u_jo'], fullwidth: ['ＡＬＩＣＥ', 'u_al'], zwsp: ['alice​', 'u_al'],
+        sharpS: ['strasse', 'u_st'], doubleSpace: ['a  lice', 'u_sp'] })) logins[k] = [await loginAs(id), `200:${owner}`];
+      const verify = (username) => call(zApp, '/api/auth/verify', { email: 'pd@example.test', code: '123456', password: 'N3wSecret!pass', username });
+      const vTaken = await verify('ａｌｉｃｅ'), vTakenBody = await vTaken.json().catch(() => ({}));
+      const vFree = await verify('pend two');
+      // (merge) a peer adds "Dave" and fullwidth "Ｅｖｅ" right after Z's re-read; Z answers "ｄａｖｅ" and a
+      // plain "eve" from its copy. Both directions: the kept name's key and the added name's key must fold.
+      await new Promise((r) => setTimeout(r, 2200));
+      await fetch(`http://127.0.0.1:${zApp}/api/games`); // Z re-reads now: for 2 s it answers from this copy
+      const n0 = fz.count412(), cur = JSON.parse(fz.getStored());
+      fz.peerWrite(JSON.stringify({ ...cur, users: [...cur.users, seededUser('u_dv', 'Dave', 'dv@example.test', pw), seededUser('u_ev', 'Ｅｖｅ', 'ev@example.test', pw)] }));
+      const [stale, staleEve] = await Promise.all([reg('ｄａｖｅ'), reg('eve')]);
+      const onGcs = () => JSON.parse(fz.getStored()).users;
+      await waitUntil(() => fz.count412() > n0 && [stale, staleEve].every((x) => onGcs().some((u) => u.email === x.email)), 5000);
+      const end = onGcs(), nameOf = (email) => end.find((u) => u.email === email)?.username;
+      await stop(Z.child); await fz.close();
+      const refused = (x, re) => x.status === 400 && re.test(x.error) && !end.some((u) => u.email === x.email);
+      const brief = (m) => Object.fromEntries(Object.entries(m).map(([k, x]) => [k, `${x.status}:${x.error.slice(0, 22)}`]));
+      record('fixture: plain-case "ALICE" is taken; a Cyrillic look-alike, an emoji ZWJ name and "bob" sign up on the same server; the owner verifies as "pend two"; the stale sign-up was accepted and its upload 412\'d',
+        refused(plainCase, /already taken/) && Object.values(free).every((x) => x.status === 200 && end.some((u) => u.email === x.email)) && vFree.status === 200
+          && end.find((u) => u.id === 'u_pd')?.username === 'pend two' && stale.status === 200 && staleEve.status === 200 && fz.count412() > n0,
+        JSON.stringify({ plainCase: `${plainCase.status}`, free: brief(free), vFree: vFree.status, stale: stale.status, staleEve: staleEve.status, n412: fz.count412() - n0 }));
+      record('THE DEFECT (register): every confusable spelling of a taken name (NFD, fullwidth, ignorables, case folds, whitespace) is refused as taken, and none reached GCS',
+        Object.values(taken).every((x) => refused(x, /already taken/)), JSON.stringify(brief(taken)));
+      record('THE DEFECT (blank): a name of only invisible code points is refused as missing',
+        Object.values(blank).every((x) => refused(x, /Username is required/)), JSON.stringify(brief(blank)));
+      record('THE DEFECT (login): a username login in a confusable spelling signs in that name\'s one owner',
+        Object.values(logins).every(([got, want]) => got === want), JSON.stringify(logins));
+      record('THE DEFECT (verify): a pending account cannot take a confusable of a taken name',
+        vTaken.status === 400 && /already taken/.test(vTakenBody.error ?? ''), `${vTaken.status} ${vTakenBody.error ?? ''}`);
+      record('THE DEFECT (merge): a stale sign-up of a confusable of a peer\'s new name is renamed when the merge lands; the peer\'s "Dave" and "Ｅｖｅ" keep theirs',
+        nameOf('dv@example.test') === 'Dave' && /^ｄａｖｅ-.{6}$/.test(nameOf(stale.email) ?? '')
+          && nameOf('ev@example.test') === 'Ｅｖｅ' && /^eve-.{6}$/.test(nameOf(staleEve.email) ?? ''),
+        JSON.stringify({ dave: nameOf('dv@example.test'), stale: nameOf(stale.email), eve: nameOf('ev@example.test'), staleEve: nameOf(staleEve.email) }));
+    }
+
+    // s30 — hostile bodies and framings (sweep 19 angles 1+2; both EMPTY, pinned here). Angle 2 pins Node's
+    // parser: each ambiguous frame hides a POST /api/games after it; want one 400, the socket closed by the
+    // server, and no "smuggled-*" game. Angle 1 pins express.json: the limit applies to the INFLATED body.
+    // Cannot pass by coincidence: a clean pipeline creates its hidden game and a small gzip login signs in.
+    {
+      const s30Gcs = gcsPortA + 56, bApp = port1 + 56; // s29's released ports
+      const pw = 'Sup3rSecret!23';
+      const fb = await trackFake(startFakeGcsDb({ port: s30Gcs, initialContent: JSON.stringify({ users: [seededUser('u_bb', 'bomb', 'bb@example.test', pw)], games: [] }) }));
+      const B = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s30-'))), bApp, s30Gcs,
+        { ...mail, TRUST_PROXY: 'true', NODE_OPTIONS: '--max-old-space-size=128' })), bApp); // mail: a failed send is an honest 500
+      const tok = (await (await call(bApp, '/api/auth/login', { email: 'bb@example.test', password: pw })).json()).token;
+      const wire = (payload) => new Promise((res) => { // closed = the SERVER hung up within 3 s (we never end first)
+        const sock = net.connect(bApp, '127.0.0.1'); let d = '';
+        const t = setTimeout(() => { res({ d, closed: false }); sock.destroy(); }, 3000);
+        sock.on('data', (c) => { d += c; if ((d.match(/HTTP\/1\.1 \d{3}/g) || []).length === 2) { clearTimeout(t); res({ d, closed: false }); sock.destroy(); } });
+        sock.on('error', () => {}); sock.on('close', () => { clearTimeout(t); res({ d, closed: true }); });
+        sock.write(payload);
+      });
+      const game = (k) => JSON.stringify({ name: `smuggled-${k}`, payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } });
+      const hiddenFor = (k) => `POST /api/games HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${tok}\r\nContent-Type: application/json\r\nContent-Length: ${game(k).length}\r\n\r\n${game(k)}`;
+      const body = '{"email":"bb@example.test","password":"wrong"}';
+      const H = (extra, b) => `POST /api/auth/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n${extra}\r\n${b}`;
+      const chunked = (hidden) => `${body.length.toString(16)}\r\n${body}\r\n0\r\n\r\n${hidden}`;
+      const framings = {
+        dupCL: (h) => H(`Content-Length: ${body.length}\r\nContent-Length: ${body.length + h.length}\r\n`, body + h),
+        clTe: (h) => H('Content-Length: 4\r\nTransfer-Encoding: chunked\r\n', chunked(h)),
+        teCl: (h) => H('Transfer-Encoding: chunked\r\nContent-Length: 200\r\n', chunked(h)),
+        teObf: (h) => H(`Transfer-Encoding: xchunked\r\nContent-Length: ${body.length}\r\n`, body + h),
+        teTab: (h) => H(`Transfer-Encoding:\tchunked\r\nContent-Length: ${body.length}\r\n`, body + h),
+        teDouble: (h) => H('Transfer-Encoding: chunked\r\nTransfer-Encoding: identity\r\n', chunked(h)),
+        teChunkedNotLast: (h) => H('Transfer-Encoding: chunked, identity\r\n', chunked(h)),
+        obsFold: (h) => H(`Content-Length: ${body.length}\r\nX-A: a\r\n Transfer-Encoding: chunked\r\n`, body + h),
+        spaceBeforeColon: (h) => H(`Content-Length : ${body.length + h.length}\r\n`, body + h),
+        bareLF: (h) => `POST /api/auth/login HTTP/1.1\nHost: x\nContent-Type: application/json\nContent-Length: ${body.length}\n\n${body}${h}`,
+        chunkExtLF: (h) => H('Transfer-Encoding: chunked\r\n', `${body.length.toString(16)};x\n\r\n${body}\r\n0\r\n\r\n${h}`),
+        negCL: (h) => H('Content-Length: -1\r\n', body + h),
+        plusCL: (h) => H(`Content-Length: +${body.length}\r\n`, body + h),
+        hexChunkOverflow: (h) => H('Transfer-Encoding: chunked\r\n', `ffffffffffffffffff1a\r\n${body}\r\n0\r\n\r\n${h}`),
+        http10TE: (h) => `POST /api/auth/login HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: ${body.length}\r\n\r\n${body}${h}`,
+        nulInHeader: (h) => H(`Content-Length: ${body.length}\r\nX-A: a\u0000b\r\n`, body + h),
+        crInValue: (h) => H(`Content-Length: ${body.length}\r\nX-A: a\rTransfer-Encoding: chunked\r\n`, body + h),
+      };
+      const control = await wire(H(`Content-Length: ${body.length}\r\n`, body) + hiddenFor('control'));
+      const framed = Object.fromEntries(await Promise.all(Object.entries(framings).map(async ([k, f]) => [k, await wire(f(hiddenFor(k)))])));
+      // Angle 1: every body route, each bomb from its own client (no rate limit couples the cases).
+      let ip = 0;
+      const post = (route, buf, headers = {}, method = 'POST') => new Promise((res) => {
+        const r = http.request({ host: '127.0.0.1', port: bApp, path: route, method, headers: { 'content-type': 'application/json', 'content-length': buf.length,
+          authorization: `Bearer ${tok}`, 'x-forwarded-for': `10.30.${++ip >> 8}.${ip & 255}`, ...headers } }, (x) => { x.resume(); x.on('end', () => res(x.statusCode)); });
+        r.on('error', (e) => res(`ERR ${e.code}`)); r.setTimeout(20000, () => { r.destroy(); res('TIMEOUT'); }); r.end(buf);
+      });
+      const spaces = Buffer.alloc(50 * 1024 * 1024, 0x20), bigJson = Buffer.concat([Buffer.from('{"email":"'), Buffer.alloc(20 * 1024 * 1024, 0x61), Buffer.from('"}')]);
+      const gz = { 'content-encoding': 'gzip' };
+      const routes = ['/api/auth/login', '/api/games', '/api/report', '/api/feedback', '/api/scenario/regenerate', '/api/auth/register', '/api/auth/verify',
+        '/api/auth/forgot-password', '/api/auth/reset-password', '/api/auth/delete-request', '/api/auth/delete-confirm', '/api/games/adopt-local'];
+      const bombs = {
+        tooLarge: { gzipSpaces: [zlib.gzipSync(spaces), gz], deflateSpaces: [zlib.deflateSync(spaces), { 'content-encoding': 'deflate' }],
+          gzipString: [zlib.gzipSync(bigJson), gz], gzipTruncated: [zlib.gzipSync(bigJson).subarray(0, 4000), gz],
+          deepObj: [Buffer.from('{"a":'.repeat(20000) + '1' + '}'.repeat(20000)), {}] },
+        unsupported: { brotli: [zlib.brotliCompressSync(bigJson), { 'content-encoding': 'br' }], stacked: [zlib.gzipSync(zlib.gzipSync(bigJson)), { 'content-encoding': 'gzip, gzip' }],
+          latin1: [Buffer.from('{"email":"\xe9"}', 'latin1'), { 'content-type': 'application/json; charset=iso-8859-1' }],
+          bogusCharset: [Buffer.from('{"email":"a"}'), { 'content-type': 'application/json; charset=x-bogus' }] },
+        other: { gzipGarbage: [Buffer.from('not gzip at all'), gz], deep: [Buffer.from('['.repeat(50000) + ']'.repeat(50000)), {}],
+          wide: [Buffer.from('{' + Array.from({ length: 9000 }, (_, i) => `"k${i}":1`).join(',') + '}'), {}],
+          protoKey: [Buffer.from('{"__proto__":{"isAdmin":true},"constructor":{"prototype":{"x":1}},"email":"bb@example.test","password":"x"}'), {}],
+          utf16: [Buffer.from('﻿{"email":"a"}', 'utf16le'), { 'content-type': 'application/json; charset=utf-16' }],
+          identityUpper: [Buffer.from('{"email":"x","password":"y"}'), { 'content-encoding': 'IDENTITY' }],
+          loneSurrogate: [Buffer.from('{"email":"\\ud800","password":"\\udfff"}'), {}], hugeNumber: [Buffer.from('{"payoffs":{"a11":1' + '0'.repeat(90000) + '}}'), {}] },
+      };
+      const got = {};
+      for (const [cls, set] of Object.entries(bombs)) for (const [k, [buf, h]] of Object.entries(set)) for (const r of routes) got[`${cls} ${k} ${r}`] = await post(r, buf, h);
+      for (const [k, [buf, h]] of Object.entries({ ...bombs.tooLarge, deep: bombs.other.deep })) for (const m of ['PATCH', 'DELETE']) got[`${k === 'deep' ? 'other' : 'tooLarge'} ${k} ${m}`] = await post('/api/games/g_x', buf, h, m);
+      const smallGzip = await post('/api/auth/login', zlib.gzipSync(JSON.stringify({ email: 'bb@example.test', password: pw })), gz);
+      const games = (await (await fetch(`http://127.0.0.1:${bApp}/api/games`, { headers: { authorization: `Bearer ${tok}` } })).json()).map((g) => g.name);
+      const health = await fetch(`http://127.0.0.1:${bApp}/api/health`).then((r) => r.json()).catch(() => ({}));
+      const alive = B.child.exitCode === null && health.pid === B.child.pid, unhandled = /Unhandled error/.test(B.log());
+      await stop(B.child); await fb.close();
+      const statuses = (d) => (d.match(/HTTP\/1\.[01] \d{3}/g) || []).join(' | ');
+      const bad = (cls, ok) => Object.entries(got).filter(([k, v]) => k.startsWith(cls) && !ok(v)).map(([k, v]) => `${k}=${v}`);
+      record('fixture: a clean keep-alive pipeline answers both requests and its hidden POST creates "smuggled-control"; a small gzip login signs in',
+        statuses(control.d) === 'HTTP/1.1 401 | HTTP/1.1 200' && games.includes('smuggled-control') && smallGzip === 200,
+        JSON.stringify({ control: statuses(control.d), smallGzip, games }));
+      const unframed = Object.entries(framed).filter(([, x]) => statuses(x.d) !== 'HTTP/1.1 400' || !x.closed).map(([k, x]) => `${k}=${statuses(x.d) || '(none)'}${x.closed ? '' : ' open'}`);
+      record('GUARD (smuggling): each of 17 ambiguous framings gets exactly one 400, the server closes the socket, and no hidden request reached /api/games',
+        Object.keys(framed).length === 17 && unframed.length === 0 && !games.some((g) => g !== 'smuggled-control'),
+        JSON.stringify({ unframed, games }));
+      record('GUARD (body size): a body over the limit AFTER inflation (gzip/deflate/truncated gzip) or raw is 413 on every body route',
+        bad('tooLarge', (v) => v === 413).length === 0, JSON.stringify(bad('tooLarge', (v) => v === 413).slice(0, 6)));
+      record('GUARD (encoding): brotli, stacked gzip and a non-UTF charset are 415 on every body route',
+        bad('unsupported', (v) => v === 415).length === 0, JSON.stringify(bad('unsupported', (v) => v === 415).slice(0, 6)));
+      // 2xx only where the body is ignored (delete-request: the token is the request) or well-formed (protoKey names a real email).
+      const answered = Object.entries(got).filter(([k, v]) => !(typeof v === 'number' && v < 500
+        && (v >= 400 || / \/api\/auth\/delete-request$|^other protoKey \/api\/auth\/forgot-password$/.test(k)))).map(([k, v]) => `${k}=${v}`);
+      record('GUARD (no 5xx): every hostile body is a 4xx (2xx only where the body is ignored or well-formed), none is logged as an unhandled error, and the process survives a 128 MB heap',
+        answered.length === 0 && Object.keys(got).length === 216 && !unhandled && alive, JSON.stringify({ bad: answered.slice(0, 12), unhandled, alive, n: Object.keys(got).length }));
     }
   }
 
