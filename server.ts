@@ -2600,14 +2600,13 @@ const EMAIL_SHAPE = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a
 // send hands the slot back (releaseCodeMail).
 const MAIL_COOLDOWN_MS = 60_000;
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000; // a dead pending row is swept this long after its code expired
-// Bounded: entries past the cooldown are pruned whenever the map passes
-// MAIL_COOLDOWN_CAP, so it holds at most the addresses mailed in the last
-// minute (register's per-IP limit bounds that rate) plus the cap.
-const MAIL_COOLDOWN_CAP = 1000;
+// Bounded: it holds only the addresses mailed in the last minute (register's
+// per-IP limit bounds that rate). One cooldown on a monotonic clock, so entries
+// sit in expiry order: expired ones leave from the front, O(1) amortized (sweep 20).
 const lastCodeMail = new Map<string, number>();
 function mailCooldownLeft(kind: "verification" | "recovery", email: string): number {
   const now = performance.now(), key = `${kind}:${email}`;
-  if (lastCodeMail.size >= MAIL_COOLDOWN_CAP) for (const [k, t] of lastCodeMail) if (now - t >= MAIL_COOLDOWN_MS) lastCodeMail.delete(k);
+  for (const [k, t] of lastCodeMail) { if (now - t < MAIL_COOLDOWN_MS) break; lastCodeMail.delete(k); }
   const left = MAIL_COOLDOWN_MS - (now - (lastCodeMail.get(key) ?? -Infinity));
   if (left <= 0) lastCodeMail.set(key, now);
   return Math.max(0, left);
@@ -3066,12 +3065,15 @@ function setRetryAfter(res: express.Response, waitMs: number): void {
   res.setHeader("Retry-After", String(Math.max(1, Math.ceil(waitMs / 1000))));
 }
 
-// Drop expired buckets so the Map can't grow unbounded under many distinct IPs.
-// Cheap: only sweeps once the Map gets large rather than on every request.
+// Drop expired buckets from the FRONT: every window is 60 s on a monotonic clock,
+// so Map insertion order is expiry order and the scan stops at the first live one
+// (O(1) amortized). A full scan per request once 1000 were live cost O(live) per
+// call, 1.75 ms at 200k distinct /56s (sweep 20). One window for every limiter
+// (ratekey.cloud pins it); a longer one would only delay pruning, never mis-answer.
 function pruneRateBuckets(now: number) {
-  if (rateBuckets.size < 1000) return;
   for (const [key, bucket] of rateBuckets) {
-    if (bucket.resetAt <= now) rateBuckets.delete(key);
+    if (bucket.resetAt > now) return;
+    rateBuckets.delete(key);
   }
 }
 

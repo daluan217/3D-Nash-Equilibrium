@@ -99,4 +99,23 @@ for (const step of [-600_000, 600_000]) {
   n += 3;
 }
 
+// Prune cost (sweep 20): a full scan per call once 1000 buckets were live made every limited request
+// O(live), 1.75 ms at 200k distinct /56s. Windows share one clock, so expired buckets leave from the
+// front: over 20k distinct clients inside one window, then 20k more after it, work per call stays O(1).
+{
+  let steps = 0;
+  class CountingMap<K, V> extends Map<K, V> { *[Symbol.iterator]() { for (const e of super.entries()) { steps++; yield e; } } }
+  const fresh = new Function('net', 'process', 'performance', 'Date', 'Map', `${ts.transpileModule(span, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return { rateLimit, rateBuckets };`)(
+    net, { env: {} }, { now: () => clock }, { now: () => wall }, CountingMap) as { rateLimit: typeof limit; rateBuckets: Map<string, unknown> };
+  const mw = fresh.rateLimit('prune', 5, 60_000), res = { setHeader() {}, status() { return res; }, json() { return res; } };
+  const at = (t: number, i: number) => { clock = t; mw({ ip: `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`, socket: {} }, res, () => {}); };
+  for (let i = 0; i < 20_000; i++) at(1_000_000 + i, i);
+  const live = fresh.rateBuckets.size;
+  for (let i = 0; i < 20_000; i++) at(2_000_000 + i, 20_000 + i);
+  assert(live === 20_000 && fresh.rateBuckets.size === 20_000, `buckets: ${live} live in the window, ${fresh.rateBuckets.size} after it (the first 20k expired)`); n++;
+  assert(steps > 0 && steps <= 3 * 40_000, `prune visited ${steps} entries over 40,000 calls: must be O(1) per call, not O(live)`); n++;
+  // The front-prune is exact only while insertion order is expiry order: one window for every limiter.
+  const windows = new Set([...src.matchAll(/rateLimit\(\s*"[^"]+",\s*\d+,\s*([\d_]+)/g)].map((m) => m[1]));
+  assert(windows.size === 1 && calls.length === [...src.matchAll(/rateLimit\(\s*"[^"]+",\s*\d+,\s*[\d_]+/g)].length, `every rateLimit call must share one literal window: ${[...windows]}`); n++;
+}
 console.log(`ratekey.cloud.test.ts: ${n} checks passed (${calls.length} rateLimit call sites, all keyed by rateKey)`);

@@ -419,16 +419,19 @@ check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
 // source (sliced out of server.ts) over 5,000 distinct addresses with a
 // clock that moves past the cooldown, and the map must stay under its cap.
 {
-  const start = source.indexOf('const MAIL_COOLDOWN_CAP');
+  const start = source.indexOf('const lastCodeMail = new Map');
   const end = source.indexOf('\nconst releaseCodeMail', start);
   const MS = /const MAIL_COOLDOWN_MS = ([\d_]+);/.exec(source)?.[1]?.replace(/_/g, '');
-  let size = -1, maxSize = 0, stillCools = false, skew = '';
+  let size = -1, maxSize = 0, stillCools = false, skew = '', steps = 0, fillSteps = 0;
   if (start > 0 && end > start && MS) {
     const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
     let now = 0, wall = 0;
-    const run = new Function('performance', 'Date', 'MAIL_COOLDOWN_MS', `${js}; return { left: mailCooldownLeft, map: lastCodeMail };`);
-    const { left, map } = run({ now: () => now }, { now: () => wall }, Number(MS));
+    // Counts entries visited by every scan of the map: the prune's work per call (sweep 20).
+    class CountingMap<K, V> extends Map<K, V> { *[Symbol.iterator]() { for (const e of super.entries()) { steps++; yield e; } } }
+    const run = new Function('performance', 'Date', 'MAIL_COOLDOWN_MS', 'Map', `${js}; return { left: mailCooldownLeft, map: lastCodeMail };`);
+    const { left, map } = run({ now: () => now }, { now: () => wall }, Number(MS), CountingMap);
     for (let i = 0; i < 5000; i++) { now += 50; left('verification', `a${i}@example.test`); maxSize = Math.max(maxSize, map.size); }
+    fillSteps = steps;
     size = map.size;
     stillCools = left('verification', 'a4999@example.test') > 0; // a fresh entry survives pruning
     // Clock skew (sweep 17): the cooldown runs on the monotonic clock, so a wall clock stepped
@@ -446,7 +449,10 @@ check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
   check('a wall-clock step (-10 min, +10 min) neither extends nor ends the mail cooldown',
     skew === `${Number(MS) - 1000},0,${Number(MS) - 1000},0`, `left after 1 s, after the cooldown: ${skew}`);
   check('the mail-cooldown map stays bounded over 5,000 distinct addresses (expired entries pruned)',
-    size > 0 && maxSize <= 1000 + Number(MS) / 50 && stillCools, `size ${size}, max ${maxSize}, fresh entry still cooling ${stillCools}`);
+    size > 0 && maxSize <= Number(MS) / 50 + 1 && stillCools,
+    `size ${size}, max ${maxSize}, fresh entry still cooling ${stillCools}`);
+  check('the mail-cooldown prune visits O(1) entries per call (expired ones leave from the front), not the whole map',
+    fillSteps > 0 && fillSteps <= 2 * 5000, `${fillSteps} entries visited over 5,000 calls with ~${Number(MS) / 50} live`);
 }
 
 // In-process intervals run on the monotonic clock (sweep 17): a wall-clock step backward
