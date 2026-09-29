@@ -26,7 +26,10 @@ const start = src.indexOf('      const forbiddenFiles = new Set<string>();');
 const tail = "      app.get('*', (req, res) => {\n        res.sendFile(path.join(distPath, 'index.html'));\n      });\n";
 const end = src.indexOf(tail, start) + tail.length;
 assert(start > 0 && end > start + tail.length, 'the static block (forbiddenFiles .. SPA fallback) is gone from server.ts');
-const block = src.slice(start, end);
+// The one Accept-Encoding negotiation (module scope in server.ts), lifted with the block that calls it.
+const PICK = src.slice(src.indexOf('function pickCoding('), src.indexOf('\nasync function startServer'));
+assert(PICK.startsWith('function pickCoding(') && PICK.includes('return qb > 0'), 'pickCoding is gone from server.ts');
+const block = PICK + src.slice(start, end);
 const STATIC = '      app.use(express.static(distPath));\n';
 assert(block.includes(STATIC), 'express.static is gone from the static block');
 // The block as it was before sweep 25: nothing between the static mount and the SPA fallback.
@@ -119,7 +122,9 @@ const decode = (r: Raw) => (r.h['content-encoding'] === 'br' ? zlib.brotliDecomp
   const onDisk = (u: string) => fs.readFileSync(path.join(d, u));
   // q is honoured: the higher q wins, a tie goes to br, `*` covers an unlisted coding, q=0 refuses, identity otherwise.
   for (const [ae, want] of [[CHROME, 'br'], ['br;q=0.1, gzip', 'gzip'], ['gzip;q=0.5, br;q=0.5', 'br'], ['*;q=0.2', 'br'], ['br;q=0, *', 'gzip'],
-    ['identity', undefined], [undefined, undefined], ['gzip;q=0, br;q=0', undefined], ['BR', 'br'], ['gzip, br;q=0.9', 'gzip'], ['deflate', undefined]] as const) {
+    ['identity', undefined], [undefined, undefined], ['gzip;q=0, br;q=0', undefined], ['BR', 'br'], ['gzip, br;q=0.9', 'gzip'], ['deflate', undefined],
+    // Out-of-range q is clamped to [0, 1]: q=5 ties br at 1 (br wins), q=-1 refuses br (not a fallback to `*`).
+    ['gzip;q=5, br', 'br'], ['br;q=-1, *', 'gzip']] as const) {
     for (const u of [REFS.script, REFS.css]) {
       const r = await get(u, ae === undefined ? {} : { 'accept-encoding': ae });
       assert.strictEqual(r.h['content-encoding'], want, `Accept-Encoding ${JSON.stringify(ae)} on ${u}: content-encoding=${r.h['content-encoding']}, want ${want ?? '(none)'}`);
@@ -254,7 +259,7 @@ for (const [url, type] of [[REFS.script, 'application/octet-stream'], [REFS.prel
   expectRows(await smoke(`${url} served full-size as ${type}`, makeDist(`type-${n}`), block, wrongType(url, type)), [url], 'PASS', { precondition: url === REFS.script ? 'FAIL' : 'PASS' });
 }
 // Sweep 27: the compression, cache and error rows against broken shapes of the real block, each failing only its rows.
-const ROUTE_PICK = "qb > 0 && qb >= qg ? ['br', 'br'] : qg > 0 ? ['gzip', 'gz'] : []";
+const ROUTE_PICK = 'qb > 0 && qb >= qg ? "br" : qg > 0 ? "gzip" : undefined';
 const ASSET_CC = "'public, max-age=31536000, immutable'";
 const STRIP = 'for (const h of ["Content-Type", "Content-Encoding", "ETag", "Last-Modified"]) res.removeHeader(h);';
 for (const [label, dist, code, eh, failing, o] of [
@@ -265,7 +270,7 @@ for (const [label, dist, code, eh, failing, o] of [
   ['a one-hour asset lifetime', makeDist('short'), swap(block, ASSET_CC, "'public, max-age=3600, immutable'"), handler, [], { packed: ALL }],
   ['a year-long asset lifetime, not immutable', makeDist('notimm'), swap(block, ASSET_CC, "'public, max-age=31536000'"), handler, [], { packed: ALL }],
   ['a tie goes to gzip', makeDist('tiegz'), swap(block, 'qb >= qg', 'qb > qg'), handler, [], { packed: ALL }],
-  ['br for every client (Accept-Encoding ignored)', makeDist('always'), swap(block, ROUTE_PICK, "['br', 'br']"), handler, [], { identity: 'FAIL' }],
+  ['br for every client (Accept-Encoding ignored)', makeDist('always'), swap(block, ROUTE_PICK, '"br"'), handler, [], { identity: 'FAIL' }],
   ["the sibling's own type (no res.type)", makeDist('octet'), swap(block, 'res.type(path.extname(file)).setHeader(', 'res.setHeader('), handler, ALL, { packed: [] }],
   ['a shell cached for a day', makeDist('dayshell'), swap(block, STATIC, "      app.use(express.static(distPath, { maxAge: '1d' }));\n"), handler, [], { shell: 'FAIL' }],
   ['an immutable shell at max-age=0', makeDist('immshell'), swap(block, STATIC, "      app.use((req, res, next) => { if (req.path === '/') res.setHeader('Cache-Control', 'public, max-age=0, immutable'); next(); });\n" + STATIC), handler, [], { shell: 'FAIL' }],

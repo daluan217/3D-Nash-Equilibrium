@@ -3652,6 +3652,25 @@ async function sendFeedbackEmail(
   }
 }
 
+// The coding to send, of those on offer, for an Accept-Encoding: the higher q wins, a tie goes to br, `*` covers an
+// unlisted coding, q=0 refuses; undefined is identity. q is clamped to [0, 1] (RFC 9110 §12.4.2): `gzip;q=5` ties br
+// at 1, and `br;q=-1` refuses br rather than falling back to `*`. The ONE negotiation for every compressed answer.
+function pickCoding(acceptEncoding: string, br: boolean, gzip: boolean): "br" | "gzip" | undefined {
+  const qOf = (coding: string) => {
+    let own = -1, star = 0;
+    for (const part of acceptEncoding.toLowerCase().split(",")) {
+      const [name, ...params] = part.split(";").map((s) => s.trim());
+      const qp = params.find((p) => p.startsWith("q="));
+      const v = qp === undefined ? 1 : Number(qp.slice(2));
+      const q = Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0;
+      if (name === coding) own = Math.max(own, q); else if (name === "*") star = Math.max(star, q);
+    }
+    return own >= 0 ? own : star;
+  };
+  const qb = br ? qOf("br") : 0, qg = gzip ? qOf("gzip") : 0;
+  return qb > 0 && qb >= qg ? "br" : qg > 0 ? "gzip" : undefined;
+}
+
 async function startServer() {
   // First thing, before anything else touches the filesystem or binds a
   // port: refuse to run as a second writer against a data directory another
@@ -5683,17 +5702,6 @@ async function startServer() {
       if (process.env.IS_ELECTRON !== "true") {
         const assetDir = path.join(distPath, 'assets');
         const listed = new Set(fs.existsSync(assetDir) ? fs.readdirSync(assetDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name) : []);
-        const qOf = (header: string, coding: string) => {
-          let own = -1, star = 0;
-          for (const part of header.toLowerCase().split(',')) {
-            const [name, ...params] = part.split(';').map((s) => s.trim());
-            const qp = params.find((p) => p.startsWith('q='));
-            const v = qp === undefined ? 1 : Number(qp.slice(2));
-            const q = Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0;
-            if (name === coding) own = Math.max(own, q); else if (name === '*') star = Math.max(star, q);
-          }
-          return own >= 0 ? own : star;
-        };
         app.get('/assets/:file', (req, res, next) => {
           const file = req.params.file;
           // The exact spelling only: the router also matches another case and a trailing slash.
@@ -5703,14 +5711,12 @@ async function startServer() {
           const br = listed.has(`${file}.br`), gz = listed.has(`${file}.gz`);
           if (!br && !gz) return next();
           res.vary('Accept-Encoding');
-          const ae = String(req.headers['accept-encoding'] ?? '');
-          const qb = br ? qOf(ae, 'br') : 0, qg = gz ? qOf(ae, 'gzip') : 0;
-          const [coding, ext] = qb > 0 && qb >= qg ? ['br', 'br'] : qg > 0 ? ['gzip', 'gz'] : [];
+          const coding = pickCoding(String(req.headers['accept-encoding'] ?? ''), br, gz);
           if (!coding) return next();
           res.type(path.extname(file)).setHeader('Content-Encoding', coding);
           // sendFile owns ETag/304/HEAD/Range. A 412/416 is the answer for the coding asked for (the error
           // handler's JSON); only a sibling gone since boot (404) falls through to the raw file, its headers removed.
-          res.sendFile(`${file}.${ext}`, { root: assetDir }, (err) => {
+          res.sendFile(`${file}.${coding === 'br' ? 'br' : 'gz'}`, { root: assetDir }, (err) => {
             // Express's own sendFile triage: a client gone mid-send is not an error.
             const e = err as (NodeJS.ErrnoException & { status?: number }) | undefined;
             if (!e || e.code === 'ECONNABORTED' || e.syscall === 'write') return;
