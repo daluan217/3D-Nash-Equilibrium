@@ -56,14 +56,16 @@ function startFakeGcs({ dmgExists, huge = false }) {
   // Counts requests that actually fetch OBJECT BYTES (?alt=media) — the
   // thing a HEAD probe must never trigger. Exposed on the returned server so
   // the HEAD test below can assert on it directly, not infer it from timing.
-  let mediaRequests = 0, mediaOpen = 0, mediaSent = 0;
+  let mediaRequests = 0, mediaOpen = 0, mediaSent = 0, metaDelayMs = 0;
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     if (u.pathname === objectPath && u.searchParams.get('alt') === 'media') mediaRequests++;
     if (huge && u.pathname === objectPath) {
       if (u.searchParams.get('alt') !== 'media') {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ name: DMG_OBJECT, bucket: BUCKET, size: String(HUGE) }));
+        return setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ name: DMG_OBJECT, bucket: BUCKET, size: String(HUGE) }));
+        }, metaDelayMs);
       }
       const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? ''), from = m ? Number(m[1]) : 0, to = m ? Number(m[2]) : HUGE - 1;
       mediaOpen++; res.on('close', () => { mediaOpen--; });
@@ -113,6 +115,7 @@ function startFakeGcs({ dmgExists, huge = false }) {
   server.mediaRequestCount = () => mediaRequests;
   server.mediaOpenCount = () => mediaOpen;
   server.mediaSentBytes = () => mediaSent;
+  server.setMetaDelay = (ms) => { metaDelayMs = ms; };
   return new Promise((resolve) => server.listen(fakeGcsPort, () => resolve(server)));
 }
 
@@ -456,6 +459,18 @@ try {
   const wholeLen = (await whole.arrayBuffer()).byteLength;
   record('…and a download read to the end still delivers every byte (the release is abort-only)',
     whole.status === 200 && wholeLen === HUGE && (await drained()) <= leftOpen, `status ${whole.status}, ${wholeLen} of ${HUGE} bytes, ${fakeGcs.mediaOpenCount()} GCS reads open (${leftOpen} before)`);
+  // Sweep 23: a client gone BEFORE the pipe (here while exists()/getMetadata() take 300 ms) had
+  // already fired 'close', so a listener attached at pipe time never ran: 10 of 10 reads stayed open.
+  fakeGcs.setMetaDelay(300);
+  const early0 = { opened: fakeGcs.mediaRequestCount(), sent: fakeGcs.mediaSentBytes() };
+  for (let i = 0; i < 3; i++) await new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1', () => { s.write('GET /api/download/dmg HTTP/1.1\r\nHost: x\r\n\r\n'); setTimeout(() => s.destroy(), 50); });
+    s.on('close', resolve); s.on('error', () => {});
+  });
+  await new Promise((r) => setTimeout(r, 1500)); // both 300 ms metadata calls answer, then the pipe would start
+  const earlyOpen = await drained(), earlySent = fakeGcs.mediaSentBytes() - early0.sent;
+  record('THE DEFECT: a client gone before the pipe starts leaves no GCS read open and pulls nothing',
+    earlyOpen === 0 && earlySent < HUGE / 4, `3 hang-ups at 50 ms: ${fakeGcs.mediaRequestCount() - early0.opened} GCS reads opened, ${earlyOpen} still open, GCS sent ${earlySent} bytes`);
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 
@@ -659,7 +674,7 @@ try {
 // otherwise prints "N/N checks passed" and exits 0. Measured: filtering one
 // data array to empty in desktop-dead-token-owner removed six checks and the
 // run said "37/37 checks passed".
-const EXPECTED_CHECKS = 49;
+const EXPECTED_CHECKS = 50;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
   process.exit(1);

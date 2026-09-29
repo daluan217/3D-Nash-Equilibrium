@@ -16,6 +16,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import net from 'node:net';
+import { gzipSync } from 'node:zlib';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -264,6 +266,22 @@ await test('scenario cancellation: abandoned draws stop making physical requests
       // retry (maxRetries) is disabled. 6 physical requests (the pre-fix
       // number) would mean the multiplier is back.
       assert.equal(events.length, 2, `expected exactly 2 physical requests (one per logical draw), got ${events.length}: ${JSON.stringify(events)}`);
+    }));
+
+  // Sweep 23: a gzip body is inflated asynchronously, so a client that hangs up right after sending it is
+  // gone before the handler runs; 'close' had already fired and a listener attached then never did (10
+  // hang-ups cost 20 physical requests, each run to completion). Now nothing a gone client starts stays open.
+  await t.test('a client gone before the handler runs (gzip body) leaves no physical request open', () =>
+    withServer(6, () => null, async (base, events) => {
+      const port = Number(new URL(base).port);
+      for (let i = 0; i < 3; i++) await new Promise((resolve) => {
+        const body = gzipSync(JSON.stringify({ payoffs: { ...GAME, a11: 3 + i } }));
+        const s = net.connect(port, '127.0.0.1', () => { s.write(Buffer.concat([Buffer.from(`POST /api/scenario/regenerate HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: ${body.length}\r\n\r\n`), body])); s.destroy(); });
+        s.on('close', resolve); s.on('error', () => {});
+      });
+      await sleep(2000);
+      const open = events.filter((e) => e.closedAt === undefined);
+      assert.ok(events.length <= 3 && open.length === 0, `3 gone clients: ${events.length} physical requests, ${open.length} still open: ${JSON.stringify(events)}`);
     }));
 
   await t.test('control: a fast valid draw costs exactly one physical request', () =>

@@ -10,12 +10,14 @@
  * (provider logs the upstream error, key included), M57 (regenerate refuses
  * the bank fallback), M58 (trust every X-Forwarded-For hop), M59 (proxy not
  * trusted: every client shares one bucket), M64 (IPv6 keyed per address), M65 (IPv4-mapped
- * keyed as an IPv6 /56) each fail a check below.
+ * keyed as an IPv6 /56) each fail a check below. S23-1 (gone-before-handler listener) fails the gzip hang-up check.
  *
  *   node src/integration/report-provider-faults.test.mjs
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import net from 'node:net';
+import { gzipSync } from 'node:zlib';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -34,9 +36,10 @@ function record(name, pass, detail = '') {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
 }
 
-let mode = 'ok', calls = 0;
+let mode = 'ok', calls = 0, open = 0;
 const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 const stub = createServer((req, res) => {
+  open++; res.on('close', () => { open--; });
   req.resume();
   req.on('end', () => {
     calls++;
@@ -92,6 +95,19 @@ try {
     const text = await r.text(); let b = null; try { b = JSON.parse(text); } catch {}
     only.push({ m, status: r.status, scenario: !!b?.scenario, failure: b?.failure ?? null, sc: b?.scenarioSource ?? null, leak: text.includes(CANARY) || /AZURE_FOUNDRY|fault-injected|\bat [\w.<>]+ \(/.test(text) });
   }
+  // Sweep 23: a client that hangs up right after a gzip body is gone before the handler runs (express.json
+  // inflates asynchronously), so a 'close' listener attached there never fired: 10 hang-ups cost 20 provider
+  // calls, each held to the 3 s draw deadline and retried. Now every call a gone client starts is cut at once.
+  mode = 'hang'; const g0 = calls;
+  for (let i = 0; i < 3; i++) await new Promise((resolve) => {
+    const body = gzipSync(JSON.stringify({ payoffs: { ...games[0], a22: 1.5 + i }, bypassCache: true }));
+    const s = net.connect(PORT, '127.0.0.1', () => { s.write(Buffer.concat([Buffer.from(`POST /api/report HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 192.0.2.${60 + i}\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: ${body.length}\r\n\r\n`), body])); s.destroy(); });
+    s.on('close', resolve); s.on('error', () => {});
+  });
+  await new Promise((r) => setTimeout(r, 1500)); const openAt1500 = open, callsAt1500 = calls - g0;
+  await new Promise((r) => setTimeout(r, 3000)); // past the 3 s draw deadline: an uncancelled ladder retries here
+  record('THE DEFECT: a client that hangs up after sending a gzip body starts no provider call that outlives it',
+    openAt1500 === 0 && calls - g0 <= 3, `3 hang-ups: ${callsAt1500} provider calls by 1.5 s (${openAt1500} still open), ${calls - g0} by 4.5 s`);
   const ok = seen[0];
   record('fixture: the fake provider was called in every mode, and the answering one reached the gate (logged drop)',
     seen.every((s) => s.calls >= 1) && /rung-3 scenario dropped/.test(log), JSON.stringify(seen.map((s) => [s.m, s.calls])));
@@ -132,4 +148,4 @@ try {
 }
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-if (failed.length || results.length !== 9) process.exit(1);
+if (failed.length || results.length !== 10) process.exit(1);

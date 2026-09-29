@@ -322,10 +322,17 @@ function scenarioOutputWithinDisplayLimits(sc: SuggestedScenario): boolean {
  */
 function clientGoneSignal(res: express.Response): AbortSignal {
   const controller = new AbortController();
-  res.on("close", () => {
-    if (!res.writableEnded) controller.abort();
-  });
+  onClientGone(res, () => controller.abort());
   return controller.signal;
+}
+
+// 'close' fires once, so a listener attached after it never runs: a client that hung up during an
+// await or while express.json inflated a gzip body got a full provider ladder or GCS read (sweep 23).
+// res.destroyed is the attach-time test. Measured: req.destroyed is true on EVERY request once its
+// body is read (live ones too) and req.aborted stays false for a client that is gone.
+function onClientGone(res: express.Response, fn: () => void): void {
+  if (res.destroyed && !res.writableEnded) return fn();
+  res.on("close", () => { if (!res.writableEnded) fn(); });
 }
 
 async function inventScreenedScenario(
@@ -4611,7 +4618,8 @@ async function startServer() {
             });
             // pipe() never ends the SOURCE when the client drops: every aborted download kept its
             // GCS read open and paused for the process's life (sweep 22: 120 of 120, still open 130 s on).
-            res.on('close', () => stream.destroy()); // a no-op once the read has ended
+            // Gone already (during the awaits above): the lazy read is destroyed before it requests.
+            onClientGone(res, () => stream.destroy());
             stream.pipe(res);
           };
 
