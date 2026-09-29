@@ -13,6 +13,7 @@ import {
 import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './e2e/selection.js';
 import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
+import { isAnalyticsNoise } from './e2e/console-noise.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -720,3 +721,26 @@ assert(doubleActivationFailures(daMissing).some((f) => f.includes('section 29'))
 assert.strictEqual(doubleActivationFailures(daReal).length, 0, 'no false positives on the real suite');
 
 console.log(`✓ double-activation contract: ${Object.keys(DOUBLE_ACTIVATION_SECTIONS).length} same-tick guards, ${daReal.size} sections scanned`);
+
+// Sweep 12 §75/§83: WebKit's offline text names no host, so the text-only analytics filter let a host network
+// blip fail a green run. Analytics noise is decided by the failing resource's URL; own-origin failures still count.
+{
+  const offline = 'Failed to load resource: The Internet connection appears to be offline.'; // verbatim, sweep12/75.log
+  const noise = [[offline, 'https://www.googletagmanager.com/gtag/js?id=G-9LRR4211HX'],
+    ['Failed to load resource: WebKit encountered an internal error', 'https://www.googletagmanager.com/gtag/js?id=X'],
+    ['Failed to load resource: net::ERR_INTERNET_DISCONNECTED', 'https://www.google.com/g/collect?v=2&tid=G-9LRR4211HX'],
+    ['Failed to load resource: net::ERR_INTERNET_DISCONNECTED', 'https://region1.analytics.google.com/g/collect?v=2']];
+  const real = [[offline, 'http://localhost:3001/api/games'], [offline, 'http://localhost:3001/assets/index-abc.js'],
+    [offline, 'https://googletagmanager.com.evil.test/gtag/js'], [offline, 'http://localhost:3001/?r=https://www.googletagmanager.com/'],
+    ['PAGEERROR: boom', '']];
+  for (const [text, url] of noise) assert.ok(isAnalyticsNoise({ text, url }), `analytics noise is filtered: ${url}`);
+  for (const [text, url] of real) assert.ok(!isAnalyticsNoise({ text, url }), `an app failure still counts: ${url || text}`);
+  for (const [file, src] of [['smoke.mjs', smoke], ['mobile.mjs', readFileSync('src/e2e/mobile.mjs', 'utf8')], ['ai-surface.mjs', readFileSync('src/e2e/ai-surface.mjs', 'utf8')]]) {
+    assert.match(src, /url: m\.location\(\)\?\.url \?\? ''/, `${file}: the console listener keeps the failing resource's URL`);
+    assert.match(src, /!isAnalyticsNoise\(e(rror)?\)/, `${file}: the console-error bar filters analytics by URL (isAnalyticsNoise)`);
+  }
+  // Every web-UA page's own error list too (§39's flap page loads gtag); Electron-UA pages never load it.
+  const textOnly = [...smoke.matchAll(/(\w+)\.on\('console', \(m\) => \{ if \(m\.type\(\) === 'error'[^\n]*?\.push\(m\.text\(\)/g)].map((m) => m[1]);
+  assert.deepStrictEqual(textOnly, ['dp', 'dp', 'dp'], `only the three Electron-UA desktop pages keep a text-only error list (${textOnly})`);
+  console.log(`✓ console noise: ${noise.length} analytics failures filtered by URL, ${real.length} app failures still counted`);
+}

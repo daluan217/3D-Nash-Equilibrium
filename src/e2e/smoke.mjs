@@ -22,6 +22,7 @@ import { closeTour, dismissTourForSetup } from './tour.mjs';
 import { throttleEveryPage } from './throttle.mjs';
 import { waitForStableGeometry } from './settled-geometry.mjs';
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './split-parts.mjs';
+import { isAnalyticsNoise } from './console-noise.mjs';
 
 const PORT = process.env.E2E_PORT || process.env.PORT || '3099';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -2639,8 +2640,8 @@ try {
   section('39', 'network-flap save does not duplicate', async () => {
     const flapPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     const flapConsoleErrors = [];
-    flapPage.on('console', (m) => { if (m.type() === 'error') flapConsoleErrors.push(m.text()); });
-    flapPage.on('pageerror', (e) => flapConsoleErrors.push(String(e)));
+    flapPage.on('console', (m) => { if (m.type() === 'error') flapConsoleErrors.push({ text: m.text(), url: m.location()?.url ?? '' }); });
+    flapPage.on('pageerror', (e) => flapConsoleErrors.push({ text: String(e) }));
 
     const uniq = await registerAndLogin(flapPage, 'e9flap');
     const gameName = `Flap-${uniq}`;
@@ -2701,8 +2702,8 @@ try {
       uiCountAfterReload === 1 && staleUiCount === 0, `edited=${uiCountAfterReload} stale=${staleUiCount}`);
 
     record('no console errors through the flap+retry sequence (net::ERR_CONNECTION_RESET is expected browser noise, filtered)',
-      flapConsoleErrors.filter((t) => !/ERR_CONNECTION_RESET/.test(t)).length === 0,
-      flapConsoleErrors.join(' | '));
+      flapConsoleErrors.filter((e) => !isAnalyticsNoise(e) && !/ERR_CONNECTION_RESET/.test(e.text)).length === 0,
+      flapConsoleErrors.map((e) => `${e.text} ${e.url ?? ''}`).join(' | '));
     await flapPage.close();
   });
 
@@ -12186,7 +12187,7 @@ const STATUS_NOISE_RE = /failed to load resource: the server responded with a st
 const relevantErrors = consoleErrors
   .filter((error) => error.sectionId === null
     || error.attempt === finalAttemptBySection.get(error.sectionId))
-  .filter(({ text }) => !/googletagmanager|google-analytics|gtag|net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED/i.test(text))
+  .filter((error) => !isAnalyticsNoise(error) && !/net::|ERR_INTERNET|ERR_NAME_NOT_RESOLVED/i.test(error.text))
   .filter((error) => {
     const m = STATUS_NOISE_RE.exec(error.text);
     if (!m) return true;
@@ -12204,7 +12205,7 @@ if (executedShard && relevantErrors.length === 0) {
   console.log('PASS no console/page errors across this shard');
 } else {
   record(`no console/page errors across ${executedShard ? 'this shard' : 'the whole suite'}`,
-    relevantErrors.length === 0, relevantErrors.slice(0, 3).map(({ text }) => text).join(' | '));
+    relevantErrors.length === 0, relevantErrors.slice(0, 3).map(({ text, url }) => (url ? `${text} (${url})` : text)).join(' | '));
 }
 
 await killServer();
