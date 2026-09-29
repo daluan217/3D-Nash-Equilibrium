@@ -339,6 +339,26 @@ assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\
   assert.match(body, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
   assert.match(body, /-eq 28\n/, 'CI requires all 28 tour-scroll cases to have run');
 }
+// TASK-18 H22: the 19-step tour walk. 6 round-robin shards x 8 cases = the 48 engine x case runs, each shard
+// fails on a non-zero exit and must print exactly its 8 case lines and its own shard's success line.
+{
+  const job = workflowJob('e2e_tour_walk');
+  const walk = readFileSync(new URL('./e2e/tour-walk.test.mjs', import.meta.url), 'utf8');
+  const install = job.indexOf('npx playwright install --with-deps chromium webkit');
+  const step = job.indexOf('node src/e2e/tour-walk.test.mjs');
+  assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour walk');
+  assert.match(job, /shard: \[1, 2, 3, 4, 5, 6\]\n/, 'the tour walk runs on 6 shards');
+  assert.match(job, /fail-fast: false/, 'one failed tour-walk shard must not cancel its siblings');
+  assert.match(job, /TOUR_WALK_SHARD: \$\{\{ matrix\.shard \}\}\/6\n/, 'each shard passes its selector');
+  assert.match(job, /set -o pipefail\s*\n\s*node src\/e2e\/tour-walk\.test\.mjs \| tee/, 'a failing tour walk fails the CI step');
+  assert.match(job, /-eq 8\n/, 'CI requires each shard to have run all 8 of its cases');
+  assert.match(job, /grep -q '\^✓ tour walk: shard \$\{\{ matrix\.shard \}\}\/6, 8 cases:'/, 'each shard proves it was that shard');
+  const cases = walk.match(/const CASES = \[([\s\S]*?)\n\];/)?.[1] ?? '';
+  assert.match(cases, /\['away', 'key'\], \['away', 'click'\], \['in view', 'click'\]\]\.flatMap[\s\S]*\[LAND, PORTRAIT, SHEET\]\.map/, '9 walks');
+  assert.match(cases, /\['flight', LAND[^\n]*\['flight', PORTRAIT[^\n]*\['flight', SHEET/, '3 flights');
+  assert.match(cases, /\[LAND, PORTRAIT, SHEET\]\.flatMap\(\(v\) => \[\['interrupt'[^\n]*\['long frame'[^\n]*\['slow'[^\n]*\n\s*\['held start'/, '12 interrupt/long/slow/held');
+  assert.match(walk, /TOUR_WALK_ENGINES \|\| 'chromium,webkit'/, 'both engines by default: 2 x 24 = 48 = 6 x 8');
+}
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
@@ -490,8 +510,9 @@ assert.doesNotMatch(workflow, /elif\s+node\s+src\/e2e\/smoke\.mjs/,
   'CI must never restore the old whole-suite second attempt');
 assert.match(workflow, /^\s{2}e2e:\s*\n\s*name:\s*e2e\s*$/m,
   'the exact branch-protection context `e2e` must remain present');
-assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface\]/,
-  'the required e2e context must aggregate both smoke and AI-surface jobs');
+assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface, e2e_tour_walk\]/,
+  'the required e2e context must aggregate the smoke, AI-surface and tour-walk jobs');
+assert.match(workflowJob('e2e'), /\[ "\$TOUR_WALK_RESULT" != success \]/, 'the e2e context fails when the tour walk does');
 assert.match(workflow, new RegExp(`e2e_smoke_failure_shard-\\$\\{\\{ matrix\\.shard \\}\\}-of-${SHARD_COUNT}_section-\\*-attempt-\\*\\.png`),
   'failure evidence must retain every section attempt and remain unique per matrix child');
 
@@ -579,14 +600,15 @@ assert.match(e2eBuildStep, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'only the dedicated e2e artifact should receive the short client timeout');
 assert.match(buildJob, /name:\s*dist\s*$[\s\S]*Build short-timeout e2e bundle[\s\S]*name:\s*dist-e2e\s*$/m,
   'the production artifact must be uploaded before the test-only rebuild overwrites dist');
-assert.strictEqual((workflow.match(/name:\s*dist-e2e\s*$/gm) ?? []).length, 3,
-  'dist-e2e must have one upload and exactly two browser-e2e downloads');
+assert.strictEqual((workflow.match(/name:\s*dist-e2e\s*$/gm) ?? []).length, 4,
+  'dist-e2e must have one upload and exactly three browser-e2e downloads');
 for (const job of [
   workflowJob('e2e_smoke'),
   workflowJob('e2e_ai_surface'),
+  workflowJob('e2e_tour_walk'),
 ]) {
   assert.match(job, /name:\s*dist-e2e\s*$/m,
-    'both browser E2E jobs must consume the short-timeout artifact');
+    'every browser E2E job must consume the short-timeout artifact');
 }
 for (const job of [
   workflowJob('integration'),

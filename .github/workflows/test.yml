@@ -866,27 +866,70 @@ jobs:
         env:
           TOUR_SCROLL_PORT: '3099'
 
+  e2e_tour_walk:
+    name: e2e tour walk (${{ matrix.shard }}/6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the short-timeout e2e bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-e2e
+          path: dist
+
+      - name: Install headless Chromium and WebKit
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: All 19 tour steps land, with scrollend removed, in chromium and webkit (TASK-18 H22)
+        # A same-target Next met a live flight WebKit then cancelled (step 16 at y=0, target off screen). 48 cases
+        # (2 engines x walk/flight/interrupt/long frame/slow/held start), round-robin over 6 shards of 8; the grep proves each ran.
+        run: |
+          set -o pipefail
+          node src/e2e/tour-walk.test.mjs | tee "$RUNNER_TEMP/tour-walk.log"
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-walk.log")" -eq 8
+          grep -q '^✓ tour walk: shard ${{ matrix.shard }}/6, 8 cases:' "$RUNNER_TEMP/tour-walk.log"
+        env:
+          TOUR_WALK_PORT: '3097'
+          TOUR_WALK_SHARD: ${{ matrix.shard }}/6
+
   # Branch protection requires the exact context "e2e". Keep that stable
   # while the implementation fans out behind it. The deploy gate therefore
-  # cannot pass until every smoke shard (the matrix above, packed by selection.js) and the AI-surface suite pass.
+  # cannot pass until every smoke shard (the matrix above, packed by selection.js), the AI-surface suite and the tour walk pass.
   e2e:
     name: e2e
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [e2e_smoke, e2e_ai_surface]
+    needs: [e2e_smoke, e2e_ai_surface, e2e_tour_walk]
     steps:
       - name: Require every e2e child job to pass
         env:
           SMOKE_RESULT: ${{ needs.e2e_smoke.result }}
           AI_SURFACE_RESULT: ${{ needs.e2e_ai_surface.result }}
+          TOUR_WALK_RESULT: ${{ needs.e2e_tour_walk.result }}
         run: |
-          if [ "$SMOKE_RESULT" != success ] || [ "$AI_SURFACE_RESULT" != success ]; then
+          if [ "$SMOKE_RESULT" != success ] || [ "$AI_SURFACE_RESULT" != success ] || [ "$TOUR_WALK_RESULT" != success ]; then
             echo "Smoke matrix: $SMOKE_RESULT"
             echo "AI surface: $AI_SURFACE_RESULT"
+            echo "Tour walk: $TOUR_WALK_RESULT"
             exit 1
           fi
-          echo "All e2e shards and the AI-surface suite passed."
+          echo "All e2e shards, the AI-surface suite and the tour walk passed."
 
   # The container Cloud Run actually runs. Until now nothing built it before
   # production did: Cloud Build builds this Dockerfile on push to main, main
