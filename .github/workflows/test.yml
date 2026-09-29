@@ -818,9 +818,8 @@ jobs:
           name: dist-e2e
           path: dist
 
-      - name: Install headless Chromium and WebKit
-        # WebKit for the tour-scroll check below: its double-scroll defect was WebKit-only.
-        run: npx playwright install --with-deps chromium webkit
+      - name: Install headless Chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run the AI-surface suite
         # The controls that CONSUME a model response — "Explain this game" and
@@ -853,18 +852,49 @@ jobs:
         # "green at 11x" for those sections (TASK-18 H16). Measured busy-loop ratio.
         run: node src/e2e/throttle.test.mjs
 
-      - name: The guided tour scrolls to its target once, in chromium and webkit (TASK-18 H19, H20)
+  e2e_tour_scroll:
+    name: e2e tour scroll (${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the short-timeout e2e bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-e2e
+          path: dist
+
+      - name: Install headless Chromium and WebKit
+        # WebKit: the double-scroll defect was WebKit-only.
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: The guided tour scrolls to its target once, in chromium and webkit (TASK-18 H19, H20, H21)
         # The step-1 scroll re-ran mid-flight; WebKit stacked the two relative scrolls (y=996, target off
         # screen, card clamped to the top) and cancelled a repeated portrait scrollIntoView (y=0, H20).
-        # Landscape, portrait and both sheet shapes, at normal and 550 ms frames. The script exits non-zero on any
-        # failed check; the grep proves every case actually ran, so a silent early exit cannot pass.
+        # 42 cases (2 engines x layouts, 550 ms frames, sub-pixel re-layouts, mid-scroll re-targets, reopens),
+        # round-robin over 2 shards of 21 (budget: tour-timings.json); non-zero exit on any failed check, the grep proves each ran.
         run: |
           set -o pipefail
           node src/e2e/tour-scroll.test.mjs | tee "$RUNNER_TEMP/tour-scroll.log"
-          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 28
-          grep -q '^✓ tour scroll: idempotent in chromium and webkit' "$RUNNER_TEMP/tour-scroll.log"
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 21
+          grep -q '^✓ tour scroll: shard ${{ matrix.shard }}/2, 21 cases:' "$RUNNER_TEMP/tour-scroll.log"
         env:
           TOUR_SCROLL_PORT: '3099'
+          TOUR_SCROLL_SHARD: ${{ matrix.shard }}/2
 
   e2e_tour_walk:
     name: e2e tour walk (${{ matrix.shard }}/9)
@@ -910,27 +940,29 @@ jobs:
 
   # Branch protection requires the exact context "e2e". Keep that stable
   # while the implementation fans out behind it. The deploy gate therefore
-  # cannot pass until every smoke shard (the matrix above, packed by selection.js), the AI-surface suite and the tour walk pass.
+  # cannot pass until every smoke shard (the matrix above, packed by selection.js), the AI-surface suite, the tour scroll and the tour walk pass.
   e2e:
     name: e2e
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [e2e_smoke, e2e_ai_surface, e2e_tour_walk]
+    needs: [e2e_smoke, e2e_ai_surface, e2e_tour_scroll, e2e_tour_walk]
     steps:
       - name: Require every e2e child job to pass
         env:
           SMOKE_RESULT: ${{ needs.e2e_smoke.result }}
           AI_SURFACE_RESULT: ${{ needs.e2e_ai_surface.result }}
+          TOUR_SCROLL_RESULT: ${{ needs.e2e_tour_scroll.result }}
           TOUR_WALK_RESULT: ${{ needs.e2e_tour_walk.result }}
         run: |
-          if [ "$SMOKE_RESULT" != success ] || [ "$AI_SURFACE_RESULT" != success ] || [ "$TOUR_WALK_RESULT" != success ]; then
+          if [ "$SMOKE_RESULT" != success ] || [ "$AI_SURFACE_RESULT" != success ] || [ "$TOUR_SCROLL_RESULT" != success ] || [ "$TOUR_WALK_RESULT" != success ]; then
             echo "Smoke matrix: $SMOKE_RESULT"
             echo "AI surface: $AI_SURFACE_RESULT"
+            echo "Tour scroll: $TOUR_SCROLL_RESULT"
             echo "Tour walk: $TOUR_WALK_RESULT"
             exit 1
           fi
-          echo "All e2e shards, the AI-surface suite and the tour walk passed."
+          echo "All e2e shards, the AI-surface suite, the tour scroll and the tour walk passed."
 
   # The container Cloud Run actually runs. Until now nothing built it before
   # production did: Cloud Build builds this Dockerfile on push to main, main

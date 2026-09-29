@@ -14,7 +14,7 @@ import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_C
 import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
 import { isAnalyticsNoise } from './e2e/console-noise.mjs';
-import { WALK_CASES, walkTags } from './e2e/tour-cases.mjs';
+import { SCROLL_CASES, WALK_CASES, scrollTags, walkTags } from './e2e/tour-cases.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -350,16 +350,30 @@ const budget = (job: string, secs: number[]) => () => shardBudget('synthetic', j
 assert.throws(budget('shard: [1]\ntimeout-minutes: 20', [1071]), /packs 1071 s/, 'CI 36533916769: a 1071 s shard on a 20 min timeout fails the budget');
 assert.doesNotThrow(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 390]), 'the boundary: 780 s + 120 s = 75% of 20 min fits');
 assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 391]), /packs 781 s/, 'the boundary: 781 s + 120 s does not');
-// TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the
-// step on a non-zero exit (pipefail through tee), and proves all 28 engine x case runs happened (H20 portrait + sheets, H21 sub-pixel .5/up/down).
+// TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the step on a
+// non-zero exit (pipefail through tee), and proves its 21 cases ran per shard: 2 round-robin shards x 21 = the 42 engine x
+// case runs (H20 portrait + sheets, H21 sub-pixel, re-targets at every layout, reopens).
 {
-  const job = workflowJob('e2e_ai_surface');
+  const job = workflowJob('e2e_tour_scroll');
+  const scroll = readFileSync(new URL('./e2e/tour-scroll.test.mjs', import.meta.url), 'utf8');
   const install = job.indexOf('npx playwright install --with-deps chromium webkit');
   const step = job.indexOf('node src/e2e/tour-scroll.test.mjs');
   assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour-scroll check');
-  const body = job.slice(step - 200, step + 400);
-  assert.match(body, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
-  assert.match(body, /-eq 28\n/, 'CI requires all 28 tour-scroll cases to have run');
+  assert.match(job, /shard: \[1, 2\]\n/, 'the tour scroll runs on 2 shards');
+  assert.match(job, /fail-fast: false/, 'one failed tour-scroll shard must not cancel its sibling');
+  assert.match(job, /TOUR_SCROLL_SHARD: \$\{\{ matrix\.shard \}\}\/2\n/, 'each tour-scroll shard passes its selector');
+  assert.match(job, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
+  assert.match(job, /-eq 21\n/, 'CI requires each tour-scroll shard to have run all 21 of its cases');
+  assert.match(job, /grep -q '\^✓ tour scroll: shard \$\{\{ matrix\.shard \}\}\/2, 21 cases:'/, 'each tour-scroll shard proves it was that shard');
+  assert.match(scroll, /if \(\+\+j % SHARDS !== SHARD - 1 \|\| !ONLY\.test\([^\n]*\)\) continue; ran\+\+;/, 'the round-robin counts every engine x case once');
+  assert.match(scroll, /TOUR_SCROLL_ONLY \|\| '\.'/, 'the local-only filter defaults to every case');
+  assert.match(scroll, /import \{ SCROLL_CASES as cases, SCROLL_VIEWPORTS \} from '\.\/tour-cases\.mjs'/, 'the scroll runs the shared case list');
+  assert.match(scroll, /for \(const \[engineName, engine\] of \[\['chromium', chromium\], \['webkit', webkit\]\]\)/, 'both engines: 2 x 21 = 42 = 2 x 21');
+  const shifts = SCROLL_CASES.map(([, , shift]) => String(shift));
+  assert.deepStrictEqual(['false', 'true', 'half', 'up', 'down', 'reopen'].map((k) => shifts.filter((x) => x === k).length), [7, 6, 2, 2, 2, 2],
+    '21 cases: 7 plain layouts, 6 re-targets (3 layouts x 2 frame rates), 2 x 3 sub-pixel, 2 reopens');
+  assert.doesNotMatch(workflowJob('e2e_ai_surface'), /tour-scroll/, 'the tour scroll runs in its own job only');
+  shardBudget('tour-scroll', job, scrollTags());
 }
 // TASK-18 H22: the 19-step tour walk. 9 round-robin shards x 6 cases = the 54 engine x case runs, each shard
 // fails on a non-zero exit and must print exactly its 6 case lines and its own shard's success line.
@@ -550,8 +564,9 @@ assert.doesNotMatch(workflow, /elif\s+node\s+src\/e2e\/smoke\.mjs/,
   'CI must never restore the old whole-suite second attempt');
 assert.match(workflow, /^\s{2}e2e:\s*\n\s*name:\s*e2e\s*$/m,
   'the exact branch-protection context `e2e` must remain present');
-assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface, e2e_tour_walk\]/,
-  'the required e2e context must aggregate the smoke, AI-surface and tour-walk jobs');
+assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface, e2e_tour_scroll, e2e_tour_walk\]/,
+  'the required e2e context must aggregate the smoke, AI-surface, tour-scroll and tour-walk jobs');
+assert.match(workflowJob('e2e'), /\[ "\$TOUR_SCROLL_RESULT" != success \]/, 'the e2e context fails when the tour scroll does');
 assert.match(workflowJob('e2e'), /\[ "\$TOUR_WALK_RESULT" != success \]/, 'the e2e context fails when the tour walk does');
 assert.match(workflow, new RegExp(`e2e_smoke_failure_shard-\\$\\{\\{ matrix\\.shard \\}\\}-of-${SHARD_COUNT}_section-\\*-attempt-\\*\\.png`),
   'failure evidence must retain every section attempt and remain unique per matrix child');
@@ -640,11 +655,12 @@ assert.match(e2eBuildStep, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'only the dedicated e2e artifact should receive the short client timeout');
 assert.match(buildJob, /name:\s*dist\s*$[\s\S]*Build short-timeout e2e bundle[\s\S]*name:\s*dist-e2e\s*$/m,
   'the production artifact must be uploaded before the test-only rebuild overwrites dist');
-assert.strictEqual((workflow.match(/name:\s*dist-e2e\s*$/gm) ?? []).length, 4,
-  'dist-e2e must have one upload and exactly three browser-e2e downloads');
+assert.strictEqual((workflow.match(/name:\s*dist-e2e\s*$/gm) ?? []).length, 5,
+  'dist-e2e must have one upload and exactly four browser-e2e downloads');
 for (const job of [
   workflowJob('e2e_smoke'),
   workflowJob('e2e_ai_surface'),
+  workflowJob('e2e_tour_scroll'),
   workflowJob('e2e_tour_walk'),
 ]) {
   assert.match(job, /name:\s*dist-e2e\s*$/m,

@@ -2,11 +2,14 @@
 // measured; WebKit stacked a relative scrollBy (y=996) and cancelled a repeated smooth scrollIntoView (y=0).
 // Chromium + webkit, normal and 550 ms frames: landscape strip (+ mid-scroll re-target), portrait scrollIntoView,
 // bottom sheet, and a sheet shorter than the target. Model-derived asserts: target in the usable strip, card clear.
-// ONE call per placement (two with the shift), also after a < 1px re-layout across .5 or a whole pixel. MUTANTS
-// (each fails by name): pre-H19 effect, either skip dropped, a round/floor/trunc/|0 key (H21: 522.30 -> 522.52).
+// ONE call per placement (two with the shift, at every layout and frame rate), also after a < 1px re-layout across
+// .5 or a whole pixel, and again on a reopen after a scroll-away. MUTANTS (each fails by name): pre-H19 effect,
+// either skip dropped, a round/floor/trunc/|0 key (H21: 522.30 -> 522.52).
 import { spawn } from 'node:child_process';
+import { loadavg } from 'node:os';
 import { chromium, webkit } from 'playwright';
 import { waitForOwnServer } from '../integration/ownserver.mjs';
+import { SCROLL_CASES as cases, SCROLL_VIEWPORTS } from './tour-cases.mjs';
 
 const PORT = Number(process.env.TOUR_SCROLL_PORT || 4746);
 const base = `http://localhost:${PORT}`;
@@ -63,18 +66,18 @@ const settled = (page) => page.evaluate(() => new Promise((resolve) => {
 
 const failures = [];
 const check = (ok, name) => { if (!ok) { failures.push(name); console.error(`  ✗ ${name}`); } };
-const LAND = { width: 1440, height: 900 }, PORTRAIT = { width: 1024, height: 1366 }, SHEET = { width: 390, height: 844 }, SHORT = { width: 320, height: 568 };
-const SUBPX = [['half', 'across .5'], ['up', 'up across a whole pixel'], ['down', 'down across a whole pixel']];
-const cases = [['normal frames', 0, false, LAND], ['550 ms frames', 550, false, LAND], ['mid-scroll re-target', 0, true, LAND],
-  ['portrait normal frames', 0, false, PORTRAIT], ['portrait 550 ms frames', 550, false, PORTRAIT],
-  ['sheet normal frames', 0, false, SHEET], ['sheet 550 ms frames', 550, false, SHEET], ['short sheet 550 ms frames', 550, false, SHORT],
-  ...SUBPX.flatMap(([k, what]) => [[`sub-pixel re-layout ${what}`, 0, k, LAND], [`portrait sub-pixel re-layout ${what}`, 550, k, PORTRAIT]])];
+const { LAND, PORTRAIT } = SCROLL_VIEWPORTS;
+const [SHARD, SHARDS] = (process.env.TOUR_SCROLL_SHARD || '1/1').split('/').map(Number); // CI: 2 runners, 21 cases each
+const ONLY = new RegExp(process.env.TOUR_SCROLL_ONLY || '.'); // local mutant runs; CI runs every case
 try {
   await waitForOwnServer(server, base);
+  let ran = 0, j = -1;
   for (const [engineName, engine] of [['chromium', chromium], ['webkit', webkit]]) {
     const browser = await engine.launch();
     try {
       for (const [label, hogMs, shift, viewport] of cases) {
+        if (++j % SHARDS !== SHARD - 1 || !ONLY.test(`[${engineName} ${label}]`)) continue; ran++;
+        const t0 = Date.now(), load = loadavg()[0].toFixed(1);
         const ctx = await browser.newContext({ viewport });
         const page = await ctx.newPage();
         await page.addInitScript(instrument, shift);
@@ -83,7 +86,17 @@ try {
         await page.getByRole('dialog', { name: /guided tour/i }).waitFor({ state: 'visible', timeout: 180000 });
         let s = await settled(page);
         const tag = `[${engineName} ${label}]`;
-        if (typeof shift === 'string' && s) {
+        let n0 = 0; // calls before this placement: a reopen is a second placement, scrolled away first
+        if (shift === 'reopen' && s) {
+          await page.getByRole('button', { name: 'Close tour' }).click();
+          await page.evaluate(() => { document.scrollingElement.scrollTop = 0; });
+          await page.waitForTimeout(300);
+          n0 = await page.evaluate(() => window.__tourScrolls);
+          await page.getByRole('button', { name: /take the tour/i }).first().click();
+          await page.getByRole('dialog', { name: /guided tour/i }).waitFor({ state: 'visible', timeout: 60000 });
+          s = await settled(page);
+          check(n0 === 1, `${tag} fixture: the first open placed the tour with one scroll before the reopen (${n0})`);
+        } else if (typeof shift === 'string' && s) {
           // H21: re-lay the target out by < 1px so the issued key crosses a boundary a quantised key would see:
           // .5 (Math.round), or a whole pixel up or down (floor/trunc/|0). The move is measured after layout.
           const mv = await page.evaluate(async (kind) => {
@@ -115,13 +128,13 @@ try {
           `${tag} the target sits in the strip above the sheet, or top-aligned under the header when taller (target ${tTop}..${tBottom}, header ${s.header}, sheet top ${cTop}, scrollY ${s.y})`);
         else check((cBottom <= tTop + 1 || cTop >= tBottom - 1) && Math.abs((tTop + tBottom) / 2 - s.vh / 2) <= 2,
           `${tag} the target is centred with the card clear of it (target ${tTop}..${tBottom}, viewport ${s.vh}, card ${cTop}..${cBottom}, scrollY ${s.y})`);
-        const repeats = s.targets.filter((t, k) => k > 0 && Math.abs(t - s.targets[k - 1]) < 1).length;
-        check(repeats === 0 && s.calls <= (shift === true ? 2 : 1),
-          `${tag} the tour issues one scroll per placement (${s.calls} calls to [${s.targets.map((t) => t.toFixed(2))}]; a re-run for the same target must not scroll again)`);
-        console.log(`  · ${tag} scrollY ${s.y}, target ${Math.round(tTop)}..${Math.round(tBottom)}, card top ${Math.round(cTop)}, ${s.calls} scroll call(s) to [${s.targets.map(Math.round)}]`);
+        const mine = s.targets.slice(n0), repeats = mine.filter((t, k) => k > 0 && Math.abs(t - mine[k - 1]) < 1).length;
+        check(repeats === 0 && mine.length <= (shift === true ? 2 : 1),
+          `${tag} the tour issues one scroll per placement (${mine.length} calls to [${mine.map((t) => t.toFixed(2))}]; a re-run for the same target must not scroll again)`);
+        console.log(`  · ${tag} scrollY ${s.y}, target ${Math.round(tTop)}..${Math.round(tBottom)}, card top ${Math.round(cTop)}, ${s.calls} scroll call(s) to [${s.targets.map(Math.round)}], ${Math.round((Date.now() - t0) / 1000)} s, load ${load} at start`);
       }
     } finally { await browser.close(); }
   }
   if (failures.length) { console.error(`✗ tour scroll: ${failures.length} check(s) failed`); process.exitCode = 1; }
-  else console.log('✓ tour scroll: idempotent in chromium and webkit at normal and 550 ms frames, landscape and portrait, and re-targets on a mid-scroll shift');
+  else console.log(`✓ tour scroll: shard ${SHARD}/${SHARDS}, ${ran} cases: idempotent in chromium and webkit at normal and 550 ms frames, every layout, re-targets on a mid-scroll shift and re-places on a reopen`);
 } finally { server.kill(); }

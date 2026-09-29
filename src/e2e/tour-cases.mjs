@@ -13,3 +13,17 @@ export const WALK_CASES = [
 ];
 export const walkTag = (en, [kind, [w, h], hogMs, a, b]) => `[${en} ${w}x${h}${hogMs ? ` ${hogMs} ms frames` : ''} ${kind === 'walk' ? `${a} ${b}` : kind}]`;
 export const walkTags = (engines = ['chromium', 'webkit']) => engines.flatMap((en) => WALK_CASES.map((c) => walkTag(en, c)));
+
+// Tour scroll: [label, hogMs, shift (true = mid-scroll re-target, 'half'/'up'/'down' = sub-pixel, 'reopen'), viewport].
+export const SCROLL_VIEWPORTS = { LAND: { width: 1440, height: 900 }, PORTRAIT: { width: 1024, height: 1366 }, SHEET: { width: 390, height: 844 }, SHORT: { width: 320, height: 568 } };
+const { LAND: L, PORTRAIT: P, SHEET: SH, SHORT } = SCROLL_VIEWPORTS;
+const SUBPX = [['half', 'across .5'], ['up', 'up across a whole pixel'], ['down', 'down across a whole pixel']];
+/** @type {[label: string, hogMs: number, shift: boolean | string, viewport: { width: number, height: number }][]} */
+export const SCROLL_CASES = [['normal frames', 0, false, L], ['550 ms frames', 550, false, L], ['mid-scroll re-target', 0, true, L],
+  ['portrait normal frames', 0, false, P], ['portrait 550 ms frames', 550, false, P],
+  ['sheet normal frames', 0, false, SH], ['sheet 550 ms frames', 550, false, SH], ['short sheet 550 ms frames', 550, false, SHORT],
+  ...SUBPX.flatMap(([k, what]) => [[`sub-pixel re-layout ${what}`, 0, k, L], [`portrait sub-pixel re-layout ${what}`, 550, k, P]]),
+  ['mid-scroll re-target 550 ms frames', 550, true, L], ['portrait mid-scroll re-target', 0, true, P],
+  ['portrait mid-scroll re-target 550 ms frames', 550, true, P], ['sheet mid-scroll re-target', 0, true, SH],
+  ['sheet mid-scroll re-target 550 ms frames', 550, true, SH], ['reopen', 0, 'reopen', L], ['portrait reopen 550 ms frames', 550, 'reopen', P]];
+export const scrollTags = (engines = ['chromium', 'webkit']) => engines.flatMap((en) => SCROLL_CASES.map(([label]) => `[${en} ${label}]`));
