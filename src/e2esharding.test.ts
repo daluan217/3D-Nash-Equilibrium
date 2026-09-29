@@ -394,6 +394,9 @@ assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', 
   const want = job.match(/want=\$\(\( \((\d+) \+ 9 - \$\{\{ matrix\.shard \}\}\) \/ 9 \)\)\n/)?.[1];
   assert.strictEqual(Number(want), walkTags().length, 'each shard counts its share of every engine x case run: ceil((runs - shard + 1) / 9)');
   assert.match(job, /-eq "\$want"\n/, 'CI requires each shard to have run all of its cases');
+  // The count cannot see WHICH cases ran: a shard re-running a sibling's cases prints the same count (sweep 13).
+  assert.match(walk, /const jobs = ENGINES\.flatMap\(\(en\) => CASES\.map\(\(c\) => \[en, \.\.\.c\]\)\)\.filter\(\(_, j\) => j % SHARDS === SHARD - 1\);/,
+    'the round-robin runs every engine x case once, in the order tour-timings.json packs');
   assert.match(job, /grep -q "\^✓ tour walk: shard \$\{\{ matrix\.shard \}\}\/9, \$want cases:"/, 'each shard proves it was that shard');
   const kinds = WALK_CASES.map(([k, [w], , a, b]) => `${k}${k === 'walk' ? ` ${a} ${b}` : ''} ${w}`);
   const cancelKinds = ['page cancels', 'page cancels same task', 'page cancels next frame Enter'];
@@ -539,9 +542,11 @@ assert.deepStrictEqual(validateTimings(['101a'], { ...SHARD_TIMINGS, '101a': 350
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
 // A shard selector returns exactly the packed assignment's members.
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: `1/${SHARD_COUNT}` }).selected.map(({ id }) => id);
-assert.deepStrictEqual(shard1Now, definitions.filter((d) => d.shard === 1).map(({ id }) => id),
-  'E2E_SHARD must select exactly the sections the packing assigned to that shard');
+// Every shard, not only shard 1: a selector that re-runs a sibling's sections passes a shard-1 check (sweep 13).
+const bySelector = Array.from({ length: SHARD_COUNT }, (_, s) => selectSmokeSections(definitions, { E2E_SHARD: `${s + 1}/${SHARD_COUNT}` }).selected.map(({ id }) => id));
+bySelector.forEach((ids, s) => assert.deepStrictEqual(ids, definitions.filter((d) => d.shard === s + 1).map(({ id }) => id),
+  `E2E_SHARD ${s + 1}/${SHARD_COUNT} must select exactly the sections the packing assigned to that shard`));
+assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id).sort(), 'the shards together run every section exactly once');
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
   'a local section selector must run exactly the requested H1 regressions');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '999' }), /unknown E2E_SECTION ID/,
