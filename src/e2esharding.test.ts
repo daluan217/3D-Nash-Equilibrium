@@ -335,7 +335,7 @@ assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\
 // of setup must fit 75% of the job's timeout.
 const TOUR_TIMINGS = JSON.parse(readFileSync(new URL('./e2e/tour-timings.json', import.meta.url), 'utf8'));
 const budgeted = new Set<string>();
-function shardBudget(name: string, job: string, tags: string[], rows: [string, number][] = TOUR_TIMINGS[name]) {
+function shardBudget(name: string, job: string, tags: string[], rows: [string, number, string?][] = TOUR_TIMINGS[name]) {
   const timed = rows.map(([t]) => t); budgeted.add(name);
   const missing = tags.filter((t) => !timed.includes(t)), stale = timed.filter((t) => !tags.includes(t));
   assert.deepStrictEqual([missing, stale], [[], []], `tour-timings.json ${name}: cases with no timing ${JSON.stringify(missing)}, timings for no case ${JSON.stringify(stale)}`);
@@ -344,12 +344,16 @@ function shardBudget(name: string, job: string, tags: string[], rows: [string, n
   const packed = rows.reduce((a, [, s], j) => { a[j % n] += s; return a; }, Array(n).fill(0));
   assert.ok(Math.max(...packed) + 120 <= 0.75 * mins * 60,
     `the slowest ${name} shard packs ${Math.max(...packed)} s of measured cases (+120 s setup) over 75% of its ${mins} min timeout: add shards`);
+  const local = rows.filter((r) => r.length > 2).map(([t]) => t); // a 3rd field marks a local placeholder, not a CI maximum
+  assert.deepStrictEqual(local, [], `tour-timings.json ${name}: placeholder timings awaiting CI maxima ${JSON.stringify(local)}`);
 }
 // The rule itself, on synthetic rows: today's data packs well inside it, so a relaxed rule would pass (audit B6).
 const budget = (job: string, secs: number[]) => () => shardBudget('synthetic', job, secs.map((_, j) => `[${j}]`), secs.map((s, j) => [`[${j}]`, s]));
 assert.throws(budget('shard: [1]\ntimeout-minutes: 20', [1071]), /packs 1071 s/, 'CI 36533916769: a 1071 s shard on a 20 min timeout fails the budget');
 assert.doesNotThrow(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 390]), 'the boundary: 780 s + 120 s = 75% of 20 min fits');
 assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 391]), /packs 781 s/, 'the boundary: 781 s + 120 s does not');
+assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', ['[0]'], [['[0]', 5, 'local-c4']]), /placeholder timings awaiting CI maxima \["\[0\]"\]/,
+  'a local placeholder timing fails the budget until a CI maximum replaces it');
 // TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the step on a
 // non-zero exit (pipefail through tee), and proves its 21 cases ran per shard: 2 round-robin shards x 21 = the 42 engine x
 // case runs (H20 portrait + sheets, H21 sub-pixel, re-targets at every layout, reopens).
@@ -375,26 +379,29 @@ assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 391]), /pack
   assert.doesNotMatch(workflowJob('e2e_ai_surface'), /tour-scroll/, 'the tour scroll runs in its own job only');
   shardBudget('tour-scroll', job, scrollTags());
 }
-// TASK-18 H22: the 19-step tour walk. 9 round-robin shards x 6 cases = the 54 engine x case runs, each shard
-// fails on a non-zero exit and must print exactly its 6 case lines and its own shard's success line.
+// TASK-18 H22: the 19-step tour walk. 9 round-robin shards share the 66 engine x case runs (8, 8, 8, then 7), each
+// fails on a non-zero exit and must print exactly its own count of case lines and its own shard's success line.
 {
   const job = workflowJob('e2e_tour_walk');
   const walk = readFileSync(new URL('./e2e/tour-walk.test.mjs', import.meta.url), 'utf8');
   const install = job.indexOf('npx playwright install --with-deps chromium webkit');
   const step = job.indexOf('node src/e2e/tour-walk.test.mjs');
   assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour walk');
-  assert.match(job, /shard: \[1, 2, 3, 4, 5, 6, 7, 8, 9\]\n/, 'the tour walk runs on 9 shards of 6: 8 cases a shard ran 1071 s of 1200 (CI 36533916769)');
+  assert.match(job, /shard: \[1, 2, 3, 4, 5, 6, 7, 8, 9\]\n/, 'the tour walk runs on 9 shards; the budget below packs them (CI 36533916769 ran 1071 s of 1200)');
   assert.match(job, /fail-fast: false/, 'one failed tour-walk shard must not cancel its siblings');
   assert.match(job, /TOUR_WALK_SHARD: \$\{\{ matrix\.shard \}\}\/9\n/, 'each shard passes its selector');
   assert.match(job, /set -o pipefail\s*\n\s*node src\/e2e\/tour-walk\.test\.mjs \| tee/, 'a failing tour walk fails the CI step');
-  assert.match(job, /-eq 6\n/, 'CI requires each shard to have run all 6 of its cases');
-  assert.match(job, /grep -q '\^✓ tour walk: shard \$\{\{ matrix\.shard \}\}\/9, 6 cases:'/, 'each shard proves it was that shard');
+  const want = job.match(/want=\$\(\( \((\d+) \+ 9 - \$\{\{ matrix\.shard \}\}\) \/ 9 \)\)\n/)?.[1];
+  assert.strictEqual(Number(want), walkTags().length, 'each shard counts its share of every engine x case run: ceil((runs - shard + 1) / 9)');
+  assert.match(job, /-eq "\$want"\n/, 'CI requires each shard to have run all of its cases');
+  assert.match(job, /grep -q "\^✓ tour walk: shard \$\{\{ matrix\.shard \}\}\/9, \$want cases:"/, 'each shard proves it was that shard');
   const kinds = WALK_CASES.map(([k, [w], , a, b]) => `${k}${k === 'walk' ? ` ${a} ${b}` : ''} ${w}`);
-  assert.deepStrictEqual([...new Set(kinds)].length, 27, '27 distinct cases: 9 walks, 3 flights, 12 interrupt/long/slow/held, 3 page cancels');
-  for (const k of ['walk away key', 'walk away click', 'walk in view click', 'flight', 'interrupt', 'long frame', 'slow', 'held start', 'page cancels'])
+  const cancelKinds = ['page cancels', 'page cancels same task', 'page cancels next frame Enter'];
+  assert.deepStrictEqual([...new Set(kinds)].length, 33, '33 distinct cases: 9 walks, 3 flights, 12 interrupt/long/slow/held, 9 page cancels');
+  for (const k of ['walk away key', 'walk away click', 'walk in view click', 'flight', 'interrupt', 'long frame', 'slow', 'held start', ...cancelKinds])
     assert.strictEqual(kinds.filter((x) => x.replace(/ \d+$/, '') === k).length, 3, `${k} at the three layout families`);
   assert.match(walk, /import \{ WALK_CASES as CASES, walkTag \} from '\.\/tour-cases\.mjs'/, 'the walk runs the shared case list');
-  assert.match(walk, /TOUR_WALK_ENGINES \|\| 'chromium,webkit'/, 'both engines by default: 2 x 27 = 54 = 9 x 6');
+  assert.match(walk, /TOUR_WALK_ENGINES \|\| 'chromium,webkit'/, 'both engines by default: 2 x 33 = 66 runs');
   // CI 36524167108: a PageDown sent after polling for a moved frame came after arrival on WebKit (one-frame flight).
   const rec = walk.match(/const rec = [\s\S]*?return r; \};/)?.[0] ?? '';
   assert.match(rec, /go = \(\) => \{ const v = call\(\);[\s\S]*const r = go\(\);[\s\S]*if \(window\.__interrupt\) \{[\s\S]*dispatchEvent\(new KeyboardEvent\('keydown'[\s\S]*se\.scrollTop = /,
@@ -417,6 +424,15 @@ assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 391]), /pack
   assert.deepStrictEqual(walk.match(/const STILL = \[(\d+), (\d+), (\d+)\];/)?.slice(1), rule, "page cancels rebuilds the product's stop from its literals: frames, ms (tourFlightStopped), px (the watcher)");
   assert.doesNotMatch(walk, /tourFlightStopped\(|from '[^']*Walkthrough/, "the fixture never imports the product's stop rule");
   assert.match(walk, /const REPLACE_FRAMES = \d+;/, 'the stop -> re-place bound is a calibrated frame count');
+  // Next mid-flight, per kind: held 4 frames, in the cut's own task (before React commits), Enter a frame later. The
+  // advance is read per frame AFTER the keydown: a read in its own task only ever sees the old step.
+  assert.deepStrictEqual(Object.keys(JSON.parse(walk.match(/const NEXT = (\{[^\n]*\});/)?.[1].replace(/'/g, '"') ?? '{}')), cancelKinds, 'every page cancels kind has a Next mode');
+  assert.match(walk, /const NEXT = \{ 'page cancels': \['ArrowRight', \[4, 208\]\], 'page cancels same task': \['ArrowRight', 0\], 'page cancels next frame Enter': \['Enter', \[1, 0\]\] \};/,
+    'Next is held 4 frames, shares the cut\'s task, or is Enter one frame later');
+  assert.match(walk, /if \(act === 'next'\) \{ window\.__hold = window\.__nextHold; watchNext\(label\(\)\);\s*document\.dispatchEvent\(new KeyboardEvent\('keydown', \{ key: window\.__nextKey/,
+    'the advance watch starts from the label before the keydown');
+  assert.match(walk, /const watchNext = \(l0, k = 1\) => requestAnimationFrame\(/, 'the advance is read in the frames after the keydown');
+  assert.match(walk, /label never changed in 10 frames[\s\S]*changed to the wrong step/, 'no advance and a wrong advance fail by their own names');
   // CI 36533916769: 8 cases a shard ran 1071 s of the 1200 s timeout.
   shardBudget('tour-walk', job, walkTags());
 }

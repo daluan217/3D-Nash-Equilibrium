@@ -926,14 +926,16 @@ jobs:
         run: npx playwright install --with-deps chromium webkit
 
       - name: All 19 tour steps land, with scrollend removed, in chromium and webkit (TASK-18 H22)
-        # A same-target Next met a live flight WebKit then cancelled (step 16 at y=0, target off screen). 54 cases
-        # (2 engines x walk/flight/interrupt/long frame/slow/held start/page cancels), round-robin over 9 shards of 6; the grep proves each ran.
-        # 6 of 8 ran 1071 s of this job's 1200 s (CI 36533916769); 9 of 6 pack them to the budget e2esharding checks (tour-timings.json).
+        # A same-target Next met a live flight WebKit then cancelled (step 16 at y=0, target off screen). 66 cases
+        # (2 engines x walk/flight/interrupt/long frame/slow/held start/page cancels in 3 Next modes), round-robin over
+        # 9 shards (8, 8, 8, then 7 each); the grep proves each ran. The packed CI timings fit the budget e2esharding
+        # checks (tour-timings.json); 8 cases a shard once ran 1071 s of this job's 1200 s (CI 36533916769).
         run: |
           set -o pipefail
           node src/e2e/tour-walk.test.mjs | tee "$RUNNER_TEMP/tour-walk.log"
-          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-walk.log")" -eq 6
-          grep -q '^✓ tour walk: shard ${{ matrix.shard }}/9, 6 cases:' "$RUNNER_TEMP/tour-walk.log"
+          want=$(( (66 + 9 - ${{ matrix.shard }}) / 9 ))
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-walk.log")" -eq "$want"
+          grep -q "^✓ tour walk: shard ${{ matrix.shard }}/9, $want cases:" "$RUNNER_TEMP/tour-walk.log"
         env:
           TOUR_WALK_PORT: '3097'
           TOUR_WALK_SHARD: ${{ matrix.shard }}/9

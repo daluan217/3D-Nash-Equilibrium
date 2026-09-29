@@ -1,5 +1,5 @@
 {
-"_why": "CI seconds per case in run order, max over CI runs; e2esharding packs them round-robin against the job timeout. tour-walk: max of CI 36524167108, 36533916769, 36548207347, 36552468990 (page cancels: the last two, pre-signal fixture). tour-scroll: max of CI 36533916769 and 36552468990 (the 14 re-target/reopen cases: 36552468990, their first CI run)",
+"_why": "CI seconds per case in run order, max over CI runs; e2esharding packs them round-robin against the job timeout. tour-walk: max of CI 36524167108, 36533916769, 36548207347, 36552468990 (page cancels: the last two, pre-signal fixture). tour-scroll: max of CI 36533916769 and 36552468990 (the 14 re-target/reopen cases: 36552468990, their first CI run) A third field marks a placeholder (local or copied); e2esharding fails while one remains.",
 "tour-walk": [
   ["[chromium 1440x900 away key]", 249],
   ["[chromium 1024x1366 away key]", 218],
@@ -28,6 +28,12 @@
   ["[chromium 1440x900 page cancels]", 52],
   ["[chromium 1024x1366 page cancels]", 55],
   ["[chromium 390x844 page cancels]", 39],
+  ["[chromium 1440x900 page cancels same task]", 52, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[chromium 1024x1366 page cancels same task]", 55, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[chromium 390x844 page cancels same task]", 39, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[chromium 1440x900 page cancels next frame Enter]", 52, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[chromium 1024x1366 page cancels next frame Enter]", 55, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[chromium 390x844 page cancels next frame Enter]", 39, "placeholder: copies page cancels at this layout until its own CI max"],
   ["[webkit 1440x900 away key]", 175],
   ["[webkit 1024x1366 away key]", 173],
   ["[webkit 390x844 away key]", 129],
@@ -54,7 +60,13 @@
   ["[webkit 390x844 held start]", 34],
   ["[webkit 1440x900 page cancels]", 34],
   ["[webkit 1024x1366 page cancels]", 59],
-  ["[webkit 390x844 page cancels]", 45]
+  ["[webkit 390x844 page cancels]", 45],
+  ["[webkit 1440x900 page cancels same task]", 34, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[webkit 1024x1366 page cancels same task]", 59, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[webkit 390x844 page cancels same task]", 45, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[webkit 1440x900 page cancels next frame Enter]", 34, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[webkit 1024x1366 page cancels next frame Enter]", 59, "placeholder: copies page cancels at this layout until its own CI max"],
+  ["[webkit 390x844 page cancels next frame Enter]", 45, "placeholder: copies page cancels at this layout until its own CI max"]
 ],
 "tour-scroll": [
   ["[chromium normal frames]", 12],

@@ -9,7 +9,8 @@ export const WALK_CASES = [
   ...[LAND, PORTRAIT, SHEET].flatMap((v) => [['interrupt', v, 0, v === SHEET ? [4, 14] : [14]], ['long frame', v, 0, [14]], ['slow', v, 550, [14]],
     ['held start', v, 0, [14]]]),
   // The same-target pair (steps s, s+1) held still at that layout in the in-view walk (CI 36533916769).
-  ['page cancels', LAND, 0, 4], ['page cancels', PORTRAIT, 0, 15], ['page cancels', SHEET, 0, 4],
+  // Next's modes (the fixture's NEXT): held 4 frames, in the cut's own task, Enter one frame later.
+  ...['page cancels', 'page cancels same task', 'page cancels next frame Enter'].flatMap((k) => [[k, LAND, 0, 4], [k, PORTRAIT, 0, 15], [k, SHEET, 0, 4]]),
 ];
 export const walkTag = (en, [kind, [w, h], hogMs, a, b]) => `[${en} ${w}x${h}${hogMs ? ` ${hogMs} ms frames` : ''} ${kind === 'walk' ? `${a} ${b}` : kind}]`;
 export const walkTags = (engines = ['chromium', 'webkit']) => engines.flatMap((en) => WALK_CASES.map((c) => walkTag(en, c)));

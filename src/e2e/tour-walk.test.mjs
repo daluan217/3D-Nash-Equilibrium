@@ -30,20 +30,25 @@ const init = (hogMs) => {
   // pre-start WebKit showed after a Next (qframes-wk1440: 2 frames, 416 ms) that ended v2c's flights early.
   // A later call supersedes a held one, as a new scrollTo supersedes an unstarted smooth scroll.
   // __cancel [act, ...] per next call, or __cancelAll: the PAGE stops the flight halfway in the call's own task with a
-  // scrollTop write (no input event; __inputs counts every one). 'next' first presses Next and holds the start 4
-  // frames, so the next step adopts the live flight before it is stopped. __cuts: [from, to, at, inputs, calls, step].
+  // scrollTop write (no input event; __inputs counts every one). 'next' first presses __nextKey and holds the start
+  // __nextHold ([n, ms], 0 = same task). __cuts: [from, to, at, inputs, calls, step]. __next [before, after, frame]:
+  // the first frame after that Next whose step label changed (after null if none in 10), read after React commits.
   window.__inputs = 0; window.__cancel = []; window.__cuts = [];
   for (const t of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(t, () => { window.__inputs++; }, { capture: true });
   // Frames delivered: calls and cuts end [frame, ms]; while __yt is an array, each frame appends [frame, ms, scrollY].
   window.__frame = 0; (function fr() { window.__frame++; window.__yt?.push([window.__frame, performance.now(), scrollY]); requestAnimationFrame(fr); })();
   const now = () => [window.__frame, Math.round(performance.now())];
+  const label = () => document.querySelector('[role="dialog"]')?.textContent.match(/(\d+)\s*\/\s*19/)?.[1];
+  const watchNext = (l0, k = 1) => requestAnimationFrame(() => { const l = label();
+    if (l !== l0 || k >= 10) window.__next = [l0, l !== l0 ? l : null, k]; else watchNext(l0, k + 1); });
   const cut = (top) => { const se = document.scrollingElement, from = window.__calls.at(-1)[0], to = Math.min(Math.max(0, top), se.scrollHeight - se.clientHeight);
     const c0 = window.__cancelAll && window.__cuts[0]; // repeated cuts alternate 24 px about the first: never converge
     se.scrollTop = c0 ? c0[2] + (window.__cuts.length % 2) * 24 * Math.sign(c0[2] - c0[1]) : Math.round((from + to) / 2);
-    window.__cuts.push([from, to, Math.round(scrollY), window.__inputs, window.__calls.length, document.querySelector('[role="dialog"]')?.textContent.match(/(\d+)\s*\/\s*19/)?.[1], ...now()]); };
+    window.__cuts.push([from, to, Math.round(scrollY), window.__inputs, window.__calls.length, label(), ...now()]); };
   const rec = (top, call, kind) => { window.__calls.push([Math.round(scrollY), Math.max(0, top), kind, window.__inputs, ...now()]); const lf = window.__longFrame;
     const act = window.__cancelAll ? 'cancel' : window.__cancel.shift(), go = () => { const v = call(); if (act) cut(top); return v; };
-    if (act === 'next') { window.__hold = [4, 208]; document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); }
+    if (act === 'next') { window.__hold = window.__nextHold; watchNext(label());
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: window.__nextKey, bubbles: true })); }
     const hold = window.__hold, token = window.__held = hold ? {} : null;
     if (hold) { window.__hold = 0; for (let j = 1; j <= hold[0]; j++) later(j, () => { block(hold[1]); if (j === hold[0] && window.__held === token) go(); }); return undefined; }
     const r = go();
@@ -194,7 +199,10 @@ async function pair(page, tag, portrait, kind, k, at) {
 // PAGE CANCELS: the page stops tour flights short itself, with no input. 1) Step s's flight is cut and re-placed; the page
 // presses Next into same-target s+1 before that re-place starts, s+1 adopts it (no call of its own), the page cuts it:
 // s+1 must re-place it, once. 2) The page cuts EVERY tour scroll: one re-place, then quiet. Mutants D3, D4 in PR #211.
-async function cancels(page, tag, portrait, s) {
+// Next per kind: its key, then the start's hold (0: the cut shares the keydown's task, before React commits).
+const NEXT = { 'page cancels': ['ArrowRight', [4, 208]], 'page cancels same task': ['ArrowRight', 0], 'page cancels next frame Enter': ['Enter', [1, 0]] };
+async function cancels(page, tag, portrait, s, kind) {
+  const [key, hold] = NEXT[kind];
   await jump(page, s - 2);
   let st = await settled(page);
   if (!check(st.step === String(s - 1), `${tag} ${s - 1}: the jump reached step ${s - 1} (shown ${st.step})`)) return;
@@ -203,18 +211,21 @@ async function cancels(page, tag, portrait, s) {
   const short = (cuts) => cuts.every(([from, to, at]) => Math.abs(at - to) >= 1 && Math.abs(at - from) >= 1);
   await awayTo(page, farFrom(st, t)); st = await settled(page);
   const n0 = st.calls.length;
-  await page.evaluate(() => { window.__cuts = []; window.__cancel = ['cancel', 'next']; window.__yt = []; });
+  await page.evaluate(([k, h]) => { window.__cuts = []; window.__cancel = ['cancel', 'next']; window.__yt = []; window.__nextKey = k; window.__nextHold = h; window.__next = null; }, [key, hold]);
   await press(page, 'ArrowRight');
   // Settle only after the product's signal, s+1's re-place (call 3): the held start's stillness settled first (CI 36552468990).
   const got = await replaced(page, n0 + 3);
   st = await settled(page);
-  const yt = await page.evaluate(() => window.__yt);
+  const [yt, nx] = await page.evaluate(() => [window.__yt, window.__next]);
   const nc = st.calls.slice(n0), [c0, c1] = st.cuts, p = place(st, t, portrait), log = `calls ${JSON.stringify(nc)}, cuts ${JSON.stringify(st.cuts)}, inputs ${st.inputs}`;
   const lat = [[nc[0], c0, nc[1]], [nc[1], c1, nc[2]]].map(([a, c, b]) => [lag(c?.slice(6), b), lag(stopOf(yt, a, c, b), b)]);
   check(got, `${name}: page cancels: step ${s + 1} re-places after the page's cut (no 3rd call in 30 s, ${log})`);
   check(lat.every(([, [f]]) => f <= REPLACE_FRAMES), `${name}: page cancels: each re-place follows the flight's stop within ${REPLACE_FRAMES} frames, nothing timed between (cut/stop -> re-place frames,ms ${JSON.stringify(lat)})`);
   // Inputs: none from step s's call to its cut and re-place; then only the page's own Next, before the adoption.
-  check(st.cuts.length === 2 && c0[5] === String(s) && c1[5] === String(s + 1) && short(st.cuts) && nc.length >= 2
+  check(!!nx?.[1], `${name}: page cancels: the page's ${key} advances the step mid-flight (label never changed in 10 frames after the keydown: ${JSON.stringify(nx)})`);
+  check(!nx?.[1] || (nx[0] === String(s) && nx[1] === String(s + 1)), `${name}: page cancels: the page's ${key} advances ${s} -> ${s + 1} (changed to the wrong step: ${JSON.stringify(nx)})`);
+  // The cut reads the label in its own task: step s+1 after a held start, still s when it shares the keydown's task.
+  check(st.cuts.length === 2 && c0[5] === String(s) && c1[5] === String(hold ? s + 1 : s) && short(st.cuts) && nc.length >= 2
     && nc[0][3] === c0[3] && nc[1][3] === c0[3] && c1[3] === c0[3] + 1 && st.inputs === c1[3],
   `${name}: fixture: the page cut step ${s}'s flight, then the re-place step ${s + 1} took over, each short, no input but the page's Next (${log})`);
   check(c1?.[4] === n0 + 2, `${name}: fixture: step ${s + 1} adopted the live re-place, no call of its own before the cut (${log})`);
@@ -224,7 +235,7 @@ async function cancels(page, tag, portrait, s) {
   await awayTo(page, farFrom(st, TARGETS[s + 1])); st = await settled(page);
   const n1 = st.calls.length;
   await page.evaluate(() => { window.__cuts = []; window.__cancelAll = 1; window.__yt = []; });
-  await press(page, 'ArrowRight');
+  await press(page, key);
   const got2 = await replaced(page, n1 + 2); // the same signal: its one re-place, then settled and 3 s more
   st = await settled(page); await page.waitForTimeout(3000);
   const end = await page.evaluate(() => ({ calls: window.__calls.slice(), cuts: window.__cuts.slice(), inputs: window.__inputs, yt: window.__yt }));
@@ -234,7 +245,7 @@ async function cancels(page, tag, portrait, s) {
     `${name}->${s + 2}: fixture: the page cut every tour scroll short with no input (${log2})`);
   check(got2 && lat[2][1][0] <= REPLACE_FRAMES, `${name}->${s + 2}: page cancels: step ${s + 2} re-places within ${REPLACE_FRAMES} frames of the flight's stop (cut/stop -> re-place frames,ms ${JSON.stringify(lat[2])}, ${log2})`);
   check(all.length === 2 && !st.timeout, `${name}->${s + 2}: the page cancels every tour scroll: step ${s + 2} re-places once, then leaves the page alone (settled ${!st.timeout}, ${log2})`);
-  console.log(`    ${name} adopted at call ${c1?.[4]}, ${nc.length} call(s); cut-every ${all.length} call(s), ${end.cuts.length} cut(s); re-place frames/ms after cut|stop ${lat.map(([c, p]) => `${c.join('/')}|${p.join('/')}`).join(' ')}`);
+  console.log(`    ${name} ${key} held ${JSON.stringify(hold)}, step shown ${nx?.[2]} frame(s) after it, adopted at call ${c1?.[4]}, ${nc.length} call(s); cut-every ${all.length} call(s), ${end.cuts.length} cut(s); re-place frames/ms after cut|stop ${lat.map(([c, p]) => `${c.join('/')}|${p.join('/')}`).join(' ')}`);
 }
 
 try {
@@ -257,7 +268,7 @@ try {
         const s0 = await settled(page);
         check(s0.hogMs === hogMs && !s0.se, `${tag} fixture: the hog ran (${s0.hogMs}, want ${hogMs}) and scrollend is absent (${s0.se})`);
         if (kind === 'walk') await walk(page, dlg, tag, h > w, a, b);
-        else if (kind === 'page cancels') await cancels(page, tag, h > w, a);
+        else if (kind in NEXT) await cancels(page, tag, h > w, a, kind);
         else { let at = 1; for (const k of a) at = await pair(page, tag, h > w, kind, k, at) || 99; }
         await ctx.close(); ran++;
         console.log(`  · ${tag} ${Math.round((Date.now() - t0) / 1000)} s, load ${load} at start`); // ONE line per case: CI counts them
