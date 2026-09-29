@@ -523,6 +523,16 @@ try {
   record('an If-Range carrying a date or a weak tag never resumes (strong comparison): 200 with the whole file',
     [byDate, weak].every((r) => r.status === 200 && r.h.get('etag') === '"2"' && r.body.equals(gens.get(2))), `date: ${seen(byDate)}; W/: ${seen(weak)}`);
   await stop(srv); srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`);
+  // If-Match (RFC 9110 §13.1.1): "*" matches any current representation, a list matches if any member does,
+  // and the comparison is strong, so W/"<current>" fails. Director audit of 30f2461: P6/P7 survived without these.
+  const tag2 = `"${cur}"`, tail2 = (r) => r.status === 206 && r.h.get('content-range') === 'bytes 3000-8999/9000' && r.body.equals(gens.get(cur).subarray(3000));
+  const star = await dl({ range: 'bytes=3000-', 'if-match': '*' });
+  record('If-Match: * matches the current representation: 206 with exactly the requested bytes', tail2(star), seen(star));
+  const list = await dl({ range: 'bytes=3000-', 'if-match': `"0", ${tag2}` });
+  record('If-Match listing another tag and the current one matches: 206 with exactly the requested bytes', tail2(list), seen(list));
+  const q1 = mediaQ.length, weakMatch = await dl({ range: 'bytes=3000-', 'if-match': `W/${tag2}` });
+  record('If-Match with the current generation as a WEAK tag is 412 (strong comparison), and no GCS read is opened',
+    weakMatch.status === 412 && mediaQ.length === q1, `${seen(weakMatch)}, GCS reads opened ${mediaQ.length - q1}`);
   // Straddle: the release lands between the route's getMetadata() and its media read.
   const straddle = async (grow, headers) => { const was = cur; flip = { after: 2, size: gens.get(cur).length + grow }; const r = await dl(headers); return { r, was, pin: mediaQ.at(-1) }; };
   for (const grow of [1000, -1000]) {
@@ -738,7 +748,7 @@ try {
 // otherwise prints "N/N checks passed" and exits 0. Measured: filtering one
 // data array to empty in desktop-dead-token-owner removed six checks and the
 // run said "37/37 checks passed".
-const EXPECTED_CHECKS = 59;
+const EXPECTED_CHECKS = 62;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
   process.exit(1);
