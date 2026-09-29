@@ -4,7 +4,7 @@
  * success line cannot see WHICH cases ran (TASK-18 sweeps 13, 14). smoke reuses selectSmokeSections, which is an
  * oracle only because e2esharding pins it to the packing for every one of the 35 shards.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { selectSmokeSections } from './selection.js';
 import { walkTags, scrollTags } from './tour-cases.mjs';
@@ -37,7 +37,8 @@ export function checkLog(job, log, env) {
     + `not this job's ${JSON.stringify(extra)}, in order ${JSON.stringify(got)} vs ${JSON.stringify(want)}`;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Node takes import.meta.url from the realpath: compare argv[1]'s, or a symlinked path skips the check, exit 0.
+if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [job, file] = process.argv.slice(2), problem = checkLog(job, readFileSync(file, 'utf8'), process.env);
   if (problem) { console.error(`::error::${problem}`); process.exit(1); }
   console.log(`✓ ${job}: the log ran exactly the ${logCases(job, readFileSync(file, 'utf8')).length} case(s) the packing gives this job`);

@@ -14,7 +14,7 @@
  *
  *   node src/e2e/webkit-shards.mjs   # prints the needed shard numbers, one per line
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { assignShards } from './selection.js';
@@ -55,7 +55,8 @@ export function shardsNeedingWebkit(smokeSource = readFileSync(join(here, 'smoke
 // workflow's `if ! webkit_shards=$(...)` capture (a script that ran but
 // produced no output is not a script that failed). pathToFileURL() encodes
 // the path the same way import.meta.url itself was produced, so the
-// comparison is exact regardless of what characters the path contains.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// comparison is exact regardless of what characters the path contains; realpathSync
+// because Node resolves the entry's symlinks (a symlinked path printed nothing).
+if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   console.log(shardsNeedingWebkit().join('\n'));
 }

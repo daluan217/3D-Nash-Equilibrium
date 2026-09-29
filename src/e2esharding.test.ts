@@ -5,7 +5,7 @@
  * `e2e` status context required by branch protection.
  */
 import assert from 'node:assert';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -588,10 +588,19 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
     ['one case run twice', 'walk', tour([...w1, w1[0]]), { TOUR_WALK_SHARD: '1/9' }], ['one case run twice', 'scroll', tour([...sc1, sc1[0]]), { TOUR_SCROLL_SHARD: '1/2' }],
     ['a section run twice before the RETRYING line', 'smoke', `${log([...s1, s1[0]])}\n${retried.split('\n')[5]}`, { E2E_SHARD: `1/${SHARD_COUNT}` }]] as const)
     assert.match(checkLog(job, text, env), /the log ran \d+ case\(s\), the packing gives \d+/, `shard-cases.mjs fails a ${job} log with ${why}`);
-  // The CLI is what CI runs: its exit status, not checkLog's string, fails the step.
-  const dir = mkdtempSync(join(tmpdir(), 'shard-cases-')), cli = (text: string) => (writeFileSync(join(dir, 'walk.log'), text),
-    spawnSync(process.execPath, ['src/e2e/shard-cases.mjs', 'walk', join(dir, 'walk.log')], { env: { ...process.env, TOUR_WALK_SHARD: '1/9' } }).status);
-  assert.deepStrictEqual([cli(tour(w1)), cli(tour(w1.slice(1)))], [0, 1], 'the shard-cases.mjs CLI exits 0 on its own cases and 1 on a missing one');
+  // The CLI is what CI runs: its exit status, not checkLog's string, fails the step. Run it by a symlinked path too:
+  // Node's import.meta.url is the realpath, so an argv[1]-only guard skipped the check and exited 0 (sweep 15).
+  const dir = mkdtempSync(join(tmpdir(), 'shard-cases-')), link = (f: string) => (symlinkSync(join(process.cwd(), 'src/e2e', f), join(dir, f)), join(dir, f));
+  const run = (script: string, args: string[], env = {}) => spawnSync(process.execPath, [script, ...args], { env: { ...process.env, ...env }, encoding: 'utf8' });
+  const cli = (script: string, text: string) => (writeFileSync(join(dir, 'walk.log'), text), run(script, ['walk', join(dir, 'walk.log')], { TOUR_WALK_SHARD: '1/9' }).status);
+  for (const script of ['src/e2e/shard-cases.mjs', link('shard-cases.mjs')])
+    assert.deepStrictEqual([cli(script, tour(w1)), cli(script, tour(w1.slice(1)))], [0, 1], `the shard-cases.mjs CLI (${script}) exits 0 on its own cases and 1 on a missing one`);
+  for (const script of ['src/e2e/webkit-shards.mjs', link('webkit-shards.mjs')])
+    assert.strictEqual(run(script, []).stdout, `${shardsNeedingWebkit().join('\n')}\n`, `the webkit-shards.mjs CLI (${script}) prints the shards that need WebKit`);
+  // Importing either module from stdin (argv[1] '-', no such file) must not throw: only a run as the entry is a CLI.
+  for (const f of ['shard-cases.mjs', 'webkit-shards.mjs'])
+    assert.strictEqual(spawnSync(process.execPath, ['--input-type=module', '-'], { input: `await import(${JSON.stringify(join(process.cwd(), 'src/e2e', f))});`, encoding: 'utf8' }).status, 0,
+      `importing ${f} with argv[1] = '-' runs no CLI and does not throw`);
   rmSync(dir, { recursive: true });
   // Each step checks its own log; the smoke step's check turns a green exit red, never red green.
   assert.match(workflowJob('e2e_smoke'), /status=\$\{PIPESTATUS\[0\]\}\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-\$\{\{ matrix\.shard \}\}\.log" \|\| \[ "\$status" -ne 0 \] \|\| status=1\n\s+set -e\n/,
