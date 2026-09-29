@@ -61,7 +61,7 @@ const VERSION_OBJECT = 'app-version.json';
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 138;
+const EXPECTED_CHECKS = 139;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -192,7 +192,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     setUploadDelayMs: (ms) => { uploadDelayMs = ms; },
     omitGenerationOnce: () => { omitGeneration = true; },
     dropUploads: (v) => { dropUploads = v; }, // accept, never store, never answer
-    peerWrite: (content) => { stored = content; generation += 1; },
+    peerWrite: (content, meta) => { stored = content; generation += 1; if (meta) custom = meta; }, // meta: a peer's lineage
     afterStoreOnce: (f) => { afterStoreOnce = f; },
     count412: () => n412,
     failUploads: (v) => { failUploads = v; }, // every upload answers 503 (the pump backs off)
@@ -2456,6 +2456,15 @@ try {
       const onGcs = () => JSON.parse(fz.getStored()).users;
       await waitUntil(() => fz.count412() > n0 && [stale, staleEve].every((x) => onGcs().some((u) => u.email === x.email)), 5000);
       const end = onGcs(), nameOf = (email) => end.find((u) => u.email === email)?.username;
+      // (merge, reborn) a peer re-creates the store without Z's rows (new lineage) holding "Frank"; Z answers
+      // "ｆｒａｎｋ" from its copy. Both are added (not in Z's baseline), so they meet INSIDE the rename loop.
+      await new Promise((r) => setTimeout(r, 2200));
+      await fetch(`http://127.0.0.1:${zApp}/api/games`);
+      const n1 = fz.count412();
+      fz.peerWrite(JSON.stringify({ users: [seededUser('u_fr', 'Frank', 'fr@example.test', pw)], games: [] }), { lineage: 'peer-reborn' });
+      const staleFr = await reg('ｆｒａｎｋ');
+      await waitUntil(() => fz.count412() > n1 && [staleFr.email, 'al@example.test'].every((e) => onGcs().some((u) => u.email === e)), 5000);
+      const reborn = onGcs(), nameOf2 = (email) => reborn.find((u) => u.email === email)?.username;
       await stop(Z.child); await fz.close();
       const refused = (x, re) => x.status === 400 && re.test(x.error) && !end.some((u) => u.email === x.email);
       const brief = (m) => Object.fromEntries(Object.entries(m).map(([k, x]) => [k, `${x.status}:${x.error.slice(0, 22)}`]));
@@ -2475,6 +2484,10 @@ try {
         nameOf('dv@example.test') === 'Dave' && /^ｄａｖｅ-.{6}$/.test(nameOf(stale.email) ?? '')
           && nameOf('ev@example.test') === 'Ｅｖｅ' && /^eve-.{6}$/.test(nameOf(staleEve.email) ?? ''),
         JSON.stringify({ dave: nameOf('dv@example.test'), stale: nameOf(stale.email), eve: nameOf('ev@example.test'), staleEve: nameOf(staleEve.email) }));
+      record('THE DEFECT (merge, reborn store): two ADDED accounts one key apart fold to one name per key: the peer\'s "Frank" keeps it, Z\'s stale "ｆｒａｎｋ" (accepted, upload 412\'d) is renamed, Z\'s rows are written back',
+        staleFr.status === 200 && fz.count412() > n1 && fz.getCustom()?.lineage === 'peer-reborn' && nameOf2('fr@example.test') === 'Frank'
+          && /^ｆｒａｎｋ-.{6}$/.test(nameOf2(staleFr.email) ?? '') && nameOf2('al@example.test') === 'alice',
+        JSON.stringify({ reg: staleFr.status, n412: fz.count412() - n1, lineage: fz.getCustom()?.lineage, frank: nameOf2('fr@example.test'), stale: nameOf2(staleFr.email), alice: nameOf2('al@example.test') }));
     }
 
     // s30 — hostile bodies and framings (sweep 19 angles 1+2; both EMPTY, pinned here). Angle 2 pins Node's
