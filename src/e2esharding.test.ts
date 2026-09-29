@@ -14,6 +14,7 @@ import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_C
 import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
 import { isAnalyticsNoise } from './e2e/console-noise.mjs';
+import { WALK_CASES, walkTags } from './e2e/tour-cases.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -329,6 +330,20 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
 }
 assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
   'CI runs the CPU-throttle reach guard in a job that has chromium');
+// Shard budget (TASK-18, CI 36533916769): tour-timings.json holds CI seconds per case tag, in run order. Its tags
+// must equal the script's own, both ways; packed round-robin over the job's matrix, the slowest shard plus 120 s
+// of setup must fit 75% of the job's timeout.
+const TOUR_TIMINGS = JSON.parse(readFileSync(new URL('./e2e/tour-timings.json', import.meta.url), 'utf8'));
+function shardBudget(name: string, job: string, tags: string[]) {
+  const rows: [string, number][] = TOUR_TIMINGS[name], timed = rows.map(([t]) => t);
+  const missing = tags.filter((t) => !timed.includes(t)), stale = timed.filter((t) => !tags.includes(t));
+  assert.deepStrictEqual([missing, stale], [[], []], `tour-timings.json ${name}: cases with no timing ${JSON.stringify(missing)}, timings for no case ${JSON.stringify(stale)}`);
+  assert.deepStrictEqual(timed, tags, `tour-timings.json ${name} lists each case once, in run order`);
+  const n = (job.match(/shard: \[([\d, ]+)\]/)?.[1] ?? '').split(',').length, mins = Number(job.match(/timeout-minutes: (\d+)/)?.[1]);
+  const packed = rows.reduce((a, [, s], j) => { a[j % n] += s; return a; }, Array(n).fill(0));
+  assert.ok(Math.max(...packed) + 120 <= 0.75 * mins * 60,
+    `the slowest ${name} shard packs ${Math.max(...packed)} s of measured cases (+120 s setup) over 75% of its ${mins} min timeout: add shards`);
+}
 // TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the
 // step on a non-zero exit (pipefail through tee), and proves all 28 engine x case runs happened (H20 portrait + sheets, H21 sub-pixel .5/up/down).
 {
@@ -340,30 +355,33 @@ assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\
   assert.match(body, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
   assert.match(body, /-eq 28\n/, 'CI requires all 28 tour-scroll cases to have run');
 }
-// TASK-18 H22: the 19-step tour walk. 6 round-robin shards x 8 cases = the 48 engine x case runs, each shard
-// fails on a non-zero exit and must print exactly its 8 case lines and its own shard's success line.
+// TASK-18 H22: the 19-step tour walk. 8 round-robin shards x 6 cases = the 48 engine x case runs, each shard
+// fails on a non-zero exit and must print exactly its 6 case lines and its own shard's success line.
 {
   const job = workflowJob('e2e_tour_walk');
   const walk = readFileSync(new URL('./e2e/tour-walk.test.mjs', import.meta.url), 'utf8');
   const install = job.indexOf('npx playwright install --with-deps chromium webkit');
   const step = job.indexOf('node src/e2e/tour-walk.test.mjs');
   assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour walk');
-  assert.match(job, /shard: \[1, 2, 3, 4, 5, 6\]\n/, 'the tour walk runs on 6 shards');
+  assert.match(job, /shard: \[1, 2, 3, 4, 5, 6, 7, 8\]\n/, 'the tour walk runs on 8 shards: 8 cases a shard ran 1071 s of 1200 (CI 36533916769)');
   assert.match(job, /fail-fast: false/, 'one failed tour-walk shard must not cancel its siblings');
-  assert.match(job, /TOUR_WALK_SHARD: \$\{\{ matrix\.shard \}\}\/6\n/, 'each shard passes its selector');
+  assert.match(job, /TOUR_WALK_SHARD: \$\{\{ matrix\.shard \}\}\/8\n/, 'each shard passes its selector');
   assert.match(job, /set -o pipefail\s*\n\s*node src\/e2e\/tour-walk\.test\.mjs \| tee/, 'a failing tour walk fails the CI step');
-  assert.match(job, /-eq 8\n/, 'CI requires each shard to have run all 8 of its cases');
-  assert.match(job, /grep -q '\^✓ tour walk: shard \$\{\{ matrix\.shard \}\}\/6, 8 cases:'/, 'each shard proves it was that shard');
-  const cases = walk.match(/const CASES = \[([\s\S]*?)\n\];/)?.[1] ?? '';
-  assert.match(cases, /\['away', 'key'\], \['away', 'click'\], \['in view', 'click'\]\]\.flatMap[\s\S]*\[LAND, PORTRAIT, SHEET\]\.map/, '9 walks');
-  assert.match(cases, /\['flight', LAND[^\n]*\['flight', PORTRAIT[^\n]*\['flight', SHEET/, '3 flights');
-  assert.match(cases, /\[LAND, PORTRAIT, SHEET\]\.flatMap\(\(v\) => \[\['interrupt'[^\n]*\['long frame'[^\n]*\['slow'[^\n]*\n\s*\['held start'/, '12 interrupt/long/slow/held');
-  assert.match(walk, /TOUR_WALK_ENGINES \|\| 'chromium,webkit'/, 'both engines by default: 2 x 24 = 48 = 6 x 8');
+  assert.match(job, /-eq 6\n/, 'CI requires each shard to have run all 6 of its cases');
+  assert.match(job, /grep -q '\^✓ tour walk: shard \$\{\{ matrix\.shard \}\}\/8, 6 cases:'/, 'each shard proves it was that shard');
+  const kinds = WALK_CASES.map(([k, [w], , a, b]) => `${k}${k === 'walk' ? ` ${a} ${b}` : ''} ${w}`);
+  assert.deepStrictEqual([...new Set(kinds)].length, 24, '24 distinct cases: 9 walks, 3 flights, 12 interrupt/long/slow/held');
+  for (const k of ['walk away key', 'walk away click', 'walk in view click', 'flight', 'interrupt', 'long frame', 'slow', 'held start'])
+    assert.strictEqual(kinds.filter((x) => x.replace(/ \d+$/, '') === k).length, 3, `${k} at the three layout families`);
+  assert.match(walk, /import \{ WALK_CASES as CASES, walkTag \} from '\.\/tour-cases\.mjs'/, 'the walk runs the shared case list');
+  assert.match(walk, /TOUR_WALK_ENGINES \|\| 'chromium,webkit'/, 'both engines by default: 2 x 24 = 48 = 8 x 6');
   // CI 36524167108: a PageDown sent after polling for a moved frame came after arrival on WebKit (one-frame flight).
   const rec = walk.match(/const rec = [\s\S]*?return r; \};/)?.[0] ?? '';
   assert.match(rec, /const r = call\(\);[\s\S]*if \(window\.__interrupt\) \{[\s\S]*dispatchEvent\(new KeyboardEvent\('keydown'[\s\S]*se\.scrollTop = /,
     'the interrupt is a keydown plus a scroll in the tour call\'s own task, never after polling frames');
   assert.doesNotMatch(walk, /keyboard\.press\('Page(Down|Up)'\)/, 'no interrupt races the flight from outside the page');
+  // CI 36533916769: 8 cases a shard ran 1071 s of the 1200 s timeout.
+  shardBudget('tour-walk', job, walkTags());
 }
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 

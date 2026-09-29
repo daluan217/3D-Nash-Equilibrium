@@ -9,6 +9,7 @@ import { loadavg } from 'node:os';
 import { chromium, webkit } from 'playwright';
 import { waitForOwnServer } from '../integration/ownserver.mjs';
 import { throttleEveryPage } from './throttle.mjs';
+import { WALK_CASES as CASES, walkTag } from './tour-cases.mjs';
 
 const PORT = Number(process.env.TOUR_WALK_PORT || 4749);
 const base = `http://localhost:${PORT}`;
@@ -89,18 +90,11 @@ const awayTo = (page, y) => page.evaluate((v) => { document.scrollingElement.scr
 const jump = (page, n) => page.evaluate((m) => { document.activeElement?.blur(); for (let j = 0; j < m; j++) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); }, n);
 const press = async (page, key) => { await page.evaluate(() => document.activeElement?.blur()); await page.keyboard.press(key); };
 
-const LAND = [1440, 900], PORTRAIT = [1024, 1366], SHEET = [390, 844];
 const ENGINES = (process.env.TOUR_WALK_ENGINES || 'chromium,webkit').split(',');
 const ONLY = new RegExp(process.env.TOUR_WALK_ONLY || '.'); // local mutant runs; CI runs every case
-const [SHARD, SHARDS] = (process.env.TOUR_WALK_SHARD || '1/1').split('/').map(Number); // CI: 6 runners, 8 cases each
+const [SHARD, SHARDS] = (process.env.TOUR_WALK_SHARD || '1/1').split('/').map(Number); // CI: 8 runners, 6 cases each
 const LONG = (process.env.TOUR_WALK_LONG || '0:1500').split(',').map((p) => p.split(':').map(Number)); // frame:ms,...
 const HOLD = (process.env.TOUR_WALK_HOLD || '2:208').split(':').map(Number); // frames:ms each
-const CASES = [
-  ...[['away', 'key'], ['away', 'click'], ['in view', 'click']].flatMap(([mode, adv]) => [LAND, PORTRAIT, SHEET].map((v) => ['walk', v, 0, mode, adv])),
-  ['flight', LAND, 0, [3, 14]], ['flight', PORTRAIT, 0, [14]], ['flight', SHEET, 0, [3, 14]],
-  ...[LAND, PORTRAIT, SHEET].flatMap((v) => [['interrupt', v, 0, v === SHEET ? [4, 14] : [14]], ['long frame', v, 0, [14]], ['slow', v, 550, [14]],
-    ['held start', v, 0, [14]]]),
-];
 
 async function walk(page, dlg, tag, portrait, mode, adv) {
   let s = await settled(page);
@@ -178,7 +172,7 @@ try {
     const browser = en === 'chromium' ? throttleEveryPage(await engine.launch()) : await engine.launch();
     try {
       for (const [, kind, [w, h], hogMs, a, b] of jobs.filter(([e]) => e === en)) {
-        const tag = `[${en} ${w}x${h}${hogMs ? ` ${hogMs} ms frames` : ''} ${kind === 'walk' ? `${a} ${b}` : kind}]`;
+        const tag = walkTag(en, [kind, [w, h], hogMs, a, b]);
         if (!ONLY.test(tag)) continue;
         const t0 = Date.now(), load = loadavg()[0].toFixed(1);
         const ctx = await browser.newContext({ viewport: { width: w, height: h } });
