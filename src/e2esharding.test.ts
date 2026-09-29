@@ -334,8 +334,9 @@ assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\
 // must equal the script's own, both ways; packed round-robin over the job's matrix, the slowest shard plus 120 s
 // of setup must fit 75% of the job's timeout.
 const TOUR_TIMINGS = JSON.parse(readFileSync(new URL('./e2e/tour-timings.json', import.meta.url), 'utf8'));
-function shardBudget(name: string, job: string, tags: string[]) {
-  const rows: [string, number][] = TOUR_TIMINGS[name], timed = rows.map(([t]) => t);
+const budgeted = new Set<string>();
+function shardBudget(name: string, job: string, tags: string[], rows: [string, number][] = TOUR_TIMINGS[name]) {
+  const timed = rows.map(([t]) => t); budgeted.add(name);
   const missing = tags.filter((t) => !timed.includes(t)), stale = timed.filter((t) => !tags.includes(t));
   assert.deepStrictEqual([missing, stale], [[], []], `tour-timings.json ${name}: cases with no timing ${JSON.stringify(missing)}, timings for no case ${JSON.stringify(stale)}`);
   assert.deepStrictEqual(timed, tags, `tour-timings.json ${name} lists each case once, in run order`);
@@ -344,6 +345,11 @@ function shardBudget(name: string, job: string, tags: string[]) {
   assert.ok(Math.max(...packed) + 120 <= 0.75 * mins * 60,
     `the slowest ${name} shard packs ${Math.max(...packed)} s of measured cases (+120 s setup) over 75% of its ${mins} min timeout: add shards`);
 }
+// The rule itself, on synthetic rows: today's data packs well inside it, so a relaxed rule would pass (audit B6).
+const budget = (job: string, secs: number[]) => () => shardBudget('synthetic', job, secs.map((_, j) => `[${j}]`), secs.map((s, j) => [`[${j}]`, s]));
+assert.throws(budget('shard: [1]\ntimeout-minutes: 20', [1071]), /packs 1071 s/, 'CI 36533916769: a 1071 s shard on a 20 min timeout fails the budget');
+assert.doesNotThrow(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 390]), 'the boundary: 780 s + 120 s = 75% of 20 min fits');
+assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 391]), /packs 781 s/, 'the boundary: 781 s + 120 s does not');
 // TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the
 // step on a non-zero exit (pipefail through tee), and proves all 28 engine x case runs happened (H20 portrait + sheets, H21 sub-pixel .5/up/down).
 {
@@ -391,6 +397,8 @@ function shardBudget(name: string, job: string, tags: string[]) {
   // CI 36533916769: 8 cases a shard ran 1071 s of the 1200 s timeout.
   shardBudget('tour-walk', job, walkTags());
 }
+assert.deepStrictEqual([...budgeted].sort(), [...Object.keys(TOUR_TIMINGS).filter((k) => k !== '_why'), 'synthetic'].sort(),
+  'every timed tour job is checked by the one shardBudget rule the synthetic rows pin');
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
