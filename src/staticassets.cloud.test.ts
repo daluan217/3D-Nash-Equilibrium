@@ -124,7 +124,9 @@ const decode = (r: Raw) => (r.h['content-encoding'] === 'br' ? zlib.brotliDecomp
   for (const [ae, want] of [[CHROME, 'br'], ['br;q=0.1, gzip', 'gzip'], ['gzip;q=0.5, br;q=0.5', 'br'], ['*;q=0.2', 'br'], ['br;q=0, *', 'gzip'],
     ['identity', undefined], [undefined, undefined], ['gzip;q=0, br;q=0', undefined], ['BR', 'br'], ['gzip, br;q=0.9', 'gzip'], ['deflate', undefined],
     // Out-of-range q is clamped to [0, 1]: q=5 ties br at 1 (br wins), q=-1 refuses br (not a fallback to `*`).
-    ['gzip;q=5, br', 'br'], ['br;q=-1, *', 'gzip']] as const) {
+    ['gzip;q=5, br', 'br'], ['br;q=-1, *', 'gzip'],
+    // An unparseable q is a refusal (0), not a default 1; a coding listed twice keeps its highest q.
+    ['br;q=abc, gzip', 'gzip'], ['br, br;q=0', 'br']] as const) {
     for (const u of [REFS.script, REFS.css]) {
       const r = await get(u, ae === undefined ? {} : { 'accept-encoding': ae });
       assert.strictEqual(r.h['content-encoding'], want, `Accept-Encoding ${JSON.stringify(ae)} on ${u}: content-encoding=${r.h['content-encoding']}, want ${want ?? '(none)'}`);
@@ -184,6 +186,16 @@ const decode = (r: Raw) => (r.h['content-encoding'] === 'br' ? zlib.brotliDecomp
   const b = await raw(bare.base, REFS.script, { 'accept-encoding': CHROME });
   assert(b.status === 200 && !b.h['content-encoding'] && /immutable/.test(String(b.h['cache-control'])), `no siblings: ${b.status} ce=${b.h['content-encoding']} cc=${b.h['cache-control']}`); n++;
   bare.close();
+  // One sibling only: the coding without a file is never picked (it would 404 into the raw fallback).
+  const one = makeDist('oneside');
+  fs.rmSync(path.join(one, `${REFS.script}.gz`)); fs.rmSync(path.join(one, `${REFS.css}.br`));
+  const os1 = await serve(one);
+  for (const [u, ae, want] of [[REFS.script, 'gzip, br;q=0.9', 'br'], [REFS.css, 'br, gzip;q=0.9', 'gzip'], [REFS.script, 'gzip', undefined], [REFS.css, 'br', undefined]] as const) {
+    const r = await raw(os1.base, u, { 'accept-encoding': ae });
+    assert(r.status === 200 && r.h['content-encoding'] === want && decode(r).equals(fs.readFileSync(path.join(one, u))),
+      `one sibling, Accept-Encoding "${ae}" on ${u}: ${r.status} content-encoding=${r.h['content-encoding']}, want ${want ?? '(none)'}`); n++;
+  }
+  os1.close();
   // Desktop (IS_ELECTRON): unchanged, a loopback origin gains nothing from either.
   const desk = await serve(d, block, undefined, { IS_ELECTRON: 'true' });
   const dr = await raw(desk.base, REFS.script, { 'accept-encoding': CHROME });
