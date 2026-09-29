@@ -34,6 +34,7 @@ let n = 0;
     `the first registration in startServer must be the desktop Host guard, found: ${between(0).slice(0, 80)}`); n++;
   assert(between(1).includes('"X-Content-Type-Options", "nosniff"') && between(1).includes('"Strict-Transport-Security"'),
     `the second registration must be the baseline header middleware (every other producer answers after it), found: ${between(1).slice(0, 80)}`); n++;
+  assert(between(1).indexOf('next()') > between(1).lastIndexOf('res.setHeader('), 'the header middleware must set every header BEFORE next(): after it, a synchronous answer has already gone out bare'); n++;
   assert(/app\.disable\("x-powered-by"\);/.test(body.slice(0, regs[0])), 'app.disable("x-powered-by") must precede every registration'); n++;
   assert(!/x-powered-by["'],\s*true|app\.enable\(["']x-powered-by/.test(src), 'x-powered-by is re-enabled somewhere'); n++;
   for (const h of ['X-Content-Type-Options', 'Referrer-Policy', 'X-Frame-Options', 'Permissions-Policy', 'Content-Security-Policy', 'Strict-Transport-Security']) {
@@ -71,6 +72,8 @@ const call = (port: number, method: string, p: string, headers: Record<string, s
   });
   q.on('error', reject); q.setTimeout(30_000, () => q.destroy(new Error(`${method} ${p} timed out`))); q.end(body);
 });
+// A request that dies (reset, timeout) is a named failure of its producer, not an anonymous crash.
+const named = <T,>(name: string, p: Promise<T>) => p.catch((e: Error) => assert.fail(`${name}: the request failed (${e.message})`));
 const freePort = () => new Promise<number>((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => r(p)); }); });
 async function boot(env: Record<string, string>) {
   const port = await freePort();
@@ -109,7 +112,7 @@ const hosted = await boot({ TRUST_PROXY: '1', GCS_BUCKET_NAME: BUCKET, STORAGE_E
 const APEX = 'nash-equilibrium-simulator.com', GFE = { host: APEX, 'x-forwarded-proto': 'https' }, J = { ...GFE, 'content-type': 'application/json' };
 const h = (method: string, p: string, headers: Record<string, string> = GFE, body?: string | Buffer) => call(hosted.port, method, p, headers, body);
 type Case = [name: string, run: () => Promise<Res>, status: number, marker: string | RegExp, libCsp?: boolean];
-const asset = await h('GET', '/assets/app-AAAA1111.js');
+const asset = await named('express.static 200', h('GET', '/assets/app-AAAA1111.js'));
 const cases: Case[] = [
   ['express.static 200', async () => asset, 200, 'var a=1;'],
   ['express.static index 200', () => h('GET', '/'), 200, '<div id="root">'],
@@ -147,7 +150,7 @@ const cases: Case[] = [
   ['DMG stream-error 500', async () => { mediaGone = true; try { return await h('GET', '/api/download/dmg'); } finally { mediaGone = false; } }, 500, 'Internal Server Error'],
 ];
 for (const [name, run, status, marker, libCsp] of cases) {
-  const r = await run();
+  const r = await named(name, run());
   // The status and a body marker prove the named producer answered, not a neighbour.
   assert(r.status === status && (typeof marker === 'string' ? r.body.includes(marker) : marker.test(r.body)) && (name !== 'www 301' || r.h.location === `https://${APEX}/x?y=1`),
     `fixture: ${name} answered ${r.status} ${r.body.slice(0, 100)}, want ${status} with ${marker}`);
@@ -167,13 +170,12 @@ const ROWS = ['live security headers present', 'live HSTS is on (max-age of at l
 // Rate limit (dmg: 10/min) and the final error handler's 500, last: both change state.
 {
   let r: Res | undefined;
-  for (let i = 0; i < 14 && r?.status !== 429; i++) r = await h('HEAD', '/api/download/dmg');
+  for (let i = 0; i < 14 && r?.status !== 429; i++) r = await named('rate-limit 429', h('HEAD', '/api/download/dmg'));
   assert.strictEqual(r?.status, 429, 'fixture: the dmg route never rate-limited');
   hardened('rate-limit 429', r!, { hsts: true });
   // An unreadable index.html makes send() raise a 500 into next(err): the global handler's own 500, no injection.
   fs.chmodSync(path.join(tmp, 'dist/index.html'), 0o000);
-  const e = await h('GET', '/some/route');
-  fs.chmodSync(path.join(tmp, 'dist/index.html'), 0o644);
+  const e = await named('final error handler 500', h('GET', '/some/route')).finally(() => fs.chmodSync(path.join(tmp, 'dist/index.html'), 0o644));
   assert(e.status === 500 && e.body.includes('Internal server error.'), `fixture: final handler 500 answered ${e.status} ${e.body.slice(0, 80)} (running as root?)`);
   hardened('final error handler 500', e, { hsts: true });
 }
@@ -185,15 +187,15 @@ hosted.stop();
   // __dirname, which ESM does not define; the store is then a local db.json in the temp cwd.
   const d = await boot({ IS_ELECTRON: 'true' });
   const own = { host: `127.0.0.1:${d.port}` };
-  const health = await call(d.port, 'GET', '/api/health', own);
+  const health = await named('desktop health 200', call(d.port, 'GET', '/api/health', own));
   assert(health.status === 200 && health.body.includes('"status":"ok"'), `fixture: desktop health ${health.status}`);
   hardened('desktop health 200', health, { hsts: false });
-  const bad = await call(d.port, 'POST', '/api/games', { ...own, 'content-type': 'application/json' }, '{bad');
+  const bad = await named('desktop body-parser 400', call(d.port, 'POST', '/api/games', { ...own, 'content-type': 'application/json' }, '{bad'));
   assert(bad.status === 400 && bad.body.includes('Invalid request.'), `fixture: desktop malformed JSON ${bad.status}`);
   hardened('desktop body-parser 400', bad, { hsts: false });
   // The Host guard is registered FIRST by design (SR-63: nothing may answer a rebound page before it), so its
   // 403 carries none of the baseline: a fixed JSON string to a foreign page, nothing to sniff or frame.
-  const rebound = await call(d.port, 'GET', '/api/games', { host: `evil.example:${d.port}` });
+  const rebound = await named('desktop Host-guard 403', call(d.port, 'GET', '/api/games', { host: `evil.example:${d.port}` }));
   assert(rebound.status === 403 && rebound.body === '{"error":"Invalid Host header."}', `fixture: rebound Host ${rebound.status} ${rebound.body}`);
   for (const k of [...Object.keys(BASELINE), 'strict-transport-security', 'x-powered-by']) assert.strictEqual(rebound.h[k], undefined, `desktop Host-guard 403: ${k}=${rebound.h[k]} (nothing may run before the guard)`);
   n++;
