@@ -54,8 +54,10 @@ const makeDist = (name: string, { drop = '', truncate = '', pad = 0 } = {}) => {
   for (const u of Object.values(REFS)) if (u !== drop) fs.writeFileSync(path.join(d, u), (u.endsWith('.css') ? '.a{b:c}' : 'var a=1;').repeat(u === truncate ? 200 : 4_000));
   return d;
 };
-const serve = async (distPath: string, code = block) => {
+type Pre = express.RequestHandler | undefined;
+const serve = async (distPath: string, code = block, pre?: Pre) => {
   const app = express();
+  if (pre) app.use(pre); // a misbehaving CDN/origin in front of the real block
   app.use('/api', (_req, res) => { res.status(404).json({ error: 'Not found' }); }); // server.ts mounts this first
   new Function('app', 'express', 'path', 'fs', 'distPath', compile(code))(app, express, path, fs, distPath);
   const srv = app.listen(0, '127.0.0.1'); await new Promise((r) => srv.once('listening', r));
@@ -91,8 +93,8 @@ const serve = async (distPath: string, code = block) => {
 
 // ── live-smoke section 2, the real script against each shape
 const SECTION2 = /^(PASS|FAIL) (the live page references its JS entry|the live page's (\/assets\/\S+) resolves as \S+|a hashed asset that is not deployed is a 404, not the SPA page)/;
-const smoke = async (label: string, distPath: string, code = block) => {
-  const s = await serve(distPath, code);
+const smoke = async (label: string, distPath: string, code = block, pre?: Pre) => {
+  const s = await serve(distPath, code, pre);
   const out = await new Promise<string>((resolve) => execFile(process.execPath, [SMOKE], { env: { PATH: process.env.PATH, LIVE_BASE: s.base }, timeout: 60_000 },
     (_e, stdout, stderr) => resolve(stdout + stderr)));
   s.close();
@@ -127,6 +129,21 @@ expectRows(await smoke('SPA-fallback server, entry missing', makeDist('naive-no-
   const r = await fetch(s.base + REFS.preload2); const body = await r.text(); s.close();
   assert(r.status === 200 && body.length < MIN && body.length > 1_000 && r.headers.get('content-type')!.includes('javascript'), 'fixture: a truncated chunk passes status and type, only the size floor can fail it'); n++;
   expectRows(await smoke('a chunk truncated to 1.6 KB', d), [REFS.preload2]);
+}
+// The RIGHT type is required, not merely "not HTML": browsers refuse a module script or a stylesheet served
+// under another MIME (white page). Full-size bodies, so only the type clause can fail them.
+const wrongType = (url: string, type: string): Pre => (req, res, next) => {
+  if (req.path !== url) return next();
+  res.type(type).send((url.endsWith('.css') ? '.a{b:c}' : 'var a=1;').repeat(4_000));
+};
+for (const [url, type] of [[REFS.script, 'application/octet-stream'], [REFS.preload1, 'text/plain'], [REFS.css, 'text/plain'], [REFS.css, 'application/javascript']]) {
+  expectRows(await smoke(`${url} served full-size as ${type}`, makeDist(`type-${n}`), block, wrongType(url, type)), [url]);
+}
+// The control is pinned to exactly 404, the only answer the route emits: a 500 is a broken origin, and a 403/410
+// would come from something in front of the server (an edge ACL, a CDN rule), which is exactly what to notice.
+for (const code of [500, 403, 410, 204]) {
+  const pre: Pre = (req, res, next) => (req.path === '/assets/index-NEVERUPLOADED.js' ? res.status(code).json({ error: 'x' }) : next());
+  expectRows(await smoke(`the not-deployed control answers ${code}`, makeDist(`ctl-${code}`), block, pre), [], 'FAIL');
 }
 console.log(`staticassets.cloud.test.ts: ${n} checks passed`);
 process.exit(0);
