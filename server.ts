@@ -5670,6 +5670,10 @@ async function startServer() {
         next();
       });
       app.use(express.static(distPath));
+      // A hashed asset not on disk is a 404, not the SPA shell as 200 text/html: a chunk that never uploaded
+      // passed the live smoke and handed the browser HTML for its script (sweep 25). no-store: no cache keeps
+      // the 404 for a chunk still uploading. /assets only; every other miss keeps the SPA fallback below.
+      app.use('/assets', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.status(404).json({ error: "Not found" }); });
       app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
       });

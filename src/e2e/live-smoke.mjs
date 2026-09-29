@@ -133,18 +133,30 @@ if (process.env.EXPECTED_INDEX) {
   record('the live site serves the app page', ok, `status=${home.status}`);
 }
 
-// ══ 2. the page's own bundle resolves (catches a deploy where index.html
-//      references a chunk that did not upload)
+// ══ 2. EVERY asset the page references (script src, modulepreload, stylesheet: any /assets/*.js|css in it)
+//      resolves AS that asset. A missing /assets/* fell through to the SPA shell (200 text/html) and this read
+//      only the first .js by status and size, so a chunk that never uploaded passed (sweep 25). Content-type
+//      is the primary check. Byte floor, measured 2026-09-29 on live 0.0.226 and local dist 0.0.227: the shell
+//      is 2,493-2,497 B, the smallest referenced asset is index-*.css at 162,365 B; 20,000 ~ their geometric mean.
+const ASSET_MIN_BYTES = 20_000;
 {
+  const bounded = (p) => getText(p, { signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) })
+    .catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
   const home = await getText('/');
-  const asset = (home.text.match(/assets\/[\w.-]+\.js/) || [])[0];
-  if (asset) {
-    const js = await getText(`/${asset}`);
-    record('the live page\'s JS bundle resolves', js.status === 200 && js.text.length > 1000,
-      `status=${js.status} bytes=${js.text.length}`);
-  } else {
-    record('the live page\'s JS bundle resolves', false, 'no asset reference found in the page');
+  const refs = [...new Set(home.text.match(/\/assets\/[\w.-]+\.(?:js|css)\b/g))];
+  record('the live page references its JS entry', refs.some((u) => u.endsWith('.js')),
+    refs.join(', ') || 'no asset reference found in the page');
+  for (const url of refs) {
+    const r = await bounded(url);
+    const want = url.endsWith('.css') ? 'text/css' : 'javascript';
+    const ct = r.headers.get('content-type') || '';
+    record(`the live page's ${url} resolves as ${want}`,
+      r.status === 200 && ct.includes(want) && r.text.length >= ASSET_MIN_BYTES,
+      `status=${r.status} content-type=${ct} bytes=${r.text.length}` + (r.error ? ` error=${r.error}` : ''));
   }
+  const miss = await bounded('/assets/index-NEVERUPLOADED.js');
+  record('a hashed asset that is not deployed is a 404, not the SPA page', miss.status === 404,
+    `status=${miss.status} content-type=${miss.headers.get('content-type')}` + (miss.error ? ` error=${miss.error}` : ''));
 }
 
 // ══ 3. API liveness behind the same domain, PLUS (when an expected version
