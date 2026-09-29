@@ -747,12 +747,15 @@ jobs:
 
       - name: Boot the production server and run the smoke suite
         # smoke.mjs retries only the failed named sections once. It never
-        # repeats the whole shard for a one-check SwiftShader stall.
+        # repeats the whole shard for a one-check SwiftShader stall. The exit
+        # code cannot see WHICH sections ran: shard-cases.mjs checks the log
+        # lists exactly this shard's, first attempts, in order (TASK-18 sweep 14).
         id: smoke
         run: |
           set +e
           node src/e2e/smoke.mjs 2>&1 | tee "$RUNNER_TEMP/e2e-smoke-${{ matrix.shard }}.log"
           status=${PIPESTATUS[0]}
+          node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-${{ matrix.shard }}.log" || [ "$status" -ne 0 ] || status=1
           set -e
           if [ "$status" -ne 0 ]; then
             echo "smoke_outcome=fail" >> "$GITHUB_OUTPUT"
@@ -773,7 +776,10 @@ jobs:
       - name: Exercise section 47 after natural simulation completion
         if: matrix.shard == 24
         id: natural_stop
-        run: node src/e2e/smoke.mjs
+        run: |
+          set -o pipefail
+          node src/e2e/smoke.mjs 2>&1 | tee "$RUNNER_TEMP/e2e-smoke-47.log"
+          node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-47.log"
         env:
           E2E_SECTION: '47'
           E2E_SECTION47_NATURAL_STOP: '1'
@@ -890,6 +896,7 @@ jobs:
         run: |
           set -o pipefail
           node src/e2e/tour-scroll.test.mjs | tee "$RUNNER_TEMP/tour-scroll.log"
+          node src/e2e/shard-cases.mjs scroll "$RUNNER_TEMP/tour-scroll.log"
           test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 21
           grep -q '^✓ tour scroll: shard ${{ matrix.shard }}/2, 21 cases:' "$RUNNER_TEMP/tour-scroll.log"
         env:
@@ -933,6 +940,7 @@ jobs:
         run: |
           set -o pipefail
           node src/e2e/tour-walk.test.mjs | tee "$RUNNER_TEMP/tour-walk.log"
+          node src/e2e/shard-cases.mjs walk "$RUNNER_TEMP/tour-walk.log"
           want=$(( (66 + 9 - ${{ matrix.shard }}) / 9 ))
           test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-walk.log")" -eq "$want"
           grep -q "^✓ tour walk: shard ${{ matrix.shard }}/9, $want cases:" "$RUNNER_TEMP/tour-walk.log"

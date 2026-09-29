@@ -15,6 +15,7 @@ import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
 import { isAnalyticsNoise } from './e2e/console-noise.mjs';
 import { SCROLL_CASES, WALK_CASES, scrollTags, walkTags } from './e2e/tour-cases.mjs';
+import { shardCases, logCases, checkLog } from './e2e/shard-cases.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -474,7 +475,7 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
 // catch.
 // TASK-18 sweep 4: the extra §47 step test.yml runs on shard 24 is packed, not ignored.
 assert.deepStrictEqual(EXTRA_STEP_SECTIONS, { 24: '47' }, 'the packer knows test.yml\'s one extra-step section');
-assert.match(workflow, /- name: Exercise section 47 after natural simulation completion\n\s+if: matrix\.shard == 24\n[\s\S]{0,160}?run: node src\/e2e\/smoke\.mjs\n\s+env:\n\s+E2E_SECTION: '47'/,
+assert.match(workflow, /- name: Exercise section 47 after natural simulation completion\n\s+if: matrix\.shard == 24\n[\s\S]{0,160}?run: \|\n[\s\S]{0,40}?node src\/e2e\/smoke\.mjs[^\n]*\n[^\n]*\n\s+env:\n\s+E2E_SECTION: '47'/,
   'test.yml\'s extra step is still §47 on shard 24, as EXTRA_STEP_SECTIONS says');
 {
   const on24 = definitions.filter((d) => d.shard === 24).reduce((sum, d) => sum + measuredMs(d.id), 0);
@@ -547,6 +548,47 @@ const bySelector = Array.from({ length: SHARD_COUNT }, (_, s) => selectSmokeSect
 bySelector.forEach((ids, s) => assert.deepStrictEqual(ids, definitions.filter((d) => d.shard === s + 1).map(({ id }) => id),
   `E2E_SHARD ${s + 1}/${SHARD_COUNT} must select exactly the sections the packing assigned to that shard`));
 assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id).sort(), 'the shards together run every section exactly once');
+// Sweep 14: nothing saw WHICH cases a runner then ran (smoke.mjs running selected.slice(1) passed). Each CI step diffs
+// its log against shard-cases.mjs. Its smoke list reuses selectSmokeSections, the runner's own selector: an oracle only
+// because the check above pins that selector to the packing for all 35 shards, and so does the line below.
+{
+  const walkShard = (s: number) => shardCases('walk', { TOUR_WALK_SHARD: `${s}/9` }), scrollShard = (s: number) => shardCases('scroll', { TOUR_SCROLL_SHARD: `${s}/2` });
+  bySelector.forEach((_, s) => assert.deepStrictEqual(shardCases('smoke', { E2E_SHARD: `${s + 1}/${SHARD_COUNT}` }, smoke),
+    definitions.filter((d) => d.shard === s + 1).map(({ id }) => id), `shard-cases.mjs gives smoke shard ${s + 1} its packed sections`));
+  for (const [job, n, of, all] of [['walk', 9, walkShard, walkTags()], ['scroll', 2, scrollShard, scrollTags()]] as const) {
+    const parts = Array.from({ length: n }, (_, s) => of(s + 1));
+    assert.ok(parts.every((p) => p.length > 0), `every ${job} shard has cases: an empty list would pass an empty (crashed) log`);
+    assert.deepStrictEqual(parts.flat().sort(), [...all].sort(), `the ${job} shards together run every engine x case exactly once`);
+  }
+  assert.ok(bySelector.every((ids) => ids.length > 0), 'every smoke shard has sections: an empty list would pass an empty (crashed) log');
+  assert.deepStrictEqual(shardCases('smoke', { E2E_SECTION: '47' }, smoke), ['47'], 'the natural-stop step runs §47 alone');
+  // CI 35979484351 shard 30, verbatim: §76 failed, was retried and passed. First attempts count, in order.
+  const retried = ['Running 4/111 smoke sections for shard 30/35.', ...['24 [shard 30/35] long-label 320px reflow', '25 [shard 30/35] suggested-name clamp',
+    '47 [shard 30/35] a legend toggle survives the next simulation redraw', '76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003)'].map((s) => `════ SECTION ${s} ════`),
+  '════ RETRYING ONLY FAILED SECTIONS: 76 Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) ════',
+  '════ SECTION 76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) (retry) ════',
+  'pass-after-section-retry: 76 Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003)'].join('\n');
+  assert.deepStrictEqual(logCases('smoke', retried), ['24', '25', '47', '76'], 'a retried section counts once, from its first attempt');
+  assert.deepStrictEqual(logCases('smoke', retried.replace('════ SECTION 76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) ════\n', '')),
+    ['24', '25', '47'], 'a section that only ran as a retry did not run in the first pass');
+  const s1 = shardCases('smoke', { E2E_SHARD: `1/${SHARD_COUNT}` }, smoke), log = (ids: string[]) => ids.map((id) => `════ SECTION ${id} [shard 1/${SHARD_COUNT}] x ════`).join('\n');
+  const w1 = walkShard(1), tour = (tags: string[]) => tags.map((t) => `  · ${t} 9 s, load 1.0 at start`).join('\n');
+  assert.strictEqual(checkLog('smoke', log(s1), { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'shard 1\'s own sections pass');
+  assert.strictEqual(checkLog('walk', tour(w1), { TOUR_WALK_SHARD: '1/9' }), '', 'walk shard 1\'s own cases pass');
+  for (const [why, job, text, env] of [['one section dropped', 'smoke', log(s1.slice(1)), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['an empty (crashed) log', 'smoke', '', { E2E_SHARD: `1/${SHARD_COUNT}` }],
+    ['a sibling shard\'s sections', 'smoke', log(bySelector[1]), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['the last case replaced by the first', 'walk', tour([...w1.slice(0, -1), w1[0]]), { TOUR_WALK_SHARD: '1/9' }],
+    ['webkit skipped', 'walk', tour(w1.filter((t) => !t.startsWith('[webkit'))), { TOUR_WALK_SHARD: '1/9' }],
+    ['two cases swapped', 'walk', tour([w1[1], w1[0], ...w1.slice(2)]), { TOUR_WALK_SHARD: '1/9' }], ['an empty (crashed) log', 'scroll', '', { TOUR_SCROLL_SHARD: '2/2' }]] as const)
+    assert.match(checkLog(job, text, env), /the log ran \d+ case\(s\), the packing gives \d+/, `shard-cases.mjs fails a ${job} log with ${why}`);
+  // Each step checks its own log; the smoke step's check turns a green exit red, never red green.
+  assert.match(workflowJob('e2e_smoke'), /status=\$\{PIPESTATUS\[0\]\}\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-\$\{\{ matrix\.shard \}\}\.log" \|\| \[ "\$status" -ne 0 \] \|\| status=1\n\s+set -e\n/,
+    'the smoke step checks its log before it takes the exit code');
+  assert.match(workflowJob('e2e_smoke'), /run: \|\n\s+set -o pipefail\n\s+node src\/e2e\/smoke\.mjs 2>&1 \| tee "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+env:\n\s+E2E_SECTION: '47'/,
+    'the §47 step checks its own log');
+  for (const job of ['walk', 'scroll'])
+    assert.match(workflowJob(`e2e_tour_${job}`), new RegExp(`set -o pipefail\\n\\s+node src/e2e/tour-${job}\\.test\\.mjs \\| tee "\\$RUNNER_TEMP/tour-${job}\\.log"\\n\\s+node src/e2e/shard-cases\\.mjs ${job} "\\$RUNNER_TEMP/tour-${job}\\.log"\\n`),
+      `the tour ${job} step checks its log right after the run`);
+}
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
   'a local section selector must run exactly the requested H1 regressions');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '999' }), /unknown E2E_SECTION ID/,
