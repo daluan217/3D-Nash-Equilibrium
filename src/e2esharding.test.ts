@@ -735,12 +735,19 @@ console.log(`✓ double-activation contract: ${Object.keys(DOUBLE_ACTIVATION_SEC
     ['PAGEERROR: boom', '']];
   for (const [text, url] of noise) assert.ok(isAnalyticsNoise({ text, url }), `analytics noise is filtered: ${url}`);
   for (const [text, url] of real) assert.ok(!isAnalyticsNoise({ text, url }), `an app failure still counts: ${url || text}`);
-  for (const [file, src] of [['smoke.mjs', smoke], ['mobile.mjs', readFileSync('src/e2e/mobile.mjs', 'utf8')], ['ai-surface.mjs', readFileSync('src/e2e/ai-surface.mjs', 'utf8')]]) {
-    assert.match(src, /url: m\.location\(\)\?\.url \?\? ''/, `${file}: the console listener keeps the failing resource's URL`);
-    assert.match(src, /!isAnalyticsNoise\(e(rror)?\)/, `${file}: the console-error bar filters analytics by URL (isAnalyticsNoise)`);
+  // Per listener, not per file (a file-wide match let §39 drop its URL): every web-UA page keeps the URL and its
+  // list is filtered by it. Electron-UA pages (dp) never load gtag (index.html skips it), so they stay text-only.
+  const want = { 'smoke.mjs': ['p', 'flapPage', 'dp', 'dp', 'dp'], 'mobile.mjs': ['page'], 'ai-surface.mjs': ['page'] };
+  for (const [file, receivers] of Object.entries(want)) {
+    const src = file === 'smoke.mjs' ? smoke : readFileSync(`src/e2e/${file}`, 'utf8');
+    const seen = [...src.matchAll(/(\w+)\.on\('console', \(m\) => \{([\s\S]*?)\}\);/g)];
+    assert.deepStrictEqual(seen.map((m) => m[1]), receivers, `${file}: the console listeners are the known pages`);
+    for (const [, who, body] of seen.filter((m) => m[1] !== 'dp')) {
+      const list = body.match(/(\w+)\.push\(/)?.[1];
+      assert.match(body, /url: m\.location\(\)\?\.url \?\? ''/, `${file} ${who}: the console listener keeps the failing resource's URL`);
+      assert.match(src, new RegExp(`\\b${list}\\b[\\s\\S]{0,200}?\\.filter\\(\\((\\w+)\\) => !isAnalyticsNoise\\(\\1\\)`),
+        `${file} ${who}: ${list} is filtered by URL (isAnalyticsNoise)`);
+    }
   }
-  // Every web-UA page's own error list too (§39's flap page loads gtag); Electron-UA pages never load it.
-  const textOnly = [...smoke.matchAll(/(\w+)\.on\('console', \(m\) => \{ if \(m\.type\(\) === 'error'[^\n]*?\.push\(m\.text\(\)/g)].map((m) => m[1]);
-  assert.deepStrictEqual(textOnly, ['dp', 'dp', 'dp'], `only the three Electron-UA desktop pages keep a text-only error list (${textOnly})`);
   console.log(`✓ console noise: ${noise.length} analytics failures filtered by URL, ${real.length} app failures still counted`);
 }
