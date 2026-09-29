@@ -47,10 +47,13 @@ const clientFiles = (dir: string): string[] => fs.readdirSync(dir, { withFileTyp
 });
 const client = clientFiles(fileURLToPath(new URL('.', import.meta.url)));
 assert(client.length > 20, `fixture: only ${client.length} client files found`);
-// Any `credentials` key in any spelling (literal, quoted, assigned, bracketed, shorthand, a Request init): the client sets none today.
-const ATTACHED = /withCredentials|document\.cookie|cookieStore|\bcredentials\b['"`]?\s*(?:[:=](?!=)|\]\s*=)|[{,]\s*credentials\s*[,}]/;
+// Any `credentials` key in any spelling (literal, quoted, assigned, bracketed, shorthand, a Request init, the name as a string
+// literal for Reflect.set / defineProperty / a computed key): the client sets none today; its only 'credentials' is prose.
+const ATTACHED = /withCredentials|document\.cookie|cookieStore|\bcredentials\b['"`]?\s*(?:[:=](?!=)|\]\s*=)|[{,]\s*credentials\s*[,}]|(['"`])credentials\1/;
 for (const [label, line] of [['assigned', 'init.credentials = "include";'], ['literal', "{ credentials: 'same-origin' }"], ['quoted key', '{ "credentials": "include" }'],
-  ['bracketed', "init['credentials'] = 'include';"], ['shorthand', 'fetch(u, { headers, credentials })'], ['a Request', "new Request(u, { method, credentials: 'include' })"]] as const)
+  ['bracketed', "init['credentials'] = 'include';"], ['shorthand', 'fetch(u, { headers, credentials })'], ['a Request', "new Request(u, { method, credentials: 'include' })"],
+  ['Reflect.set', 'Reflect.set(init, "credentials", "include");'], ['defineProperty', "Object.defineProperty(init, 'credentials', { value: 'include' });"],
+  ['a template key', 'const k = `credentials`; init[k] = "include";']] as const)
   assert(ATTACHED.test(line), `fixture: the credentials pattern misses the ${label} form: ${line}`);
 for (const f of client) assert(!ATTACHED.test(fs.readFileSync(f, 'utf8')), `${f}: a browser-attached credential (${ATTACHED.exec(fs.readFileSync(f, 'utf8'))?.[0]})`);
 assert(fs.readFileSync(new URL('./utils/apiClient.ts', import.meta.url), 'utf8').includes("headers['Authorization'] = `Bearer ${requestToken}`"), 'apiClient no longer sends the token as a Bearer header');
