@@ -867,14 +867,14 @@ jobs:
           TOUR_SCROLL_PORT: '3099'
 
   e2e_tour_walk:
-    name: e2e tour walk (${{ matrix.shard }}/8)
+    name: e2e tour walk (${{ matrix.shard }}/9)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: build
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     steps:
       - uses: actions/checkout@v5
 
@@ -896,17 +896,17 @@ jobs:
         run: npx playwright install --with-deps chromium webkit
 
       - name: All 19 tour steps land, with scrollend removed, in chromium and webkit (TASK-18 H22)
-        # A same-target Next met a live flight WebKit then cancelled (step 16 at y=0, target off screen). 48 cases
-        # (2 engines x walk/flight/interrupt/long frame/slow/held start), round-robin over 8 shards of 6; the grep proves each ran.
-        # 6 of 8 ran 1071 s of this job's 1200 s (CI 36533916769); 8 of 6 pack them to 723 s (tour-timings.json).
+        # A same-target Next met a live flight WebKit then cancelled (step 16 at y=0, target off screen). 54 cases
+        # (2 engines x walk/flight/interrupt/long frame/slow/held start/page cancels), round-robin over 9 shards of 6; the grep proves each ran.
+        # 6 of 8 ran 1071 s of this job's 1200 s (CI 36533916769); 9 of 6 pack them to the budget e2esharding checks (tour-timings.json).
         run: |
           set -o pipefail
           node src/e2e/tour-walk.test.mjs | tee "$RUNNER_TEMP/tour-walk.log"
           test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-walk.log")" -eq 6
-          grep -q '^✓ tour walk: shard ${{ matrix.shard }}/8, 6 cases:' "$RUNNER_TEMP/tour-walk.log"
+          grep -q '^✓ tour walk: shard ${{ matrix.shard }}/9, 6 cases:' "$RUNNER_TEMP/tour-walk.log"
         env:
           TOUR_WALK_PORT: '3097'
-          TOUR_WALK_SHARD: ${{ matrix.shard }}/8
+          TOUR_WALK_SHARD: ${{ matrix.shard }}/9
 
   # Branch protection requires the exact context "e2e". Keep that stable
   # while the implementation fans out behind it. The deploy gate therefore

@@ -1,5 +1,5 @@
 {
-"_why": "CI seconds per case in run order (max of CI 36524167108, 36533916769); e2esharding packs them round-robin against the job timeout",
+"_why": "CI seconds per case in run order (max of CI 36524167108, 36533916769); e2esharding packs them round-robin against the job timeout; page cancels: 60 s placeholder until CI measures it (local pilot 36 s at 1x)",
 "tour-walk": [
   ["[chromium 1440x900 away key]", 249],
   ["[chromium 1024x1366 away key]", 218],
@@ -25,6 +25,9 @@
   ["[chromium 390x844 long frame]", 30],
   ["[chromium 390x844 550 ms frames slow]", 77],
   ["[chromium 390x844 held start]", 32],
+  ["[chromium 1440x900 page cancels]", 60],
+  ["[chromium 1024x1366 page cancels]", 60],
+  ["[chromium 390x844 page cancels]", 60],
   ["[webkit 1440x900 away key]", 175],
   ["[webkit 1024x1366 away key]", 173],
   ["[webkit 390x844 away key]", 128],
@@ -48,5 +51,9 @@
   ["[webkit 390x844 interrupt]", 43],
   ["[webkit 390x844 long frame]", 25],
   ["[webkit 390x844 550 ms frames slow]", 80],
-  ["[webkit 390x844 held start]", 34]
-]}
+  ["[webkit 390x844 held start]", 34],
+  ["[webkit 1440x900 page cancels]", 60],
+  ["[webkit 1024x1366 page cancels]", 60],
+  ["[webkit 390x844 page cancels]", 60]
+]
+}
