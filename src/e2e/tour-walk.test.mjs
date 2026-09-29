@@ -124,7 +124,7 @@ const REPLACE_FRAMES = 5;
 
 const ENGINES = (process.env.TOUR_WALK_ENGINES || 'chromium,webkit').split(',');
 const ONLY = new RegExp(process.env.TOUR_WALK_ONLY || '.'); // local mutant runs; CI runs every case
-const [SHARD, SHARDS] = (process.env.TOUR_WALK_SHARD || '1/1').split('/').map(Number); // CI: 9 runners, 6 cases each
+const [SHARD, SHARDS] = (process.env.TOUR_WALK_SHARD || '1/1').split('/').map(Number); // CI: test.yml's e2e_tour_walk matrix (its want counts each shard's share)
 const LONG = (process.env.TOUR_WALK_LONG || '0:1500').split(',').map((p) => p.split(':').map(Number)); // frame:ms,...
 const HOLD = (process.env.TOUR_WALK_HOLD || '2:208').split(':').map(Number); // frames:ms each
 
