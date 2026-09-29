@@ -52,6 +52,9 @@ process.on('exit', () => { for (const k of kids) k.kill('SIGKILL'); fs.rmSync(tm
 fs.mkdirSync(path.join(tmp, 'dist/assets'), { recursive: true });
 fs.writeFileSync(path.join(tmp, 'dist/index.html'), '<!doctype html><html><body><div id="root"></div></body></html>');
 fs.writeFileSync(path.join(tmp, 'dist/assets/app-AAAA1111.js'), 'var a=1;'.repeat(100));
+// The build's precompress siblings (sweep 27): the hosted /assets route answers from them.
+fs.writeFileSync(path.join(tmp, 'dist/assets/app-AAAA1111.js.br'), zlib.brotliCompressSync('var a=1;'.repeat(100)));
+fs.writeFileSync(path.join(tmp, 'dist/assets/app-AAAA1111.js.gz'), zlib.gzipSync('var a=1;'.repeat(100)));
 const BUCKET = 'fake-sechdr-bucket', DMG = 'Nash Equilibrium Simulator.dmg', BYTES = Buffer.alloc(4000, 68);
 let mediaGone = false; // the object vanished between metadata and bytes: the route's stream-error 500
 const gcs = http.createServer((req, res) => {
@@ -118,6 +121,10 @@ const cases: Case[] = [
   ['express.static index 200', () => h('GET', '/'), 200, '<div id="root">'],
   ['express.static HEAD', () => h('HEAD', '/assets/app-AAAA1111.js'), 200, ''],
   ['express.static conditional 304', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, 'if-none-match': String(asset.h.etag) }), 304, ''],
+  ['/assets br 200', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, 'accept-encoding': 'br' }), 200, ''],
+  ['/assets gzip 200', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, 'accept-encoding': 'gzip' }), 200, ''],
+  ['/assets br 412 (If-Match)', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, 'accept-encoding': 'br', 'if-match': '"nope"' }), 412, 'Invalid request.'],
+  ['/assets 416', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, range: 'bytes=99999-' }), 416, 'Invalid request.'],
   ['serve-static directory 301', () => h('GET', '/assets'), 301, 'Redirecting', true],
   ['SPA fallback 200', () => h('GET', '/some/route'), 200, '<div id="root">'],
   ['www 301', () => h('GET', '/x?y=1', { ...GFE, host: `www.${APEX}` }), 301, `https://${APEX}/x?y=1`],
@@ -151,9 +158,11 @@ const cases: Case[] = [
 ];
 for (const [name, run, status, marker, libCsp] of cases) {
   const r = await named(name, run());
-  // The status and a body marker prove the named producer answered, not a neighbour.
-  assert(r.status === status && (typeof marker === 'string' ? r.body.includes(marker) : marker.test(r.body)) && (name !== 'www 301' || r.h.location === `https://${APEX}/x?y=1`),
-    `fixture: ${name} answered ${r.status} ${r.body.slice(0, 100)}, want ${status} with ${marker}`);
+  // The status and a body marker prove the named producer answered, not a neighbour (the coding, for the /assets route).
+  const coded = /^\/assets (br|gzip) 200$/.exec(name)?.[1];
+  assert(r.status === status && (typeof marker === 'string' ? r.body.includes(marker) : marker.test(r.body)) && (name !== 'www 301' || r.h.location === `https://${APEX}/x?y=1`)
+    && r.h['content-encoding'] === coded && (!/^\/assets .*41\d/.test(name) || (r.h['content-type']!.startsWith('application/json') && r.h['cache-control'] === 'no-store')),
+    `fixture: ${name} answered ${r.status} ${r.h['content-encoding'] ?? ''} ${r.h['content-type']} ${r.body.slice(0, 100)}, want ${status} with ${marker}`);
   hardened(name, r, { hsts: true, libCsp });
 }
 

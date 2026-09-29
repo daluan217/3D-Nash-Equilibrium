@@ -16,6 +16,7 @@ COPY src/ ./src/
 COPY public/ ./public/
 COPY index.html ./
 COPY vite.config.ts ./
+COPY scripts/precompress.mjs ./scripts/
 # Build frontend (Vite) and server (esbuild)
 RUN npm run build
 

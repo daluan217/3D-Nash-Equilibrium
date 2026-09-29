@@ -5676,6 +5676,50 @@ async function startServer() {
         }
         next();
       });
+      // Hosted: hashed assets are immutable, and a JS/CSS with build-time siblings (scripts/precompress.mjs)
+      // goes out as .br/.gz. Cloud Run's front end compresses nothing: the page shipped 4.66 MB raw at
+      // max-age=0 (sweep 27). The boot listing is also the traversal check. q is honoured: the higher q wins,
+      // a tie goes to br, `*` covers an unlisted coding, q=0 refuses; otherwise identity. Desktop unchanged.
+      if (process.env.IS_ELECTRON !== "true") {
+        const assetDir = path.join(distPath, 'assets');
+        const listed = new Set(fs.existsSync(assetDir) ? fs.readdirSync(assetDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name) : []);
+        const qOf = (header: string, coding: string) => {
+          let own = -1, star = 0;
+          for (const part of header.toLowerCase().split(',')) {
+            const [name, ...params] = part.split(';').map((s) => s.trim());
+            const qp = params.find((p) => p.startsWith('q='));
+            const v = qp === undefined ? 1 : Number(qp.slice(2));
+            const q = Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0;
+            if (name === coding) own = Math.max(own, q); else if (name === '*') star = Math.max(star, q);
+          }
+          return own >= 0 ? own : star;
+        };
+        app.get('/assets/:file', (req, res, next) => {
+          const file = req.params.file;
+          // The exact spelling only: the router also matches another case and a trailing slash.
+          if (!listed.has(file) || req.path !== `/assets/${file}`) return next();
+          // send keeps a preset Cache-Control; every error answer below resets it to no-store.
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          const br = listed.has(`${file}.br`), gz = listed.has(`${file}.gz`);
+          if (!br && !gz) return next();
+          res.vary('Accept-Encoding');
+          const ae = String(req.headers['accept-encoding'] ?? '');
+          const qb = br ? qOf(ae, 'br') : 0, qg = gz ? qOf(ae, 'gzip') : 0;
+          const [coding, ext] = qb > 0 && qb >= qg ? ['br', 'br'] : qg > 0 ? ['gzip', 'gz'] : [];
+          if (!coding) return next();
+          res.type(path.extname(file)).setHeader('Content-Encoding', coding);
+          // sendFile owns ETag/304/HEAD/Range. A 412/416 is the answer for the coding asked for (the error
+          // handler's JSON); only a sibling gone since boot (404) falls through to the raw file, its headers removed.
+          res.sendFile(`${file}.${ext}`, { root: assetDir }, (err) => {
+            // Express's own sendFile triage: a client gone mid-send is not an error.
+            const e = err as (NodeJS.ErrnoException & { status?: number }) | undefined;
+            if (!e || e.code === 'ECONNABORTED' || e.syscall === 'write') return;
+            if (e.status !== 404 || res.headersSent) return next(e);
+            for (const h of ['Content-Encoding', 'Content-Type', 'ETag', 'Last-Modified']) res.removeHeader(h);
+            next();
+          });
+        });
+      }
       app.use(express.static(distPath));
       // A hashed asset not on disk is a 404, not the SPA shell as 200 text/html: a chunk that never uploaded
       // passed the live smoke and handed the browser HTML for its script (sweep 25). no-store: no cache keeps
@@ -5723,6 +5767,11 @@ async function startServer() {
     // handler shipped without this carve-out. Only trust a 4xx (never a
     // spoofed/mistaken 5xx or something out of range) from upstream
     // middleware; anything else still collapses to a logged, generic 500.
+    // The answer is this handler's own JSON: send sets the asset's type, validators and year-long cache before
+    // its 412/416 (a JSON 412 went out as application/javascript: res.json keeps a preset type), and the /assets
+    // route sets its coding (sweep 27).
+    for (const h of ["Content-Type", "Content-Encoding", "ETag", "Last-Modified"]) res.removeHeader(h);
+    res.setHeader("Cache-Control", "no-store");
     const upstreamStatus = (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.status
       ?? (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.statusCode;
     // Not logged: the client's own error, and body-parser's message echoes its

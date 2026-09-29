@@ -140,7 +140,9 @@ if (process.env.EXPECTED_INDEX) {
 //      is 2,493-2,497 B, the smallest referenced asset is index-*.css at 162,365 B; 20,000 ~ their geometric mean.
 const ASSET_MIN_BYTES = 20_000;
 {
-  const bounded = (p) => getText(p, { signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) })
+  // Chrome's Accept-Encoding: fetch decodes br/gzip, so r.text is the asset itself.
+  const CHROME_AE = 'gzip, deflate, br, zstd';
+  const bounded = (p, ae = CHROME_AE) => getText(p, { headers: { 'accept-encoding': ae }, signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) })
     .catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
   const home = await getText('/');
   const refs = [...new Set(home.text.match(/\/assets\/[\w.-]+\.(?:js|css)\b/g))];
@@ -153,6 +155,29 @@ const ASSET_MIN_BYTES = 20_000;
     record(`the live page's ${url} resolves as ${want}`,
       r.status === 200 && ct.includes(want) && r.text.length >= ASSET_MIN_BYTES,
       `status=${r.status} content-type=${ct} bytes=${r.text.length}` + (r.error ? ` error=${r.error}` : ''));
+    // Sweep 27: Cloud Run compresses nothing, and every asset went out raw (4.66 MB) at max-age=0.
+    const [ce, cc, vary] = ['content-encoding', 'cache-control', 'vary'].map((k) => r.headers.get(k) || '');
+    record(`the live page's ${url} arrives brotli-compressed and immutable`,
+      r.status === 200 && ce === 'br' && /\bimmutable\b/.test(cc) && Number(/max-age=(\d+)/.exec(cc)?.[1]) >= 31_536_000 && /\baccept-encoding\b/i.test(vary),
+      `status=${r.status} content-encoding=${ce || '(none)'} cache-control=${cc || '(none)'} vary=${vary || '(none)'}`);
+  }
+  const entry = refs.find((u) => u.endsWith('.js'));
+  if (entry) {
+    const r = await bounded(entry, 'identity');
+    record('an identity-only client gets the asset uncompressed', r.status === 200 && !r.headers.get('content-encoding') && r.text.length >= ASSET_MIN_BYTES,
+      `status=${r.status} content-encoding=${r.headers.get('content-encoding') || '(none)'} bytes=${r.text.length}`);
+  }
+  // The shell names the hashes, so it must revalidate: explicitly (a missing header lets caches guess a lifetime).
+  const cc = home.headers.get('cache-control') || '';
+  record('the live page itself is revalidated on every load (never immutable)',
+    !/immutable/i.test(cc) && (/\bno-(?:cache|store)\b/i.test(cc) || /(?:^|[,\s])max-age=0(?:$|[,\s])/i.test(cc)), `cache-control=${cc || '(none)'}`);
+  // A failed conditional request is the error handler's JSON, never cached (send had set the asset's type and cache).
+  if (entry) {
+    const r = await getText(entry, { headers: { 'if-match': '"never-this-etag"' }, signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) })
+      .catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
+    const [ct, rc] = [r.headers.get('content-type') || '', r.headers.get('cache-control') || ''];
+    record('a failed conditional asset request is an uncached JSON 412', r.status === 412 && ct.startsWith('application/json') && /\bno-store\b/.test(rc),
+      `status=${r.status} content-type=${ct || '(none)'} cache-control=${rc || '(none)'}` + (r.error ? ` error=${r.error}` : ''));
   }
   const miss = await bounded('/assets/index-NEVERUPLOADED.js');
   record('a hashed asset that is not deployed is a 404, not the SPA page', miss.status === 404,
