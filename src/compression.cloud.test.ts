@@ -47,9 +47,15 @@ const clientFiles = (dir: string): string[] => fs.readdirSync(dir, { withFileTyp
 });
 const client = clientFiles(fileURLToPath(new URL('.', import.meta.url)));
 assert(client.length > 20, `fixture: only ${client.length} client files found`);
-for (const f of client) assert(!/withCredentials|document\.cookie|credentials:\s*["']include["']/.test(fs.readFileSync(f, 'utf8')), `${f}: a browser-attached credential`);
+// Any `credentials` key in any spelling (literal, quoted, assigned, bracketed, shorthand, a Request init): the client sets none today.
+const ATTACHED = /withCredentials|document\.cookie|cookieStore|\bcredentials\b['"`]?\s*(?:[:=](?!=)|\]\s*=)|[{,]\s*credentials\s*[,}]/;
+for (const [label, line] of [['assigned', 'init.credentials = "include";'], ['literal', "{ credentials: 'same-origin' }"], ['quoted key', '{ "credentials": "include" }'],
+  ['bracketed', "init['credentials'] = 'include';"], ['shorthand', 'fetch(u, { headers, credentials })'], ['a Request', "new Request(u, { method, credentials: 'include' })"]] as const)
+  assert(ATTACHED.test(line), `fixture: the credentials pattern misses the ${label} form: ${line}`);
+for (const f of client) assert(!ATTACHED.test(fs.readFileSync(f, 'utf8')), `${f}: a browser-attached credential (${ATTACHED.exec(fs.readFileSync(f, 'utf8'))?.[0]})`);
 assert(fs.readFileSync(new URL('./utils/apiClient.ts', import.meta.url), 'utf8').includes("headers['Authorization'] = `Bearer ${requestToken}`"), 'apiClient no longer sends the token as a Bearer header');
-n += 4;
+assert(!/www-authenticate/i.test(src), 'server.ts challenges for HTTP auth: the browser re-sends Basic/Digest credentials by itself');
+n += 6;
 
 // ── fixtures: users, a 200-game library, and two one-game libraries of exactly 1,023 and 1,024 bytes
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'compression-'));
@@ -65,13 +71,17 @@ const game = (userId: string, i: number, description = `Saved variant ${i}: twea
     payoffs: Object.fromEntries(K.map((k, j) => [k, (p[k] ?? 0) + ((i * 7 + j) % 5)])), createdAt: new Date(Date.UTC(2026, 8, 1) + i * 3.6e6).toISOString(),
     ...(p.row1Label ? { row1Label: p.row1Label, row2Label: p.row2Label, col1Label: p.col1Label, col2Label: p.col2Label } : {}) };
 };
-// Exactly `bytes` of JSON for a one-game list: the description absorbs the difference.
-const sized = (userId: string, bytes: number) => { const g = game(userId, 1, ''); g.description = 'x'.repeat(bytes - Buffer.byteLength(JSON.stringify([g]))); return g; };
+// Exactly `bytes` of JSON for a one-game list: the description absorbs the difference (in 'é', 2 bytes and 1 UTF-16 unit, if wide).
+const sized = (userId: string, bytes: number, wide = false) => {
+  const g = game(userId, 1, ''), gap = bytes - Buffer.byteLength(JSON.stringify([g]));
+  g.description = wide ? 'é'.repeat(gap >> 1) + 'x'.repeat(gap & 1) : 'x'.repeat(gap); return g;
+};
 const big = user('librarian', 'librarian@example.test'), u1023 = user('edge1023', 'edge1023@example.test'), u1024 = user('edge1024', 'edge1024@example.test');
+const u1024wide = user('edge1024wide', 'edge1024wide@example.test');
 // The login body is the one hosted body that carries a secret: at the field caps (username 40, email 254) it stays under 1 KB.
 const widest = user('w'.repeat(40), `${'a'.repeat(241)}@example.test`);
 const library = Array.from({ length: 200 }, (_, i) => game(big.id, i));
-const db = { users: [big, u1023, u1024, widest], games: [...library, sized(u1023.id, 1023), sized(u1024.id, 1024), ...Array.from({ length: 200 }, (_, i) => game('local-owner', i))] };
+const db = { users: [big, u1023, u1024, u1024wide, widest], games: [...library, sized(u1023.id, 1023), sized(u1024.id, 1024), sized(u1024wide.id, 1024, true), ...Array.from({ length: 200 }, (_, i) => game('local-owner', i))] };
 const dir = (name: string) => { const d = path.join(tmp, name); fs.mkdirSync(d); fs.writeFileSync(path.join(d, 'db.json'), JSON.stringify(db)); return d; };
 
 type Res = { status: number; h: http.IncomingHttpHeaders; body: Buffer };
@@ -151,10 +161,13 @@ const CHROME = 'gzip, deflate, br, zstd';
     `HEAD with br: ${head.status} ${head.h['content-encoding']} ${head.h['content-length']} vs ${brGet.body.length}`);
   n += 3;
   // The threshold, at its edge: 1,023 bytes raw, 1,024 bytes coded. Small bodies are raw and vary on nothing.
-  for (const [u, bytes, want] of [[u1023, 1023, undefined], [u1024, 1024, 'br']] as const) {
+  // The wide library is 1,024 BYTES in under 1,024 UTF-16 units, so a threshold on string length leaves it raw. Its
+  // mirror (1,024+ units in under 1,024 bytes) cannot exist: UTF-8 spends at least one byte per UTF-16 unit.
+  for (const [u, bytes, want, label] of [[u1023, 1023, undefined, '1,023 B'], [u1024, 1024, 'br', '1,024 B'], [u1024wide, 1024, 'br', '1,024 B of wide text']] as const) {
     const ut = await tok(u), raw = await games(ut, 'identity'), r = await games(ut, CHROME);
-    assert.strictEqual(raw.body.length, bytes, `fixture: the ${bytes}-byte library is ${raw.body.length} B`);
-    assert(r.status === 200 && r.h['content-encoding'] === want && decode(r).equals(raw.body), `${bytes} B under a browser's Accept-Encoding: content-encoding=${r.h['content-encoding']}`);
+    assert.strictEqual(raw.body.length, bytes, `fixture: the ${label} library is ${raw.body.length} B`);
+    if (u === u1024wide) assert(raw.body.toString('utf8').length < 1000, `fixture: the ${label} library is ${raw.body.toString('utf8').length} UTF-16 units, so chars and bytes agree`);
+    assert(r.status === 200 && r.h['content-encoding'] === want && decode(r).equals(raw.body), `${label} under a browser's Accept-Encoding: content-encoding=${r.h['content-encoding']}`);
     n++;
   }
   const small = await call(s.port, 'GET', '/api/games', { 'accept-encoding': CHROME });
