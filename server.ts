@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import net from "net";
+import zlib from "zlib";
 import { isDeepStrictEqual } from "util";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
@@ -3701,6 +3702,24 @@ async function startServer() {
 
   const app = express();
   app.disable("x-powered-by"); // advertised the framework on every response (sweep 26)
+  // Hosted: a string body (every res.json) of 1 KB or more goes out br/gzip by pickCoding. A 200-game library was
+  // 80 KB raw and Cloud Run compresses nothing (sweep 28, S28-1). send then sets Content-Length, a per-coding ETag
+  // and 304 from the coded bytes. br q5 costs ~1 ms on the library (q11 ~80 ms). BREACH needs a credential the
+  // browser attaches on its own; auth here is a Bearer header only (pinned in src/compression.cloud.test.ts).
+  if (process.env.IS_ELECTRON !== "true") {
+    const send = app.response.send;
+    app.response.send = function (this: express.Response, body?: unknown) {
+      if (typeof body === "string" && Buffer.byteLength(body) >= 1024) {
+        this.vary("Accept-Encoding");
+        const coding = pickCoding(String(this.req.headers["accept-encoding"] ?? ""), true, true);
+        if (coding) {
+          this.setHeader("Content-Encoding", coding);
+          body = coding === "br" ? zlib.brotliCompressSync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } }) : zlib.gzipSync(body);
+        }
+      }
+      return send.call(this, body);
+    };
+  }
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
   // Trust the proxy in front of us (e.g. Cloud Run) so req.ip reflects the real
