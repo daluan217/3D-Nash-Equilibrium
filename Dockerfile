@@ -49,8 +49,8 @@ RUN npm ci --omit=dev
 # Copy built server and frontend from builder
 COPY --from=builder /app/dist/ ./dist/
 
-# Not root. node (uid 1000, from the base image) owns /app itself, where the no-bucket path writes db.json,
-# and nothing under it: dist/ and node_modules stay root's, so the server cannot rewrite what it serves.
+# Not root. node (uid 1000, from the base image) owns only /app itself, where the no-bucket path writes db.json
+# and its temp/moved-aside siblings. The files under it stay root's: chown reaches only where the server writes.
 RUN chown node:node /app
 USER node
 
