@@ -70,6 +70,7 @@
  *   node src/integration/db-shape-refusal.test.mjs
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { pbkdf2Sync, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -663,6 +664,45 @@ for (const [label, doc, expectMsg] of [
       save.ok, `POST /api/games status ${save.status}`);
   } catch (err) {
     record('CONTROL: a local-owner-shaped user (passwordHash \'\') and a bare game object still BOOT and serve', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 10. A STORED EMAIL THE SHAPE CHECK ACCEPTS BUT REGISTER NEVER WRITES (sweep 22, S1-1). The
+//     validator asks only for a string, so a legacy or hand-edited "Kate@Example.test" loads. Register,
+//     forgot and reset folded it; login and verify compared it exactly: "already registered" at sign-up,
+//     401 at log-in, 404 at verify. Hosted, file-backed, the real bundle. The wrong-password control
+//     keeps the 200 from passing because login accepts anything.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-email-'));
+  const PW = 'Sup3rSecret!23';
+  const salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_kate', username: 'kate', email: 'Kate@Example.test', passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 },
+    { id: 'u_pat', username: 'pat', email: ' Pat@Example.test', passwordHash: hash, isVerified: false,
+      verificationCode: '123456', verificationCodeExpires: Date.now() + 3_600_000 },
+  ] }));
+  const child = spawnHostedServer(userData, port);
+  const post = (route, body) => fetch(`http://127.0.0.1:${port}/api/auth/${route}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    await waitReady(child, port);
+    const taken = await post('register', { username: 'kate2', email: 'kate@example.test', password: PW });
+    record('stored "Kate@Example.test": CONTROL, register already sees the account (400)', taken.status === 400, `status ${taken.status}`);
+    const login = await post('login', { email: 'kate@example.test', password: PW });
+    record('stored "Kate@Example.test": login by the typed email succeeds (200), as it does by username',
+      login.status === 200, `status ${login.status}`);
+    const wrong = await post('login', { email: 'kate@example.test', password: 'Wr0ngSecret!23' });
+    record('stored "Kate@Example.test": CONTROL, a wrong password is still 401', wrong.status === 401, `status ${wrong.status}`);
+    const verify = await post('verify', { email: 'pat@example.test', code: '123456', password: PW });
+    record('stored " Pat@Example.test" (pending): verify by the typed email succeeds (200)', verify.status === 200, `status ${verify.status}`);
+  } catch (err) {
+    record('stored mixed-case email: the hosted server boots', false, String(err));
   } finally {
     await stop(child);
     rmSync(userData, { recursive: true, force: true });

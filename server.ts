@@ -2316,17 +2316,16 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
  * one is renamed, never merged.
  */
 function dedupeAccounts(db: DB, remote: DB): DB {
-  const norm = (v: string) => v.trim().toLowerCase();
   const onGcs = new Set(remote.users.map((u) => u.id));
   const byEmail = new Map<string, User>();
   const movedTo = new Map<string, string>();
   for (const u of [...db.users].sort((a, b) => Number(onGcs.has(b.id)) - Number(onGcs.has(a.id)))) {
-    const held = byEmail.get(norm(u.email));
-    if (!held || (onGcs.has(held.id) && onGcs.has(u.id))) { if (!held) byEmail.set(norm(u.email), u); continue; }
+    const held = byEmail.get(emailKey(u.email));
+    if (!held || (onGcs.has(held.id) && onGcs.has(u.id))) { if (!held) byEmail.set(emailKey(u.email), u); continue; }
     const [keep, drop] = !held.isVerified && u.isVerified ? [u, held] : [held, u];
     movedTo.set(drop.id, keep.id);
     for (const [from, to] of movedTo) if (to === drop.id) movedTo.set(from, keep.id);
-    byEmail.set(norm(u.email), keep);
+    byEmail.set(emailKey(u.email), keep);
   }
   // The kept account records what it absorbed, so a game the other instance
   // saves for the folded id before it learns of the fold still finds a home.
@@ -2621,9 +2620,15 @@ function mailCooldownLeft(kind: "verification" | "recovery", email: string): num
 }
 const releaseCodeMail = (kind: "verification" | "recovery", email: string) => lastCodeMail.delete(`${kind}:${email}`);
 
+// One email, one key (sweep 22, S1-1): login and verify compared the stored
+// email exactly while register, forgot and reset folded it, so a stored
+// "Kate@Example.test" was "taken" at sign-up yet unknown at log-in. Every
+// email equality goes through this; emailkey.cloud.test.ts greps the rest out.
+const emailKey = (s: string) => s.trim().toLowerCase();
+
 function findByIdentifier(users: User[], id: string): User | undefined {
   const key = usernameKey(id);
-  return users.find((u) => u.email === id) ?? users.find((u) => u.username.toLowerCase() === id)
+  return users.find((u) => emailKey(u.email) === emailKey(id)) ?? users.find((u) => u.username.toLowerCase() === id)
     ?? users.find((u) => usernameKey(u.username) === key);
 }
 
@@ -4763,7 +4768,7 @@ async function startServer() {
       });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const emailTrimmed = emailKey(email);
     // One mailbox (the input[type=email] shape): nodemailer read "a@x, b@y",
     // "<b@y>" or a CRLF "Bcc:" as more recipients, so one sign-up mailed its
     // code to addresses the account does not own (sweep 6).
@@ -4776,14 +4781,14 @@ async function startServer() {
     // Check for duplicate username (case-insensitive)
     const usernameTaken = db.users.find(
       u => usernameKey(u.username) === usernameKey(usernameTrimmed)
-        && u.email.trim().toLowerCase() !== emailTrimmed
+        && emailKey(u.email) !== emailTrimmed
     );
     if (usernameTaken) {
       return res.status(400).json({ error: "That username is already taken. Please choose a different one." });
     }
 
     // Check if user exists using trimmed, lowercased comparison
-    const existingUser = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+    const existingUser = db.users.find(u => emailKey(u.email) === emailTrimmed);
     if (existingUser) {
       if (existingUser.isVerified) {
         return res.status(400).json({ error: "An account with this email already exists." });
@@ -4947,7 +4952,7 @@ async function startServer() {
       return res.status(400).json({ error: hosted ? "Email, verification code and password are required." : "Email and verification code are required." });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const emailTrimmed = emailKey(email);
     const db = loadDB();
     // Login's lookup: a username login's 403 opens this screen with the
     // username as `email`, which used to dead-end in a 404 here.
@@ -5017,7 +5022,7 @@ async function startServer() {
       return res.status(400).json({ error: "Email/username and password are required." });
     }
 
-    const identifier = email.trim().toLowerCase();
+    const identifier = emailKey(email);
     const db = loadDB();
     const candidate = findByIdentifier(db.users, identifier);
     // Always run pbkdf2 (against a dummy hash on a miss) so a non-existent
@@ -5083,12 +5088,12 @@ async function startServer() {
       return res.status(400).json({ error: "Email address is required." });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const emailTrimmed = emailKey(email);
     if (emailTrimmed.length > 254 || !EMAIL_SHAPE.test(emailTrimmed)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
     const db = loadDB();
-    const user = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+    const user = db.users.find(u => emailKey(u.email) === emailTrimmed);
 
     // Always return a success-looking response to prevent email enumeration
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
@@ -5154,9 +5159,9 @@ async function startServer() {
       });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const emailTrimmed = emailKey(email);
     const db = loadDB();
-    const user = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+    const user = db.users.find(u => emailKey(u.email) === emailTrimmed);
 
     if (!user) {
       return res.status(404).json({ error: "No account found for this email." });
@@ -5276,7 +5281,7 @@ async function startServer() {
       });
     }
 
-    const userEmail = user.email.toLowerCase().trim();
+    const userEmail = emailKey(user.email);
 
     // STRUCT-DESKTOP-19: this is the one route that promises destruction, so
     // it is the one route that must never report a write it did not make.
@@ -5292,7 +5297,7 @@ async function startServer() {
     const remaining: DB = {
       // Both wipes come from the same snapshot: the games saved by this user,
       // and every user record sharing this id or this email address.
-      users: db.users.filter(u => u.email.toLowerCase().trim() !== userEmail && u.id !== user.id),
+      users: db.users.filter(u => emailKey(u.email) !== userEmail && u.id !== user.id),
       games: db.games.filter(g => g.userId !== user.id),
     };
 
