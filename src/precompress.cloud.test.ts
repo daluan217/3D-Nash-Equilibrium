@@ -9,7 +9,7 @@
 import assert from 'node:assert';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, isBuiltin } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,6 +86,21 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
       assert(lands, `Dockerfile: the builder stage never COPYs ${file} to /app/${file}, and \`npm run build\` runs it`); n++;
     }
   }
+}
+
+// ── the runtime stage (`npm ci --omit=dev`) installs every package the server bundle requires (--packages=external):
+// one in devDependencies boots nowhere but the image, where the require throws and every revision fails its health check.
+{
+  const esbuild = await import('esbuild');
+  // The build line's own flags; the OUTPUT's imports, so a type-only import (erased) is not counted.
+  const { metafile } = await esbuild.build({ entryPoints: [path.join(root, 'server.ts')], bundle: true, platform: 'node', format: 'cjs', packages: 'external', outfile: path.join(tmp, 'server.cjs'), write: false, metafile: true, logLevel: 'silent' });
+  const pkgName = (s: string) => s.split('/').slice(0, s.startsWith('@') ? 2 : 1).join('/');
+  const ext = new Set(Object.values(metafile.outputs).flatMap((o) => o.imports).filter((i) => i.external && !isBuiltin(i.path)).map((i) => pkgName(i.path)));
+  assert(ext.has('express') && ext.has('@google-cloud/storage'), `fixture: the server's externals were not read (${[...ext]})`);
+  const deps = JSON.parse(read('package.json')).dependencies ?? {};
+  for (const p of ext) { assert(p in deps, `server.ts requires ${p}, which is not in package.json dependencies: the image's \`npm ci --omit=dev\` never installs it`); n++; }
+  const df = read('Dockerfile'), runtime = df.slice(df.lastIndexOf('\nFROM '));
+  assert(/^RUN npm ci --omit=dev$/m.test(runtime) && /^CMD \["node", "dist\/server\.cjs"\]$/m.test(runtime), 'Dockerfile: the runtime stage no longer installs with `npm ci --omit=dev` and runs dist/server.cjs'); n++;
 }
 
 // ── the desktop package leaves the siblings out, judged by electron-builder's own matcher (last match wins)
