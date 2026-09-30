@@ -72,12 +72,12 @@ const ONLY = new RegExp(process.env.TOUR_SCROLL_ONLY || '.'); // local mutant ru
 try {
   await waitForOwnServer(server, base);
   let ran = 0;
-  const mine = new Set(tourShards('scroll', SHARDS)[SHARD - 1]);
+  const ours = new Set(tourShards('scroll', SHARDS)[SHARD - 1]); // not `mine`: the case body's own const would shadow it (TDZ)
   for (const [engineName, engine] of [['chromium', chromium], ['webkit', webkit]]) {
     const browser = await engine.launch();
     try {
       for (const [label, hogMs, shift, viewport] of cases) {
-        if (!mine.has(`[${engineName} ${label}]`) || !ONLY.test(`[${engineName} ${label}]`)) continue; ran++;
+        if (!ours.has(`[${engineName} ${label}]`) || !ONLY.test(`[${engineName} ${label}]`)) continue; ran++;
         const t0 = Date.now(), load = loadavg()[0].toFixed(1);
         const ctx = await browser.newContext({ viewport });
         const page = await ctx.newPage();

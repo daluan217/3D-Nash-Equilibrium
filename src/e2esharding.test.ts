@@ -5,10 +5,11 @@
  * `e2e` status context required by branch protection.
  */
 import assert from 'node:assert';
-import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import ts from 'typescript';
 import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
@@ -398,7 +399,7 @@ assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', 
   assert.match(job, /want=\$\(node --input-type=module -e "import \{ shardCases \} from '\.\/src\/e2e\/shard-cases\.mjs'; process\.stdout\.write\(String\(shardCases\('scroll', process\.env\)\.length\)\)"\)\n/, 'each tour-scroll shard counts its own packed share');
   assert.match(job, /-eq "\$want"\n/, 'CI requires each tour-scroll shard to have run all of its cases');
   assert.match(job, /grep -q "\^✓ tour scroll: shard \$\{\{ matrix\.shard \}\}\/2, \$want cases:"/, 'each tour-scroll shard proves it was that shard');
-  assert.match(scroll, /const mine = new Set\(tourShards\('scroll', SHARDS\)\[SHARD - 1\]\);[\s\S]{0,400}?if \(!mine\.has\(`\[\$\{engineName\} \$\{label\}\]`\) \|\| !ONLY\.test\([^\n]*\)\) continue; ran\+\+;/,
+  assert.match(scroll, /const ours = new Set\(tourShards\('scroll', SHARDS\)\[SHARD - 1\]\);[^\n]*\n[\s\S]{0,400}?if \(!ours\.has\(`\[\$\{engineName\} \$\{label\}\]`\) \|\| !ONLY\.test\([^\n]*\)\) continue; ran\+\+;/,
     'the scroll runs exactly its packed shard, by the tag its case line prints');
   assert.match(scroll, /TOUR_SCROLL_ONLY \|\| '\.'/, 'the local-only filter defaults to every case');
   assert.match(scroll, /import \{ SCROLL_CASES as cases, SCROLL_VIEWPORTS, tourShards \} from '\.\/tour-cases\.mjs'/, 'the scroll runs the shared case list');
@@ -408,6 +409,28 @@ assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', 
     '21 cases: 7 plain layouts, 6 re-targets (3 layouts x 2 frame rates), 2 x 3 sub-pixel, 2 reopens');
   assert.doesNotMatch(workflowJob('e2e_ai_surface'), /tour-scroll/, 'the tour scroll runs in its own job only');
   shardBudget('tour-scroll', job, scrollTags());
+}
+// Sweep 6 (CI 36728768985): tour-scroll's shard set `mine` sat in the TDZ of the case body's own `const mine`, and the
+// job threw before its first case. node --check and the pins above only parse. checkJs's scope errors (used before its
+// declaration, unknown name) read 0 on every script here, and fire on the verbatim defect.
+{
+  const SCOPE = [2304, 2448, 2449, 2552];
+  const scopeErrors = (files: string[]) => {
+    const p = ts.createProgram(files, { allowJs: true, checkJs: true, noEmit: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler, lib: ['lib.es2022.d.ts', 'lib.dom.d.ts', 'lib.dom.iterable.d.ts'], skipLibCheck: true });
+    return Object.fromEntries(files.map((f) => [f, p.getSemanticDiagnostics(p.getSourceFile(f)).filter((d) => SCOPE.includes(d.code))
+      .map((d) => `${f}:${d.file!.getLineAndCharacterOfPosition(d.start!).line + 1} TS${d.code} ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`)]));
+  }; // one entry per file: a scan of no files is not a clean scan
+  const scripts = [...readdirSync('src/e2e').filter((f) => /\.m?js$/.test(f)).map((f) => `src/e2e/${f}`), 'scripts/shard-timings-from-run.mjs', 'src/deploy/cloud-run-traffic.mjs'];
+  assert.ok(['tour-scroll.test.mjs', 'tour-walk.test.mjs', 'shard-cases.mjs', 'smoke.mjs'].every((f) => scripts.includes(`src/e2e/${f}`)), 'the scan covers the runners');
+  assert.deepStrictEqual(scopeErrors(scripts), Object.fromEntries(scripts.map((f) => [f, []])), 'no e2e or timing script reads a name before its declaration or a name that does not exist');
+  const dir = mkdtempSync(join(tmpdir(), 'tdz-')), bad = join(dir, 'tour-scroll.mjs');
+  writeFileSync(bad, ["const mine = new Set(tourShards('scroll', SHARDS)[SHARD - 1]);", 'for (const [label] of cases) {',
+    '  if (!mine.has(`[${engineName} ${label}]`)) continue;', '  const mine = s.targets.slice(n0);', '}',
+    "const tourShards = () => [], SHARDS = 1, SHARD = 1, cases = [], engineName = '', s = { targets: [] }, n0 = 0;", ''].join('\n'));
+  assert.match(scopeErrors([bad])[bad].join('\n'), /tour-scroll\.mjs:3 TS2448 Block-scoped variable 'mine' used before its declaration/,
+    'the verbatim CI 36728768985 shadowing fails by name');
+  rmSync(dir, { recursive: true });
 }
 // TASK-18 H22: the 19-step tour walk. 9 shards share the 66 engine x case runs, packed slowest-first (sweep 5), each
 // fails on a non-zero exit and must print exactly its own count of case lines and its own shard's success line.
