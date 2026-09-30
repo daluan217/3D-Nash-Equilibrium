@@ -153,9 +153,22 @@ const { lines: dfLines, offForm } = dockerLines(read('Dockerfile'));
   // A RUN after USER node leaves node owning what it creates (npm ci there = writable dependencies).
   // What USER node could regress: it cannot bind below 1024. Cloud Run's port is 8080 unless the deploy passes
   // --port, and Docker (the CI container job) lets non-root bind low ports, so only this sees a --port=80.
-  const deployArgs = (yaml.load(read('cloudbuild.yaml')) as { steps: { args?: string[] }[] }).steps.flatMap((s) => s.args ?? []).join(' ');
+  const cb = yaml.load(read('cloudbuild.yaml')) as { steps: { name?: string; args?: string[] }[] };
+  const deployArgs = cb.steps.flatMap((s) => s.args ?? []).join(' ');
   const low = [...deployArgs.matchAll(/--port[= ]+(\S+)/g)].map((m) => m[1]).filter((p) => !(Number(p) >= 1024));
   assert(low.length === 0, `cloudbuild.yaml: --port ${low.join(', ')}, which USER node cannot bind`); n++;
+  // Every check here reads what ships only if Cloud Run runs this file's last stage (sweep 12: build `-f`/`--target`/
+  // another context, another --image, --command/--source all passed). Build + push exact; deploy flags allowlisted.
+  const IMG = 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:$SHORT_SHA';
+  assert.deepStrictEqual(cb.steps.slice(0, 2), [
+    { name: 'gcr.io/cloud-builders/docker', args: ['build', '-t', IMG, '-t', 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:latest', '.'] },
+    { name: 'gcr.io/cloud-builders/docker', args: ['push', IMG] }], 'cloudbuild.yaml: the image is not this Dockerfile\'s last stage, built from . and pushed as the deployed tag'); n++;
+  const [deploy, ...extra] = cb.steps.slice(2), dArgs = deploy?.args ?? [], flag = (a: string) => a.split('=')[0];
+  const DEPLOY_FLAGS = ['--image', '--region', '--platform', '--allow-unauthenticated', '--set-env-vars', '--set-secrets', '--memory', '--cpu', '--timeout', '--max-instances'];
+  assert(extra.length === 0 && Object.keys(deploy ?? {}).join() === 'name,args' && deploy.name === 'gcr.io/cloud-builders/gcloud'
+    && dArgs.slice(0, 3).join(' ') === 'run deploy nash-equilibrium-backend' && dArgs.slice(3).every((a) => DEPLOY_FLAGS.includes(flag(a)))
+    && dArgs.filter((a) => flag(a) === '--image').join() === `--image=${IMG}`,
+  `cloudbuild.yaml: the deploy is not one \`gcloud run deploy\` of --image=${IMG} with reviewed flags: ${cb.steps.slice(2).map((s) => JSON.stringify(s)).join(' | ').slice(0, 600)}`); n++;
   const lastAt = (re: RegExp) => rt.map((l) => re.test(l)).lastIndexOf(true);
   assert(lastAt(/^RUN /) < lastAt(/^USER /), 'Dockerfile: a RUN after USER node, so node owns what it creates'); n++;
   // The backstop (sweep 9: `FROM builder`, inheriting source + devDependencies, passed every check above): the
