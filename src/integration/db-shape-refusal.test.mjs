@@ -933,6 +933,45 @@ for (const [label, doc, expectMsg] of [
   port += 1;
 }
 
+// 14. NO BUCKET, CWD NOT WRITABLE (cloud sweep 6: the image now runs as `node`; a dropped chown leaves it here).
+//     A save is an honest 500 that changes neither memory nor disk; the same folder made writable saves.
+//     FIXTURE: the server's own EACCES proves the folder refused it. Mutant: saveDBAwaited's catch returns true.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-ro-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  const dbFile = path.join(userData, 'db.json');
+  writeFileSync(dbFile, JSON.stringify({ games: [], users: [{ id: 'u_ro', username: 'ro', email: 'ro@example.test',
+    passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 }] }));
+  chmodSync(userData, 0o555);
+  const child = spawnHostedServer(userData, port);
+  const api = (m, r, token, body) => fetch(`http://127.0.0.1:${port}/api/${r}`, { method: m, headers: { 'content-type': 'application/json',
+    ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: body && JSON.stringify(body) });
+  const game = (name) => ({ name, payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } });
+  const onDisk = () => JSON.parse(readFileSync(dbFile, 'utf8')).games.length;
+  try {
+    const ready = await waitReady(child, port);
+    const { token } = await (await api('POST', 'auth/login', null, { email: 'ro@example.test', password: PW })).json();
+    const save = await api('POST', 'games', token, game('ro-1'));
+    const listed = await (await api('GET', 'games', token)).json();
+    record('no bucket, read-only cwd: a save is an honest 500, not a success', save.status === 500, `status ${save.status}`);
+    record('no bucket, read-only cwd: the refused game is neither listed nor on disk', Array.isArray(listed) && listed.length === 0 && onDisk() === 0,
+      `listed ${JSON.stringify(listed).slice(0, 60)}, on disk ${onDisk()}`);
+    record('no bucket, read-only cwd: FIXTURE, the server itself hit EACCES', /EACCES/.test(ready.log()), ready.log().slice(-120));
+    chmodSync(userData, 0o700);
+    const again = await api('POST', 'games', token, game('ro-2'));
+    record('no bucket, cwd made writable: CONTROL, the same save lands (200, on disk)', again.status === 200 && onDisk() === 1, `status ${again.status}, on disk ${onDisk()}`);
+  } catch (err) {
+    record('no bucket, read-only cwd: the hosted server boots and signs in', false, String(err));
+  } finally {
+    await stop(child);
+    chmodSync(userData, 0o700);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DB-SHAPE REFUSAL: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {
