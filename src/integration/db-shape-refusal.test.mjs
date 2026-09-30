@@ -723,7 +723,7 @@ for (const [label, doc, expectMsg] of [
   const row = (id, username, email) => ({ id, username, email, passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 });
   const payoffs = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
   writeFileSync(path.join(userData, 'db.json'), JSON.stringify({
-    users: [row('u_a', 'kate', 'kate@example.test'), row('u_b', 'kate-old', 'Kate@Example.test'), row('u_c', 'other', 'other@example.test')],
+    users: [row('u_b', 'kate-old', 'Kate@Example.test'), row('u_a', 'kate', 'kate@example.test'), row('u_c', 'other', 'other@example.test')],
     games: [{ id: 'g_a', userId: 'u_a', name: 'A', payoffs }, { id: 'g_b', userId: 'u_b', name: 'B', payoffs }, { id: 'g_c', userId: 'u_c', name: 'C', payoffs }] }));
   const child = spawnServer(userData, port);
   const call = (route, body, token) => fetch(`http://127.0.0.1:${port}/api/auth/${route}`, { method: 'POST',
@@ -731,7 +731,16 @@ for (const [label, doc, expectMsg] of [
     .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
   try {
     await waitReady(child, port);
-    const { json: login } = await call('login', { email: 'kate', password: PW });
+    // One lookup rule for every route (findByEmail): u_b sorts first but u_a holds the typed spelling,
+    // so forgot, reset and login all land on u_a. Unfixed, reset hit u_b and login u_a (401); a plain
+    // fold moves login onto the legacy u_b.
+    const { json: forgot } = await call('forgot-password', { email: 'kate@example.test' });
+    const NEW = 'N3wSecret!456';
+    const reset = await call('reset-password', { email: 'kate@example.test', code: forgot?.recoveryCode, newPassword: NEW });
+    const relog = await call('login', { email: 'kate@example.test', password: NEW });
+    record('two rows, one mailbox: forgot, reset and login reach the same row (the new password logs in, as u_a)',
+      reset.status === 200 && relog.status === 200 && relog.json?.user?.id === 'u_a', `reset ${reset.status}, login ${relog.status} as ${relog.json?.user?.id}`);
+    const { json: login } = await call('login', { email: 'kate', password: NEW });
     const { json: ask } = await call('delete-request', {}, login?.token);
     const done = await call('delete-confirm', { code: ask?.deleteCode }, login?.token);
     const after = JSON.parse(readFileSync(path.join(userData, 'db.json'), 'utf-8'));

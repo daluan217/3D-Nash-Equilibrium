@@ -14,7 +14,8 @@ const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
 const line = (sig: string) => { const s = src.indexOf(sig); assert(s > 0, `${sig} is gone from server.ts`); return src.slice(s, src.indexOf('\n', s) + 1); };
 const fn = (sig: string) => { const s = src.indexOf(sig); assert(s > 0, `${sig} is gone from server.ts`); return src.slice(s, src.indexOf('\n}\n', s) + 3); };
 const lift = (code: string) => new Function(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)();
-const { emailKey, findByIdentifier } = lift([line('const emailKey ='), line('const nfkcBare ='), line('const usernameKey ='),
+const defs = [line('const emailKey ='), line('const findByEmail ='), src.slice(src.indexOf('const findByEmail =')).split('\n')[1] + '\n'];
+const { emailKey, findByIdentifier } = lift([...defs, line('const nfkcBare ='), line('const usernameKey ='),
   fn('function findByIdentifier('), 'return { emailKey, findByIdentifier };'].join('\n'));
 
 let n = 0;
@@ -30,13 +31,22 @@ for (const stored of ['Kate@Example.test', ' kate@example.test ', 'KATE@EXAMPLE.
 // The email match still wins over another user's same-spelled username.
 assert.equal(findByIdentifier([{ id: 'name', username: 'kate@example.test', email: 'x@y.test' },
   { id: 'mail', username: 'k', email: 'Kate@Example.test' }], 'kate@example.test')?.id, 'mail', 'an email match must win over a username match'); n++;
+// Two rows, one mailbox: every lookup reaches the row stored as typed, whatever order the rows are in.
+for (const users of [[{ id: 'mixed', username: 'a', email: 'Kate@Example.test' }, { id: 'exact', username: 'b', email: 'kate@example.test' }],
+  [{ id: 'exact', username: 'b', email: 'kate@example.test' }, { id: 'mixed', username: 'a', email: 'Kate@Example.test' }]]) {
+  assert.equal(findByIdentifier(users, 'kate@example.test')?.id, 'exact', `two rows, one mailbox: ${users[0].id} first`); n++;
+}
 
 // Every equality on an email goes through emailKey: no hand-rolled fold, no bare === on .email.
 const BYPASS = /\.email\b\s*(?:===|!==|\.trim\(|\.toLowerCase\()|(?:===|!==)\s*[\w.]*\.email\b|\bemail\.(?:trim\(\)\.toLowerCase|toLowerCase)\(/g;
-const stripped = src.replace(/^\s*(\/\/|\*).*$/gm, '');
+// The one exact compare lives in findByEmail's definition; every other line is scanned.
+const stripped = defs.reduce((t, d) => t.replace(d, ''), src).replace(/^\s*(\/\/|\*).*$/gm, '');
 const bypass = stripped.match(BYPASS) ?? [];
 assert.deepEqual(bypass, [], 'an email comparison bypasses emailKey'); n++;
-assert(stripped.match(/emailKey\((?:u|user)\.email\)/g)!.length >= 9, 'fixture: the stored-side sites (dedupe 3, register 2, forgot, reset, delete 2) use emailKey'); n++;
+// A lookup of one account by email is findByEmail, never a hand-rolled find over emailKey.
+assert.deepEqual(stripped.match(/\.find(?:Index)?\(\s*\(?\w+\)?\s*=>\s*emailKey\(\w+\.email\)\s*===/g) ?? [], [], 'an email lookup bypasses findByEmail'); n++;
+assert.equal(stripped.match(/findByEmail\(/g)?.length, 4, 'fixture: login/verify, register, forgot and reset look up through findByEmail'); n++;
+assert(stripped.match(/emailKey\((?:u|user)\.email\)/g)!.length >= 6, 'fixture: dedupe 3, register-name 1, delete 2 fold the stored side'); n++;
 // Self-test: the bypass pattern catches each shape this file replaced.
 for (const old of ['u.email === id', 'u.email.trim().toLowerCase() === e', 'user.email.toLowerCase().trim()', 'x === u.email', 'email.trim().toLowerCase();']) {
   assert(new RegExp(BYPASS.source).test(old), `self-test: ${old} is not caught`); n++;

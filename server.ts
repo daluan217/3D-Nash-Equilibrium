@@ -2625,10 +2625,14 @@ const releaseCodeMail = (kind: "verification" | "recovery", email: string) => la
 // "Kate@Example.test" was "taken" at sign-up yet unknown at log-in. Every
 // email equality goes through this; emailkey.cloud.test.ts greps the rest out.
 const emailKey = (s: string) => s.trim().toLowerCase();
+// Every lookup picks the same row when two share a mailbox: the one stored as typed first.
+const findByEmail = (users: User[], key: string): User | undefined =>
+  users.find((u) => u.email === key) ?? users.find((u) => emailKey(u.email) === key);
 
+// `id` arrives as emailKey(input) from both callers (login, verify).
 function findByIdentifier(users: User[], id: string): User | undefined {
   const key = usernameKey(id);
-  return users.find((u) => emailKey(u.email) === emailKey(id)) ?? users.find((u) => u.username.toLowerCase() === id)
+  return findByEmail(users, id) ?? users.find((u) => u.username.toLowerCase() === id)
     ?? users.find((u) => usernameKey(u.username) === key);
 }
 
@@ -4788,7 +4792,7 @@ async function startServer() {
     }
 
     // Check if user exists using trimmed, lowercased comparison
-    const existingUser = db.users.find(u => emailKey(u.email) === emailTrimmed);
+    const existingUser = findByEmail(db.users, emailTrimmed);
     if (existingUser) {
       if (existingUser.isVerified) {
         return res.status(400).json({ error: "An account with this email already exists." });
@@ -5093,7 +5097,7 @@ async function startServer() {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
     const db = loadDB();
-    const user = db.users.find(u => emailKey(u.email) === emailTrimmed);
+    const user = findByEmail(db.users, emailTrimmed);
 
     // Always return a success-looking response to prevent email enumeration
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
@@ -5161,7 +5165,7 @@ async function startServer() {
 
     const emailTrimmed = emailKey(email);
     const db = loadDB();
-    const user = db.users.find(u => emailKey(u.email) === emailTrimmed);
+    const user = findByEmail(db.users, emailTrimmed);
 
     if (!user) {
       return res.status(404).json({ error: "No account found for this email." });
