@@ -108,7 +108,7 @@ function spawnServer(userData, thePort) {
 // passed as a whole replacement object (never inherits the real process.env),
 // so this can never accidentally pick up real GCS credentials from the
 // machine running the test.
-function spawnHostedServer(userData, thePort) {
+function spawnHostedServer(userData, thePort, extraEnv = {}) {
   return spawn('node', [BUNDLE], {
     cwd: userData,
     env: {
@@ -116,6 +116,7 @@ function spawnHostedServer(userData, thePort) {
       HOME: userData,
       NODE_ENV: 'production',
       PORT: String(thePort),
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -791,6 +792,68 @@ for (const [label, doc, expectMsg] of [
       `status ${forgot.status}, code ${forgot.json?.recoveryCode ? 'issued' : 'none'}`);
   } catch (err) {
     record('verified vs pending: the desktop server boots', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 13. HOSTILE BODIES, HOSTED (sweep 22, empty probes checked in). Every POST route answers a body that
+//     is not a JSON object with a 4xx; every game field given the wrong type answers without a 5xx and
+//     stores only strings (or string lists). TRUST_PROXY + one X-Forwarded-For per request keeps the
+//     rate limits out of it: the first probe run was 401/429 throughout and "passed" with nothing
+//     tested, so the 200 counts below are asserted, and a dead server fails as status 0.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-bodies-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [{ id: 'u_k', username: 'kate', email: 'kate@example.test',
+    passwordHash: `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`, isVerified: true, verificationCode: '', verificationCodeExpires: 0 }] }));
+  const child = spawnHostedServer(userData, port, { TRUST_PROXY: 'true' });
+  let ip = 0;
+  const raw = (method, route, type, body, token) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method, body,
+    headers: { 'content-type': type, 'x-forwarded-for': `10.${(++ip >> 8) & 255}.${ip & 255}.1`, ...(token ? { authorization: `Bearer ${token}` } : {}) } })
+    .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }), () => ({ status: 0, json: null }));
+  const call = (method, route, body, token) => raw(method, route, 'application/json', body === undefined ? undefined : JSON.stringify(body), token);
+  try {
+    const ready = await waitReady(child, port);
+    const bodies = [['text/plain', 'x'], ['application/json', 'null'], ['application/json', '[1]'], ['application/json', '"s"'],
+      ['application/json', '{'], ['application/x-www-form-urlencoded', 'email=a']];
+    const routes = ['auth/register', 'auth/verify', 'auth/login', 'auth/forgot-password', 'auth/reset-password', 'auth/delete-request',
+      'auth/delete-confirm', 'feedback', 'report', 'games', 'games/adopt-local', 'scenario/regenerate'];
+    const off = [];
+    for (const r of routes) for (const [type, body] of bodies) {
+      const { status } = await raw('POST', r, type, body);
+      if (status < 400 || status >= 500) off.push(`${r} ${body} -> ${status}`);
+    }
+    record('hostile bodies: every POST route answers a non-object body with a 4xx (72 requests)', off.length === 0, off.join('; ') || 'all 4xx');
+    const token = (await call('POST', 'auth/login', { email: 'kate', password: PW })).json?.token;
+    const P = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+    const base = (await call('POST', 'games', { name: 'base', payoffs: P }, token)).json?.game?.id;
+    record('hostile bodies: CONTROL, a well-formed login and save succeed on the same server', !!token && !!base, `token ${!!token}, game ${base}`);
+    const junk = [null, 5, true, [], ['x'], [5], [{}], [null], ['a', 'a'], Array(500).fill('word'), {}, { toString: 'x' }, 'x'.repeat(5000), '‮\u0000', -0, 1e308];
+    const fields = ['name', 'description', 'row1Label', 'row2Label', 'col1Label', 'col2Label', 'colorTermsA', 'colorTermsB', 'clientRequestId', 'allowClear', 'scenarioSource'];
+    const shapeOk = (g) => Object.entries(g ?? {}).every(([k, v]) => (k === 'payoffs' ? Object.values(v).every(Number.isFinite)
+      : /^colorTerms[AB]$/.test(k) ? Array.isArray(v) && v.every((x) => typeof x === 'string') : typeof v === 'string'));
+    const bad = [], ok = { POST: 0, PATCH: 0 };
+    for (const f of fields) for (const v of junk) {
+      const tag = `${f}=${JSON.stringify(v)?.slice(0, 16)}`;
+      const a = await call('POST', 'games', { name: 'n', payoffs: P, [f]: v }, token);
+      if (a.status === 0 || a.status >= 500 || (a.status === 200 && !shapeOk(a.json?.game))) bad.push(`POST ${tag} -> ${a.status} ${JSON.stringify(a.json?.game?.[f])?.slice(0, 30)}`);
+      if (a.status === 200) { ok.POST++; await call('DELETE', `games/${a.json.game.id}`, undefined, token); }
+      const b = await call('PATCH', `games/${base}`, { name: 'n2', [f]: v }, token);
+      if (b.status === 0 || b.status >= 500 || (b.status === 200 && !shapeOk(b.json?.game))) bad.push(`PATCH ${tag} -> ${b.status} ${JSON.stringify(b.json?.game?.[f])?.slice(0, 30)}`);
+      if (b.status === 200) ok.PATCH++;
+    }
+    const stored = JSON.parse(readFileSync(path.join(userData, 'db.json'), 'utf-8')).games;
+    record('hostile bodies: every mistyped game field answers without a 5xx and stores only strings / string lists',
+      bad.length === 0 && stored.every(shapeOk), bad.slice(0, 4).join('; ') || `${stored.length} stored game(s) clean`);
+    record('hostile bodies: FIXTURE, the saves really ran (>= 150 POST and PATCH answered 200, not 401/429)',
+      ok.POST >= 150 && ok.PATCH >= 150, JSON.stringify(ok));
+    record('hostile bodies: the server logged no TypeError', !/TypeError/.test(ready.log()), (ready.log().match(/.*TypeError.*/) ?? [''])[0].slice(0, 120));
+  } catch (err) {
+    record('hostile bodies: the hosted server boots', false, String(err));
   } finally {
     await stop(child);
     rmSync(userData, { recursive: true, force: true });
