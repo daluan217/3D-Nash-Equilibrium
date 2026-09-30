@@ -223,10 +223,44 @@ jobs:
           AUDIT_REQUIRE_SHIPPED: '1'
         run: node src/desktop/audit-packaged-asar.cjs
 
+  # TASK-18 sweeps 6, 7, 9, 10: a slow runner apt mirror (64-252 kB/s) made `playwright install --with-deps` take
+  # 225-784 s, which tripped the 420 s smoke wall check on shards whose sections were well inside budget and cancelled
+  # tour jobs at their timeouts. This job alone fills the browser deps cache (.github/actions/browser-deps), before any
+  # browser job's clock starts; every browser job needs it and only restores (dozens of parallel saves of one key race).
+  # It runs beside build, so a warm cache costs no wall time; a cold one spends the mirror's minutes here, once.
+  browser_deps:
+    name: browser deps cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: deps
+        uses: ./.github/actions/browser-deps
+
+      - if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Fetch every browser job's system packages (chromium and webkit cover them all)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npx playwright install-deps chromium webkit
+
+      - if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /var/cache/pw-apt/*.deb
+          key: ${{ steps.deps.outputs.key }}
+
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: build
+    needs: [build, browser_deps]
     steps:
       - uses: actions/checkout@v5
 
@@ -237,6 +271,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+        uses: ./.github/actions/browser-deps
 
       - name: Download the bundle built by the build job
         uses: actions/download-artifact@v4
@@ -689,7 +726,7 @@ jobs:
     name: e2e smoke (${{ matrix.shard }}/35)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: build
+    needs: [build, browser_deps]
     strategy:
       # One bad shard must not cancel its siblings and destroy their evidence.
       # GitHub's "Re-run failed jobs" then re-runs only the failed matrix child.
@@ -710,6 +747,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+        uses: ./.github/actions/browser-deps
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -817,7 +857,7 @@ jobs:
     name: e2e AI surface
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: build
+    needs: [build, browser_deps]
     steps:
       - uses: actions/checkout@v5
 
@@ -828,6 +868,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+        uses: ./.github/actions/browser-deps
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -873,7 +916,7 @@ jobs:
     name: e2e tour scroll (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: build
+    needs: [build, browser_deps]
     strategy:
       fail-fast: false
       matrix:
@@ -888,6 +931,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+        uses: ./.github/actions/browser-deps
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -920,7 +966,7 @@ jobs:
     name: e2e tour walk (${{ matrix.shard }}/9)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: build
+    needs: [build, browser_deps]
     strategy:
       fail-fast: false
       matrix:
@@ -935,6 +981,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+        uses: ./.github/actions/browser-deps
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -1097,7 +1146,7 @@ jobs:
   mobile:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: build
+    needs: [build, browser_deps]
     steps:
       - uses: actions/checkout@v5
 
@@ -1108,6 +1157,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+        uses: ./.github/actions/browser-deps
 
       - name: Download the bundle built by the build job
         uses: actions/download-artifact@v4

@@ -945,6 +945,60 @@ for (const job of [
   assert.doesNotMatch(job, /name:\s*dist-e2e\s*$/m,
     'the test-only timeout artifact must not leak into integration or mobile');
 }
+
+// TASK-18 sweeps 6, 7, 9, 10: a 64-252 kB/s runner apt mirror put `playwright install --with-deps` at 225-784 s, over the
+// 420 s smoke wall and the tour timeouts, on shards whose sections fit (CI 36759762921 attempt 1, 36769717770). The
+// browser_deps job fills one cache of every browser job's system packages before their clocks start
+// (.github/actions/browser-deps); every ubuntu job that installs with deps needs it and restores first, and only it saves.
+const browserDepsAction = readFileSync('.github/actions/browser-deps/action.yml', 'utf8');
+function browserDepsProblems(wf: string, action: string): string[] {
+  const jobs = new Map(wf.slice(wf.indexOf('\njobs:\n')).split(/^  (?=[a-z0-9_-]+:\s*$)/m).slice(1)
+    .map((body) => [body.slice(0, body.indexOf(':')), body] as [string, string]));
+  const problems: string[] = [], restore = '- name: Restore the browser system packages', uses = 'uses: ./.github/actions/browser-deps';
+  const archive = action.match(/Dir::Cache::Archives "([^"]+)\/";/)?.[1], path = action.match(/uses: actions\/cache\/restore@v4\n\s+with:[\s\S]*?\n\s+path: (\S+)\n/)?.[1];
+  if (!archive || path !== `${archive}/*.deb`) problems.push(`the action restores ${path}, not the .debs of the archive apt writes (${archive}); apt's lock and partial/ are unreadable to the save`);
+  if (!/jq -r '\.packages\["node_modules\/playwright-core"\]\.version \/\/ empty' package-lock\.json/.test(action) || !/key=pw-apt-\$ImageOS-playwright-\$v-\$ImageVersion"/.test(action))
+    problems.push('the cache key must follow the runner image and the locked playwright-core version');
+  const fill = jobs.get('browser_deps') ?? '';
+  if (!new RegExp(`- id: deps\\n\\s+${uses.replace(/[./]/g, '\\$&')}\\n`).test(fill)) problems.push('the browser_deps job must restore through the action (id: deps) first');
+  if (!/run: npx playwright install-deps chromium webkit\n/.test(fill)) problems.push('the browser_deps job must fetch chromium and webkit, the union of every browser job\'s engines');
+  const after = fill.split(/^      - /m).slice(3);
+  if (after.length < 4 || after.some((s) => !/if: steps\.deps\.outputs\.cache-hit != 'true'/.test(s))) problems.push('every browser_deps step after the restore must be skipped on a cache hit');
+  if (!new RegExp(`uses: actions/cache/save@v4\\n\\s+with:\\n\\s+path: ${(path ?? '').replace(/[.*/]/g, '\\$&')}\\n\\s+key: \\$\\{\\{ steps\\.deps\\.outputs\\.key \\}\\}`).test(fill))
+    problems.push('the browser_deps job must save the path the action restores, under the action\'s key');
+  for (const [name, body] of jobs) {
+    if (name !== 'browser_deps' && /actions\/cache(\/save)?@/.test(body)) problems.push(`${name} saves a cache: only browser_deps may (parallel saves of one key race)`);
+    const install = body.indexOf('playwright install --with-deps');
+    if (install < 0 || !/runs-on: ubuntu-latest/.test(body)) continue;
+    if (!/needs: \[[^\]]*\bbrowser_deps\b[^\]]*\]/.test(body)) problems.push(`${name} installs with deps but does not need browser_deps`);
+    const at = body.indexOf(restore);
+    if (at < 0 || !body.slice(at).startsWith(`${restore} (a slow runner apt mirror stays off this job's clock)\n        ${uses}\n`) || at > install)
+      problems.push(`${name} installs with deps before restoring the browser system packages`);
+    for (const [, engines] of body.matchAll(/playwright install --with-deps ([^\n]+)/g))
+      if (!/^(chromium|chromium webkit|\$\{\{ steps\.webkit_need\.outputs\.browsers \}\})$/.test(engines)) problems.push(`${name} installs ${engines}, which browser_deps does not fetch`);
+  }
+  for (const [, engines] of wf.matchAll(/echo "browsers=([^"]+)" >> "\$GITHUB_OUTPUT"/g))
+    if (!['chromium', 'chromium webkit'].includes(engines)) problems.push(`a shard installs ${engines}, which browser_deps does not fetch`);
+  return problems;
+}
+assert.deepStrictEqual(browserDepsProblems(workflow, browserDepsAction), [], 'every browser job takes its system packages from the browser_deps cache');
+assert.deepStrictEqual([...workflow.matchAll(/^  ([a-z0-9_]+):\n(?:(?!^  \S)[\s\S])*?playwright install --with-deps/gm)].map((m) => m[1]),
+  ['integration', 'e2e_smoke', 'e2e_ai_surface', 'e2e_tour_scroll', 'e2e_tour_walk', 'mobile'], 'the ubuntu jobs that install with deps (the guard\'s known positives)');
+// Each rule fails by name on a one-line mutant of the real files.
+const depsMutant = (from: string | RegExp, to: string, text = workflow) => { const out = text.replace(from, to); assert.notStrictEqual(out, text, `mutant ${from} applies`); return out; };
+const walkBody = workflowJob('e2e_tour_walk');
+for (const [wf, action, want] of [
+  [depsMutant(walkBody, walkBody.replace(/      - name: Restore the browser system packages[^\n]*\n[^\n]*\n\n/, '')), browserDepsAction, 'e2e_tour_walk installs with deps before restoring'],
+  [depsMutant(/(  mobile:\n[\s\S]*?)needs: \[build, browser_deps\]/, '$1needs: build'), browserDepsAction, 'mobile installs with deps but does not need browser_deps'],
+  [depsMutant('run: npx playwright install-deps chromium webkit\n', 'run: npx playwright install-deps chromium\n'), browserDepsAction, 'union of every browser job\'s engines'],
+  [depsMutant(/(uses: actions\/cache\/save@v4\n\s+with:\n\s+path: )\/var\/cache\/pw-apt\/\*\.deb/, '$1/var/cache/pw-apt'), browserDepsAction, 'must save the path the action restores'],
+  [workflow, depsMutant('path: /var/cache/pw-apt/*.deb', 'path: /var/cache/pw-apt', browserDepsAction), 'not the .debs of the archive apt writes'],
+  [workflow, depsMutant('-$ImageVersion"', '"', browserDepsAction), 'the cache key must follow the runner image'],
+  [depsMutant("        if: steps.deps.outputs.cache-hit != 'true'\n        run: npx playwright install-deps", '        run: npx playwright install-deps'), browserDepsAction, 'skipped on a cache hit'],
+  [depsMutant('echo "browsers=chromium webkit"', 'echo "browsers=chromium firefox"'), browserDepsAction, 'a shard installs chromium firefox'],
+  [depsMutant('      - name: Install headless browsers for this shard\n', '      - uses: actions/cache@v4\n        with:\n          path: x\n          key: x\n\n      - name: Install headless browsers for this shard\n'), browserDepsAction, 'e2e_smoke saves a cache'],
+] as [string, string, string][])
+  assert.ok(browserDepsProblems(wf, action).some((p) => p.includes(want)), `the browser deps guard names "${want}" (got ${JSON.stringify(browserDepsProblems(wf, action))})`);
 assert.match(liveWorkflow, /LIVE_WAIT_MINUTES:\s*'5'/,
   'deploy verification must stop waiting for an asset after five minutes');
 const timeoutInitializer = app.match(

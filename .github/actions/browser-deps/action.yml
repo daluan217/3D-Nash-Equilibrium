@@ -1,0 +1,43 @@
+name: Browser system packages from the Actions cache
+description: >-
+  Points apt at /var/cache/pw-apt and restores the .debs that `playwright install --with-deps` installs into it, so a
+  slow runner apt mirror is not on a browser job's clock. TASK-18 sweeps 6, 7, 9 and 10: package fetches of 64-252 kB/s
+  made 225-784 s installs that tripped the 420 s smoke wall check and cancelled tour jobs at their timeouts; apt's own
+  index fetch stayed fast. The browser_deps job in test.yml fills this cache; every other job only restores it.
+outputs:
+  cache-hit:
+    description: "'true' when the exact key restored"
+    value: ${{ steps.restore.outputs.cache-hit }}
+  key:
+    description: The cache key (runner image and Playwright version)
+    value: ${{ steps.key.outputs.key }}
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      # The debs a runner needs follow its image and the Playwright version that picks them. The image version is last,
+      # so restore-keys falls back to the same image OS and Playwright during a runner image rollout.
+      run: |
+        v=$(jq -r '.packages["node_modules/playwright-core"].version // empty' package-lock.json)
+        if [ -z "$v" ]; then echo "::error::package-lock.json names no playwright-core version to key the browser deps cache on"; exit 1; fi
+        echo "prefix=pw-apt-$ImageOS-playwright-$v-" >> "$GITHUB_OUTPUT"
+        echo "key=pw-apt-$ImageOS-playwright-$v-$ImageVersion" >> "$GITHUB_OUTPUT"
+
+    - name: Point apt at the cached archive
+      shell: bash
+      # partial/ belongs to _apt so the download stays sandboxed; the archive itself belongs to the runner user so the
+      # cache restores into it. apt-get keeps what it downloads there (Keep-Downloaded-Packages for `apt` too).
+      run: |
+        sudo install -d -o "$(id -u)" /var/cache/pw-apt
+        sudo install -d -o _apt -m 700 /var/cache/pw-apt/partial
+        printf '%s\n' 'Dir::Cache::Archives "/var/cache/pw-apt/";' 'APT::Keep-Downloaded-Packages "true";' \
+          'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99pw-apt-cache > /dev/null
+
+    - id: restore
+      uses: actions/cache/restore@v4
+      with:
+        # Only the .debs: apt's lock (root, 0640) and partial/ (_apt, 0700) are unreadable to the save's tar.
+        path: /var/cache/pw-apt/*.deb
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
