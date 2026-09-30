@@ -14,7 +14,7 @@ const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
 const line = (sig: string) => { const s = src.indexOf(sig); assert(s > 0, `${sig} is gone from server.ts`); return src.slice(s, src.indexOf('\n', s) + 1); };
 const fn = (sig: string) => { const s = src.indexOf(sig); assert(s > 0, `${sig} is gone from server.ts`); return src.slice(s, src.indexOf('\n}\n', s) + 3); };
 const lift = (code: string) => new Function(ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)();
-const defs = [line('const emailKey ='), line('const findByEmail ='), src.slice(src.indexOf('const findByEmail =')).split('\n')[1] + '\n'];
+const defs = [line('const emailKey ='), fn('function findByEmail(')];
 const { emailKey, findByIdentifier } = lift([...defs, line('const nfkcBare ='), line('const usernameKey ='),
   fn('function findByIdentifier('), 'return { emailKey, findByIdentifier };'].join('\n'));
 
@@ -36,6 +36,15 @@ for (const users of [[{ id: 'mixed', username: 'a', email: 'Kate@Example.test' }
   [{ id: 'exact', username: 'b', email: 'kate@example.test' }, { id: 'mixed', username: 'a', email: 'Kate@Example.test' }]]) {
   assert.equal(findByIdentifier(users, 'kate@example.test')?.id, 'exact', `two rows, one mailbox: ${users[0].id} first`); n++;
 }
+// ...unless only the other is verified: the account dedupe keeps outranks a pending claim (sweep 22, S1-4).
+const pend = { id: 'pending', username: 'b', email: 'kate@example.test', isVerified: false };
+const own = { id: 'verified', username: 'a', email: 'Kate@Example.test', isVerified: true };
+for (const users of [[pend, own], [own, pend]]) {
+  assert.equal(findByIdentifier(users, 'kate@example.test')?.id, 'verified', `verified vs pending: ${users[0].id} first`); n++;
+}
+assert.equal(findByIdentifier([own, pend, { ...pend, id: 'both', isVerified: true }], 'kate@example.test')?.id, 'both',
+  'verified first, then the spelling typed'); n++;
+assert.equal(findByIdentifier([{ ...own, id: 'first' }, { ...own, id: 'second' }], 'kate@example.test')?.id, 'first', 'a full tie keeps store order'); n++;
 
 // Every equality on an email goes through emailKey: no hand-rolled fold, no bare === on .email.
 const BYPASS = /\.email\b\s*(?:===|!==|\.trim\(|\.toLowerCase\()|(?:===|!==)\s*[\w.]*\.email\b|\bemail\.(?:trim\(\)\.toLowerCase|toLowerCase)\(/g;

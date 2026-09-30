@@ -2625,9 +2625,13 @@ const releaseCodeMail = (kind: "verification" | "recovery", email: string) => la
 // "Kate@Example.test" was "taken" at sign-up yet unknown at log-in. Every
 // email equality goes through this; emailkey.cloud.test.ts greps the rest out.
 const emailKey = (s: string) => s.trim().toLowerCase();
-// Every lookup picks the same row when two share a mailbox: the one stored as typed first.
-const findByEmail = (users: User[], key: string): User | undefined =>
-  users.find((u) => u.email === key) ?? users.find((u) => emailKey(u.email) === key);
+// Two rows, one mailbox: every lookup reaches the same one. Verified first (the
+// row dedupeAccounts keeps; S1-4: a pending claim took the owner's login and
+// recovery), then the spelling typed (S1-3), then store order.
+function findByEmail(users: User[], key: string): User | undefined {
+  const rank = (u: User) => (u.isVerified ? 2 : 0) + (u.email === key ? 1 : 0);
+  return users.filter((u) => emailKey(u.email) === key).reduce<User | undefined>((a, u) => (a && rank(a) >= rank(u) ? a : u), undefined);
+}
 
 // `id` arrives as emailKey(input) from both callers (login, verify).
 function findByIdentifier(users: User[], id: string): User | undefined {

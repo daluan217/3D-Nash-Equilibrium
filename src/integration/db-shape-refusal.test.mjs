@@ -760,6 +760,44 @@ for (const [label, doc, expectMsg] of [
   port += 1;
 }
 
+// 12. VERIFIED VS PENDING, ONE MAILBOX (sweep 22, S1-4). A legacy store holds the owner's verified
+//     "Kate@Example.test" and a later pending "kate@example.test" (register once compared exactly).
+//     S1-3's exact-first lookup sent the owner's email login to the pending row (401) and forgot to it
+//     (no code), and the pending row's password opened a 403 "verify" path. Each check names u_owner or
+//     the status the owner's row gives, so a lookup that drops the pending row cannot pass them by luck.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-pending-'));
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hashOf = (pw) => { const s = randomBytes(16); return `pbkdf2$1000$${b64u(s)}$${b64u(pbkdf2Sync(pw, s, 1000, 32, 'sha256'))}`; };
+  const OWN = 'Own3rSecret!1', SQUAT = 'Squ4tter!pw9';
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_pend', username: 'kate2', email: 'kate@example.test', passwordHash: hashOf(SQUAT), isVerified: false,
+      verificationCode: '654321', verificationCodeExpires: Date.now() + 3_600_000 },
+    { id: 'u_owner', username: 'kate', email: 'Kate@Example.test', passwordHash: hashOf(OWN), isVerified: true, verificationCode: '', verificationCodeExpires: 0 },
+  ] }));
+  const child = spawnServer(userData, port);
+  const call = (route, body) => fetch(`http://127.0.0.1:${port}/api/auth/${route}`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
+  try {
+    await waitReady(child, port);
+    const own = await call('login', { email: 'kate@example.test', password: OWN });
+    record('verified vs pending: the owner logs in by the typed email (200, as u_owner)',
+      own.status === 200 && own.json?.user?.id === 'u_owner', `status ${own.status} as ${own.json?.user?.id}`);
+    const squat = await call('login', { email: 'kate@example.test', password: SQUAT });
+    record('verified vs pending: the pending row\'s password is a 401 (owner\'s row), not a 403 verify path', squat.status === 401, `status ${squat.status}`);
+    const forgot = await call('forgot-password', { email: 'kate@example.test' });
+    record('verified vs pending: forgot issues the owner a recovery code', typeof forgot.json?.recoveryCode === 'string',
+      `status ${forgot.status}, code ${forgot.json?.recoveryCode ? 'issued' : 'none'}`);
+  } catch (err) {
+    record('verified vs pending: the desktop server boots', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DB-SHAPE REFUSAL: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {
