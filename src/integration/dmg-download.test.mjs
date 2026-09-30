@@ -545,6 +545,20 @@ try {
   record('the read-failed 500 is plain JSON: none of the download headers (attachment, octet-stream, Content-Range, the ETag) leak onto it',
     err500.status === 500 && /^application\/json/.test(err500.h.get('content-type') ?? '') && dlHeaders.length === 0 && !/^"/.test(err500.h.get('etag') ?? ''),
     `status ${err500.status}, content-type ${err500.h.get('content-type')}, leaked [${dlHeaders.join(', ')}], ETag ${err500.h.get('etag')}`);
+  // Range edges (sweep 5, cloud-loop-22): a suffix of 0 and a first byte AT the size are unsatisfiable (RFC 9110
+  // §14.1.1); a 400-digit position parses to Infinity: past the end as a first byte, "to the end" as a last byte or
+  // suffix. Mutants `Number(m[1]) | 0`, `-0 = whole file` and `start <= end + 1` each fail a check here by name.
+  await stop(srv); srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`); // a fresh dmg bucket (10/min)
+  const body = gens.get(cur), size = body.length, BIG = '9'.repeat(400), all = `bytes 0-${size - 1}/${size}`;
+  for (const [label, range, want] of [['a zero-length suffix (bytes=-0)', 'bytes=-0', 416], ['a first byte AT the size', `bytes=${size}-`, 416],
+    ['a 400-digit first byte', `bytes=${BIG}-`, 416], ['a 400-digit last byte', `bytes=0-${BIG}`, all], ['a 400-digit suffix', `bytes=-${BIG}`, all],
+    ['the last byte, control', `bytes=${size - 1}-`, `bytes ${size - 1}-${size - 1}/${size}`]]) {
+    const r = await dl({ range });
+    record(`Range edge: ${label} is ${want === 416 ? '416 bytes */size, empty' : `206 ${want}`}`, want === 416
+      ? r.status === 416 && r.h.get('content-range') === `bytes */${size}` && r.body.length === 0
+      : r.status === 206 && r.h.get('content-range') === want && r.body.equals(body.subarray(Number(/ (\d+)-/.exec(want)[1]))),
+    `${range.slice(0, 24)}: ${seen(r)}, Content-Range ${r.h.get('content-range')}`);
+  }
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 
@@ -748,7 +762,7 @@ try {
 // otherwise prints "N/N checks passed" and exits 0. Measured: filtering one
 // data array to empty in desktop-dead-token-owner removed six checks and the
 // run said "37/37 checks passed".
-const EXPECTED_CHECKS = 62;
+const EXPECTED_CHECKS = 68;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
   process.exit(1);
