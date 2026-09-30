@@ -74,6 +74,7 @@ import { pbkdf2Sync, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createServer } from 'node:net';
 import { waitForOwnServer } from './ownserver.mjs';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
@@ -808,9 +809,28 @@ for (const [label, doc, expectMsg] of [
   const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-bodies-'));
   const PW = 'Sup3rSecret!23', salt = randomBytes(16);
   const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [{ id: 'u_k', username: 'kate', email: 'kate@example.test',
-    passwordHash: `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`, isVerified: true, verificationCode: '', verificationCodeExpires: 0 }] }));
-  const child = spawnHostedServer(userData, port, { TRUST_PROXY: 'true' });
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_k', username: 'kate', email: 'kate@example.test', passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 },
+    { id: 'u_p', username: 'pend', email: 'pend@example.test', passwordHash: hash, isVerified: false, verificationCode: '123456', verificationCodeExpires: Date.now() + 6e5 }] }));
+  // Accept-all SMTP on an ephemeral port: without it every sent mail is a 500 by design, which would
+  // hide a junk-field 500 among them. Counted, so the fixture can show mail really went out.
+  let mails = 0;
+  const smtp = createServer((sock) => {
+    let inData = false;
+    sock.write('220 t ESMTP\r\n');
+    sock.on('data', (c) => { for (const l of c.toString().split(/\r?\n/)) {
+      if (!l) continue;
+      if (inData) { if (l === '.') { inData = false; mails++; sock.write('250 Ok\r\n'); } continue; }
+      const v = l.split(' ')[0].toUpperCase();
+      if (v === 'DATA') inData = true;
+      sock.write(v === 'EHLO' || v === 'HELO' ? '250-t\r\n250 AUTH PLAIN LOGIN\r\n' : v === 'AUTH' ? '235 Ok\r\n' : v === 'DATA' ? '354 Go\r\n' : v === 'QUIT' ? '221 Bye\r\n' : '250 Ok\r\n');
+    } });
+    sock.on('error', () => {});
+  });
+  await new Promise((r) => smtp.listen(0, '127.0.0.1', r));
+  const child = spawnHostedServer(userData, port, { TRUST_PROXY: 'true', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtp.address().port),
+    SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'dbshape@example.invalid', FEEDBACK_INBOX: 'inbox@example.invalid' });
   let ip = 0;
   const raw = (method, route, type, body, token) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method, body,
     headers: { 'content-type': type, 'x-forwarded-for': `10.${(++ip >> 8) & 255}.${ip & 255}.1`, ...(token ? { authorization: `Bearer ${token}` } : {}) } })
@@ -851,11 +871,33 @@ for (const [label, doc, expectMsg] of [
       bad.length === 0 && stored.every(shapeOk), bad.slice(0, 4).join('; ') || `${stored.length} stored game(s) clean`);
     record('hostile bodies: FIXTURE, the saves really ran (>= 150 POST and PATCH answered 200, not 401/429)',
       ok.POST >= 150 && ok.PATCH >= 150, JSON.stringify(ok));
+    // Auth and feedback fields, each mistyped on an otherwise valid body.
+    const fb = await call('POST', 'feedback', { message: 'hello there', email: 'kate@example.test' });
+    record('hostile bodies: CONTROL, a well-formed feedback is mailed (200 and the stub got it)', fb.status === 200 && mails === 1, `${fb.status}, ${mails} mail(s)`);
+    const valid = {
+      'auth/register': { username: 'newbie', email: 'new@example.test', password: 'Abcdefgh1' },
+      'auth/verify': { email: 'pend@example.test', code: '123456', password: 'Abcdefgh1', username: 'pend' },
+      'auth/login': { email: 'kate', password: PW },
+      'auth/forgot-password': { email: 'kate@example.test' },
+      'auth/reset-password': { email: 'kate@example.test', code: '123456', newPassword: 'Abcdefgh2' },
+      'auth/delete-confirm': { code: '123456' },
+      feedback: { message: 'hello there', email: 'kate@example.test', rating: 4 },
+    };
+    const junk2 = [5, true, [], ['Abcdefgh1'], {}, { toString: 'x' }, [5], 1e308, 'x'.repeat(5000)]; // 5000: past every field cap, under the 100 kb body limit
+    const auth = [];
+    let answered = 0;
+    for (const [r, body] of Object.entries(valid)) for (const f of Object.keys(body)) for (const v of junk2) {
+      const { status } = await call('POST', r, { ...body, [f]: v }, r === 'auth/delete-confirm' ? token : undefined);
+      if (status === 0 || status >= 500) auth.push(`${r} ${f}=${JSON.stringify(v).slice(0, 16)} -> ${status}`); else answered++;
+    }
+    record('hostile bodies: every mistyped auth or feedback field answers without a 5xx (mail configured, so a 500 is the field)',
+      auth.length === 0 && answered === Object.values(valid).flatMap(Object.keys).length * junk2.length, auth.slice(0, 4).join('; ') || `${answered} answered, ${mails} mail(s)`);
     record('hostile bodies: the server logged no TypeError', !/TypeError/.test(ready.log()), (ready.log().match(/.*TypeError.*/) ?? [''])[0].slice(0, 120));
   } catch (err) {
     record('hostile bodies: the hosted server boots', false, String(err));
   } finally {
     await stop(child);
+    smtp.close();
     rmSync(userData, { recursive: true, force: true });
   }
   port += 1;
