@@ -49,6 +49,11 @@ RUN npm ci --omit=dev
 # Copy built server and frontend from builder
 COPY --from=builder /app/dist/ ./dist/
 
+# Not root. node (uid 1000, from the base image) owns /app itself, where the no-bucket path writes db.json,
+# and nothing under it: dist/ and node_modules stay root's, so the server cannot rewrite what it serves.
+RUN chown node:node /app
+USER node
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || '3000') + '/api/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"

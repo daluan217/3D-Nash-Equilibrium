@@ -101,6 +101,13 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   for (const p of ext) { assert(p in deps, `server.ts requires ${p}, which is not in package.json dependencies: the image's \`npm ci --omit=dev\` never installs it`); n++; }
   const df = read('Dockerfile'), runtime = df.slice(df.lastIndexOf('\nFROM '));
   assert(/^RUN npm ci --omit=dev$/m.test(runtime) && /^CMD \["node", "dist\/server\.cjs"\]$/m.test(runtime), 'Dockerfile: the runtime stage no longer installs with `npm ci --omit=dev` and runs dist/server.cjs'); n++;
+  // Not root (cloud sweep 6): the last USER wins. It owns the WORKDIR (the no-bucket server's db.json folder) and
+  // nothing inside it, so the process cannot rewrite the dist/ it serves.
+  const users = [...runtime.matchAll(/^USER[ \t]+(\S+)[ \t]*$/gm)].map((m) => m[1]), user = users.at(-1)?.split(':')[0];
+  const wd = [...runtime.matchAll(/^WORKDIR[ \t]+(\S+)[ \t]*$/gm)].at(-1)?.[1];
+  assert(user && !['root', '0'].includes(user), `Dockerfile: the runtime stage runs as root (USER ${users.at(-1) ?? 'never set'})`); n++;
+  assert(wd && runtime.split('\n').includes(`RUN chown ${user}:${user} ${wd}`), `Dockerfile: ${user} does not own ${wd}, where the no-bucket server writes db.json`); n++;
+  assert(!/--chown|chown[ \t]+-/.test(runtime), 'Dockerfile: the runtime stage hands files under the WORKDIR to the server user, not just the folder'); n++;
 }
 
 // ── the desktop package leaves the siblings out, judged by electron-builder's own matcher (last match wins)
