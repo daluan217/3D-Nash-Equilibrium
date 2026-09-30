@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { assignShards } from './selection.js';
+import { assignShards, parseSections } from './selection.js';
 
 // The three sections that call launchWebkitOrSkip in smoke.mjs (CodeRabbit
 // outside-diff on #166). Kept as an explicit list — not re-derived by
@@ -34,10 +34,7 @@ const here = dirname(fileURLToPath(import.meta.url));
  *   argument.
  */
 export function shardsNeedingWebkit(smokeSource = readFileSync(join(here, 'smoke.mjs'), 'utf8')) {
-  const definitions = [...smokeSource.matchAll(
-    /section\('([^']+)',\s*'([^']+)',\s*async\s*\(\)\s*=>/g,
-  )].map((match) => ({ id: match[1], name: match[2] }));
-  const { definitions: assigned } = assignShards(definitions);
+  const { definitions: assigned } = assignShards(parseSections(smokeSource));
   const shards = new Set();
   for (const id of WEBKIT_SECTION_IDS) {
     const definition = assigned.find((d) => d.id === id);

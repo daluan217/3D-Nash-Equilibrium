@@ -13,7 +13,7 @@ import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
-import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './e2e/selection.js';
+import { parseSections, selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './e2e/selection.js';
 import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
 import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
 import { isAnalyticsNoise } from './e2e/console-noise.mjs';
@@ -35,9 +35,7 @@ function workflowJob(name: string): string {
   return workflow.slice(start, end);
 }
 
-const definitions: { id: string; name: string; shard?: number }[] = [...smoke.matchAll(
-  /section\('([^']+)',\s*'([^']+)',\s*async\s*\(\)\s*=>/g,
-)].map((match) => ({ id: match[1], name: match[2] }));
+const definitions: { id: string; name: string; shard?: number }[] = parseSections(smoke);
 assert(!/section\('[^']+',\s*'[^']*',\s*\d+,\s*async/.test(smoke),
   'sections no longer name a shard by hand — selection.js packs them from shard-timings.json');
 
@@ -51,6 +49,10 @@ const sectionCalls = (smoke.match(/^\s*section\('/gm) || []).length;
 assert.strictEqual(definitions.length, sectionCalls,
   `${sectionCalls} section() calls but only ${definitions.length} parsed — a section is written in a shape `
   + 'the enumerator cannot see (it must be `section(\'id\', \'name\', async () => ...)`), so it would never run in CI');
+// That parity covers every reader only if there is one parser: the timings refresh once had its own, looser one (sweep 1).
+const censusCopies = execFileSync('git', ['grep', '-lF', String.raw`section\(` + String.raw`'([^']+)',\s*'`, '--', '*.js', '*.mjs', '*.cjs', '*.ts', '*.tsx', ':(exclude)_gen'], { encoding: 'utf8' })
+  .split('\n').filter(Boolean);
+assert.deepStrictEqual(censusCopies, ['src/e2e/selection.js'], 'one census of smoke.mjs sections, parseSections: every reader imports it');
 
 const expectedIds = [
   '1', '2', '3', '4', '5', '6', '6b', '7', '8', '9', '10', '11', '12',

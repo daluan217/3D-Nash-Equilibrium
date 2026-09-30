@@ -27,9 +27,8 @@ for (const job of jobs) {
 // The run must have reported EVERY section registered in smoke.mjs, and none over budget —
 // otherwise the table would be a mix of two suites (CodeRabbit on #157: a pre-split run
 // reporting 66 at 275 s next to a retained 66b) and packing it would exceed the job ceiling.
-const { validateTimings, assignShards, SHARD_COUNT } = await import('../src/e2e/selection.js');
-const smoke = readFileSync(new URL('../src/e2e/smoke.mjs', import.meta.url), 'utf8');
-const registered = [...smoke.matchAll(/section\('([^']+)',\s*'[^']*',\s*async/g)].map((m) => m[1]);
+const { validateTimings, assignShards, parseSections, SHARD_COUNT } = await import('../src/e2e/selection.js');
+const registered = parseSections(readFileSync(new URL('../src/e2e/smoke.mjs', import.meta.url), 'utf8')).map(({ id }) => id);
 const fresh = Object.fromEntries(Object.entries(next).filter(([k]) => k.startsWith('_')));
 for (const id of registered) if (typeof next[id] === 'number') fresh[id] = next[id];
 const registeredSet = new Set(registered);

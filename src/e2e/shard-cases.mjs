@@ -6,15 +6,14 @@
  */
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { selectSmokeSections, measuredMs, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './selection.js';
+import { parseSections, selectSmokeSections, measuredMs, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './selection.js';
 import { walkTags, scrollTags } from './tour-cases.mjs';
 
 const TOUR = { walk: [walkTags, 'TOUR_WALK_SHARD'], scroll: [scrollTags, 'TOUR_SCROLL_SHARD'] };
 
 export function shardCases(job, env, smoke = readFileSync(new URL('./smoke.mjs', import.meta.url), 'utf8')) {
   if (job === 'smoke') {
-    const definitions = [...smoke.matchAll(/section\('([^']+)',\s*'([^']+)',\s*async\s*\(\)\s*=>/g)].map((m) => ({ id: m[1], name: m[2] }));
-    return selectSmokeSections(definitions, env).selected.map(({ id }) => id);
+    return selectSmokeSections(parseSections(smoke), env).selected.map(({ id }) => id);
   }
   if (!TOUR[job]) throw new Error(`unknown job ${JSON.stringify(job)}: smoke, walk or scroll`);
   const [tags, key] = TOUR[job], raw = env[key] ?? '1/1', m = /^(\d+)\/(\d+)$/.exec(raw);

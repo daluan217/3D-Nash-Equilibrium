@@ -71,6 +71,11 @@ import { dirname, join } from 'node:path';
  */
 export const SHARD_COUNT = 35;
 
+// The one census of smoke.mjs's sections, read as TEXT (importing smoke.mjs boots the suite). e2esharding counts
+// section( calls without this pattern, so a shape it cannot see fails there by name, never silently unpacked.
+export const parseSections = (smokeSource) => [...smokeSource.matchAll(/section\('([^']+)',\s*'([^']+)',\s*async\s*\(\)\s*=>/g)]
+  .map((m) => ({ id: m[1], name: m[2] }));
+
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));
 export const SECTION_BUDGET_MS = SHARD_TIMINGS._ceiling_ms - SHARD_TIMINGS._overhead_ms;
