@@ -187,6 +187,29 @@ for (const [method, t] of [['GET', '/\\evil.example/%2e%2e/assets'], ['HEAD', '/
     assert(!r.body.includes(MARK), `GET ${t}: ${r.status} served a file outside dist/ or a dotfile: ${r.body.slice(0, 60)}`);
     hardened(`GET ${t}`, r, { hsts: true });
   }
+  // Seeded target fuzz (_gen/c22-target-fuzz.mjs, 7000 clean on the bundle): separators, dot segments, encodings
+  // and names glued at random; same seed every run, so a failure names a reproducible target. The planted
+  // dist/server.cjs stands in for the bundle: no spelling may serve it. The apex never redirects; www only to it.
+  fs.writeFileSync(path.join(tmp, 'dist/server.cjs'), `${MARK} dist/server.cjs\n`);
+  let seed = 22;
+  const rnd = (k: number) => Math.floor(((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32) * k);
+  const TOK = ['/', '/', '/', '\\', '%2f', '%5c', '%5C', '..', '.', '%2e', '%2e%2e', '.%2e', 'assets', 'assets', 'server.cjs', 'server%2ecjs', 'SERVER.CJS', '.env',
+    '%2eenv', 'package.json', '.git', 'HEAD', 'dist', 'evil.example', '@evil.example', '%00', '%', '%E0%A4%A', ';', '?x=//evil', '%23', '%3f', '%09', '%20', '~',
+    'index.html', 'app-AAAA1111.js', 'app-AAAA1111.js.br', 'favicon.ico'];
+  const seen = new Set<string>();
+  for (let k = 0; k < 700; k++) {
+    let t = '/'; for (let j = rnd(7); j >= 0; j--) t += TOK[rnd(TOK.length)];
+    const method = ['GET', 'GET', 'HEAD', 'OPTIONS'][rnd(4)], www = rnd(7) === 0, name = `fuzz #${k} ${method} ${t}${www ? ' (www)' : ''}`;
+    const r = await named(name, h(method, t, { ...GFE, ...(www ? { host: `www.${APEX}` } : {}), 'accept-encoding': 'br' }));
+    assert(r.status < 500, `${name}: ${r.status} ${r.body.slice(0, 80)}`);
+    const to = r.h.location === undefined ? undefined : new URL(r.h.location, `https://${APEX}/`).host;
+    assert(to === undefined || (www && to === APEX), `${name}: ${r.status} Location ${r.h.location} (host ${to}), want none from the apex and only the apex from www`);
+    assert(!r.body.includes(MARK), `${name}: ${r.status} served a file outside dist/, a dotfile or the bundle: ${r.body.slice(0, 60)}`);
+    hardened(name, r, { hsts: true });
+    seen.add(`${r.status}${www ? ' www' : ''}`);
+  }
+  // Fixture: the seed reaches the SPA, the asset 404, a malformed-target 400 and the www redirect.
+  assert(['200', '404', '400', '301 www'].every((s) => seen.has(s)), `fuzz fixture: answers seen ${[...seen]}`); n++;
 }
 
 // live-smoke section 3, the real script against the real server: every new row passes.
