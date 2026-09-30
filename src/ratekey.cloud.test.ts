@@ -63,6 +63,41 @@ assert.deepStrictEqual(readers.map(([, l]) => l.trim()), ['const ip = (req.ip ||
   `only rateKey may read the client address: ${JSON.stringify(readers)}`); n++;
 const calls = src.match(/rateLimit\(\s*"[^"]+"/g) ?? [];
 assert(calls.length >= 15, `expected every route limiter via rateLimit(), found ${calls.length}`); n++;
+// Per route (sweep 15: the count above let one route lose its limiter, or a login budget go to 10000, unseen):
+// each /api route's limiter as `label max scope`, before its handler; health is cheap and unlimited by design.
+const ROUTES: Record<string, string | null> = {
+  'get /api/admin/stats': 'admin 10 always', 'get /api/health': null, 'get /api/version': 'version 60 hosted-only',
+  'post /api/report': 'report 20 hosted-only', 'post /api/scenario/regenerate': 'report 20 hosted-only',
+  'post /api/feedback': 'feedback 10 always', 'get /api/download/dmg': 'dmg 10 always', 'post /api/auth/register': 'register 8 always',
+  'post /api/auth/verify': 'verify 12 always', 'post /api/auth/login': 'login 10 always', 'get /api/auth/me': 'me 60 always',
+  'post /api/auth/forgot-password': 'forgot 6 always', 'post /api/auth/reset-password': 'reset 8 always',
+  'post /api/auth/delete-request': 'delete-request 6 always', 'post /api/auth/delete-confirm': 'delete-confirm 8 always',
+  'get /api/auth/desktop-hint': 'desktop-hint 30 always', 'get /api/games': 'games-read 60 hosted-only',
+  'post /api/games': 'games-write 20 hosted-only', 'patch /api/games/:id': 'games-write 20 hosted-only',
+  'post /api/games/adopt-local': 'games-adopt 10 hosted-only', 'delete /api/games/:id': 'games-delete 30 hosted-only',
+};
+const routeLimits = (text: string) => Object.fromEntries([...text.matchAll(/\bapp\.(get|post|put|patch|delete|all|head|options)\(\s*"(\/api[^"]*)",([^\n]*)/g)].map(([, verb, p, rest]) => {
+  const lim = /^(.*?)\brateLimit\(\s*"([^"]+)",\s*([\d_]+),\s*[\d_]+(?:,\s*'([\w-]+)')?\)/.exec(rest);
+  return [`${verb} ${p}`, lim && !/\(req\b|asyncHandler\(/.test(lim[1]) ? `${lim[2]} ${Number(lim[3].replace(/_/g, ''))} ${lim[4] ?? 'always'}` : null];
+}));
+const verbs = (text: string) => (text.match(/\bapp\.(get|post|put|patch|delete|all|head|options|route)\(/g) ?? []).length;
+const routeFaults = (text: string) => [
+  ...(JSON.stringify(routeLimits(text)) === JSON.stringify(ROUTES) ? [] : [`limiters ${JSON.stringify(routeLimits(text))}`]),
+  // Every verb registration is an /api one above or one of the two SPA-side gets; a Router mounts routes unseen.
+  ...(verbs(text) === Object.keys(ROUTES).length + 2 && /app\.get\('\/assets\/:file'/.test(text) && /app\.get\('\*'/.test(text) ? [] : [`${verbs(text)} app.<verb>( calls`]),
+  // The five /api app.use( are gatekeepers (save guard, no-store, auth field types, store gate, the 404 catch-all).
+  ...((text.match(/\bapp\.use\(\s*\[?\s*['"]\/api/g) ?? []).length === 5 ? [] : ['an /api app.use( mount beyond the reviewed five']),
+  ...(/\bRouter\(|\bapp\[/.test(text) ? ['a Router or app[...] registration'] : [])];
+assert.deepStrictEqual(routeFaults(src), [], 'server.ts: a route\'s rate limit is not the reviewed one (a route added, unlimited, re-budgeted or re-scoped)'); n++;
+// The table's own reach: each of these edits to the real source must be seen.
+for (const [what, a, b] of [['limiter dropped', 'app.get("/api/auth/desktop-hint", rateLimit("desktop-hint", 30, 60_000), ', 'app.get("/api/auth/desktop-hint", '],
+  ['budget raised', 'rateLimit("login", 10, 60_000)', 'rateLimit("login", 10_000, 60_000)'], ['re-scoped', 'rateLimit("verify", 12, 60_000)', 'rateLimit("verify", 12, 60_000, \'hosted-only\')'],
+  ['limiter after the handler', 'rateLimit("me", 60, 60_000), (req, res) =>', '(req, res, next) => next(), rateLimit("me", 60, 60_000), (req, res) =>'],
+  ['route added', 'app.get("/api/health", ', 'app.get("/api/x", (q, s) => s.end()); app.get("/api/health", '],
+  ['path by variable', 'app.get("/api/health", ', 'app.get(P, (q, s) => s.end()); app.get("/api/health", '], ['router', 'app.get("/api/health", ', 'app.use(express.Router()); app.get("/api/health", '],
+  ['use-mounted handler', 'app.get("/api/health", ', 'app.use("/api/y", (q, s) => s.end()); app.get("/api/health", ']] as const) {
+  assert(src.includes(a) && routeFaults(src.replace(a, b)).length > 0, `ratekey route table: "${what}" in server.ts passed it`); n++;
+}
 
 // Retry-After (director audit s16: "always 1" and "+60" both passed the old 1..60 range check). The limiter
 // runs from source on a controlled clock: a 429 names ceil(remaining), a retry 1 s sooner is still
