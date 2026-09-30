@@ -535,6 +535,9 @@ assert.match(workflow, /- name: Exercise section 47 after natural simulation com
   const on24 = definitions.filter((d) => d.shard === 24).reduce((sum, d) => sum + measuredMs(d.id), 0);
   assert.strictEqual(totals[23], on24 + measuredMs('47'), 'shard 24 packs its sections plus the extra §47 step it runs');
 }
+// The ceiling is the brief's decision (TASK-18: 420 s); the budget under it follows the measured overhead. Sweep 4: with
+// only the budget pinned before F6, dropping that pin let a 440 s ceiling pass every check.
+assert.strictEqual(SHARD_TIMINGS._ceiling_ms, 420000, 'the smoke job ceiling is 420 s (TASK-18); raising it is a decision, not a refresh');
 const HEADROOM_MS = 0.9 * SECTION_BUDGET_MS;
 const shardMembers = new Map<number, string[]>();
 for (const { id, shard } of definitions) {
@@ -683,7 +686,7 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   assert.deepStrictEqual([cli24(120000), cli24(120001)], [0, 1], 'the shard-cases.mjs CLI reads the extra step logs it is given');
   symlinkSync(join(process.cwd(), 'scripts/shard-timings-from-run.mjs'), join(dir, 'refresh.mjs'));
   for (const script of ['scripts/shard-timings-from-run.mjs', join(dir, 'refresh.mjs')])
-    assert.match(`${run(script, []).status} ${run(script, []).stderr}`, /^2 usage: shard-timings-from-run\.mjs/, `the refresh CLI (${script}) runs and exits 2 with no run ids`);
+    assert.match(((r) => `${r.status} ${r.stderr}`)(run(script, [])), /^2 usage: shard-timings-from-run\.mjs/, `the refresh CLI (${script}) runs and exits 2 with no run ids`);
   for (const script of ['src/e2e/webkit-shards.mjs', link('webkit-shards.mjs')])
     assert.strictEqual(run(script, []).stdout, `${shardsNeedingWebkit().join('\n')}\n`, `the webkit-shards.mjs CLI (${script}) prints the shards that need WebKit`);
   // Importing either module from stdin (argv[1] '-', no such file) must not throw: only a run as the entry is a CLI.
