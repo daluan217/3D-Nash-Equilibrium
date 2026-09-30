@@ -11,6 +11,7 @@
  * the bank fallback), M58 (trust every X-Forwarded-For hop), M59 (proxy not
  * trusted: every client shares one bucket), M64 (IPv6 keyed per address), M65 (IPv4-mapped
  * keyed as an IPv6 /56) each fail a check below. S23-1 (gone-before-handler listener) fails the gzip hang-up check.
+ * Sweep 22: M7 (payoff cell type check dropped) and M9 (cleanText coerces non-strings) fail the mistyped-field check.
  *
  *   node src/integration/report-provider-faults.test.mjs
  */
@@ -143,9 +144,27 @@ try {
     v6spoof.slice(0, 20).every((s) => s === 400) && v6spoof[20] === 429 && mapped.every((s) => s === 400) && mappedOther === 400,
     `spoof=${v6spoof.join(',')} mapped=${mapped.join(',')} mappedOther=${mappedOther}`);
   record('CONTROL: an answering provider is fast (the fault timings are the faults, not the harness)', ok.ms < 5000, `ok ${ok.ms}ms`);
+  // Sweep 22 (empty probe checked in): every report field mistyped, answering provider. A mistyped matrix
+  // is a 400; anything else is a whole 200 report, never a 5xx. One client address per request (the last
+  // hop, TRUST_PROXY=1) keeps the limiter out of it; the 200/400 counts prove the handler really ran.
+  mode = 'ok';
+  const P = games[0], S = { name: 'Price war', row1: 'Hold', row2: 'Cut', col1: 'Hold', col2: 'Cut', description: 'Two firms.' };
+  const junk = [null, 5, true, [], ['x'], {}, { toString: 'x' }, { valueOf: 1 }, 'x'.repeat(5000), -0, 1e308, [[1]]];
+  const cases = junk.flatMap((v) => [['payoffs', { payoffs: v, scenario: S }], ['scenario', { payoffs: P, scenario: v }], ['scenarioOnly', { payoffs: P, scenarioOnly: v }],
+    ...Object.keys(S).map((k) => [`scenario.${k}`, { payoffs: P, scenario: { ...S, [k]: v } }]), ...Object.keys(P).map((k) => [`payoffs.${k}`, { payoffs: { ...P, [k]: v }, scenario: S }])]);
+  const typed = { 200: 0, 400: 0 }, broken = []; // 84 = 12 whole matrices + 8 cells x 9 non-numbers (5, -0, 1e308 clamp)
+  for (const [i, [field, body]] of cases.entries()) {
+    const r = await fetch(`${BASE}/api/report`, { method: 'POST', body: JSON.stringify(body), signal: AbortSignal.timeout(30000),
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': `198.18.${i >> 8}.${i & 255}` } }).catch(() => null);
+    const b = await r?.json().catch(() => null);
+    if (r?.status in typed && (r.status === 400 || b?.report || b?.scenario !== undefined)) typed[r.status]++;
+    else broken.push(`${field}=${JSON.stringify(body[field.split('.')[0]])?.slice(0, 20)} -> ${r?.status ?? 'no answer'}`);
+  }
+  record('THE DEFECT: a mistyped report field answers a 400 or a whole report, never a 5xx or a TypeError',
+    broken.length === 0 && typed[200] === 120 && typed[400] === 84 && !/TypeError/.test(log), broken.slice(0, 4).join('; ') || JSON.stringify(typed));
 } finally {
   await stop(child); await new Promise((r) => stub.close(r)); rmSync(cwd, { recursive: true, force: true });
 }
 const failed = results.filter((r) => !r.pass);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-if (failed.length || results.length !== 10) process.exit(1);
+if (failed.length || results.length !== 11) process.exit(1);
