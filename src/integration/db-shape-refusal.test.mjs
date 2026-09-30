@@ -903,7 +903,26 @@ for (const [label, doc, expectMsg] of [
     }
     record('hostile bodies: every mistyped auth or feedback field answers without a 5xx (mail configured, so a 500 is the field)',
       auth.length === 0 && answered === Object.values(valid).flatMap(Object.keys).length * junk2.length, auth.slice(0, 4).join('; ') || `${answered} answered, ${mails} mail(s)`);
+    // ~100 kB of nesting or width in one field (sweep 5): JSON.parse takes any depth, but a recursive walk
+    // (stringify, structuredClone, a deep cleaner) of req.body overflows the stack. Raw text: this test's own
+    // JSON.stringify would overflow on the value too. Mutant `JSON.stringify(req.body)` in a route fails here.
+    const DEEP = { '49000-deep array': '['.repeat(49000) + ']'.repeat(49000), '16000-deep object': '{"a":'.repeat(16000) + '1' + '}'.repeat(16000),
+      '9000-key object': `{${Array.from({ length: 9000 }, (_, i) => `"k${i}":1`).join(',')}}` };
+    const withRaw = (body, f, text) => JSON.stringify({ ...body, [f]: '\u0001' }).replace('"\\u0001"', text);
+    const deepBodies = [...Object.entries(valid).flatMap(([r, b]) => Object.keys(b).map((f) => ['POST', r, b, f])),
+      ...['name', 'description', 'payoffs', 'row1Label', 'colorTermsA', 'clientRequestId'].map((f) => ['POST', 'games', { name: 'n', payoffs: P }, f]),
+      ...['name', 'description', 'row1Label', 'colorTermsA', 'colorTermsB', 'allowClear'].map((f) => ['PATCH', `games/${base}`, { name: 'n2' }, f]),
+      ...['payoffs', 'scenario', 'scenarioOnly'].map((f) => ['POST', 'report', { payoffs: P }, f])];
+    const deepOff = [], deepSeen = new Set();
+    for (const [m, r, b, f] of deepBodies) for (const [dn, text] of Object.entries(DEEP)) {
+      const { status } = await raw(m, r, 'application/json', withRaw(b, f, text), /^(games|auth\/delete)/.test(r) ? token : undefined);
+      deepSeen.add(status);
+      if (status === 0 || status >= 500) deepOff.push(`${m} ${r.slice(0, 20)} ${f}=${dn} -> ${status}`);
+    }
+    record('hostile bodies: a ~100 kB nested or wide value in any field answers without a 5xx (FIXTURE: both 200 and 400 seen)',
+      deepOff.length === 0 && deepSeen.has(200) && deepSeen.has(400), deepOff.slice(0, 4).join('; ') || `${deepBodies.length * 3} answered: ${[...deepSeen]}`);
     record('hostile bodies: the server logged no TypeError', !/TypeError/.test(ready.log()), (ready.log().match(/.*TypeError.*/) ?? [''])[0].slice(0, 120));
+    record('hostile bodies: the server logged no RangeError (stack overflow)', !/RangeError/.test(ready.log()), (ready.log().match(/.*RangeError.*/) ?? [''])[0].slice(0, 120));
   } catch (err) {
     record('hostile bodies: the hosted server boots', false, String(err));
   } finally {
