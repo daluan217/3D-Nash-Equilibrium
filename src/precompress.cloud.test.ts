@@ -70,9 +70,39 @@ const at = (re: RegExp) => steps.findIndex((s) => re.test(s));
 assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1 && at(/^esbuild server\.ts\b/) === 2,
   `package.json build must run \`vite build && node scripts/precompress.mjs && esbuild ...\`: ${pkg.scripts.build}`); n++;
 
+// ── the Dockerfile as buildkit reads it (moby/buildkit parser.go): a comment line (`#` after blanks) is dropped and
+// never continues (review 3: `# c \` then `USER root` ran as root past a plain `\`-newline join); `\` + blanks joins
+// the next line, skipping comment and blank lines inside it; `\\` does not continue. A heredoc is refused below, not modelled.
+const dockerLines = (text: string) => {
+  const raw = text.split('\n').map((l) => l.replace(/\r+$/, '')), lines: string[] = [];
+  let cur: string | undefined;
+  for (const l of raw) {
+    if (/^[ \t]*(#|$)/.test(l)) continue;
+    const body = l.replace(/(^|[^\\])\\[ \t]*$/, '$1');
+    cur = (cur ?? '') + body;
+    if (body === l) { lines.push(cur); cur = undefined; }
+  }
+  if (cur !== undefined) lines.push(cur);
+  // Canonical spelling, or every line-anchored Dockerfile guard (here, cloudbuild.contract's) reads the wrong file:
+  // docker takes `from`/`user`/`copy` in any case, indented; a `# syntax=` frontend re-parses the whole file (buildkit
+  // strips unicode blanks after `#`); heredoc bodies read as instructions here and are not.
+  const offForm = [...raw.filter((l) => /^[ \t]*#[\s\u0085]*(syntax|escape|check)\s*=/i.test(l)),
+    ...lines.filter((l) => !/^[A-Z]+ \S/.test(l) || l.includes('<<'))];
+  return { lines, offForm };
+};
+// The reader itself, on review 3's shapes (the real Dockerfile has none of them, so it alone cannot pin the reader).
+assert.deepStrictEqual(dockerLines('USER node\n# ignored comment \\\nUSER root\n').lines, ['USER node', 'USER root'], 'Dockerfile reader: a comment ending in `\\` continued into the next instruction'); n++;
+assert.deepStrictEqual(dockerLines('RUN a \\\\\nUSER root').lines, ['RUN a \\\\', 'USER root'], 'Dockerfile reader: an escaped `\\\\` continued the line'); n++;
+assert.deepStrictEqual(dockerLines('RUN a \\ \t\r\n  # c\n\n  b\n  # indented comment\nUSER x').lines, ['RUN a   b', 'USER x'], 'Dockerfile reader: `\\` + blanks, or a comment/blank inside a continuation, split the instruction'); n++;
+assert.deepStrictEqual(dockerLines('  # indented comment\nUSER x').offForm, [], 'Dockerfile reader: an indented comment read as an instruction'); n++;
+for (const bad of ['#\u00a0escape=`\nUSER x', '  #check = skip=all\nUSER x', '#!/bin/x\n# syntax=a/b\nUSER x', 'RUN cat <<"# end"\nUSER x\n# end']) {
+  assert(dockerLines(bad).offForm.length > 0, `Dockerfile reader: ${JSON.stringify(bad)} (directive or heredoc) read as canonical`); n++;
+}
+const { lines: dfLines, offForm } = dockerLines(read('Dockerfile'));
+
 // ── the Dockerfile's builder stage copies every script the build line runs (else the image build dies on it)
 {
-  const df = read('Dockerfile');
+  const df = dfLines.join('\n');
   const builder = df.slice(0, df.indexOf('RUN npm run build'));
   assert(builder.length > 0 && /^WORKDIR \/app$/m.test(builder), 'Dockerfile: the builder stage (WORKDIR /app .. RUN npm run build) is gone');
   const copies = [...builder.matchAll(/^COPY (?!--from)(\S+) (\S+)\s*$/gm)].map((m) => [m[1], m[2]]);
@@ -99,12 +129,8 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   assert(ext.has('express') && ext.has('@google-cloud/storage'), `fixture: the server's externals were not read (${[...ext]})`);
   const deps = JSON.parse(read('package.json')).dependencies ?? {};
   for (const p of ext) { assert(p in deps, `server.ts requires ${p}, which is not in package.json dependencies: the image's \`npm ci --omit=dev\` never installs it`); n++; }
-  // Logical lines, as docker reads them: a `\` joins the next line into the same instruction.
-  const df = read('Dockerfile').replace(/\\\r?\n/g, ' '), lines = df.split('\n');
-  // Canonical spelling, or every line-anchored Dockerfile guard (here, cloudbuild.contract's) reads the wrong file:
-  // docker takes `from`/`user`/`copy` in any case, indented, and a `# syntax=` frontend re-parses the whole file.
-  const offForm = lines.filter((l) => l.trim() && !/^#(?![ \t]*(syntax|escape|check)[ \t]*=)/i.test(l) && !/^[A-Z]+ \S/.test(l));
-  assert(offForm.length === 0, `Dockerfile: instructions the static guards cannot read (want upper case at column 0, no parser directive): ${offForm.join(' | ')}`); n++;
+  const lines = dfLines, df = lines.join('\n');
+  assert(offForm.length === 0, `Dockerfile: instructions the static guards cannot read (want upper case at column 0, no parser directive, no heredoc): ${offForm.join(' | ')}`); n++;
   const runtime = df.slice(df.lastIndexOf('\nFROM '));
   // Named sources only (cloudbuild.contract's whole-context check reads one spelling: ADD, `[".", "./"]`, `*` passed).
   const wide = lines.filter((l) => /^(ADD|COPY) /.test(l) && !/^COPY --from=/.test(l)
@@ -121,7 +147,7 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   const user = [...runtime.matchAll(/^[ \t]*USER[ \t]+(.*?)[ \t]*$/gim)].at(-1)?.[1];
   const wd = [...runtime.matchAll(/^[ \t]*WORKDIR[ \t]+(\S+)[ \t]*$/gim)].at(-1)?.[1];
   assert(user === 'node', `Dockerfile: the runtime stage runs as root or an unknown user (USER ${user ?? 'never set'}), want node`); n++;
-  const rt = runtime.split('\n'), chowns = rt.filter((l) => /^[ \t]*[^#\s].*ch(own|mod)/i.test(l));
+  const rt = runtime.split('\n'), chowns = rt.filter((l) => /ch(own|mod)/i.test(l));
   assert(chowns.includes(`RUN chown node:node ${wd}`), `Dockerfile: node does not own ${wd}, where the no-bucket server writes db.json`); n++;
   assert(chowns.length === 1, `Dockerfile: the runtime stage chowns or chmods more than the folder the server writes to: ${chowns.join(' | ')}`); n++;
   // A RUN after USER node leaves node owning what it creates (npm ci there = writable dependencies).
