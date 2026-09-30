@@ -132,6 +132,11 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   assert(low.length === 0, `cloudbuild.yaml: --port ${low.join(', ')}, which USER node cannot bind`); n++;
   const lastAt = (re: RegExp) => rt.map((l) => re.test(l)).lastIndexOf(true);
   assert(lastAt(/^RUN /) < lastAt(/^USER /), 'Dockerfile: a RUN after USER node, so node owns what it creates'); n++;
+  // The backstop (sweep 9: `FROM builder`, inheriting source + devDependencies, passed every check above): the
+  // runtime stage is exactly the reviewed one. The named checks above say why; changing the image means editing this.
+  const REVIEWED = ['FROM node:22-alpine', 'WORKDIR /app', 'ENV NODE_ENV=production', 'COPY package*.json ./', 'RUN npm ci --omit=dev',
+    'COPY --from=builder /app/dist/ ./dist/', 'RUN chown node:node /app', 'USER node', 'HEALTHCHECK', 'EXPOSE 3000', 'CMD ["node", "dist/server.cjs"]'];
+  assert.deepStrictEqual(rt.filter((l) => /^[A-Z]/.test(l)).map((l) => l.replace(/^HEALTHCHECK .*/, 'HEALTHCHECK')), REVIEWED, 'Dockerfile: the runtime stage is not the reviewed one'); n++;
 }
 
 // ── the desktop package leaves the siblings out, judged by electron-builder's own matcher (last match wins)
