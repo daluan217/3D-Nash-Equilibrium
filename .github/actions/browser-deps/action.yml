@@ -1,28 +1,50 @@
-name: Browser system packages from the Actions cache
+name: Browser system packages and builds from the Actions cache
 description: >-
-  Points apt at /var/cache/pw-apt and restores the .debs that `playwright install --with-deps` installs into it, so a
-  slow runner apt mirror is not on a browser job's clock. TASK-18 sweeps 6, 7, 9 and 10: package fetches of 64-252 kB/s
-  made 225-784 s installs that tripped the 420 s smoke wall check and cancelled tour jobs at their timeouts; apt's own
-  index fetch stayed fast. The browser_deps job in test.yml fills this cache; every other job only restores it.
+  Points apt at /var/cache/pw-apt and restores the .debs that `playwright install --with-deps` installs into it, then
+  the Playwright browser builds themselves, so neither a slow runner apt mirror nor a slow Playwright CDN is on a
+  browser job's clock. TASK-18 sweeps 6, 7, 9 and 10: package fetches of 64-252 kB/s made 225-784 s installs that
+  tripped the 420 s smoke wall check and cancelled tour jobs at their timeouts; apt's own index fetch stayed fast.
+  Sweep 14 (CI 36784197311): with the packages cached, the CDN served Chrome for Testing's 177 MiB in 215 s on smoke 22
+  (486 s wall). The browser_deps job in test.yml fills these caches; every other job only restores them.
+inputs:
+  browsers:
+    description: The engines this job installs (chromium, or chromium webkit); WebKit's build restores only when named
+    default: chromium
+  lookup-only:
+    description: "'true' checks the browser build caches without downloading them (browser_deps, which only fills)"
+    default: 'false'
 outputs:
   cache-hit:
-    description: "'true' when the exact key restored"
+    description: "'true' when the system packages' exact key restored"
     value: ${{ steps.restore.outputs.cache-hit }}
   key:
-    description: The cache key (runner image and Playwright version)
+    description: The system packages' cache key (runner image and Playwright version)
     value: ${{ steps.key.outputs.key }}
+  chromium-hit:
+    description: "'true' when the chromium build (with its headless shell and ffmpeg) is cached"
+    value: ${{ steps.chromium.outputs.cache-hit }}
+  chromium-key:
+    value: ${{ steps.key.outputs.chromium }}
+  webkit-hit:
+    description: "'true' when the WebKit build is cached"
+    value: ${{ steps.webkit.outputs.cache-hit }}
+  webkit-key:
+    value: ${{ steps.key.outputs.webkit }}
 runs:
   using: composite
   steps:
     - id: key
       shell: bash
       # The debs a runner needs follow its image and the Playwright version that picks them. The image version is last,
-      # so restore-keys falls back to the same image OS and Playwright during a runner image rollout.
+      # so restore-keys falls back to the same image OS and Playwright during a runner image rollout. A browser build
+      # follows the Playwright version alone (its directory names carry the revision that version pins).
       run: |
         v=$(jq -r '.packages["node_modules/playwright-core"].version // empty' package-lock.json)
         if [ -z "$v" ]; then echo "::error::package-lock.json names no playwright-core version to key the browser deps cache on"; exit 1; fi
         echo "prefix=pw-apt-$ImageOS-playwright-$v-" >> "$GITHUB_OUTPUT"
         echo "key=pw-apt-$ImageOS-playwright-$v-$ImageVersion" >> "$GITHUB_OUTPUT"
+        echo "chromium=pw-build-$ImageOS-chromium-playwright-$v" >> "$GITHUB_OUTPUT"
+        echo "webkit=pw-build-$ImageOS-webkit-playwright-$v" >> "$GITHUB_OUTPUT"
 
     - name: Point apt at the cached archive
       shell: bash
@@ -49,3 +71,21 @@ runs:
         path: /var/cache/pw-apt/*.deb
         key: ${{ steps.key.outputs.key }}
         restore-keys: ${{ steps.key.outputs.prefix }}
+
+    # `playwright install` skips a build whose directory is already complete, so a restored build downloads nothing.
+    - id: chromium
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cache/ms-playwright/chromium*
+          ~/.cache/ms-playwright/ffmpeg-*
+        key: ${{ steps.key.outputs.chromium }}
+        lookup-only: ${{ inputs.lookup-only }}
+
+    - id: webkit
+      if: contains(inputs.browsers, 'webkit')
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/ms-playwright/webkit-*
+        key: ${{ steps.key.outputs.webkit }}
+        lookup-only: ${{ inputs.lookup-only }}

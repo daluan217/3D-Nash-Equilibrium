@@ -951,15 +951,21 @@ for (const job of [
 }
 
 // TASK-18 sweeps 6, 7, 9, 10: a 64-252 kB/s runner apt mirror put `playwright install --with-deps` at 225-784 s, over the
-// 420 s smoke wall and the tour timeouts, on shards whose sections fit (CI 36759762921 attempt 1, 36769717770). The
-// browser_deps job fills one cache of every browser job's system packages before their clocks start
-// (.github/actions/browser-deps); every ubuntu job that installs with deps needs it and restores first, and only it saves.
+// 420 s smoke wall and the tour timeouts, on shards whose sections fit (CI 36759762921 attempt 1, 36769717770). Sweep 14
+// (CI 36784197311): the Playwright CDN then served chromium at 0.8 MB/s, 215 s on smoke 22. The browser_deps job fills
+// one cache of every browser job's system packages and one per browser build before their clocks start
+// (.github/actions/browser-deps); every ubuntu job that installs with deps needs it and restores first what it installs,
+// and only browser_deps saves.
 const browserDepsAction = readFileSync('.github/actions/browser-deps/action.yml', 'utf8');
 function browserDepsProblems(wf: string, action: string): string[] {
   const jobs = new Map(wf.slice(wf.indexOf('\njobs:\n')).split(/^  (?=[a-z0-9_-]+:\s*$)/m).slice(1)
     .map((body) => [body.slice(0, body.indexOf(':')), body] as [string, string]));
-  const problems: string[] = [], restore = '- name: Restore the browser system packages', uses = 'uses: ./.github/actions/browser-deps';
-  const archive = action.match(/Dir::Cache::Archives "([^"]+)\/";/)?.[1], path = action.match(/uses: actions\/cache\/restore@v4\n\s+with:[\s\S]*?\n\s+path: (\S+)\n/)?.[1];
+  const problems: string[] = [], restore = '- name: Restore the browser system packages and builds', uses = 'uses: ./.github/actions/browser-deps';
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  // A cache step's path, verbatim (one line or a `|` block), so a save and its restore must name the same files.
+  const pathOf = (step: string) => step.match(/\n( +)path: \|\n((?:\1 +\S[^\n]*\n)+)/)?.[2].replace(/^ +/gm, '') ?? step.match(/\n\s+path: (\S[^\n]*)\n/)?.[1];
+  const actionStep = (id: string) => action.split(/^    - /m).find((st) => st.startsWith(`id: ${id}\n`)) ?? '';
+  const archive = action.match(/Dir::Cache::Archives "([^"]+)\/";/)?.[1], path = pathOf(actionStep('restore'));
   if (!archive || path !== `${archive}/*.deb`) problems.push(`the action restores ${path}, not the .debs of the archive apt writes (${archive}); apt's lock and partial/ are unreadable to the save`);
   // Sweep 11 (CI 36774742769): 27 of 48 jobs upgraded glib/xvfb/libxml2 the filling runner already had at newest.
   if (!/'APT::Get::Upgrade "false";'/.test(action)) problems.push('apt must not upgrade what the image ships (APT::Get::Upgrade "false"): those upgrades are never cached');
@@ -968,43 +974,73 @@ function browserDepsProblems(wf: string, action: string): string[] {
     problems.push('dpkg must skip its per-file fsync (force-unsafe-io): a slow runner disk otherwise puts the unpack on the job clock');
   if (!/jq -r '\.packages\["node_modules\/playwright-core"\]\.version \/\/ empty' package-lock\.json/.test(action) || !/key=pw-apt-\$ImageOS-playwright-\$v-\$ImageVersion"/.test(action))
     problems.push('the cache key must follow the runner image and the locked playwright-core version');
+  // The builds: chromium (with its headless shell and ffmpeg) always, WebKit only for a job that names it.
+  const builds = { chromium: '~/.cache/ms-playwright/chromium*\n~/.cache/ms-playwright/ffmpeg-*\n', webkit: '~/.cache/ms-playwright/webkit-*' } as const;
+  for (const [engine, want] of Object.entries(builds)) {
+    const step = actionStep(engine);
+    if (!/uses: actions\/cache\/restore@v4\n/.test(step) || pathOf(step) !== want) problems.push(`the action must restore the ${engine} build (${JSON.stringify(want)}), got ${JSON.stringify(pathOf(step))}`);
+    if (!step.includes(`key: \${{ steps.key.outputs.${engine} }}`) || !new RegExp(`echo "${engine}=pw-build-\\$ImageOS-${engine}-playwright-\\$v" >> "\\$GITHUB_OUTPUT"`).test(action))
+      problems.push(`the ${engine} build's cache key must follow the locked playwright-core version`);
+    if (!step.includes('lookup-only: ${{ inputs.lookup-only }}')) problems.push(`the ${engine} build restore must honour lookup-only (browser_deps only fills)`);
+  }
+  if (!/^if: contains\(inputs\.browsers, 'webkit'\)\n/m.test(actionStep('webkit').split('\n').slice(1).join('\n').replace(/^\s+/gm, '')))
+    problems.push('the WebKit build must restore only for a job that installs webkit');
   const fill = jobs.get('browser_deps') ?? '';
-  if (!new RegExp(`- id: deps\\n\\s+${uses.replace(/[./]/g, '\\$&')}\\n`).test(fill)) problems.push('the browser_deps job must restore through the action (id: deps) first');
-  if (!/run: npx playwright install-deps chromium webkit\n/.test(fill)) problems.push('the browser_deps job must fetch chromium and webkit, the union of every browser job\'s engines');
-  const after = fill.split(/^      - /m).slice(3);
-  if (after.length < 4 || after.some((s) => !/if: steps\.deps\.outputs\.cache-hit != 'true'/.test(s))) problems.push('every browser_deps step after the restore must be skipped on a cache hit');
-  if (!new RegExp(`uses: actions/cache/save@v4\\n\\s+with:\\n\\s+path: ${(path ?? '').replace(/[.*/]/g, '\\$&')}\\n\\s+key: \\$\\{\\{ steps\\.deps\\.outputs\\.key \\}\\}`).test(fill))
-    problems.push('the browser_deps job must save the path the action restores, under the action\'s key');
+  if (!new RegExp(`- id: deps\\n\\s+${esc(uses)}\\n\\s+with:\\n\\s+browsers: chromium webkit\\n\\s+lookup-only: 'true'\\n`).test(fill))
+    problems.push('the browser_deps job must look up every cache through the action (id: deps, chromium webkit, lookup-only) first');
+  const fills = [['cache-hit', 'key', 'npx playwright install-deps chromium webkit', path ?? ''], ['chromium-hit', 'chromium-key', 'npx playwright install chromium', builds.chromium],
+    ['webkit-hit', 'webkit-key', 'npx playwright install webkit', builds.webkit]] as const;
+  const steps = fill.split(/^      - /m).slice(3);
+  for (const [hit, key, run, saved] of fills) {
+    const gate = `if: steps.deps.outputs.${hit} != 'true'`;
+    if (!steps.some((st) => st.includes(gate) && st.includes(`run: ${run}\n`))) problems.push(`the browser_deps job must run \`${run}\` exactly when ${hit} misses (union of every browser job's engines)`);
+    if (!steps.some((st) => st.includes(gate) && /uses: actions\/cache\/save@v4\n/.test(st) && pathOf(st) === saved && st.includes(`key: \${{ steps.deps.outputs.${key} }}`)))
+      problems.push(`the browser_deps job must save the path the action restores under ${key}, when ${hit} misses`);
+  }
+  if (steps.length < 8 || steps.some((st) => !/if: steps\.deps\.outputs\.[a-z-]+ != 'true'/.test(st))) problems.push('every browser_deps step after the lookup must be skipped on a cache hit');
   for (const [name, body] of jobs) {
     if (name !== 'browser_deps' && /actions\/cache(\/save)?@/.test(body)) problems.push(`${name} saves a cache: only browser_deps may (parallel saves of one key race)`);
     const install = body.indexOf('playwright install --with-deps');
     if (install < 0 || !/runs-on: ubuntu-latest/.test(body)) continue;
     if (!/needs: \[[^\]]*\bbrowser_deps\b[^\]]*\]/.test(body)) problems.push(`${name} installs with deps but does not need browser_deps`);
-    const at = body.indexOf(restore);
-    if (at < 0 || !body.slice(at).startsWith(`${restore} (a slow runner apt mirror stays off this job's clock)\n        ${uses}\n`) || at > install)
-      problems.push(`${name} installs with deps before restoring the browser system packages`);
-    for (const [, engines] of body.matchAll(/playwright install --with-deps ([^\n]+)/g))
-      if (!/^(chromium|chromium webkit|\$\{\{ steps\.webkit_need\.outputs\.browsers \}\})$/.test(engines)) problems.push(`${name} installs ${engines}, which browser_deps does not fetch`);
+    const at = body.indexOf(restore), engines = body.match(/playwright install --with-deps ([^\n]+)/)?.[1];
+    if (at < 0 || !body.slice(at).startsWith(`${restore} (a slow apt mirror or Playwright CDN stays off this job's clock)\n        ${uses}\n        with:\n          browsers: ${engines}\n`) || at > install)
+      problems.push(`${name} installs with deps before restoring the browser system packages and the builds it installs`);
+    if (engines === '${{ steps.webkit_need.outputs.browsers }}' && !(body.indexOf('id: webkit_need') >= 0 && body.indexOf('id: webkit_need') < at))
+      problems.push(`${name} restores before webkit_need names its engines`);
+    for (const [, e] of body.matchAll(/playwright install --with-deps ([^\n]+)/g))
+      if (!/^(chromium|chromium webkit|\$\{\{ steps\.webkit_need\.outputs\.browsers \}\})$/.test(e)) problems.push(`${name} installs ${e}, which browser_deps does not fetch`);
   }
   for (const [, engines] of wf.matchAll(/echo "browsers=([^"]+)" >> "\$GITHUB_OUTPUT"/g))
     if (!['chromium', 'chromium webkit'].includes(engines)) problems.push(`a shard installs ${engines}, which browser_deps does not fetch`);
   return problems;
 }
-assert.deepStrictEqual(browserDepsProblems(workflow, browserDepsAction), [], 'every browser job takes its system packages from the browser_deps cache');
+assert.deepStrictEqual(browserDepsProblems(workflow, browserDepsAction), [], 'every browser job takes its system packages and builds from the browser_deps caches');
 assert.deepStrictEqual([...workflow.matchAll(/^  ([a-z0-9_]+):\n(?:(?!^  \S)[\s\S])*?playwright install --with-deps/gm)].map((m) => m[1]),
   ['integration', 'e2e_smoke', 'e2e_ai_surface', 'e2e_tour_scroll', 'e2e_tour_walk', 'mobile'], 'the ubuntu jobs that install with deps (the guard\'s known positives)');
 // Each rule fails by name on a one-line mutant of the real files.
 const depsMutant = (from: string | RegExp, to: string, text = workflow) => { const out = text.replace(from, to); assert.notStrictEqual(out, text, `mutant ${from} applies`); return out; };
-const walkBody = workflowJob('e2e_tour_walk');
+const walkBody = workflowJob('e2e_tour_walk'), smokeBody = workflowJob('e2e_smoke');
+const smokeRestore = smokeBody.match(/      - name: Restore the browser system packages and builds[^\n]*\n(?:[^\n]+\n){3}\n/)?.[0] ?? '';
 for (const [wf, action, want] of [
-  [depsMutant(walkBody, walkBody.replace(/      - name: Restore the browser system packages[^\n]*\n[^\n]*\n\n/, '')), browserDepsAction, 'e2e_tour_walk installs with deps before restoring'],
+  [depsMutant(walkBody, walkBody.replace(/      - name: Restore the browser system packages and builds[^\n]*\n(?:[^\n]+\n){3}\n/, '')), browserDepsAction, 'e2e_tour_walk installs with deps before restoring'],
+  [depsMutant(walkBody, walkBody.replace(/(Restore the browser system packages and builds[^\n]*\n[^\n]*\n[^\n]*\n\s+browsers: )chromium webkit/, '$1chromium')), browserDepsAction, 'e2e_tour_walk installs with deps before restoring'],
+  [depsMutant(smokeBody, smokeBody.replace(smokeRestore, '').replace('      - name: Download the short-timeout e2e bundle\n', `${smokeRestore}      - name: Download the short-timeout e2e bundle\n`)), browserDepsAction, 'e2e_smoke restores before webkit_need'],
   [depsMutant(/(  mobile:\n[\s\S]*?)needs: \[build, browser_deps\]/, '$1needs: build'), browserDepsAction, 'mobile installs with deps but does not need browser_deps'],
   [depsMutant('run: npx playwright install-deps chromium webkit\n', 'run: npx playwright install-deps chromium\n'), browserDepsAction, 'union of every browser job\'s engines'],
-  [depsMutant(/(uses: actions\/cache\/save@v4\n\s+with:\n\s+path: )\/var\/cache\/pw-apt\/\*\.deb/, '$1/var/cache/pw-apt'), browserDepsAction, 'must save the path the action restores'],
+  [depsMutant('run: npx playwright install webkit\n', 'run: npx playwright install chromium\n'), browserDepsAction, '`npx playwright install webkit` exactly when webkit-hit misses'],
+  [depsMutant(/(uses: actions\/cache\/save@v4\n\s+with:\n\s+path: )\/var\/cache\/pw-apt\/\*\.deb/, '$1/var/cache/pw-apt'), browserDepsAction, 'must save the path the action restores under key'],
+  [depsMutant('            ~/.cache/ms-playwright/ffmpeg-*\n          key: ${{ steps.deps.outputs.chromium-key }}', '          key: ${{ steps.deps.outputs.chromium-key }}'), browserDepsAction, 'must save the path the action restores under chromium-key'],
+  [depsMutant('key: ${{ steps.deps.outputs.webkit-key }}', 'key: ${{ steps.deps.outputs.chromium-key }}'), browserDepsAction, 'must save the path the action restores under webkit-key'],
+  [depsMutant("          lookup-only: 'true'\n", ''), browserDepsAction, 'lookup-only) first'],
   [workflow, depsMutant('path: /var/cache/pw-apt/*.deb', 'path: /var/cache/pw-apt', browserDepsAction), 'not the .debs of the archive apt writes'],
   [workflow, depsMutant('-$ImageVersion"', '"', browserDepsAction), 'the cache key must follow the runner image'],
   [workflow, depsMutant(` 'APT::Get::Upgrade "false";'`, '', browserDepsAction), 'apt must not upgrade what the image ships'],
   [workflow, depsMutant(/\n\s+echo force-unsafe-io[^\n]*/, '', browserDepsAction), 'dpkg must skip its per-file fsync'],
+  [workflow, depsMutant('          ~/.cache/ms-playwright/ffmpeg-*\n        key: ${{ steps.key.outputs.chromium }}', '        key: ${{ steps.key.outputs.chromium }}', browserDepsAction), 'the action must restore the chromium build'],
+  [workflow, depsMutant("      if: contains(inputs.browsers, 'webkit')\n", '', browserDepsAction), 'restore only for a job that installs webkit'],
+  [workflow, depsMutant('webkit=pw-build-$ImageOS-webkit-playwright-$v', 'webkit=pw-build-$ImageOS-webkit', browserDepsAction), 'the webkit build\'s cache key must follow'],
+  [workflow, depsMutant(/(id: webkit\n[\s\S]*?)\n\s+lookup-only: \$\{\{ inputs\.lookup-only \}\}/, '$1', browserDepsAction), 'the webkit build restore must honour lookup-only'],
   [depsMutant("        if: steps.deps.outputs.cache-hit != 'true'\n        run: npx playwright install-deps", '        run: npx playwright install-deps'), browserDepsAction, 'skipped on a cache hit'],
   [depsMutant('echo "browsers=chromium webkit"', 'echo "browsers=chromium firefox"'), browserDepsAction, 'a shard installs chromium firefox'],
   [depsMutant('      - name: Install headless browsers for this shard\n', '      - uses: actions/cache@v4\n        with:\n          path: x\n          key: x\n\n      - name: Install headless browsers for this shard\n'), browserDepsAction, 'e2e_smoke saves a cache'],

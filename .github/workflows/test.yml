@@ -228,6 +228,8 @@ jobs:
   # tour jobs at their timeouts. This job alone fills the browser deps cache (.github/actions/browser-deps), before any
   # browser job's clock starts; every browser job needs it and only restores (dozens of parallel saves of one key race).
   # It runs beside build, so a warm cache costs no wall time; a cold one spends the mirror's minutes here, once.
+  # Sweep 14 (CI 36784197311): the Playwright CDN then served chromium at 0.8 MB/s (215 s on smoke 22), so the browser
+  # builds are cached the same way: chromium with its headless shell and ffmpeg, and WebKit for the jobs that run it.
   browser_deps:
     name: browser deps cache
     runs-on: ubuntu-latest
@@ -237,14 +239,17 @@ jobs:
 
       - id: deps
         uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium webkit
+          lookup-only: 'true'
 
-      - if: steps.deps.outputs.cache-hit != 'true'
+      - if: steps.deps.outputs.cache-hit != 'true' || steps.deps.outputs.chromium-hit != 'true' || steps.deps.outputs.webkit-hit != 'true'
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
-      - if: steps.deps.outputs.cache-hit != 'true'
+      - if: steps.deps.outputs.cache-hit != 'true' || steps.deps.outputs.chromium-hit != 'true' || steps.deps.outputs.webkit-hit != 'true'
         run: npm ci
 
       - name: Fetch every browser job's system packages (chromium and webkit cover them all)
@@ -256,6 +261,29 @@ jobs:
         with:
           path: /var/cache/pw-apt/*.deb
           key: ${{ steps.deps.outputs.key }}
+
+      # Sweep 14 (CI 36784197311): the Playwright CDN served chromium at 0.8 MB/s, 215 s on smoke 22's clock.
+      - name: Fetch the chromium build (with its headless shell and ffmpeg)
+        if: steps.deps.outputs.chromium-hit != 'true'
+        run: npx playwright install chromium
+
+      - if: steps.deps.outputs.chromium-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright/chromium*
+            ~/.cache/ms-playwright/ffmpeg-*
+          key: ${{ steps.deps.outputs.chromium-key }}
+
+      - name: Fetch the WebKit build
+        if: steps.deps.outputs.webkit-hit != 'true'
+        run: npx playwright install webkit
+
+      - if: steps.deps.outputs.webkit-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright/webkit-*
+          key: ${{ steps.deps.outputs.webkit-key }}
 
   integration:
     runs-on: ubuntu-latest
@@ -272,8 +300,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
         uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium
 
       - name: Download the bundle built by the build job
         uses: actions/download-artifact@v4
@@ -748,9 +778,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
-        uses: ./.github/actions/browser-deps
-
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
         with:
@@ -785,6 +812,11 @@ jobs:
           else
             echo "browsers=chromium" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: ${{ steps.webkit_need.outputs.browsers }}
 
       - name: Install headless browsers for this shard
         # Timed: a wall-check trip names the install's seconds, so a slow runner mirror reads as one (TASK-18 sweep 6).
@@ -869,8 +901,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
         uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -932,8 +966,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
         uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium webkit
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -982,8 +1018,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
         uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium webkit
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -1158,8 +1196,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore the browser system packages (a slow runner apt mirror stays off this job's clock)
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
         uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium
 
       - name: Download the bundle built by the build job
         uses: actions/download-artifact@v4
