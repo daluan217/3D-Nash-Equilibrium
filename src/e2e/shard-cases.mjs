@@ -58,12 +58,12 @@ export function checkLog(job, log, env, extraLogs = [], now = Date.now()) {
   const wall = now - t0 - [log, ...extraLogs].reduce((a, l) => a + retryMs(l), 0) + outside;
   if (wall <= ceiling) return '';
   // Still a fail, but say where the time went (sweep 6: a 109 kB/s runner apt mirror put 7 of 35 shards at 466-1349 s on
-  // normal sections). An install past the whole measured overhead is not the packing; its apt rate says mirror or growth
-  // (sweep 7: 828 healthy fetches >= 2295 kB/s, incident 81-707; the mirror outlasted re-runs, so a repeat trip is no proof).
+  // normal sections). An install past the whole measured overhead is not the packing; its download rates say network or
+  // growth (sweep 7: 828 green apt fetches >= 2295 kB/s, incident 81-707; the mirror outlasted re-runs, so a repeat is no proof).
   const inst = /^\d+$/.test(env.E2E_INSTALL_S ?? '') ? +env.E2E_INSTALL_S * 1000 : null, rest = Math.round((wall - ms - outside - (inst ?? 0)) / 1000);
   const why = inst > SHARD_TIMINGS._overhead_ms ? `The browser install alone outran the whole measured overhead (${SHARD_TIMINGS._overhead_ms / 1000} s), not the packing. `
-    + 'Its install log says which: any apt "Fetched ... (N kB/s)" line under 1 MB/s is a slow runner mirror (re-run once it recovers; it can outlast re-runs), '
-    + 'a normal rate means the install itself grew: re-measure _overhead_ms'
+    + 'Its log says why: an apt "Fetched ... (N kB/s)" line under 1 MB/s (a slow runner mirror) or Playwright downloads slower than a green run\'s '
+    + 'is the network (re-run once it recovers; it can outlast re-runs); neither means the install itself grew: re-measure _overhead_ms'
     : 'Re-measure _overhead_ms with scripts/shard-timings-from-run.mjs';
   return `smoke: the job's first attempts ran ${Math.ceil(wall / 1000)} s (${outside / 1000} s of it outside the steps), over the ${ceiling / 1000} s ceiling: `
     + `${ms / 1000} s of sections (budget ${SECTION_BUDGET_MS / 1000} s), ${inst === null ? `no readable install time (E2E_INSTALL_S ${JSON.stringify(env.E2E_INSTALL_S)}), `
