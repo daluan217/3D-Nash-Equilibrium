@@ -99,16 +99,25 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   assert(ext.has('express') && ext.has('@google-cloud/storage'), `fixture: the server's externals were not read (${[...ext]})`);
   const deps = JSON.parse(read('package.json')).dependencies ?? {};
   for (const p of ext) { assert(p in deps, `server.ts requires ${p}, which is not in package.json dependencies: the image's \`npm ci --omit=dev\` never installs it`); n++; }
-  const df = read('Dockerfile'), runtime = df.slice(df.lastIndexOf('\nFROM '));
+  // Logical lines, as docker reads them: a `\` joins the next line into the same instruction.
+  const df = read('Dockerfile').replace(/\\\r?\n/g, ' '), lines = df.split('\n');
+  // Canonical spelling, or every line-anchored Dockerfile guard (here, cloudbuild.contract's) reads the wrong file:
+  // docker takes `from`/`user`/`copy` in any case, indented, and a `# syntax=` frontend re-parses the whole file.
+  const offForm = lines.filter((l) => l.trim() && !/^#(?![ \t]*(syntax|escape|check)[ \t]*=)/i.test(l) && !/^[A-Z]+ \S/.test(l));
+  assert(offForm.length === 0, `Dockerfile: instructions the static guards cannot read (want upper case at column 0, no parser directive): ${offForm.join(' | ')}`); n++;
+  const runtime = df.slice(df.lastIndexOf('\nFROM '));
   assert(/^RUN npm ci --omit=dev$/m.test(runtime) && /^CMD \["node", "dist\/server\.cjs"\]$/m.test(runtime), 'Dockerfile: the runtime stage no longer installs with `npm ci --omit=dev` and runs dist/server.cjs'); n++;
   // Not root (cloud sweep 6): the last USER (instructions are case-insensitive) is exactly the base image's node,
   // an allowlist, since `USER 00` / `+0` are uid 0 too. Its one chown is the WORKDIR (the no-bucket db.json folder).
   const user = [...runtime.matchAll(/^[ \t]*USER[ \t]+(.*?)[ \t]*$/gim)].at(-1)?.[1];
   const wd = [...runtime.matchAll(/^[ \t]*WORKDIR[ \t]+(\S+)[ \t]*$/gim)].at(-1)?.[1];
   assert(user === 'node', `Dockerfile: the runtime stage runs as root or an unknown user (USER ${user ?? 'never set'}), want node`); n++;
-  const chowns = runtime.split('\n').filter((l) => /^[ \t]*[^#\s].*chown/i.test(l));
+  const rt = runtime.split('\n'), chowns = rt.filter((l) => /^[ \t]*[^#\s].*ch(own|mod)/i.test(l));
   assert(chowns.includes(`RUN chown node:node ${wd}`), `Dockerfile: node does not own ${wd}, where the no-bucket server writes db.json`); n++;
-  assert(chowns.length === 1, `Dockerfile: the runtime stage chowns more than the folder the server writes to: ${chowns.join(' | ')}`); n++;
+  assert(chowns.length === 1, `Dockerfile: the runtime stage chowns or chmods more than the folder the server writes to: ${chowns.join(' | ')}`); n++;
+  // A RUN after USER node leaves node owning what it creates (npm ci there = writable dependencies).
+  const lastAt = (re: RegExp) => rt.map((l) => re.test(l)).lastIndexOf(true);
+  assert(lastAt(/^RUN /) < lastAt(/^USER /), 'Dockerfile: a RUN after USER node, so node owns what it creates'); n++;
 }
 
 // ── the desktop package leaves the siblings out, judged by electron-builder's own matcher (last match wins)
