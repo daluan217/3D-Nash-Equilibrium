@@ -871,6 +871,17 @@ for (const [label, doc, expectMsg] of [
       bad.length === 0 && stored.every(shapeOk), bad.slice(0, 4).join('; ') || `${stored.length} stored game(s) clean`);
     record('hostile bodies: FIXTURE, the saves really ran (>= 150 POST and PATCH answered 200, not 401/429)',
       ok.POST >= 150 && ok.PATCH >= 150, JSON.stringify(ok));
+    // Hostile :id, signed in (sweep 22 probe): prototype names, bad escapes, traversal, 8 kB, and near misses of a
+    // real id (padded, upper-cased). Each is a 4xx, and the base game is neither renamed nor deleted.
+    const ids = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', '%', '%E0%A4%A', '%00', '..%2F..%2Fdb.json', 'x'.repeat(8000), `${base}%20`, `%20${base}`, String(base).toUpperCase()];
+    const idOff = [];
+    for (const id of ids) for (const [m, body] of [['PATCH', { name: 'hijack' }], ['DELETE', undefined]]) {
+      const { status } = await call(m, `games/${id}`, body, token);
+      if (status < 400 || status >= 500) idOff.push(`${m} ${id.slice(0, 24)} -> ${status}`);
+    }
+    const kept = (await call('GET', 'games', undefined, token)).json;
+    record('hostile ids: PATCH and DELETE on a hostile or near-miss :id answer 4xx and leave the base game as it was',
+      idOff.length === 0 && Array.isArray(kept) && kept.some((g) => g.id === base && g.name === 'n2'), idOff.join('; ') || `${kept?.length} game(s), base kept`);
     // Auth and feedback fields, each mistyped on an otherwise valid body.
     const fb = await call('POST', 'feedback', { message: 'hello there', email: 'kate@example.test' });
     record('hostile bodies: CONTROL, a well-formed feedback is mailed (200 and the stub got it)', fb.status === 200 && mails === 1, `${fb.status}, ${mails} mail(s)`);
