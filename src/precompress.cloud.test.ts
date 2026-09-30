@@ -101,13 +101,14 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   for (const p of ext) { assert(p in deps, `server.ts requires ${p}, which is not in package.json dependencies: the image's \`npm ci --omit=dev\` never installs it`); n++; }
   const df = read('Dockerfile'), runtime = df.slice(df.lastIndexOf('\nFROM '));
   assert(/^RUN npm ci --omit=dev$/m.test(runtime) && /^CMD \["node", "dist\/server\.cjs"\]$/m.test(runtime), 'Dockerfile: the runtime stage no longer installs with `npm ci --omit=dev` and runs dist/server.cjs'); n++;
-  // Not root (cloud sweep 6): the last USER wins. It owns only the WORKDIR (the no-bucket server's db.json folder),
-  // not the files under it: least privilege, chown reaches only where the server writes.
-  const users = [...runtime.matchAll(/^USER[ \t]+(\S+)[ \t]*$/gm)].map((m) => m[1]), user = users.at(-1)?.split(':')[0];
-  const wd = [...runtime.matchAll(/^WORKDIR[ \t]+(\S+)[ \t]*$/gm)].at(-1)?.[1];
-  assert(user && !['root', '0'].includes(user), `Dockerfile: the runtime stage runs as root (USER ${users.at(-1) ?? 'never set'})`); n++;
-  assert(wd && runtime.split('\n').includes(`RUN chown ${user}:${user} ${wd}`), `Dockerfile: ${user} does not own ${wd}, where the no-bucket server writes db.json`); n++;
-  assert(!/--chown|chown[ \t]+-/.test(runtime), 'Dockerfile: the runtime stage chowns files under the WORKDIR, not just the folder the server writes to'); n++;
+  // Not root (cloud sweep 6): the last USER (instructions are case-insensitive) is exactly the base image's node,
+  // an allowlist, since `USER 00` / `+0` are uid 0 too. Its one chown is the WORKDIR (the no-bucket db.json folder).
+  const user = [...runtime.matchAll(/^[ \t]*USER[ \t]+(.*?)[ \t]*$/gim)].at(-1)?.[1];
+  const wd = [...runtime.matchAll(/^[ \t]*WORKDIR[ \t]+(\S+)[ \t]*$/gim)].at(-1)?.[1];
+  assert(user === 'node', `Dockerfile: the runtime stage runs as root or an unknown user (USER ${user ?? 'never set'}), want node`); n++;
+  const chowns = runtime.split('\n').filter((l) => /^[ \t]*[^#\s].*chown/i.test(l));
+  assert(chowns.includes(`RUN chown node:node ${wd}`), `Dockerfile: node does not own ${wd}, where the no-bucket server writes db.json`); n++;
+  assert(chowns.length === 1, `Dockerfile: the runtime stage chowns more than the folder the server writes to: ${chowns.join(' | ')}`); n++;
 }
 
 // ── the desktop package leaves the siblings out, judged by electron-builder's own matcher (last match wins)
