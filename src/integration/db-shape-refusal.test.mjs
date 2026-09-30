@@ -972,6 +972,72 @@ for (const [label, doc, expectMsg] of [
   port += 1;
 }
 
+// 15. MAIL POOLS (cloud sweep 17: rotated IPs spent Gmail's ~500/day and wrote a pending row per sign-up).
+//     The stub counts what really went out: 200 sign-ups reach it, the 201st is a 429 with Retry-After that
+//     neither mails nor writes a row, and recovery still mails. Feedback stops at 50, delete-request at 5 per
+//     address. FIXTURE: every refusal is preceded by the stub's own count of the sends it caps.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-mail-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  const dbFile = path.join(userData, 'db.json');
+  const acct = (id) => ({ id, username: id, email: `${id}@example.test`, passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 });
+  writeFileSync(dbFile, JSON.stringify({ games: [], users: [acct('u_mk'), acct('u_md')] }));
+  let mails = 0;
+  const smtp = createServer((sock) => {
+    let inData = false;
+    sock.write('220 t ESMTP\r\n');
+    sock.on('data', (c) => { for (const l of c.toString().split(/\r?\n/)) {
+      if (!l) continue;
+      if (inData) { if (l === '.') { inData = false; mails++; sock.write('250 Ok\r\n'); } continue; }
+      const v = l.split(' ')[0].toUpperCase();
+      if (v === 'DATA') inData = true;
+      sock.write(v === 'EHLO' || v === 'HELO' ? '250-t\r\n250 AUTH PLAIN LOGIN\r\n' : v === 'AUTH' ? '235 Ok\r\n' : v === 'DATA' ? '354 Go\r\n' : v === 'QUIT' ? '221 Bye\r\n' : '250 Ok\r\n');
+    } });
+    sock.on('error', () => {});
+  });
+  await new Promise((r) => smtp.listen(0, '127.0.0.1', r));
+  const child = spawnHostedServer(userData, port, { TRUST_PROXY: '1', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtp.address().port),
+    SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'dbshape@example.invalid', FEEDBACK_INBOX: 'inbox@example.invalid' });
+  let ip = 0;
+  const call = (route, body, token) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method: 'POST', body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.${(++ip >> 8) & 255}.${ip & 255}.2`, ...(token ? { authorization: `Bearer ${token}` } : {}) } })
+    .then(async (r) => ({ status: r.status, retry: Number(r.headers.get('retry-after')), json: await r.json().catch(() => null) }), () => ({ status: 0, retry: 0, json: null }));
+  const rows = () => JSON.parse(readFileSync(dbFile, 'utf8')).users.length;
+  const refused = (r, m0) => r.status === 429 && r.retry > 0 && /try again in \d+ (minute|hour)s?\./.test(r.json?.error ?? '') && mails === m0;
+  try {
+    await waitReady(child, port);
+    const signups = [];
+    for (let i = 0; i < 200; i++) signups.push((await call('auth/register', { username: `mp${i}`, email: `mp${i}@example.test`, password: 'Abcdefgh1' })).status);
+    const [m0, r0] = [mails, rows()];
+    const over = await call('auth/register', { username: 'mpover', email: 'mpover@example.test', password: 'Abcdefgh1' });
+    record('mail pools: FIXTURE, 200 sign-ups answered 200 and reached the stub', signups.every((s) => s === 200) && m0 === 200 && r0 === 202, `${m0} mail(s), ${r0} row(s), ${[...new Set(signups)]}`);
+    record('mail pools: the 201st sign-up is a 429 with Retry-After and a wait, and mails nothing', refused(over, m0), `${over.status} retry ${over.retry} ${over.json?.error} (${mails - m0} mail(s))`);
+    record('mail pools: a refused sign-up writes no pending row', rows() === r0, `${r0} -> ${rows()}`);
+    const rec = await call('auth/forgot-password', { email: 'u_mk@example.test' });
+    record('mail pools: with sign-ups exhausted, recovery still mails', rec.status === 200 && mails === m0 + 1, `${rec.status}, ${mails - m0} mail(s)`);
+    const fb = [];
+    for (let i = 0; i < 50; i++) fb.push((await call('feedback', { message: `note ${i}` })).status);
+    const m1 = mails, fbOver = await call('feedback', { message: 'one more' });
+    record('mail pools: FIXTURE, 50 feedbacks answered 200 and reached the stub', fb.every((s) => s === 200) && m1 === m0 + 51, `${m1 - m0 - 1} mail(s), ${[...new Set(fb)]}`);
+    record('mail pools: the 51st feedback is a 429 with Retry-After, not mailed', refused(fbOver, m1), `${fbOver.status} retry ${fbOver.retry} (${mails - m1} mail(s))`);
+    const token = (await call('auth/login', { email: 'u_md@example.test', password: PW })).json?.token;
+    const del = [];
+    for (let i = 0; i < 5; i++) del.push((await call('auth/delete-request', {}, token)).status);
+    const m2 = mails, delOver = await call('auth/delete-request', {}, token);
+    record('mail pools: FIXTURE, 5 delete requests to one address answered 200 and reached the stub', !!token && del.every((s) => s === 200) && m2 === m1 + 5, `${m2 - m1} mail(s), ${del}`);
+    record('mail pools: the 6th delete request to one address is a 429 with Retry-After, not mailed', refused(delOver, m2), `${delOver.status} retry ${delOver.retry} (${mails - m2} mail(s))`);
+  } catch (err) {
+    record('mail pools: the hosted server boots', false, String(err));
+  } finally {
+    await stop(child);
+    smtp.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DB-SHAPE REFUSAL: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {

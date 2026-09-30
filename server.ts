@@ -2606,7 +2606,8 @@ const EMAIL_SHAPE = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a
 // owner's inbox from many IPs (sweep 6). 0 = sent now (slot taken); a failed
 // send hands the slot back (releaseCodeMail).
 const MAIL_COOLDOWN_MS = 60_000;
-const PENDING_TTL_MS = 24 * 60 * 60 * 1000; // a dead pending row is swept this long after its code expired
+// A dead pending row is swept this long after its code expired: with the signup pool, at most ~200 rows live (sweep 17).
+const PENDING_TTL_MS = 60 * 60 * 1000;
 // Bounded: it holds only the addresses mailed in the last minute (register's
 // per-IP limit bounds that rate). One cooldown on a monotonic clock, so entries
 // sit in expiry order: expired ones leave from the front, O(1) amortized (sweep 20).
@@ -2619,6 +2620,29 @@ function mailCooldownLeft(kind: "verification" | "recovery", email: string): num
   return Math.max(0, left);
 }
 const releaseCodeMail = (kind: "verification" | "recovery", email: string) => lastCodeMail.delete(`${kind}:${email}`);
+
+// Rolling 24 h mail pools (sweep 17): Gmail sends ~500 a day for the whole site and nothing capped the total, so
+// rotated IPs could spend it on sign-ups or feedback and silence every recovery mail; one known address took 1440
+// codes a day. Taken only where a mail really goes out (after every refusal), never refunded (a timed-out send may
+// have left); per address 5 a day. ponytail: in-process (max-instances=1), so a redeploy resets it; persist it if that changes.
+const MAIL_POOLS = { signup: 200, recovery: 150, delete: 50, feedback: 50 } as const; // 450 of Gmail's ~500
+const MAIL_PER_ADDRESS = 5, MAIL_DAY_MS = 24 * 60 * 60 * 1000;
+const mailSends: Record<keyof typeof MAIL_POOLS, { t: number; to: string }[]> = { signup: [], recovery: [], delete: [], feedback: [] };
+function takeMail(pool: keyof typeof MAIL_POOLS, to = ""): number { // 0 = taken; else ms until one frees
+  if (isDesktop() || process.env.ELECTRON_USER_DATA_PATH) return 0; // the desktop mails nothing it could exhaust
+  const now = performance.now(), sent = mailSends[pool];
+  while (sent.length && now - sent[0].t >= MAIL_DAY_MS) sent.shift();
+  const mine = to ? sent.filter((s) => s.to === to) : [];
+  const wait = Math.max(sent.length >= MAIL_POOLS[pool] ? sent[0].t : -Infinity, mine.length >= MAIL_PER_ADDRESS ? mine[0].t : -Infinity) + MAIL_DAY_MS - now;
+  if (wait > 0) return wait;
+  sent.push({ t: now, to });
+  return 0;
+}
+function mailRefused(res: express.Response, wait: number, what: string) {
+  setRetryAfter(res, wait);
+  const n = wait < 3_600_000 ? Math.ceil(wait / 60_000) : Math.ceil(wait / 3_600_000), unit = wait < 3_600_000 ? "minute" : "hour";
+  return res.status(429).json({ error: `We cannot send more ${what} right now. Please try again in ${n} ${unit}${n === 1 ? "" : "s"}.` });
+}
 
 // One email, one key (sweep 22, S1-1): login and verify compared the stored
 // email exactly while register, forgot and reset folded it, so a stored
@@ -4616,6 +4640,8 @@ async function startServer() {
       if (!Number.isNaN(r) && r >= 1 && r <= 5) ratingValue = r;
     }
 
+    const poolWait = takeMail("feedback");
+    if (poolWait > 0) return mailRefused(res, poolWait, "feedback");
     try {
       await sendFeedbackEmail(trimmedMessage, ratingValue, fromEmail);
       return res.json({
@@ -4845,6 +4871,11 @@ async function startServer() {
         setRetryAfter(res, wait);
         return res.status(429).json({ error: "A code for this email went out less than a minute ago. Please try again in a minute." });
       }
+      const poolWait = takeMail("signup", emailTrimmed);
+      if (poolWait > 0) {
+        releaseCodeMail("verification", emailTrimmed); // nothing went out
+        return mailRefused(res, poolWait, "verification emails");
+      }
       const updatedCode = live ? existingUser.verificationCode : makeCode();
       if (!live) {
         existingUser.verificationCode = updatedCode;
@@ -4907,7 +4938,7 @@ async function startServer() {
     }
     const verificationCode = makeCode();
     // Pending rows now survive a failed send (no rollback), so each new sign-up
-    // sweeps pending rows whose code died a day ago and own no games: db.json
+    // sweeps pending rows whose code died an hour ago and own no games: db.json
     // cannot grow without bound from abandoned or junk registrations (sweep 6).
     const stale = Date.now() - PENDING_TTL_MS;
     const owners = new Set(db.games.map((g) => g.userId));
@@ -4930,6 +4961,11 @@ async function startServer() {
     if (growsPastBudget(userDelta)) {
       releaseCodeMail("verification", emailTrimmed); // nothing went out
       return res.status(507).json({ error: "New sign-ups are paused because account storage is full. Please try again later." });
+    }
+    const poolWait = takeMail("signup", emailTrimmed); // before the row: a refused sign-up writes nothing
+    if (poolWait > 0) {
+      releaseCodeMail("verification", emailTrimmed);
+      return mailRefused(res, poolWait, "verification emails");
     }
     db.users = users;
     saveDB(db);
@@ -5135,6 +5171,11 @@ async function startServer() {
       return res.status(429).json({ error: "A recovery code went out less than a minute ago. Please try again in a minute." });
     }
 
+    const poolWait = takeMail("recovery", emailTrimmed);
+    if (poolWait > 0) {
+      releaseCodeMail("recovery", emailTrimmed);
+      return mailRefused(res, poolWait, "recovery emails");
+    }
     const recoveryCode = makeCode();
     const withCode = { ...user, recoveryCode, recoveryCodeExpires: Date.now() + 10 * 60 * 1000, recoveryCodeAttempts: undefined };
     if (!saveDB({ users: db.users.map((u) => (u === user ? withCode : u)), games: db.games })) {
@@ -5237,6 +5278,8 @@ async function startServer() {
     if (!user) {
       return res.status(401).json({ error: "Invalid session." });
     }
+    const poolWait = takeMail("delete", emailKey(user.email));
+    if (poolWait > 0) return mailRefused(res, poolWait, "confirmation emails");
 
     const deleteCode = makeCode();
     const withCode = { ...user, deleteCode, deleteCodeExpires: Date.now() + 10 * 60 * 1000, deleteCodeAttempts: undefined };
