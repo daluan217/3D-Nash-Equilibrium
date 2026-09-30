@@ -169,11 +169,24 @@ for (const [name, run, status, marker, libCsp] of cases) {
 // answered 301 Location /\evil.example/%2e%2e/assets/, which a browser resolves to https://evil.example/assets/.
 // Live, Google's front end normalises `\` first; the server must not depend on it. The apex redirects nothing.
 for (const [method, t] of [['GET', '/\\evil.example/%2e%2e/assets'], ['HEAD', '/\\evil.example/%2e%2e/assets'], ['GET', '/\\evil.example/x/..%2f..%2fassets'],
-  ['GET', '//evil.example/%2e%2e/assets'], ['GET', '/%5Cevil.example/%2e%2e/assets'], ['GET', '/assets/..%2Fassets'], ['GET', '/assets/'], ['HEAD', '/assets']]) {
+  ['GET', '//evil.example/%2e%2e/assets'], ['GET', '/%5Cevil.example/%2e%2e/assets'], ['GET', '/assets/..%2Fassets'], ['GET', '/assets/'], ['HEAD', '/assets'],
+  ['GET', 'http://evil.example/assets']]) {
   const r = await named(`${method} ${t}`, h(method, t));
   assert(r.status !== 301 && r.status !== 302 && r.status !== 303 && r.status !== 307 && r.status !== 308 && r.h.location === undefined,
     `${method} ${t}: ${r.status} Location ${r.h.location}, want no redirect from the apex`);
   hardened(`${method} ${t}`, r, { hsts: true });
+}
+// Nothing outside dist/ and no dotfile is served: the hosted cwd holds package.json and, locally, .env.
+// Planted after boot (dotenv reads cwd/.env at start); each file carries a marker no answer may contain.
+{
+  const MARK = 'sechdr-outside-dist-7f3a';
+  for (const f of ['.env', 'package.json', '.git/HEAD', 'dist/.env']) { fs.mkdirSync(path.dirname(path.join(tmp, f)), { recursive: true }); fs.writeFileSync(path.join(tmp, f), `${MARK} ${f}\n`); }
+  for (const t of ['/../.env', '/..%2F.env', '/%2e%2e/.env', '/%2e%2e%2f.env', '/..%5C.env', '/assets/..%2F..%2F.env', '/.env', '/%2Eenv', '/.git/HEAD', '/.git%2FHEAD',
+    '/../package.json', '/..%2Fpackage.json', '/package.json', '/assets/%2e%2e/%2e%2e/package.json', '/assets/..%5C..%5Cpackage.json', '/dist/.env', '/..%2Fdist%2F.env']) {
+    const r = await named(`GET ${t}`, h('GET', t));
+    assert(!r.body.includes(MARK), `GET ${t}: ${r.status} served a file outside dist/ or a dotfile: ${r.body.slice(0, 60)}`);
+    hardened(`GET ${t}`, r, { hsts: true });
+  }
 }
 
 // live-smoke section 3, the real script against the real server: every new row passes.
