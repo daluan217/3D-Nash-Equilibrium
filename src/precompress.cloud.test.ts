@@ -73,20 +73,23 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
 // ── the Dockerfile as buildkit reads it (moby/buildkit parser.go): a comment line (`#` after blanks) is dropped and
 // never continues (review 3: `# c \` then `USER root` ran as root past a plain `\`-newline join); `\` + blanks joins
 // the next line, skipping comment and blank lines inside it; `\\` does not continue. A heredoc is refused below, not modelled.
+// Blanks are Go's unicode.IsSpace (sweep 13: a BOM, a trailing blank and a NBSP-indented comment misread as instructions).
+const SP = '[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]';
 const dockerLines = (text: string) => {
-  const raw = text.split('\n').map((l) => l.replace(/\r+$/, '')), lines: string[] = [];
+  const raw = text.replace(/^\ufeff/, '').split('\n').map((l) => l.replace(/\r+$/, '')), lines: string[] = [];
+  const skip = new RegExp(`^${SP}*(#|$)`), trim = (l: string) => l.replace(new RegExp(`${SP}+$`), '');
   let cur: string | undefined;
   for (const l of raw) {
-    if (/^[ \t]*(#|$)/.test(l)) continue;
+    if (skip.test(l)) continue;
     const body = l.replace(/(^|[^\\])\\[ \t]*$/, '$1');
     cur = (cur ?? '') + body;
-    if (body === l) { lines.push(cur); cur = undefined; }
+    if (body === l) { lines.push(trim(cur)); cur = undefined; }
   }
-  if (cur !== undefined) lines.push(cur);
+  if (cur !== undefined) lines.push(trim(cur));
   // Canonical spelling, or every line-anchored Dockerfile guard (here, cloudbuild.contract's) reads the wrong file:
-  // docker takes `from`/`user`/`copy` in any case, indented; a `# syntax=` frontend re-parses the whole file (buildkit
-  // strips unicode blanks after `#`); heredoc bodies read as instructions here and are not.
-  const offForm = [...raw.filter((l) => /^[ \t]*#[\s\u0085]*(syntax|escape|check)\s*=/i.test(l)),
+  // docker takes `from`/`user`/`copy` in any case, indented; heredoc bodies read as instructions here and are not;
+  // a parser directive re-escapes or re-parses the file. Not modelled: any directive-shaped comment is refused.
+  const offForm = [...raw.filter((l) => new RegExp(`^${SP}*#${SP}*(syntax|escape|check)${SP}*=`, 'i').test(l)),
     ...lines.filter((l) => !/^[A-Z]+ \S/.test(l) || l.includes('<<'))];
   return { lines, offForm };
 };
@@ -95,8 +98,12 @@ assert.deepStrictEqual(dockerLines('USER node\n# ignored comment \\\nUSER root\n
 assert.deepStrictEqual(dockerLines('RUN a \\\\\nUSER root').lines, ['RUN a \\\\', 'USER root'], 'Dockerfile reader: an escaped `\\\\` continued the line'); n++;
 assert.deepStrictEqual(dockerLines('RUN a \\ \t\r\n  # c\n\n  b\n  # indented comment\nUSER x').lines, ['RUN a   b', 'USER x'], 'Dockerfile reader: `\\` + blanks, or a comment/blank inside a continuation, split the instruction'); n++;
 assert.deepStrictEqual(dockerLines('  # indented comment\nUSER x').offForm, [], 'Dockerfile reader: an indented comment read as an instruction'); n++;
-for (const bad of ['#\u00a0escape=`\nUSER x', '  #check = skip=all\nUSER x', '#!/bin/x\n# syntax=a/b\nUSER x', 'RUN cat <<"# end"\nUSER x\n# end']) {
-  assert(dockerLines(bad).offForm.length > 0, `Dockerfile reader: ${JSON.stringify(bad)} (directive or heredoc) read as canonical`); n++;
+for (const bad of ['#\u00a0escape=`\nUSER x', '  #check = skip=all\nUSER x', '#!/bin/x\n# syntax=a/b\nUSER x', 'RUN cat <<"# end"\nUSER x\n# end', 'user root', ' USER root', 'USER\troot']) {
+  assert(dockerLines(bad).offForm.length > 0, `Dockerfile reader: ${JSON.stringify(bad)} (directive, heredoc, off-case or off-column) read as canonical`); n++;
+}
+// Docker reads each of these as `USER node` (a BOM, trailing blanks, a unicode-indented comment and blank line).
+for (const ok of ['\ufeff# c\nUSER node \t\r\n', '\u00a0# c \\\n\u3000\nUSER node\u00a0\u2003', 'USER node \\']) {
+  assert.deepStrictEqual(dockerLines(ok), { lines: ['USER node'], offForm: [] }, `Dockerfile reader: ${JSON.stringify(ok)} not read as docker reads it`); n++;
 }
 const { lines: dfLines, offForm } = dockerLines(read('Dockerfile'));
 
@@ -130,7 +137,7 @@ const { lines: dfLines, offForm } = dockerLines(read('Dockerfile'));
   const deps = JSON.parse(read('package.json')).dependencies ?? {};
   for (const p of ext) { assert(p in deps, `server.ts requires ${p}, which is not in package.json dependencies: the image's \`npm ci --omit=dev\` never installs it`); n++; }
   const lines = dfLines, df = lines.join('\n');
-  assert(offForm.length === 0, `Dockerfile: instructions the static guards cannot read (want upper case at column 0, no parser directive, no heredoc): ${offForm.join(' | ')}`); n++;
+  assert(offForm.length === 0, `Dockerfile: instructions the static guards cannot read (want upper case at column 0, no parser directive, no \`<<\`): ${offForm.join(' | ')}`); n++;
   const runtime = df.slice(df.lastIndexOf('\nFROM '));
   // Named sources only (cloudbuild.contract's whole-context check reads one spelling: ADD, `[".", "./"]`, `*` passed).
   const wide = lines.filter((l) => /^(ADD|COPY) /.test(l) && !/^COPY --from=/.test(l)
@@ -174,8 +181,11 @@ const { lines: dfLines, offForm } = dockerLines(read('Dockerfile'));
   // The backstop (sweep 9: `FROM builder`, inheriting source + devDependencies, passed every check above): the
   // runtime stage is exactly the reviewed one. The named checks above say why; changing the image means editing this.
   const REVIEWED = ['FROM node:22-alpine', 'WORKDIR /app', 'ENV NODE_ENV=production', 'COPY package*.json ./', 'RUN npm ci --omit=dev',
-    'COPY --from=builder /app/dist/ ./dist/', 'RUN chown node:node /app', 'USER node', 'HEALTHCHECK', 'EXPOSE 3000', 'CMD ["node", "dist/server.cjs"]'];
-  assert.deepStrictEqual(rt.filter((l) => /^[A-Z]/.test(l)).map((l) => l.replace(/^HEALTHCHECK .*/, 'HEALTHCHECK')), REVIEWED, 'Dockerfile: the runtime stage is not the reviewed one'); n++;
+    'COPY --from=builder /app/dist/ ./dist/', 'RUN chown node:node /app', 'USER node',
+    // `\`-joined as buildkit joins it (sweep 13: `HEALTHCHECK NONE` passed when this line was normalised away).
+    'HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3   CMD node -e "require(\'http\').get(\'http://localhost:\' + (process.env.PORT || \'3000\') + \'/api/health\', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"',
+    'EXPOSE 3000', 'CMD ["node", "dist/server.cjs"]'];
+  assert.deepStrictEqual(rt.filter((l) => /^[A-Z]/.test(l)), REVIEWED, 'Dockerfile: the runtime stage is not the reviewed one'); n++;
 }
 
 // ── the desktop package leaves the siblings out, judged by electron-builder's own matcher (last match wins)
