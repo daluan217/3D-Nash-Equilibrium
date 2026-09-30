@@ -61,9 +61,9 @@ export function checkLog(job, log, env, extraLogs = [], now = Date.now()) {
   // normal sections). An install past the whole measured overhead is not the packing; its download rates say network or
   // growth (sweep 7: 828 green apt fetches >= 2295 kB/s, incident 81-707; the mirror outlasted re-runs, so a repeat is no proof).
   const inst = /^\d+$/.test(env.E2E_INSTALL_S ?? '') ? +env.E2E_INSTALL_S * 1000 : null, rest = Math.round((wall - ms - outside - (inst ?? 0)) / 1000);
-  const why = inst > SHARD_TIMINGS._overhead_ms ? `The browser install alone outran the whole measured overhead (${SHARD_TIMINGS._overhead_ms / 1000} s), not the packing. `
-    + 'Its log says why: an apt "Fetched ... (N kB/s)" line under 1 MB/s (a slow runner mirror) or Playwright downloads slower than a green run\'s '
-    + 'is the network (re-run once it recovers; it can outlast re-runs); neither means the install itself grew: re-measure _overhead_ms'
+  const why = inst > SHARD_TIMINGS._overhead_ms ? `The browser install alone outran the whole measured overhead (${SHARD_TIMINGS._overhead_ms / 1000} s), so the trip is the install, not the packing. `
+    + 'If this job\'s log shows an apt "Fetched ... (N kB/s)" line under 1 MB/s (a slow runner mirror) or Playwright downloads slower than a green run\'s, '
+    + 'it is the network: re-run once it recovers (it can outlast re-runs). If neither, the install itself grew: re-measure _overhead_ms'
     : 'Re-measure _overhead_ms with scripts/shard-timings-from-run.mjs';
   return `smoke: the job's first attempts ran ${Math.ceil(wall / 1000)} s (${outside / 1000} s of it outside the steps), over the ${ceiling / 1000} s ceiling: `
     + `${ms / 1000} s of sections (budget ${SECTION_BUDGET_MS / 1000} s), ${inst === null ? `no readable install time (E2E_INSTALL_S ${JSON.stringify(env.E2E_INSTALL_S)}), `
