@@ -71,7 +71,7 @@ assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 35, 'the smoke suite is split into 35 CI shards (test.yml matrix must match) '
+assert.strictEqual(SHARD_COUNT, 38, 'the smoke suite is split into 38 CI shards (test.yml matrix must match) '
   + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
   + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
   + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
@@ -90,7 +90,10 @@ assert.strictEqual(SHARD_COUNT, 35, 'the smoke suite is split into 35 CI shards 
   + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; the table carries 125,000/180,000. Adding three LANDSCAPE conditions to \u00a7101 (the orientation that hid the tour footer) took it to a MEASURED 259,112ms -- over the same per-section budget -- so the trio split out as \u00a7103 behind one shared walker; re-measured alone, \u00a7101 is 104,486ms and \u00a7103 65,779-79,621ms (tabled at 120,000/200,000). 35 is the MINIMUM that clears the 200 s multi-section line: 34 puts four multi-section shards over it (9 = \u00a770+\u00a784 at 205 s, 10 at 203 s, 33 at 205 s, 34 at 204 s). 36 also clears it and leaves no shard empty -- it is simply not needed, and test.yml pins the matrix to whatever this constant says. '
   + 'TASK-18 2026-09-23: three CI runs summed 9,296/8,994/9,317 s of sections against the 7,875 s that '
   + '35 x 225 s allows, so the table could not be honest at 35; the per-job ceiling rose to 420 s and '
-  + '\u00a7100-\u00a7103 split along their viewport lists. 35 stays: every run already peaked at 40 concurrent jobs.');
+  + '\u00a7100-\u00a7103 split along their viewport lists. 35 stays: every run already peaked at 40 concurrent jobs. '
+  + 'TASK-18 sweeps 11-13 (CI 36774742769, 36778548533, 36781207202): with the browser packages cached, a slow runner disk '
+  + 'still measured 145 s of overhead (smoke 19: dpkg unpacked the local WebKit set in 58.8 s), so the budget is 275 s and '
+  + 'the line 247.5 s. 35 packs 261 s and 37 leaves 0.7 s under the line; 38 packs every shard at 222-235 s.');
 
 // ── §100-§103 split (TASK-18): the parts cover the pre-split loops exactly ──
 // The lists below are the pre-split sections' own literals, verbatim. Each family's parts must
@@ -372,10 +375,11 @@ const line = 900 - TOUR_TIMINGS._setup_s; // 75% of 20 min, less the measured se
 assert.doesNotThrow(budget('shard: [1, 2]\ntimeout-minutes: 20', [line - 380, 380, line - 1]), `the boundary: ${line} s + the measured setup = 75% of 20 min fits`);
 assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [line - 379, 380, line - 1]), new RegExp(`packs ${line + 1} s of measured cases \\(\\+${TOUR_TIMINGS._setup_s} s setup\\)`),
   `the boundary: ${line + 1} s + the measured setup does not`);
-// The known positive: CI's round-robin walk packing on the verbatim table (runs 36616155651..36662358380).
+// The known positive: CI's round-robin walk packing (on runs 36616155651..36662358380's table: shard 2's 32 s case onto
+// the 533 s shard lowers its 759 s). Shard 2 is pinned; its seconds follow the table, which a refresh raises.
 const roundRobin: Pack = (tags, _, n) => Array.from({ length: n }, (_, s) => tags.filter((_, j) => j % n === s));
 assert.throws(() => shardBudget('synthetic', workflowJob('e2e_tour_walk'), walkTags(), TOUR_TIMINGS['tour-walk'], TOUR_TIMINGS._setup_s, roundRobin),
-  /moving shard 2's 32 s case onto the 533 s shard lowers its 759 s/, 'the round-robin walk packing that ended the e2e gate fails the budget by name');
+  /moving shard 2's \d+ s case onto the \d+ s shard lowers its \d+ s/, 'the round-robin walk packing that ended the e2e gate fails the budget by name');
 assert.throws(() => packTour(['[a]', '[b]'], [['[a]', 5]], 2), /^Error: tour-timings\.json has no CI time for \[b\]: refresh it/,
   'a case with no CI time stops the runner by name: packed at NaN it would run on no shard');
 assert.deepStrictEqual(packTour(['[a]', '[b]', '[c]', '[d]'], [['[a]', 1], ['[b]', 3], ['[c]', 3], ['[d]', 2]], 2), [['[b]', '[d]'], ['[a]', '[c]']],
@@ -660,7 +664,7 @@ bySelector.forEach((ids, s) => assert.deepStrictEqual(ids, definitions.filter((d
 assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id).sort(), 'the shards together run every section exactly once');
 // Sweep 14: nothing saw WHICH cases a runner then ran (smoke.mjs running selected.slice(1) passed). Each CI step diffs
 // its log against shard-cases.mjs. Its smoke list reuses selectSmokeSections, the runner's own selector: an oracle only
-// because the check above pins that selector to the packing for all 35 shards, and so does the line below.
+// because the check above pins that selector to the packing for every shard, and so does the line below.
 {
   const walkShard = (s: number) => shardCases('walk', { TOUR_WALK_SHARD: `${s}/9` }), scrollShard = (s: number) => shardCases('scroll', { TOUR_SCROLL_SHARD: `${s}/2` });
   bySelector.forEach((_, s) => assert.deepStrictEqual(shardCases('smoke', { E2E_SHARD: `${s + 1}/${SHARD_COUNT}` }, smoke),
@@ -708,7 +712,7 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   assert.strictEqual(wall(log(s1), C - O, String(T)), '', 'a job at its ceiling, counting the time outside its steps, passes');
   assert.match(wall(log(s1), C - O + 1, String(T)), ceil, 'a job 1 ms over its ceiling fails by name');
   const retried24 = `${main24(1000)}\n════ RETRYING ONLY FAILED SECTIONS: ${s24[0]} x ════\n${log([s24[0]], 30000, 24)}`, retried47 = `${step47(1000)}\n════ RETRYING ONLY FAILED SECTIONS: 47 x ════\n${step47(30000)}`;
-  assert.deepStrictEqual([C - O + 60000, C - O + 60001].map((ms) => wall(retried24, ms, String(T), 24, [retried47])), ['', wall(log(s1), C - O + 1, String(T))],
+  assert.deepStrictEqual([C - O + 60000, C - O + 60001].map((ms) => wall(retried24, ms, String(T), 24, [retried47])), ['', wall(at(s1, 2000), C - O + 1, String(T))],
     'retries in the main and §47 logs are not charged to the wall; 1 ms more is');
   for (const t0 of [undefined, '', ' 1800000000', '1.8e9', String(T + 1)])
     assert.match(wall(log(s1), 0, t0), /^smoke: E2E_JOB_T0 .* is not this job's start in epoch seconds, so its wall is unreadable$/, `an E2E_JOB_T0 of ${JSON.stringify(t0)} fails, never passes as NaN`);
@@ -779,7 +783,7 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   // Each step checks its own log; the smoke step's check turns a green exit red, never red green.
   assert.match(workflowJob('e2e_smoke'), /status=\$\{PIPESTATUS\[0\]\}\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-\$\{\{ matrix\.shard \}\}\.log" \|\| \[ "\$status" -ne 0 \] \|\| status=1\n\s+set -e\n/,
     'the smoke step checks its log before it takes the exit code');
-  assert.match(workflowJob('e2e_smoke'), /run: \|\n\s+set -o pipefail\n\s+node src\/e2e\/smoke\.mjs 2>&1 \| tee "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+#[^\n]*\n\s+env -u E2E_SECTION E2E_SHARD=24\/35 node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-24\.log" "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+env:\n\s+E2E_SECTION: '47'/,
+  assert.match(workflowJob('e2e_smoke'), new RegExp(String.raw`run: \|\n\s+set -o pipefail\n\s+node src\/e2e\/smoke\.mjs 2>&1 \| tee "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+#[^\n]*\n\s+env -u E2E_SECTION E2E_SHARD=24\/${SHARD_COUNT} node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-24\.log" "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+env:\n\s+E2E_SECTION: '47'`),
     'the §47 step checks its own log, then shard 24\'s budget with both logs');
   for (const job of ['walk', 'scroll'])
     assert.match(workflowJob(`e2e_tour_${job}`), new RegExp(`set -o pipefail\\n\\s+node src/e2e/tour-${job}\\.test\\.mjs \\| tee "\\$RUNNER_TEMP/tour-${job}\\.log"\\n\\s+node src/e2e/shard-cases\\.mjs ${job} "\\$RUNNER_TEMP/tour-${job}\\.log"\\n`),

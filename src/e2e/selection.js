@@ -71,8 +71,15 @@ import { dirname, join } from 'node:path';
  * 36695839492 the slowest smoke job ran 319 s (was 1,228); the e2e gate took
  * 13.6 min (was 20.5), bound by the tour walk jobs (803 s). Shard 24 was the slowest in 7 of 8
  * runs because test.yml reruns §47 there (78-96 s), so the packer now counts it.
+ *
+ * TASK-18 sweeps 11-13 (2026-09-30): browser system packages now come from the
+ * Actions cache, but smoke 19 on CI 36778548533 still spent 145 s outside its
+ * sections (dpkg unpacked the cached WebKit set in 58.8 s on a slow disk). The
+ * tables keep that maximum, so the budget is 275 s and the multi-section line
+ * 247.5 s: 35 shards pack 261 s, 37 leave 0.7 s under the line, 38 pack every
+ * shard at 222-235 s. Three more smoke jobs are the price of an honest table.
  */
-export const SHARD_COUNT = 35;
+export const SHARD_COUNT = 38;
 
 // The one census of smoke.mjs's sections, read as TEXT (importing smoke.mjs boots the suite). e2esharding counts
 // section( calls without this pattern, so a shape it cannot see fails there by name, never silently unpacked.

@@ -2,7 +2,7 @@
  * Which cases a CI e2e job must run, and whether its log shows it ran exactly those. test.yml runs
  * `node src/e2e/shard-cases.mjs <smoke|walk|scroll> <log>` after each runner, in the runner's env: a count or a
  * success line cannot see WHICH cases ran (TASK-18 sweeps 13, 14). smoke reuses selectSmokeSections, which is an
- * oracle only because e2esharding pins it to the packing for every one of the 35 shards.
+ * oracle only because e2esharding pins it to the packing for every one of its shards.
  */
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
