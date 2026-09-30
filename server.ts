@@ -5760,7 +5760,10 @@ async function startServer() {
           });
         });
       }
-      app.use(express.static(distPath));
+      // No directory redirect: serve-static echoes the raw target, so /\evil.example/%2e%2e/assets answered
+      // 301 Location /\evil.example/%2e%2e/assets/, which a browser reads as https://evil.example/ (sweep 22).
+      // dist/'s one directory, assets/, is a 404 either way.
+      app.use(express.static(distPath, { redirect: false }));
       // A hashed asset not on disk is a 404, not the SPA shell as 200 text/html: a chunk that never uploaded
       // passed the live smoke and handed the browser HTML for its script (sweep 25). no-store: no cache keeps
       // the 404 for a chunk still uploading. /assets only; every other miss keeps the SPA fallback below.

@@ -97,8 +97,8 @@ const BASELINE: Record<string, string> = {
   'x-content-type-options': 'nosniff', 'referrer-policy': 'strict-origin-when-cross-origin', 'x-frame-options': 'DENY',
   'permissions-policy': 'geolocation=(), microphone=(), camera=()', 'content-security-policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
 };
-// serve-static's redirect and Express's own 404 page overwrite CSP with the stricter `default-src 'none'` (no
-// script, style or object at all); framing stays blocked by X-Frame-Options DENY. Only those two may.
+// Express's own 404 page overwrites CSP with the stricter `default-src 'none'` (no script, style or object at
+// all); framing stays blocked by X-Frame-Options DENY. Only it may (serve-static's redirect is off, sweep 22).
 const LIB_CSP = "default-src 'none'";
 const hardened = (name: string, r: Res, { hsts, libCsp = false }: { hsts: boolean; libCsp?: boolean }) => {
   for (const [k, v] of Object.entries(BASELINE)) {
@@ -125,7 +125,7 @@ const cases: Case[] = [
   ['/assets gzip 200', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, 'accept-encoding': 'gzip' }), 200, ''],
   ['/assets br 412 (If-Match)', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, 'accept-encoding': 'br', 'if-match': '"nope"' }), 412, 'Invalid request.'],
   ['/assets 416', () => h('GET', '/assets/app-AAAA1111.js', { ...GFE, range: 'bytes=99999-' }), 416, 'Invalid request.'],
-  ['serve-static directory 301', () => h('GET', '/assets'), 301, 'Redirecting', true],
+  ['serve-static directory, no redirect', () => h('GET', '/assets'), 404, '"Not found"'],
   ['SPA fallback 200', () => h('GET', '/some/route'), 200, '<div id="root">'],
   ['www 301', () => h('GET', '/x?y=1', { ...GFE, host: `www.${APEX}` }), 301, `https://${APEX}/x?y=1`],
   ['body-parser 400 (malformed JSON)', () => h('POST', '/api/auth/login', J, '{bad'), 400, 'Invalid request.'],
@@ -164,6 +164,16 @@ for (const [name, run, status, marker, libCsp] of cases) {
     && r.h['content-encoding'] === coded && (!/^\/assets .*41\d/.test(name) || (r.h['content-type']!.startsWith('application/json') && r.h['cache-control'] === 'no-store')),
     `fixture: ${name} answered ${r.status} ${r.h['content-encoding'] ?? ''} ${r.h['content-type']} ${r.body.slice(0, 100)}, want ${status} with ${marker}`);
   hardened(name, r, { hsts: true, libCsp });
+}
+// Sweep 22 (S1-5): serve-static's directory redirect echoed the raw target: GET /\evil.example/%2e%2e/assets
+// answered 301 Location /\evil.example/%2e%2e/assets/, which a browser resolves to https://evil.example/assets/.
+// Live, Google's front end normalises `\` first; the server must not depend on it. The apex redirects nothing.
+for (const [method, t] of [['GET', '/\\evil.example/%2e%2e/assets'], ['HEAD', '/\\evil.example/%2e%2e/assets'], ['GET', '/\\evil.example/x/..%2f..%2fassets'],
+  ['GET', '//evil.example/%2e%2e/assets'], ['GET', '/%5Cevil.example/%2e%2e/assets'], ['GET', '/assets/..%2Fassets'], ['GET', '/assets/'], ['HEAD', '/assets']]) {
+  const r = await named(`${method} ${t}`, h(method, t));
+  assert(r.status !== 301 && r.status !== 302 && r.status !== 303 && r.status !== 307 && r.status !== 308 && r.h.location === undefined,
+    `${method} ${t}: ${r.status} Location ${r.h.location}, want no redirect from the apex`);
+  hardened(`${method} ${t}`, r, { hsts: true });
 }
 
 // live-smoke section 3, the real script against the real server: every new row passes.

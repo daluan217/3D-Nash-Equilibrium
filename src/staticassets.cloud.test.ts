@@ -30,7 +30,7 @@ assert(start > 0 && end > start + tail.length, 'the static block (forbiddenFiles
 const PICK = src.slice(src.indexOf('function pickCoding('), src.indexOf('\nasync function startServer'));
 assert(PICK.startsWith('function pickCoding(') && PICK.includes('return qb > 0'), 'pickCoding is gone from server.ts');
 const block = PICK + src.slice(start, end);
-const STATIC = '      app.use(express.static(distPath));\n';
+const STATIC = '      app.use(express.static(distPath, { redirect: false }));\n';
 assert(block.includes(STATIC), 'express.static is gone from the static block');
 // The block as it was before sweep 25: nothing between the static mount and the SPA fallback.
 const naive = block.slice(0, block.indexOf(STATIC) + STATIC.length) + block.slice(block.indexOf(tail));
