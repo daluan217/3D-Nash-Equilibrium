@@ -113,10 +113,11 @@ const hardened = (name: string, r: Res, { hsts, libCsp = false }: { hsts: boolea
 
 // ── hosted (Cloud Run shape: TRUST_PROXY=1, GCS store, GFE's Host + X-Forwarded-Proto)
 // TRUST_PROXY as cloudbuild.yaml deploys it; the rate-limit block below proves what that value keys on.
-const TRUST_PROXY = /^ {2}_TRUST_PROXY: '([^']*)'$/m.exec(fs.readFileSync(fileURLToPath(new URL('../cloudbuild.yaml', import.meta.url)), 'utf8'))?.[1];
+const cbText = fs.readFileSync(fileURLToPath(new URL('../cloudbuild.yaml', import.meta.url)), 'utf8');
+const TRUST_PROXY = /'--set-env-vars=(?:[^',]*,)*TRUST_PROXY=([^,']*)/.exec(cbText)?.[1];
 // One hop: Cloud Run's peer is Google's front end, never loopback, so an address list (this harness's peer IS
 // loopback) would pass here and key every visitor on the front end in production.
-assert.strictEqual(TRUST_PROXY, '1', `cloudbuild.yaml _TRUST_PROXY is '${TRUST_PROXY}': Cloud Run is exactly one trusted hop`); n++;
+assert.strictEqual(TRUST_PROXY, '1', `cloudbuild.yaml TRUST_PROXY is '${TRUST_PROXY}': Cloud Run is exactly one trusted hop`); n++;
 const hosted = await boot({ TRUST_PROXY, GCS_BUCKET_NAME: BUCKET, STORAGE_EMULATOR_HOST: `http://127.0.0.1:${(gcs.address() as net.AddressInfo).port}`, GOOGLE_CLOUD_PROJECT: 'fake-project' });
 const APEX = 'nash-equilibrium-simulator.com', GFE = { host: APEX, 'x-forwarded-proto': 'https' }, J = { ...GFE, 'content-type': 'application/json' };
 const h = (method: string, p: string, headers: Record<string, string> = GFE, body?: string | Buffer) => call(hosted.port, method, p, headers, body);

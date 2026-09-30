@@ -170,18 +170,27 @@ const { lines: dfLines, offForm } = dockerLines(read('Dockerfile'));
   assert.deepStrictEqual(cb.steps.slice(0, 2), [
     { name: 'gcr.io/cloud-builders/docker', args: ['build', '-t', IMG, '-t', 'gcr.io/$PROJECT_ID/nash-equilibrium-backend:latest', '.'] },
     { name: 'gcr.io/cloud-builders/docker', args: ['push', IMG] }], 'cloudbuild.yaml: the image is not this Dockerfile\'s last stage, built from . and pushed as the deployed tag'); n++;
-  const [deploy, ...extra] = cb.steps.slice(2), dArgs = deploy?.args ?? [], flag = (a: string) => a.split('=')[0];
-  const DEPLOY_FLAGS = ['--image', '--region', '--platform', '--allow-unauthenticated', '--set-env-vars', '--set-secrets', '--memory', '--cpu', '--timeout', '--max-instances'];
-  // Each flag once (sweep 15: a second --set-env-vars=IS_ELECTRON=true or --max-instances=100 passed every guard; the
-  // contract reads only the first), and no build-wide env, secrets or pool beside the steps.
+  const [deploy, ...extra] = cb.steps.slice(2), dArgs = deploy?.args ?? [];
+  // No build-wide env, secrets or pool beside the steps (sweep 15).
   const cbKeys = cb as unknown as Record<string, unknown>;
   assert(Object.keys(cbKeys).sort().join() === 'images,options,steps,substitutions' && JSON.stringify(cbKeys.options) === '{"logging":"CLOUD_LOGGING_ONLY"}',
     `cloudbuild.yaml: top-level keys or options beyond the reviewed ones: ${JSON.stringify(Object.keys(cbKeys))} ${JSON.stringify(cbKeys.options)}`); n++;
   assert(extra.length === 0 && Object.keys(deploy ?? {}).join() === 'name,args' && deploy.name === 'gcr.io/cloud-builders/gcloud'
-    && new Set(dArgs.slice(3).map(flag)).size === dArgs.length - 3
-    && dArgs.slice(0, 3).join(' ') === 'run deploy nash-equilibrium-backend' && dArgs.slice(3).every((a) => DEPLOY_FLAGS.includes(flag(a)))
-    && dArgs.filter((a) => flag(a) === '--image').join() === `--image=${IMG}`,
-  `cloudbuild.yaml: the deploy is not one \`gcloud run deploy\` of --image=${IMG} with reviewed flags: ${cb.steps.slice(2).map((s) => JSON.stringify(s)).join(' | ').slice(0, 600)}`); n++;
+    && dArgs.slice(0, 3).join(' ') === 'run deploy nash-equilibrium-backend',
+  `cloudbuild.yaml: the deploy is not one \`gcloud run deploy\`: ${cb.steps.slice(2).map((s) => JSON.stringify(s)).join(' | ').slice(0, 600)}`); n++;
+  // Every flag and env value as reviewed, each once (sweep 15: a second --set-env-vars passed; sweep 16: NODE_ENV=development,
+  // NASH_SCENARIO_REGEN=1, TRUST_PROXY=true, --timeout=60 passed). A trigger value beats a substitution default, so only
+  // per-deployment, non-security values are ${_SUB}s (TRUST_PROXY/REPORT_MODEL were). Secret refs: cloudbuild.contract.
+  const norm = (a: string) => a.startsWith('--set-env-vars=') ? `--set-env-vars=${a.slice(15).split(',').sort().join()}` : a.startsWith('--set-secrets=') ? '--set-secrets' : a;
+  assert.deepStrictEqual(dArgs.slice(3).map(norm).sort(), ['--allow-unauthenticated', '--cpu=1', `--image=${IMG}`, '--max-instances=1', '--memory=512Mi',
+    '--platform=managed', '--region=us-east1', '--set-env-vars=AZURE_FOUNDRY_ENDPOINT=${_AZURE_FOUNDRY_ENDPOINT},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},'
+    + 'NASH_DIRECTION_CHECKS=1,NASH_LLM_TIES=template,NASH_PAYOFF_TEMPLATE=1,NASH_SCENARIO_REGEN=0,NODE_ENV=production,REPORT_MODEL=gpt-5.6-luna,'
+    + 'SMTP_FROM=${_SMTP_FROM},SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},TRUST_PROXY=1', '--set-secrets', '--timeout=3600'],
+  'cloudbuild.yaml: a deploy flag or env value is not the reviewed one'); n++;
+  // The trigger defines no _SMTP_HOST/_SMTP_PORT (cloud-env-audit.yml's topology note), so these defaults ship.
+  assert.deepStrictEqual((cb as unknown as { substitutions: unknown }).substitutions, { _SMTP_HOST: 'smtp.gmail.com', _SMTP_PORT: '465',
+    _SMTP_FROM: '"Nash Equilibrium Simulator" <your-email@gmail.com>', _GCS_BUCKET_NAME: 'your-gcs-bucket-name', _AZURE_FOUNDRY_ENDPOINT: '' },
+  'cloudbuild.yaml: a substitution default is not the reviewed one'); n++;
   const lastAt = (re: RegExp) => rt.map((l) => re.test(l)).lastIndexOf(true);
   assert(lastAt(/^RUN /) < lastAt(/^USER /), 'Dockerfile: a RUN after USER node, so node owns what it creates'); n++;
   // The backstop (sweep 9: `FROM builder`, inheriting source + devDependencies, passed every check above): the

@@ -45,7 +45,11 @@ steps:
       # versions are public deployment configuration, so keeping them here
       # makes a rotation reviewable and prevents a trigger-UI override from
       # silently switching a secret to `latest`.
-      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},TRUST_PROXY=${_TRUST_PROXY},AZURE_FOUNDRY_ENDPOINT=${_AZURE_FOUNDRY_ENDPOINT},REPORT_MODEL=${_REPORT_MODEL},NASH_PAYOFF_TEMPLATE=1,NASH_LLM_TIES=template,NASH_DIRECTION_CHECKS=1,NASH_SCENARIO_REGEN=0'
+      # TRUST_PROXY and REPORT_MODEL are literal for the same reason: a trigger value beats a substitution's
+      # default here. TRUST_PROXY=1 = Cloud Run's one front-end hop (rate limits key on the real client; "true"
+      # would key on a client-written X-Forwarded-For). REPORT_MODEL is the reviewed rung-3 model; empty
+      # falls back to DEFAULT_MODEL in src/utils/report.ts, unseen (how prod ran gpt-5.4-mini).
+      - '--set-env-vars=NODE_ENV=production,SMTP_HOST=${_SMTP_HOST},SMTP_PORT=${_SMTP_PORT},SMTP_FROM=${_SMTP_FROM},GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},TRUST_PROXY=1,AZURE_FOUNDRY_ENDPOINT=${_AZURE_FOUNDRY_ENDPOINT},REPORT_MODEL=gpt-5.6-luna,NASH_PAYOFF_TEMPLATE=1,NASH_LLM_TIES=template,NASH_DIRECTION_CHECKS=1,NASH_SCENARIO_REGEN=0'
       - '--set-secrets=SMTP_USER=nash-equilibrium-smtp-user:3,SMTP_PASS=nash-equilibrium-smtp-pass:3,ADMIN_SECRET=nash-equilibrium-admin-secret:3,AUTH_SECRET=nash-equilibrium-auth-secret:2,AZURE_FOUNDRY_API_KEY=nash-equilibrium-azure-foundry-api-key:3'
       - '--memory=512Mi'
       - '--cpu=1'
@@ -77,17 +81,6 @@ substitutions:
   _SMTP_PORT: '465'
   _SMTP_FROM: '"Nash Equilibrium Simulator" <your-email@gmail.com>'
   _GCS_BUCKET_NAME: 'your-gcs-bucket-name'
-  # Trust the Cloud Run front-end proxy so rate limiting keys on the real client
-  # IP (req.ip) rather than the proxy. "1" = trust one hop, correct for Cloud Run.
-  _TRUST_PROXY: '1'
   # Microsoft Foundry endpoint is not itself a credential and remains a normal
   # environment value. The API key is injected from Secret Manager below.
   _AZURE_FOUNDRY_ENDPOINT: ''
-  # The report model. gpt-5.6-luna is what production runs (rung-3 scenario
-  # invention); it is NOT a secret, so the real value lives here in review,
-  # not in the trigger UI. An EMPTY value here or in the Cloud Build trigger
-  # silently falls back to DEFAULT_MODEL in src/utils/report.ts — invisible
-  # from the outside, which is how prod ran gpt-5.4-mini unnoticed. If the
-  # trigger UI still defines _REPORT_MODEL, its value WINS over this default:
-  # clear it there, or keep the two in sync.
-  _REPORT_MODEL: 'gpt-5.6-luna'
