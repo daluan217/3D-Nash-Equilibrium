@@ -19,6 +19,7 @@ import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
 import { isAnalyticsNoise } from './e2e/console-noise.mjs';
 import { SCROLL_CASES, WALK_CASES, scrollTags, walkTags } from './e2e/tour-cases.mjs';
 import { shardCases, logCases, checkLog } from './e2e/shard-cases.mjs';
+import { measure, refresh } from '../scripts/shard-timings-from-run.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -337,27 +338,29 @@ for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74',
 assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
   'CI runs the CPU-throttle reach guard in a job that has chromium');
 // Shard budget (TASK-18, CI 36533916769): tour-timings.json holds CI seconds per case tag, in run order. Its tags
-// must equal the script's own, both ways; packed round-robin over the job's matrix, the slowest shard plus 120 s
-// of setup must fit 75% of the job's timeout.
+// must equal the script's own, both ways; packed round-robin over the job's matrix, the slowest shard plus the
+// measured _setup_s (it was a hand-set 120 s; CI measured 133, sweep 3 F6) must fit 75% of the job's timeout.
 const TOUR_TIMINGS = JSON.parse(readFileSync(new URL('./e2e/tour-timings.json', import.meta.url), 'utf8'));
 const budgeted = new Set<string>();
-function shardBudget(name: string, job: string, tags: string[], rows: [string, number, string?][] = TOUR_TIMINGS[name]) {
+function shardBudget(name: string, job: string, tags: string[], rows: [string, number, string?][] = TOUR_TIMINGS[name], setup: number = TOUR_TIMINGS._setup_s) {
   const timed = rows.map(([t]) => t); budgeted.add(name);
   const missing = tags.filter((t) => !timed.includes(t)), stale = timed.filter((t) => !tags.includes(t));
   assert.deepStrictEqual([missing, stale], [[], []], `tour-timings.json ${name}: cases with no timing ${JSON.stringify(missing)}, timings for no case ${JSON.stringify(stale)}`);
   assert.deepStrictEqual(timed, tags, `tour-timings.json ${name} lists each case once, in run order`);
   const n = (job.match(/shard: \[([\d, ]+)\]/)?.[1] ?? '').split(',').length, mins = Number(job.match(/timeout-minutes: (\d+)/)?.[1]);
   const packed = rows.reduce((a, [, s], j) => { a[j % n] += s; return a; }, Array(n).fill(0));
-  assert.ok(Math.max(...packed) + 120 <= 0.75 * mins * 60,
-    `the slowest ${name} shard packs ${Math.max(...packed)} s of measured cases (+120 s setup) over 75% of its ${mins} min timeout: add shards`);
+  assert.ok(Number.isInteger(setup) && Math.max(...packed) + setup <= 0.75 * mins * 60,
+    `the slowest ${name} shard packs ${Math.max(...packed)} s of measured cases (+${setup} s setup) over 75% of its ${mins} min timeout: add shards`);
   const local = rows.filter((r) => r.length > 2).map(([t]) => t); // a 3rd field marks a local placeholder, not a CI maximum
   assert.deepStrictEqual(local, [], `tour-timings.json ${name}: placeholder timings awaiting CI maxima ${JSON.stringify(local)}`);
 }
 // The rule itself, on synthetic rows: today's data packs well inside it, so a relaxed rule would pass (audit B6).
 const budget = (job: string, secs: number[]) => () => shardBudget('synthetic', job, secs.map((_, j) => `[${j}]`), secs.map((s, j) => [`[${j}]`, s]));
 assert.throws(budget('shard: [1]\ntimeout-minutes: 20', [1071]), /packs 1071 s/, 'CI 36533916769: a 1071 s shard on a 20 min timeout fails the budget');
-assert.doesNotThrow(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 390]), 'the boundary: 780 s + 120 s = 75% of 20 min fits');
-assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [390, 5, 391]), /packs 781 s/, 'the boundary: 781 s + 120 s does not');
+const line = 900 - TOUR_TIMINGS._setup_s; // 75% of 20 min, less the measured setup
+assert.doesNotThrow(budget('shard: [1, 2]\ntimeout-minutes: 20', [line - 390, 5, 390]), `the boundary: ${line} s + the measured setup = 75% of 20 min fits`);
+assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [line - 390, 5, 391]), new RegExp(`packs ${line + 1} s of measured cases \\(\\+${TOUR_TIMINGS._setup_s} s setup\\)`),
+  `the boundary: ${line + 1} s + the measured setup does not`);
 assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', ['[0]'], [['[0]', 5, 'local-c4']]), /placeholder timings awaiting CI maxima \["\[0\]"\]/,
   'a local placeholder timing fails the budget until a CI maximum replaces it');
 // TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the step on a
@@ -445,7 +448,7 @@ assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', 
   // CI 36533916769: 8 cases a shard ran 1071 s of the 1200 s timeout.
   shardBudget('tour-walk', job, walkTags());
 }
-assert.deepStrictEqual([...budgeted].sort(), [...Object.keys(TOUR_TIMINGS).filter((k) => k !== '_why'), 'synthetic'].sort(),
+assert.deepStrictEqual([...budgeted].sort(), [...Object.keys(TOUR_TIMINGS).filter((k) => !k.startsWith('_')), 'synthetic'].sort(),
   'every timed tour job is checked by the one shardBudget rule the synthetic rows pin');
 console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
@@ -461,16 +464,62 @@ for (const id of Object.keys(SHARD_TIMINGS).filter((k) => !k.startsWith('_'))) {
   assert(definitions.some((d) => d.id === id), `shard-timings.json names section ${id}, which no longer exists — remove it`);
 }
 assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'the checked-in timings table must be complete and in budget');
+// Sweep 3 F6: the fixed costs are measured, from gh's job JSON and log. Verbatim CI jobs (run 36662358380 smoke 8/35 =
+// job 109719866209, 26/35 = 109719866210; run 36661100607 walk 9/9 = 109716042553). By hand: shard 8 walled 403 s,
+// ran 279.658 s of sections, so 124 s overhead (the hand-set table said 75); shard 26 spent 5 s before its first step
+// and 3 s after its last check; walk 9/9 walled 485 s over 352 s of cases, so 133 s setup (the rule said 120).
+{
+  const st = (name: string, a: string, b: string, conclusion = 'success') => ({ name, conclusion, startedAt: `2026-09-30T${a}Z`, completedAt: `2026-09-30T${b}Z` });
+  const steps = (t: string[]) => [st('Set up job', t[0], t[1]), st('Run actions/checkout@v5', t[1], t[2]), st('Run actions/setup-node@v5', t[2], t[3]), st('Install dependencies', t[3], t[4]),
+    st('Download the short-timeout e2e bundle', t[4], t[5]), st('Determine whether this shard runs a WebKit-guarded section', t[5], t[5]), st('Install headless browsers for this shard', t[5], t[6]),
+    st('Boot the production server and run the smoke suite', t[6], t[7]), st('Exercise section 47 after natural simulation completion', t[7], t[7], 'skipped'),
+    st('Upload shard evidence', t[7], t[8], 'skipped'), st('Complete job', t[8], t[8])];
+  const gh = (job: string, lines: string[]) => lines.map((l) => `${job}\tUNKNOWN STEP\t2026-09-30T${l}`).join('\n');
+  const smoke8 = { name: 'e2e smoke (8/35)', conclusion: 'success', startedAt: '2026-09-30T03:00:30Z', completedAt: '2026-09-30T03:07:13Z',
+    steps: steps(['03:00:31', '03:00:32', '03:00:34', '03:00:47', '03:01:00', '03:01:02', '03:02:10', '03:07:10', '03:07:11']),
+    log: gh('e2e smoke (8/35)', ['03:02:50.6945708Z SECTION-PASS 16 zoom pauses simulation (20014ms)', '03:03:53.9079226Z SECTION-PASS 30 regenerate timeout wording (62672ms)',
+      '03:07:10.8799692Z SECTION-PASS 75 ModalSurface: Tab trap holds from a tabIndex=-1 landmark inside the drawer, in both directions, with 0 and 3 saved games (196972ms)']) };
+  const smoke26 = { name: 'e2e smoke (26/35)', conclusion: 'success', startedAt: '2026-09-30T03:03:26Z', completedAt: '2026-09-30T03:07:40Z',
+    steps: steps(['03:03:27', '03:03:31', '03:03:33', '03:03:36', '03:03:47', '03:03:49', '03:04:19', '03:07:37', '03:07:38']),
+    log: gh('e2e smoke (26/35)', ['03:04:42.1036399Z SECTION-PASS 18 reduced-motion idle spin (21114ms)', '03:06:10.5390478Z SECTION-PASS 88 tour card never sits inside its own spotlight (912x1368 dsf2) (88436ms)',
+      '03:07:15.9748961Z SECTION-PASS 100c no width and zoom a user can reach makes the page scroll sideways (390px at 145-163%, drawer) (65436ms)',
+      '03:07:37.5948730Z SECTION-PASS 101a the guided tour can be walked to the end at every width and zoom a user can reach (280px at 300%) (21620ms)']) };
+  const walk9 = { name: 'e2e tour walk (9/9)', conclusion: 'success', startedAt: '2026-09-30T02:43:46Z', completedAt: '2026-09-30T02:51:51Z',
+    log: gh('e2e tour walk (9/9)', ['02:47:32.5647833Z   · [chromium 390x844 in view click] 97 s, load 1.1 at start', '02:48:03.8278057Z   · [chromium 1024x1366 long frame] 31 s, load 2.6 at start',
+      '02:48:36.0954441Z   · [chromium 390x844 page cancels] 32 s, load 2.9 at start', '02:50:25.6191171Z   · [webkit 390x844 away key] 109 s, load 3.7 at start',
+      '02:50:52.1342723Z   · [webkit 390x844 flight] 27 s, load 1.8 at start', '02:51:21.2263642Z   · [webkit 390x844 interrupt] 29 s, load 1.5 at start',
+      '02:51:48.3966382Z   · [webkit 390x844 page cancels same task] 27 s, load 2.2 at start']) };
+  const m = measure([smoke8, smoke26, walk9]);
+  assert.deepStrictEqual([m.overheadMs, m.outsideMs, m.setupS, m.problems], [124000, 8000, 133, []], 'measure() reads 124 s overhead, 8 s outside the steps and 133 s tour setup off the verbatim CI jobs');
+  assert.deepStrictEqual([Object.keys(m.sections).length, Object.keys(m.tour.walk).length], [7, 7], 'measure() reads every section and tour case line in the fixture');
+  // The checked-in tables cover every measurement a real CI job made: the shipped 75 s / 120 s did not.
+  assert.ok(SHARD_TIMINGS._overhead_ms >= m.overheadMs && SHARD_TIMINGS._outside_ms >= m.outsideMs && TOUR_TIMINGS._setup_s >= m.setupS,
+    `the tables' fixed costs (${SHARD_TIMINGS._overhead_ms} ms overhead, ${SHARD_TIMINGS._outside_ms} ms outside, ${TOUR_TIMINGS._setup_s} s tour setup) cover the CI jobs' measured ones`);
+  assert.deepStrictEqual(Object.entries(m.sections).filter(([id, ms]) => !(SHARD_TIMINGS[id] >= ms)), [], 'every CI section time in the fixture is within its table entry');
+  assert.deepStrictEqual(Object.entries(m.tour.walk).filter(([t, s]) => !(Object.fromEntries(TOUR_TIMINGS['tour-walk'])[t] >= s)), [], 'every CI tour case time in the fixture is within its table row');
+  // A failed or unreadable job is not a measurement: refused by name, never folded in as 0 or Infinity.
+  for (const [why, job] of [['a failed job', { ...smoke8, conclusion: 'failure' }], ['a job with no steps', { ...smoke26, steps: [] }],
+    ['a job whose checked steps were all skipped', { ...smoke26, steps: smoke26.steps.map((s) => ({ ...s, conclusion: /^Boot/.test(s.name) ? 'skipped' : s.conclusion })) }],
+    ['a cancelled tour job', { ...walk9, conclusion: 'cancelled' }]] as const)
+    assert.strictEqual(measure([job]).problems.length, 1, `measure() refuses ${why}`);
+  // refresh() writes what measure() read, never the table's old fixed costs (F1's class: the refresh never re-measured).
+  const out = refresh([smoke8, smoke26, walk9], { ...SHARD_TIMINGS, _overhead_ms: 75000, _outside_ms: 0 }, smoke, ['36662358380']);
+  assert.deepStrictEqual([JSON.parse(out.shard)._overhead_ms, JSON.parse(out.shard)._outside_ms, out.tour.match(/\n"_setup_s": (\d+),\n/)?.[1]], [124000, 8000, '133'],
+    'refresh() writes the measured fixed costs over the old ones'); // (a partial run's tour text is not JSON; the CLI refuses it unwritten)
+  assert.ok(out.problems.some((p: string) => /^run 36662358380 did not report section 1 /.test(p)), 'refresh() refuses a run that did not report every section');
+}
+assert.match(workflowJob('e2e_smoke'), /steps:\n\s+#[^\n]*\n\s+- name: Start the job clock\n\s+run: echo "E2E_JOB_T0=\$\(date \+%s\)" >> "\$GITHUB_ENV"\n/,
+  'e2e_smoke\'s FIRST step starts the clock shard-cases.mjs reads the wall from');
 const { totals } = assignShards(definitions);
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   assert(definitions.some((definition) => definition.shard === shard), `shard ${shard} must own at least one section`);
   assert(totals[shard - 1] <= SECTION_BUDGET_MS,
     `shard ${shard} packs ${Math.round(totals[shard - 1] / 1000)} s of measured sections, over the ${SECTION_BUDGET_MS / 1000} s budget `
-    + `(${SHARD_TIMINGS._ceiling_ms / 1000} s job ceiling minus ~${SHARD_TIMINGS._overhead_ms / 1000} s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
+    + `(${SHARD_TIMINGS._ceiling_ms / 1000} s job ceiling minus the measured ${SHARD_TIMINGS._overhead_ms / 1000} s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
 }
 // Headroom: CI ran ~5% slower than the table the first 20-shard matrix was packed from (285 s on a
-// 207 s-packed shard). Keep every MULTI-section packed shard ≤ 310 s (0.9 x the 345 s budget since
-// TASK-18; it was 200 s of 225 s) so that slack cannot reach the budget. A shard holding exactly ONE section is exempted from the 200 s line (bounded instead
+// 207 s-packed shard). Keep every MULTI-section packed shard ≤ 0.9 x the section budget (TASK-18;
+// it was 200 s of 225 s) so that slack cannot reach the budget. A shard holding exactly ONE section is exempted from the 200 s line (bounded instead
 // by the per-section SECTION_BUDGET_MS assert above): the 200 s line exists to catch a PILEUP —
 // several sections landing on one shard close enough to the ceiling that CI's ~5% slop could tip it
 // over — and no amount of splitting into more shards makes one already-isolated section smaller
@@ -486,8 +535,7 @@ assert.match(workflow, /- name: Exercise section 47 after natural simulation com
   const on24 = definitions.filter((d) => d.shard === 24).reduce((sum, d) => sum + measuredMs(d.id), 0);
   assert.strictEqual(totals[23], on24 + measuredMs('47'), 'shard 24 packs its sections plus the extra §47 step it runs');
 }
-const HEADROOM_MS = 310000;
-assert.strictEqual(SECTION_BUDGET_MS, 345000, 'the per-job section budget is 345 s (420 s ceiling - 75 s overhead, TASK-18)');
+const HEADROOM_MS = 0.9 * SECTION_BUDGET_MS;
 const shardMembers = new Map<number, string[]>();
 for (const { id, shard } of definitions) {
   if (shard === undefined) continue;
@@ -524,25 +572,32 @@ assert.deepStrictEqual(again.definitions.map((d) => d.shard), definitions.map((d
 {
   const fake = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 420000, a: 360000, b: 1000 };
   const packed = assignShards([{ id: 'a' }, { id: 'b' }], fake, 2);
-  assert(Math.max(...packed.totals) > SECTION_BUDGET_MS, 'a 360 s section must exceed the 345 s budget (known positive)');
+  assert(Math.max(...packed.totals) > SECTION_BUDGET_MS, 'a 360 s section must exceed the per-job section budget (known positive)');
   const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`s${i}`, 180000]));
   const over = assignShards(Object.keys(many).map((id) => ({ id })), { ...fake, ...many }, 20);
   assert(Math.max(...over.totals) > SECTION_BUDGET_MS, 'forty 180 s sections cannot fit 20 shards under budget (known positive)');
   assert(assignShards([{ id: 'zz' }], fake, 1).totals[0] === 90000, 'an unmeasured section packs at _default');
   // validateTimings (shared with scripts/shard-timings-from-run.mjs) rejects the two bad-table shapes
   // CodeRabbit named on #157: a pre-split run's table (66 at 275 s, no 66b) and an incomplete one.
-  const meta = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 300000 };
+  const meta = { _default: 90000, _overhead_ms: 75000, _outside_ms: 8000, _ceiling_ms: 300000 };
   assert.deepStrictEqual(validateTimings(['66', '66b'], { ...meta, '66': 275000 }),
     ['section 66 measures 275 s, over the 225 s per-job section budget — split it', 'section 66b has no measured entry'],
     'a pre-split run\'s table (66 at 275 s, no 66b) must report both problems');
   assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000, '2': 1000 }), ['timings name section 2, which is not registered']);
   assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000 }), [], 'a complete, in-budget table is accepted');
+  // Sweep 3: with _overhead_ms missing the budget was NaN, `v > NaN` is false, and a 999,999,999 ms section passed.
+  const noMeta = validateTimings(['1'], { _default: 90000, _ceiling_ms: 420000, '1': 999999999 });
+  assert.deepStrictEqual(noMeta.filter((p) => /^_(overhead|outside)_ms must be a whole, non-negative number of ms; got undefined$|^section 1 measures 1000000 s, over/.test(p)).length, 3,
+    `a table missing _overhead_ms and _outside_ms is refused for both, and its 999,999,999 ms section too: ${JSON.stringify(noMeta)}`);
+  for (const [why, bad] of [['a fractional overhead', { _overhead_ms: 124000.5 }], ['a negative outside', { _outside_ms: -1 }],
+    ['a string ceiling', { _ceiling_ms: '420000' }], ['an overhead that fills the ceiling', { _overhead_ms: 300000 }]] as const)
+    assert.notDeepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000, ...bad }), [], `validateTimings refuses ${why}`);
 }
 // A refresh can never again write a section the budget cannot hold (TASK-18: §101 ran 1086 s on CI
 // against a 120 s entry because the refresh refused and nobody re-measured). Known positive on the
 // REAL budget: one fake 350 s entry for a registered section is refused by name.
 assert.deepStrictEqual(validateTimings(['101a'], { ...SHARD_TIMINGS, '101a': 350000 }).filter((p) => /101a/.test(p)),
-  ['section 101a measures 350 s, over the 345 s per-job section budget — split it'],
+  [`section 101a measures 350 s, over the ${SECTION_BUDGET_MS / 1000} s per-job section budget — split it`],
   'a refreshed table carrying a 350 s section must be refused, naming the section');
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
@@ -579,23 +634,35 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   assert.deepStrictEqual(logCases('smoke', retried), ['24', '25', '47', '76'], 'a retried section counts once, from its first attempt');
   assert.deepStrictEqual(logCases('smoke', retried.replace('════ SECTION 76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) ════\n', '')),
     ['24', '25', '47'], 'a section that only ran as a retry did not run in the first pass');
+  // A job that started this second: the wall check (pinned below) has nothing to say about these budget cases.
+  const T0 = String(Math.floor(Date.now() / 1000)), e1 = { E2E_SHARD: `1/${SHARD_COUNT}`, E2E_JOB_T0: T0 };
   const s1 = shardCases('smoke', { E2E_SHARD: `1/${SHARD_COUNT}` }, smoke), log = (ids: string[], ms = 1000, shard = 1) =>
     ids.map((id) => `\n════ SECTION ${id} [shard ${shard}/${SHARD_COUNT}] x ════\nSECTION-PASS ${id} x (RED-APP-15/003) (${ms}ms)`).join('\n');
   // The budget holds at run time, first attempts only: CI 36646092049 shard 32 ran 304 s of 345 on a stale table (sweep 1).
   const at = (ids: string[], total: number, q = Math.floor(total / ids.length)) => ids.map((id, j) => log([id], j ? q : total - q * (ids.length - 1))).join('\n'), s24 = shardCases('smoke', { E2E_SHARD: `24/${SHARD_COUNT}` }, smoke);
-  const e24 = { E2E_SHARD: `24/${SHARD_COUNT}` }, main24 = (ms: number) => at(s24, ms).replaceAll('shard 1/', 'shard 24/'), step47 = (ms: number) => log(['47'], ms).replaceAll('shard 1/', 'shard 24/');
-  const over = /over the 345 s budget/;
-  assert.strictEqual(checkLog('smoke', at(s1, SECTION_BUDGET_MS), { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'a shard at its section budget passes');
-  assert.match(checkLog('smoke', at(s1, SECTION_BUDGET_MS + 1), { E2E_SHARD: `1/${SHARD_COUNT}` }), /first attempts ran [\d.]+ s of sections, over the 345 s budget/, 'a shard over its section budget fails by name');
+  const e24 = { E2E_SHARD: `24/${SHARD_COUNT}`, E2E_JOB_T0: T0 }, main24 = (ms: number) => at(s24, ms).replaceAll('shard 1/', 'shard 24/'), step47 = (ms: number) => log(['47'], ms).replaceAll('shard 1/', 'shard 24/');
+  const over = new RegExp(`over the ${SECTION_BUDGET_MS / 1000} s budget`), s = (ms: number) => String(ms / 1000).replace('.', '\\.');
+  assert.strictEqual(checkLog('smoke', at(s1, SECTION_BUDGET_MS), e1), '', 'a shard at its section budget passes');
+  assert.match(checkLog('smoke', at(s1, SECTION_BUDGET_MS + 1), e1), new RegExp(`first attempts ran ${s(SECTION_BUDGET_MS + 1)} s of sections, ${over.source}`), 'a shard over its section budget fails by name');
   // Shard 24's §47 step is charged its own log's time: at its 92 s table entry, a 120 s §47 once went unseen (sweep 2).
   assert.strictEqual(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120000)]), '', 'shard 24 with its §47 step at the budget passes');
-  assert.match(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120001)]), /ran 345.001 s of sections with the extra steps, over the 345 s budget/, 'shard 24\'s §47 step is charged its measured time');
+  assert.match(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120001)]), new RegExp(`ran ${s(SECTION_BUDGET_MS + 1)} s of sections with the extra steps, ${over.source}`), 'shard 24\'s §47 step is charged its measured time');
   assert.match(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120000).replace('(120000ms)', '(2 min)')]), /the time is unreadable/, 'a §47 step time the budget cannot read fails');
-  assert.strictEqual(checkLog('smoke', `${log(s1)}\n════ RETRYING ONLY FAILED SECTIONS: ${s1[0]} x ════\n${log([s1[0]], SECTION_BUDGET_MS)}`, { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'a retry\'s time is not a first attempt\'s');
-  assert.match(checkLog('smoke', log(s1).replace(/\(1000ms\)$/, '(1 s)'), { E2E_SHARD: `1/${SHARD_COUNT}` }), /the time is unreadable/, 'a result line the budget cannot read fails, never sums to 0 s');
+  assert.strictEqual(checkLog('smoke', `${log(s1)}\n════ RETRYING ONLY FAILED SECTIONS: ${s1[0]} x ════\n${log([s1[0]], SECTION_BUDGET_MS)}`, e1), '', 'a retry\'s time is not a first attempt\'s');
+  assert.match(checkLog('smoke', log(s1).replace(/\(1000ms\)$/, '(1 s)'), e1), /the time is unreadable/, 'a result line the budget cannot read fails, never sums to 0 s');
   assert.doesNotMatch(checkLog('smoke', at(s1, SECTION_BUDGET_MS * 2), { E2E_SECTION: s1.join(',') }), over, 'a local E2E_SECTION run has no shard budget to break');
+  // The job's wall (sweep 3 F6): from test.yml's clock, retries aside, plus the measured time outside the steps, fits the ceiling.
+  const { _ceiling_ms: C, _outside_ms: O } = SHARD_TIMINGS, T = 1800000000, ceil = new RegExp(`first attempts ran ${C / 1000 + 1} s \\(${O / 1000} s of it outside the steps\\), over the ${C / 1000} s ceiling`);
+  const wall = (text: string, ms: number, t0?: string, shard = 1, extra: string[] = []) => checkLog('smoke', text, { E2E_SHARD: `${shard}/${SHARD_COUNT}`, ...(t0 === undefined ? {} : { E2E_JOB_T0: t0 }) }, extra, T * 1000 + ms);
+  assert.strictEqual(wall(log(s1), C - O, String(T)), '', 'a job at its ceiling, counting the time outside its steps, passes');
+  assert.match(wall(log(s1), C - O + 1, String(T)), ceil, 'a job 1 ms over its ceiling fails by name');
+  const retried24 = `${main24(1000)}\n════ RETRYING ONLY FAILED SECTIONS: ${s24[0]} x ════\n${log([s24[0]], 30000, 24)}`, retried47 = `${step47(1000)}\n════ RETRYING ONLY FAILED SECTIONS: 47 x ════\n${step47(30000)}`;
+  assert.deepStrictEqual([C - O + 60000, C - O + 60001].map((ms) => wall(retried24, ms, String(T), 24, [retried47])), ['', wall(log(s1), C - O + 1, String(T))],
+    'retries in the main and §47 logs are not charged to the wall; 1 ms more is');
+  for (const t0 of [undefined, '', ' 1800000000', '1.8e9', String(T + 1)])
+    assert.match(wall(log(s1), 0, t0), /^smoke: E2E_JOB_T0 .* is not this job's start in epoch seconds, so its wall is unreadable$/, `an E2E_JOB_T0 of ${JSON.stringify(t0)} fails, never passes as NaN`);
   const w1 = walkShard(1), sc1 = scrollShard(1), tour = (tags: string[]) => tags.map((t) => `  · ${t} 9 s, load 1.0 at start`).join('\n');
-  assert.strictEqual(checkLog('smoke', log(s1), { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'shard 1\'s own sections pass');
+  assert.strictEqual(checkLog('smoke', log(s1), e1), '', 'shard 1\'s own sections pass');
   assert.strictEqual(checkLog('walk', tour(w1), { TOUR_WALK_SHARD: '1/9' }), '', 'walk shard 1\'s own cases pass');
   for (const [why, job, text, env] of [['one section dropped', 'smoke', log(s1.slice(1)), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['an empty (crashed) log', 'smoke', '', { E2E_SHARD: `1/${SHARD_COUNT}` }],
     ['a sibling shard\'s sections', 'smoke', log(bySelector[1]), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['the last case replaced by the first', 'walk', tour([...w1.slice(0, -1), w1[0]]), { TOUR_WALK_SHARD: '1/9' }],
@@ -612,8 +679,11 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   for (const script of ['src/e2e/shard-cases.mjs', link('shard-cases.mjs')])
     assert.deepStrictEqual([cli(script, tour(w1)), cli(script, tour(w1.slice(1)))], [0, 1], `the shard-cases.mjs CLI (${script}) exits 0 on its own cases and 1 on a missing one`);
   const cli24 = (ms47: number) => (writeFileSync(join(dir, '24.log'), main24(SECTION_BUDGET_MS - 120000)), writeFileSync(join(dir, '47.log'), step47(ms47)),
-    run('src/e2e/shard-cases.mjs', ['smoke', join(dir, '24.log'), join(dir, '47.log')], { E2E_SHARD: `24/${SHARD_COUNT}` }).status);
+    run('src/e2e/shard-cases.mjs', ['smoke', join(dir, '24.log'), join(dir, '47.log')], { E2E_SHARD: `24/${SHARD_COUNT}`, E2E_JOB_T0: String(Math.floor(Date.now() / 1000)) }).status);
   assert.deepStrictEqual([cli24(120000), cli24(120001)], [0, 1], 'the shard-cases.mjs CLI reads the extra step logs it is given');
+  symlinkSync(join(process.cwd(), 'scripts/shard-timings-from-run.mjs'), join(dir, 'refresh.mjs'));
+  for (const script of ['scripts/shard-timings-from-run.mjs', join(dir, 'refresh.mjs')])
+    assert.match(`${run(script, []).status} ${run(script, []).stderr}`, /^2 usage: shard-timings-from-run\.mjs/, `the refresh CLI (${script}) runs and exits 2 with no run ids`);
   for (const script of ['src/e2e/webkit-shards.mjs', link('webkit-shards.mjs')])
     assert.strictEqual(run(script, []).stdout, `${shardsNeedingWebkit().join('\n')}\n`, `the webkit-shards.mjs CLI (${script}) prints the shards that need WebKit`);
   // Importing either module from stdin (argv[1] '-', no such file) must not throw: only a run as the entry is a CLI.
@@ -634,7 +704,7 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
     .split('\n').filter((f) => f && f !== 'src/e2esharding.test.ts' && existsSync(f));
   const argv1 = /argv(\[1\]|\.at\(1\))|\]\s*=\s*process\.argv\b(?!\.slice\([2-9]\))/; // argv[1], argv.at(1), [, entry] = process.argv
   const entries = code.filter((f) => { const t = readFileSync(f, 'utf8'); return /import\.meta/.test(t) && argv1.test(t); });
-  assert.deepStrictEqual(entries.sort(), ['src/deploy/cloud-run-traffic.mjs', 'src/e2e/shard-cases.mjs', 'src/e2e/webkit-shards.mjs'], 'the scan finds the three known CLI entry guards');
+  assert.deepStrictEqual(entries.sort(), ['scripts/shard-timings-from-run.mjs', 'src/deploy/cloud-run-traffic.mjs', 'src/e2e/shard-cases.mjs', 'src/e2e/webkit-shards.mjs'], 'the scan finds the four known CLI entry guards');
   for (const f of entries) {
     const lines = readFileSync(f, 'utf8').split('\n').filter((l) => argv1.test(l) && !/^\s*\/\//.test(l));
     assert.deepStrictEqual(lines.map((l) => l.trim()), [GUARD], `${f}'s entry guard resolves argv[1] with realpathSync (a symlinked path would skip the CLI and exit 0)`);

@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { parseSections, selectSmokeSections, SECTION_BUDGET_MS } from './selection.js';
+import { parseSections, selectSmokeSections, SECTION_BUDGET_MS, SHARD_TIMINGS } from './selection.js';
 import { walkTags, scrollTags } from './tour-cases.mjs';
 
 const TOUR = { walk: [walkTags, 'TOUR_WALK_SHARD'], scroll: [scrollTags, 'TOUR_SCROLL_SHARD'] };
@@ -29,13 +29,14 @@ export function logCases(job, log) {
 }
 
 // A log's first-attempt section time, or null if a section run has no readable result line (it would sum to 0 s).
+const RESULT = /^SECTION-(?:PASS|FAIL) (\S+) .*\((\d+)ms\)$/gm, retryMs = (log) => [...(log.split(/^════ RETRYING ONLY FAILED SECTIONS/m)[1] ?? '').matchAll(RESULT)].reduce((a, m) => a + +m[2], 0);
 function sectionMs(log) {
-  const first = log.split(/^════ RETRYING ONLY FAILED SECTIONS/m)[0], results = [...first.matchAll(/^SECTION-(?:PASS|FAIL) (\S+) .*\((\d+)ms\)$/gm)];
+  const first = log.split(/^════ RETRYING ONLY FAILED SECTIONS/m)[0], results = [...first.matchAll(RESULT)];
   return JSON.stringify(results.map((m) => m[1])) === JSON.stringify(logCases('smoke', first)) ? results.reduce((a, m) => a + +m[2], 0) : null;
 }
 
 // extraLogs: the same job's later steps (shard 24's §47 step), whose section time shares the shard's budget.
-export function checkLog(job, log, env, extraLogs = []) {
+export function checkLog(job, log, env, extraLogs = [], now = Date.now()) {
   const want = shardCases(job, env), got = logCases(job, log); // e2esharding: want is never empty in CI
   if (JSON.stringify(got) !== JSON.stringify(want)) {
     const missing = want.filter((c) => !got.includes(c)), extra = got.filter((c) => !want.includes(c));
@@ -48,8 +49,15 @@ export function checkLog(job, log, env, extraLogs = []) {
   // (a retry is its own signal).
   const each = [log, ...extraLogs].map(sectionMs), ms = each.reduce((a, t) => a + (t ?? 0), 0);
   if (each.includes(null)) return `smoke: a section ran with no readable SECTION-PASS/FAIL (…ms) line, so the time is unreadable`;
-  return ms > SECTION_BUDGET_MS ? `smoke: the first attempts ran ${ms / 1000} s of sections${extraLogs.length ? ' with the extra steps' : ''}, over the `
-    + `${SECTION_BUDGET_MS / 1000} s budget: refresh shard-timings.json with scripts/shard-timings-from-run.mjs, or split a section` : '';
+  if (!(ms <= SECTION_BUDGET_MS)) return `smoke: the first attempts ran ${ms / 1000} s of sections${extraLogs.length ? ' with the extra steps' : ''}, over the `
+    + `${SECTION_BUDGET_MS / 1000} s budget: refresh shard-timings.json with scripts/shard-timings-from-run.mjs, or split a section`;
+  // The budget is the plan; the job's wall is the promise (sweep 3 F6: a hand-set 75 s overhead planned 440 s WebKit jobs).
+  // Wall so far from test.yml's first-step clock, retries aside, plus what GitHub spends outside the steps, fits the ceiling.
+  const t0 = /^\d+$/.test(env.E2E_JOB_T0 ?? '') ? +env.E2E_JOB_T0 * 1000 : NaN, { _ceiling_ms: ceiling, _outside_ms: outside } = SHARD_TIMINGS;
+  if (!(t0 <= now)) return `smoke: E2E_JOB_T0 ${JSON.stringify(env.E2E_JOB_T0)} is not this job's start in epoch seconds, so its wall is unreadable`;
+  const wall = now - t0 - [log, ...extraLogs].reduce((a, l) => a + retryMs(l), 0) + outside;
+  return !(wall <= ceiling) ? `smoke: the job's first attempts ran ${Math.ceil(wall / 1000)} s (${outside / 1000} s of it outside the steps), over the `
+    + `${ceiling / 1000} s ceiling: re-measure _overhead_ms with scripts/shard-timings-from-run.mjs` : '';
 }
 
 // Node takes import.meta.url from the realpath: compare argv[1]'s, or a symlinked path skips the check, exit 0.

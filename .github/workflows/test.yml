@@ -697,6 +697,10 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
     steps:
+      # First step: shard-cases.mjs clocks the job's wall from here against _ceiling_ms (sweep 3 F6).
+      - name: Start the job clock
+        run: echo "E2E_JOB_T0=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
@@ -750,7 +754,7 @@ jobs:
         # repeats the whole shard for a one-check SwiftShader stall. The exit
         # code cannot see WHICH sections ran: shard-cases.mjs checks the log
         # lists exactly this shard's, first attempts, in order (TASK-18 sweep 14),
-        # and that their time fits the 345 s section budget the packing assumed.
+        # that their time fits the section budget the packing assumed, and the job's wall its ceiling.
         id: smoke
         run: |
           set +e

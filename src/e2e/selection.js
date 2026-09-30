@@ -9,10 +9,10 @@ import { dirname, join } from 'node:path';
 /**
  * How many CI shards the smoke suite is split into (test.yml's matrix must
  * match — e2esharding.test.ts pins both). Sections are packed into shards by
- * MEASURED duration (shard-timings.json, longest-first): a job pays ~75 s of
- * fixed overhead (checkout, dist, browsers, server boot) and must finish under
- * 300 s, so every shard holds at most 225 s of sections (420 s / 345 s since
- * TASK-18, below). 16 shards stopped
+ * MEASURED duration (shard-timings.json, longest-first): a job pays a
+ * measured fixed overhead (_overhead_ms: checkout, dist, browsers, server
+ * boot) and must finish under _ceiling_ms, so every shard holds at most the
+ * difference in sections (300 s / 225 s until TASK-18, below). 16 shards stopped
  * fitting on 2026-09-06 (4,040 s of sections; shards 6/7/8 at 390 s). The
  * first 20-shard run measured 4,260 s of sections on CI (CI runs ~5% slower
  * than the table it was packed from) — a 213 s mean, 288 s jobs, too close to
@@ -61,8 +61,11 @@ import { dirname, join } from 'node:path';
  * against a 120 s entry, §102 735 s, §100 378 s, §103 326 s. Three CI runs
  * summed 9,296 / 8,994 / 9,317 s of sections, but 35 x 225 s allows 7,875 s,
  * so no split could make an honest table fit. The old table's ~190 s shards
- * really ran 785-1,224 s. The ceiling is now 420 s (a 345 s budget, 310 s
- * multi-section line) and §100-§103 are split along their viewport lists.
+ * really ran 785-1,224 s. The ceiling is now 420 s and §100-§103 are split
+ * along their viewport lists. The overhead is measured, not assumed (sweep 3
+ * F6: WebKit jobs spent up to 124 s outside their sections against a hand-set
+ * 75 s), so the budget is 420 s less the measured overhead and the
+ * multi-section line 0.9x that; shard-cases.mjs checks the job's wall too.
  * Raising the ceiling makes the budget honest; no check was dropped to fit.
  * 35 stays: all three runs already peaked at 40 concurrent jobs. Refreshed
  * from runs 35952906105 + 35953748451: slowest shard 393 / 365 s (was 1,228),
@@ -95,10 +98,14 @@ export function measuredMs(id, timings = SHARD_TIMINGS) {
 export function validateTimings(sectionIds, timings = SHARD_TIMINGS) {
   const problems = [];
   const budget = timings._ceiling_ms - timings._overhead_ms;
+  // Measured fixed costs (sweep 3 F6); a missing one made the budget NaN, and v > NaN passes every section.
+  for (const k of ['_ceiling_ms', '_overhead_ms', '_outside_ms']) {
+    if (!(Number.isInteger(timings[k]) && timings[k] >= 0)) problems.push(`${k} must be a whole, non-negative number of ms; got ${JSON.stringify(timings[k])}`);
+  }
   for (const id of sectionIds) {
     const v = timings[String(id)];
     if (typeof v !== 'number') problems.push(`section ${id} has no measured entry`);
-    else if (v > budget) problems.push(`section ${id} measures ${Math.round(v / 1000)} s, over the ${budget / 1000} s per-job section budget — split it`);
+    else if (!(v <= budget)) problems.push(`section ${id} measures ${Math.round(v / 1000)} s, over the ${budget / 1000} s per-job section budget — split it`);
   }
   for (const id of Object.keys(timings).filter((k) => !k.startsWith('_'))) {
     if (!sectionIds.map(String).includes(id)) problems.push(`timings name section ${id}, which is not registered`);
