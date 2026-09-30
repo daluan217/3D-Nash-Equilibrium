@@ -106,6 +106,12 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   const offForm = lines.filter((l) => l.trim() && !/^#(?![ \t]*(syntax|escape|check)[ \t]*=)/i.test(l) && !/^[A-Z]+ \S/.test(l));
   assert(offForm.length === 0, `Dockerfile: instructions the static guards cannot read (want upper case at column 0, no parser directive): ${offForm.join(' | ')}`); n++;
   const runtime = df.slice(df.lastIndexOf('\nFROM '));
+  // Named sources only (cloudbuild.contract's whole-context check reads one spelling: ADD, `[".", "./"]`, `*` passed).
+  const wide = lines.filter((l) => /^(ADD|COPY) /.test(l) && !/^COPY --from=/.test(l)
+    && !l.split(/[ \t]+/).slice(1, -1).every((s) => s === 'package*.json' || /^[\w-][\w.-]*(\/[\w-][\w.-]*)*\/?$/.test(s)));
+  assert(wide.length === 0, `Dockerfile: copies more than named files from the build context: ${wide.join(' | ')}`); n++;
+  assert.deepStrictEqual(runtime.split('\n').filter((l) => /^(ADD|COPY) /.test(l)), ['COPY package*.json ./', 'COPY --from=builder /app/dist/ ./dist/'],
+    'Dockerfile: the runtime stage copies only package*.json and the built dist/'); n++;
   assert(/^RUN npm ci --omit=dev$/m.test(runtime) && /^CMD \["node", "dist\/server\.cjs"\]$/m.test(runtime), 'Dockerfile: the runtime stage no longer installs with `npm ci --omit=dev` and runs dist/server.cjs'); n++;
   // Not root (cloud sweep 6): the last USER (instructions are case-insensitive) is exactly the base image's node,
   // an allowlist, since `USER 00` / `+0` are uid 0 too. Its one chown is the WORKDIR (the no-bucket db.json folder).
