@@ -172,7 +172,13 @@ const { lines: dfLines, offForm } = dockerLines(read('Dockerfile'));
     { name: 'gcr.io/cloud-builders/docker', args: ['push', IMG] }], 'cloudbuild.yaml: the image is not this Dockerfile\'s last stage, built from . and pushed as the deployed tag'); n++;
   const [deploy, ...extra] = cb.steps.slice(2), dArgs = deploy?.args ?? [], flag = (a: string) => a.split('=')[0];
   const DEPLOY_FLAGS = ['--image', '--region', '--platform', '--allow-unauthenticated', '--set-env-vars', '--set-secrets', '--memory', '--cpu', '--timeout', '--max-instances'];
+  // Each flag once (sweep 15: a second --set-env-vars=IS_ELECTRON=true or --max-instances=100 passed every guard; the
+  // contract reads only the first), and no build-wide env, secrets or pool beside the steps.
+  const cbKeys = cb as unknown as Record<string, unknown>;
+  assert(Object.keys(cbKeys).sort().join() === 'images,options,steps,substitutions' && JSON.stringify(cbKeys.options) === '{"logging":"CLOUD_LOGGING_ONLY"}',
+    `cloudbuild.yaml: top-level keys or options beyond the reviewed ones: ${JSON.stringify(Object.keys(cbKeys))} ${JSON.stringify(cbKeys.options)}`); n++;
   assert(extra.length === 0 && Object.keys(deploy ?? {}).join() === 'name,args' && deploy.name === 'gcr.io/cloud-builders/gcloud'
+    && new Set(dArgs.slice(3).map(flag)).size === dArgs.length - 3
     && dArgs.slice(0, 3).join(' ') === 'run deploy nash-equilibrium-backend' && dArgs.slice(3).every((a) => DEPLOY_FLAGS.includes(flag(a)))
     && dArgs.filter((a) => flag(a) === '--image').join() === `--image=${IMG}`,
   `cloudbuild.yaml: the deploy is not one \`gcloud run deploy\` of --image=${IMG} with reviewed flags: ${cb.steps.slice(2).map((s) => JSON.stringify(s)).join(' | ').slice(0, 600)}`); n++;
