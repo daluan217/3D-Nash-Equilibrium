@@ -31,12 +31,16 @@ runs:
       # Upgrade "false" is --no-upgrade: a dependency the image already ships stays as shipped. Sweep 11 (CI 36774742769):
       # the filling runner had glib, xvfb and libxml2 at the archive's newest, so none were cached, while 27 of 48 jobs
       # on the same image upgraded them from the mirror (2.8-4.3 MB each, about 70 s at the incident's 64 kB/s).
+      # force-unsafe-io: dpkg skips its per-file fsync, which only guards against a power cut on a VM that is thrown away
+      # anyway. Sweep 12 (CI 36778548533), with every .deb already local: unpacking took 58.8 s on WebKit shard 19 (median
+      # 15.6) and 23.3 s on chromium shard 14 (median 4.3), which put shard 19's overhead at 145 s, over _overhead_ms.
       run: |
         sudo install -d -o "$(id -u)" /var/cache/pw-apt
         sudo install -d -o _apt -m 700 /var/cache/pw-apt/partial
         printf '%s\n' 'Dir::Cache::Archives "/var/cache/pw-apt/";' 'APT::Keep-Downloaded-Packages "true";' \
           'Binary::apt::APT::Keep-Downloaded-Packages "true";' 'APT::Get::Upgrade "false";' \
           | sudo tee /etc/apt/apt.conf.d/99pw-apt-cache > /dev/null
+        echo force-unsafe-io | sudo tee /etc/dpkg/dpkg.cfg.d/99pw-unsafe-io > /dev/null
 
     - id: restore
       uses: actions/cache/restore@v4
