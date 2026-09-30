@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import express from 'express';
+import { seededRandom } from './testing/prng.ts';
 
 setTimeout(() => { console.error('securityheaders.cloud.test.ts: timed out'); process.exit(1); }, 180_000).unref();
 const SERVER = fileURLToPath(new URL('../server.ts', import.meta.url));
@@ -191,8 +192,8 @@ for (const [method, t] of [['GET', '/\\evil.example/%2e%2e/assets'], ['HEAD', '/
   // and names glued at random; same seed every run, so a failure names a reproducible target. The planted
   // dist/server.cjs stands in for the bundle: no spelling may serve it. The apex never redirects; www only to it.
   fs.writeFileSync(path.join(tmp, 'dist/server.cjs'), `${MARK} dist/server.cjs\n`);
-  let seed = 22;
-  const rnd = (k: number) => Math.floor(((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32) * k);
+  const draw = seededRandom(23), rnd = (k: number) => Math.floor(draw() * k);
+  const lands = (t: string) => { try { return path.posix.normalize(decodeURIComponent(t.split('?')[0]).replace(/\\/g, '/')); } catch { return ''; } };
   const TOK = ['/', '/', '/', '\\', '%2f', '%5c', '%5C', '..', '.', '%2e', '%2e%2e', '.%2e', 'assets', 'assets', 'server.cjs', 'server%2ecjs', 'SERVER.CJS', '.env',
     '%2eenv', 'package.json', '.git', 'HEAD', 'dist', 'evil.example', '@evil.example', '%00', '%', '%E0%A4%A', ';', '?x=//evil', '%23', '%3f', '%09', '%20', '~',
     'index.html', 'app-AAAA1111.js', 'app-AAAA1111.js.br', 'favicon.ico'];
@@ -207,9 +208,12 @@ for (const [method, t] of [['GET', '/\\evil.example/%2e%2e/assets'], ['HEAD', '/
     assert(!r.body.includes(MARK), `${name}: ${r.status} served a file outside dist/, a dotfile or the bundle: ${r.body.slice(0, 60)}`);
     hardened(name, r, { hsts: true });
     seen.add(`${r.status}${www ? ' www' : ''}`);
+    if (method === 'GET' && !www) seen.add(`GET ${lands(t)}`);
   }
-  // Fixture: the seed reaches the SPA, the asset 404, a malformed-target 400 and the www redirect.
-  assert(['200', '404', '400', '301 www'].every((s) => seen.has(s)), `fuzz fixture: answers seen ${[...seen]}`); n++;
+  // Fixture: the seed reaches the SPA, a malformed-target 400, the www redirect, and a GET (a body) of every
+  // planted file and of the assets directory by some spelling; else the marker checks prove nothing.
+  const want = ['200', '404', '400', '301 www', 'GET /server.cjs', 'GET /.env', 'GET /package.json', 'GET /assets'];
+  assert(want.every((s) => seen.has(s)), `fuzz fixture: missing ${want.filter((s) => !seen.has(s))}`); n++;
 }
 
 // live-smoke section 3, the real script against the real server: every new row passes.
