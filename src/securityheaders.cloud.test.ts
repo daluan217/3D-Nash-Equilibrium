@@ -112,7 +112,12 @@ const hardened = (name: string, r: Res, { hsts, libCsp = false }: { hsts: boolea
 };
 
 // ── hosted (Cloud Run shape: TRUST_PROXY=1, GCS store, GFE's Host + X-Forwarded-Proto)
-const hosted = await boot({ TRUST_PROXY: '1', GCS_BUCKET_NAME: BUCKET, STORAGE_EMULATOR_HOST: `http://127.0.0.1:${(gcs.address() as net.AddressInfo).port}`, GOOGLE_CLOUD_PROJECT: 'fake-project' });
+// TRUST_PROXY as cloudbuild.yaml deploys it; the rate-limit block below proves what that value keys on.
+const TRUST_PROXY = /^ {2}_TRUST_PROXY: '([^']*)'$/m.exec(fs.readFileSync(fileURLToPath(new URL('../cloudbuild.yaml', import.meta.url)), 'utf8'))?.[1];
+// One hop: Cloud Run's peer is Google's front end, never loopback, so an address list (this harness's peer IS
+// loopback) would pass here and key every visitor on the front end in production.
+assert.strictEqual(TRUST_PROXY, '1', `cloudbuild.yaml _TRUST_PROXY is '${TRUST_PROXY}': Cloud Run is exactly one trusted hop`); n++;
+const hosted = await boot({ TRUST_PROXY, GCS_BUCKET_NAME: BUCKET, STORAGE_EMULATOR_HOST: `http://127.0.0.1:${(gcs.address() as net.AddressInfo).port}`, GOOGLE_CLOUD_PROJECT: 'fake-project' });
 const APEX = 'nash-equilibrium-simulator.com', GFE = { host: APEX, 'x-forwarded-proto': 'https' }, J = { ...GFE, 'content-type': 'application/json' };
 const h = (method: string, p: string, headers: Record<string, string> = GFE, body?: string | Buffer) => call(hosted.port, method, p, headers, body);
 type Case = [name: string, run: () => Promise<Res>, status: number, marker: string | RegExp, libCsp?: boolean];
@@ -232,6 +237,14 @@ const ROWS = ['live security headers present', 'live HSTS is on (max-age of at l
   for (let i = 0; i < 14 && r?.status !== 429; i++) r = await named('rate-limit 429', h('HEAD', '/api/download/dmg'));
   assert.strictEqual(r?.status, 429, 'fixture: the dmg route never rate-limited');
   hardened('rate-limit 429', r!, { hsts: true });
+  // Google's front end APPENDS the peer it saw, so the client owns everything left of the last entry. A
+  // client rotating that part must stay in one bucket: trusting more than one hop keyed each on the spoof.
+  let s: Res | undefined;
+  for (let i = 0; i < 14 && s?.status !== 429; i++) s = await named(`xff rotation #${i}`, h('HEAD', '/api/download/dmg', { ...GFE, 'x-forwarded-for': `10.9.${i}.1, 203.0.113.9` }));
+  assert.strictEqual(s?.status, 429, `TRUST_PROXY=${TRUST_PROXY}: 14 requests rotating the client-written X-Forwarded-For never hit the dmg limit (10/min)`); n++;
+  // ...and a different peer is a different client: trusting no hop put every visitor in the front end's bucket.
+  const other = await named('xff other peer', h('HEAD', '/api/download/dmg', { ...GFE, 'x-forwarded-for': '10.9.0.1, 198.51.100.7' }));
+  assert.notStrictEqual(other.status, 429, `TRUST_PROXY=${TRUST_PROXY}: a second client (another peer) shares the first one's exhausted bucket`); n++;
   // An unreadable index.html makes send() raise a 500 into next(err): the global handler's own 500, no injection.
   fs.chmodSync(path.join(tmp, 'dist/index.html'), 0o000);
   const e = await named('final error handler 500', h('GET', '/some/route')).finally(() => fs.chmodSync(path.join(tmp, 'dist/index.html'), 0o644));
