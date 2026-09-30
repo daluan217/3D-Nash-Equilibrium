@@ -67,9 +67,9 @@ import { dirname, join } from 'node:path';
  * 75 s), so the budget is 420 s less the measured overhead and the
  * multi-section line 0.9x that; shard-cases.mjs checks the job's wall too.
  * Raising the ceiling makes the budget honest; no check was dropped to fit.
- * 35 stays: all three runs already peaked at 40 concurrent jobs. Refreshed
- * from runs 35952906105 + 35953748451: slowest shard 393 / 365 s (was 1,228),
- * about 6.5 min of e2e wall clock (was 20.5). Shard 24 was the slowest in 7 of 8
+ * 35 stays: all three runs already peaked at 40 concurrent jobs. On CI
+ * 36695839492 the slowest smoke job ran 319 s (was 1,228); the e2e gate took
+ * 13.6 min (was 20.5), bound by the tour walk jobs (803 s). Shard 24 was the slowest in 7 of 8
  * runs because test.yml reruns §47 there (78-96 s), so the packer now counts it.
  */
 export const SHARD_COUNT = 35;
