@@ -3098,11 +3098,24 @@ function pruneRateBuckets(now: number) {
   }
 }
 
+// ponytail: IPv4 has no /24 tier (a /24 is not free to hold); add one beside the /48 if that changes.
+const PER_48 = 4;
+const to48 = (key: string) => key.replace(/:[0-9a-f]+::\/56$/, "::/48"); // "l:2001:db8:7:100::/56" -> "l:2001:db8:7::/48"
+// Counts one request in `key`'s window; returns the wait left if that puts it over `max`, else 0.
+function overBudget(key: string, max: number, windowMs: number, now: number): number {
+  const bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return 0;
+  }
+  return ++bucket.count > max ? bucket.resetAt - now : 0;
+}
+
 // The throttle's client key, from req.ip (after TRUST_PROXY). IPv4 as-is, an
 // IPv4-mapped address as its IPv4; IPv6 by its /56: one subscriber holds a /64
 // or more, and a per-address key let one client rotate through fresh buckets
-// (live, sweep 9). ponytail: /56 is the common ISP delegation (express-rate-limit
-// v8's default); a /48 holder still gets 256 buckets.
+// (live, sweep 9). /56 is the common ISP delegation (express-rate-limit v8's
+// default); rateLimit also caps each /48 (a free tunnel-broker grant) at PER_48 /56s.
 function rateKey(req: express.Request): string {
   const ip = (req.ip || req.socket.remoteAddress || "unknown").replace(/%.*$/, "");
   if (!net.isIPv6(ip)) return ip;
@@ -3146,14 +3159,13 @@ function rateLimit(
     const key = `${label}:${rateKey(req)}`;
     const now = performance.now();
     pruneRateBuckets(now);
-    const bucket = rateBuckets.get(key);
-    if (!bucket || bucket.resetAt <= now) {
-      rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
-    bucket.count++;
-    if (bucket.count > max) {
-      setRetryAfter(res, bucket.resetAt - now);
+    // A request its /56 allows also counts against its /48 at PER_48 x the budget: one /48 (free from a
+    // tunnel broker) held 256 /56 buckets, and its login flood took /api/health from p50 3 ms to 636 ms
+    // (sweep 17). A /56 over its own budget does not drain its /48 siblings'.
+    const agg = to48(key);
+    const wait = overBudget(key, max, windowMs, now) || (agg !== key ? overBudget(agg, max * PER_48, windowMs, now) : 0);
+    if (wait > 0) {
+      setRetryAfter(res, wait);
       return res.status(429).json({ error: "Too many attempts. Please wait a minute and try again." });
     }
     return next();

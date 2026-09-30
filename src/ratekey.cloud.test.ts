@@ -107,10 +107,10 @@ let clock = 0, wall = 0; // monotonic time; the wall clock, stepped by the skew 
 const span = src.slice(src.indexOf('const rateBuckets = new Map'), src.indexOf('\n}\n', src.indexOf('function rateLimit(')) + 2);
 const limit = new Function('net', 'process', 'performance', 'Date', `${ts.transpileModule(span, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return rateLimit;`)(
   net, { env: {} }, { now: () => clock }, { now: () => wall }) as (label: string, max: number, windowMs: number) => Mw;
-const hit = (mw: Mw, t: number, step = 0) => {
+const hit = (mw: Mw, t: number, step = 0, ip = '203.0.113.9') => {
   clock = t; wall = t + step; let passed = false, code = 0, ra: string | undefined;
   const res = { setHeader: (k: string, v: string) => { if (k === 'Retry-After') ra = v; }, status: (c: number) => { code = c; return res; }, json: () => res };
-  mw({ ip: '203.0.113.9', socket: {} }, res, () => { passed = true; });
+  mw({ ip, socket: {} }, res, () => { passed = true; });
   return { passed, code, ra };
 };
 for (const d of [0, 1, 999, 1000, 1001, 30_500, 58_999, 59_000, 59_001, 59_999]) {
@@ -132,6 +132,21 @@ for (const step of [-600_000, 600_000]) {
   assert.strictEqual(hit(mw, T + 30_000, step).code, 429, `wall step ${step}: the window must not open early`);
   assert(hit(mw, T + 60_000, step).passed, `wall step ${step}: the window must open at 60 s of real time`);
   n += 3;
+}
+
+// /48 tier (sweep 17: one /48 held 256 /56 buckets; its login flood took /api/health p50 from 3 to 636 ms).
+// Budget 2, so a /48 gets 4 x 2 = 8: /56 #0 sends 5 (2 pass; its 3 refusals spend nothing of the /48), /56s
+// #1-#6 pass, #7 is the 9th and is refused with the real wait; another /48, an IPv4 and the next window pass.
+{
+  const mw = limit('agg48', 2, 60_000), T = 5_000_000, in48 = (i: number, h = '77') => `2001:db8:${h}:${(i << 8).toString(16)}::1`;
+  const first = [0, 1, 2, 3, 4].map((k) => hit(mw, T + k, 0, in48(0)).passed);
+  assert.deepStrictEqual(first, [true, true, false, false, false], `a /56 keeps its own budget of 2: ${first}`); n++;
+  const sibs = [1, 2, 3, 4, 5, 6].map((i) => hit(mw, T + 1000, 0, in48(i)).passed);
+  assert(sibs.every(Boolean), `a /56 over its own budget must not drain its /48 siblings': ${sibs}`); n++;
+  const ninth = hit(mw, T + 30_000, 0, in48(7));
+  assert(ninth.code === 429 && ninth.ra === '30', `the 9th /56 of one /48 must be refused (Retry-After 30): ${ninth.code} ${ninth.ra}`); n++;
+  assert(hit(mw, T + 30_000, 0, in48(7, '78')).passed && hit(mw, T + 30_000, 0, '198.51.100.40').passed, 'another /48 and an IPv4 must not share it'); n++;
+  assert(hit(mw, T + 60_000, 0, in48(8)).passed, 'the /48 window must open at 60 s'); n++;
 }
 
 // Prune cost (sweep 20): a full scan per call once 1000 buckets were live made every limited request
