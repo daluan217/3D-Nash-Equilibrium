@@ -112,6 +112,9 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   assert(wide.length === 0, `Dockerfile: copies more than named files from the build context: ${wide.join(' | ')}`); n++;
   assert.deepStrictEqual(runtime.split('\n').filter((l) => /^(ADD|COPY) /.test(l)), ['COPY package*.json ./', 'COPY --from=builder /app/dist/ ./dist/'],
     'Dockerfile: the runtime stage copies only package*.json and the built dist/'); n++;
+  // cloudbuild.contract checks NODE_ENV=production is SET, not that it holds: a later ENV (development, IS_ELECTRON,
+  // ELECTRON_USER_DATA_PATH = the desktop's local owner, no HSTS, no Host guard) overrode it past both.
+  assert.deepStrictEqual(runtime.split('\n').filter((l) => /^(ENV|ARG) /.test(l)), ['ENV NODE_ENV=production'], 'Dockerfile: the runtime stage sets an env beyond NODE_ENV=production'); n++;
   assert(/^RUN npm ci --omit=dev$/m.test(runtime) && /^CMD \["node", "dist\/server\.cjs"\]$/m.test(runtime), 'Dockerfile: the runtime stage no longer installs with `npm ci --omit=dev` and runs dist/server.cjs'); n++;
   // Not root (cloud sweep 6): the last USER (instructions are case-insensitive) is exactly the base image's node,
   // an allowlist, since `USER 00` / `+0` are uid 0 too. Its one chown is the WORKDIR (the no-bucket db.json folder).
