@@ -716,7 +716,10 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   // sections, a 342 s browser install (apt 34.9 MB at 109 kB/s). Blamed on the mirror only past the whole overhead; never a pass.
   const s14 = shardCases('smoke', { E2E_SHARD: `14/${SHARD_COUNT}` }, smoke), job14 = at(s14, 234103).replaceAll('shard 1/', 'shard 14/');
   const trip = (install: string | undefined, ms = 613000) => checkLog('smoke', job14, { E2E_SHARD: `14/${SHARD_COUNT}`, E2E_JOB_T0: String(T), ...(install === undefined ? {} : { E2E_INSTALL_S: install }) }, [], T * 1000 + ms);
-  const mirror = /The browser install alone outran the whole measured overhead \(124 s\): a slow runner mirror, not the packing\. Re-run the job/;
+  // Sweep 7 F8: CI 36747948728 smoke 2/35 tripped on the mirror twice (1224 s, then 533 s installs); "trips again = grown"
+  // would have raised _overhead_ms over a mirror. The apt rate decides (index fetches stayed ~10 MB/s), never the repeat.
+  const mirror = /The browser install alone outran the whole measured overhead \(124 s\), not the packing\. Its install log says which: any apt "Fetched \.\.\. \(N kB\/s\)" line under 1 MB\/s is a slow runner mirror \(re-run once it recovers; it can outlast re-runs\), a normal rate means the install itself grew: re-measure _overhead_ms$/;
+  assert.doesNotMatch(trip('533', 773000), /again|repeat/i, 'a repeat trip is never read as a grown install: the mirror outlasted re-runs');
   assert.match(trip('342'), /^smoke: the job's first attempts ran 621 s \(8 s of it outside the steps\), over the 420 s ceiling: 234\.103 s of sections \(budget 296 s\), 342 s installing browsers, 37 s of everything else\. /, 'the verbatim CI trip names its section, install and remaining seconds');
   assert.match(trip('342'), mirror, 'a 342 s install is named as the slow mirror');
   const O1 = SHARD_TIMINGS._overhead_ms / 1000;
