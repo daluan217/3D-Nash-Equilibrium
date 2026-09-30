@@ -5294,11 +5294,13 @@ async function startServer() {
     // and every saved game back. `_gen/d19b3-deleteconfirm-false-destruction.mjs`
     // walks that end to end. The post-deletion database is now a CANDIDATE
     // that `saveDB` commits only after the bytes land, and a failure says so.
+    // Both wipes come from the same snapshot: every user record sharing this id
+    // or this email address, and the games of EVERY one of them (sweep 22, S1-2:
+    // a second row's games outlived it, orphaned, under "all ... deleted").
+    const gone = new Set(db.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id).map(u => u.id));
     const remaining: DB = {
-      // Both wipes come from the same snapshot: the games saved by this user,
-      // and every user record sharing this id or this email address.
-      users: db.users.filter(u => emailKey(u.email) !== userEmail && u.id !== user.id),
-      games: db.games.filter(g => g.userId !== user.id),
+      users: db.users.filter(u => !gone.has(u.id)),
+      games: db.games.filter(g => !gone.has(g.userId)),
     };
 
     if (!saveDB(remaining)) {

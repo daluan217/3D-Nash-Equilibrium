@@ -710,6 +710,47 @@ for (const [label, doc, expectMsg] of [
   port += 1;
 }
 
+// 11. TWO ROWS, ONE MAILBOX (sweep 22, S1-2). A merged or legacy store can hold both (dedupe keeps
+//     duplicates GCS already held). delete-confirm removed every row with the email but only the
+//     signed-in row's games, then said "all saved game profiles ... deleted". A third account's game
+//     is the control: a wipe-everything fix would pass the first check and fail this one.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-dupmail-'));
+  const PW = 'Sup3rSecret!23';
+  const salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  const row = (id, username, email) => ({ id, username, email, passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 });
+  const payoffs = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({
+    users: [row('u_a', 'kate', 'kate@example.test'), row('u_b', 'kate-old', 'Kate@Example.test'), row('u_c', 'other', 'other@example.test')],
+    games: [{ id: 'g_a', userId: 'u_a', name: 'A', payoffs }, { id: 'g_b', userId: 'u_b', name: 'B', payoffs }, { id: 'g_c', userId: 'u_c', name: 'C', payoffs }] }));
+  const child = spawnServer(userData, port);
+  const call = (route, body, token) => fetch(`http://127.0.0.1:${port}/api/auth/${route}`, { method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body ?? {}) })
+    .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
+  try {
+    await waitReady(child, port);
+    const { json: login } = await call('login', { email: 'kate', password: PW });
+    const { json: ask } = await call('delete-request', {}, login?.token);
+    const done = await call('delete-confirm', { code: ask?.deleteCode }, login?.token);
+    const after = JSON.parse(readFileSync(path.join(userData, 'db.json'), 'utf-8'));
+    const ids = (xs) => xs.map((x) => x.id).sort().join(',');
+    record('two rows, one mailbox: delete-confirm answers 200', done.status === 200, `status ${done.status}`);
+    record('two rows, one mailbox: both rows AND both rows\' games are gone from disk',
+      !after.games.some((g) => g.userId === 'u_a' || g.userId === 'u_b') && !after.users.some((u) => u.id === 'u_a' || u.id === 'u_b'),
+      `users ${ids(after.users)}; games ${ids(after.games)}`);
+    record('two rows, one mailbox: CONTROL, the other account and its game are untouched',
+      after.users.some((u) => u.id === 'u_c') && after.games.some((g) => g.id === 'g_c'), `users ${ids(after.users)}; games ${ids(after.games)}`);
+  } catch (err) {
+    record('two rows, one mailbox: the desktop server boots', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DB-SHAPE REFUSAL: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {
