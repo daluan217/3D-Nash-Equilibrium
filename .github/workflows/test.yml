@@ -747,7 +747,11 @@ jobs:
           fi
 
       - name: Install headless browsers for this shard
-        run: npx playwright install --with-deps ${{ steps.webkit_need.outputs.browsers }}
+        # Timed: a wall-check trip names the install's seconds, so a slow runner mirror reads as one (TASK-18 sweep 6).
+        run: |
+          t=$(date +%s)
+          npx playwright install --with-deps ${{ steps.webkit_need.outputs.browsers }}
+          echo "E2E_INSTALL_S=$(( $(date +%s) - t ))" >> "$GITHUB_ENV"
 
       - name: Boot the production server and run the smoke suite
         # smoke.mjs retries only the failed named sections once. It never

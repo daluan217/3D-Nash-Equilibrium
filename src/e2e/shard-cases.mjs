@@ -56,9 +56,16 @@ export function checkLog(job, log, env, extraLogs = [], now = Date.now()) {
   const t0 = /^\d+$/.test(env.E2E_JOB_T0 ?? '') ? +env.E2E_JOB_T0 * 1000 : NaN, { _ceiling_ms: ceiling, _outside_ms: outside } = SHARD_TIMINGS;
   if (!(t0 <= now)) return `smoke: E2E_JOB_T0 ${JSON.stringify(env.E2E_JOB_T0)} is not this job's start in epoch seconds, so its wall is unreadable`;
   const wall = now - t0 - [log, ...extraLogs].reduce((a, l) => a + retryMs(l), 0) + outside;
-  return !(wall <= ceiling) ? `smoke: the job's first attempts ran ${Math.ceil(wall / 1000)} s (${outside / 1000} s of it outside the steps), over the `
-    + `${ceiling / 1000} s ceiling: re-measure _overhead_ms with scripts/shard-timings-from-run.mjs, or re-run the job if its `
-    + 'install steps ran slow (a 269 kB/s apt mirror once cost 89 s)' : '';
+  if (wall <= ceiling) return '';
+  // Still a fail, but say where the time went (sweep 6: a 109 kB/s runner apt mirror put 7 of 35 shards at 466-1349 s on
+  // normal sections). Only an install that alone outran the whole measured overhead is blamed on the runner; unread, never.
+  const inst = /^\d+$/.test(env.E2E_INSTALL_S ?? '') ? +env.E2E_INSTALL_S * 1000 : null, rest = Math.round((wall - ms - outside - (inst ?? 0)) / 1000);
+  const why = inst > SHARD_TIMINGS._overhead_ms ? `The browser install alone outran the whole measured overhead (${SHARD_TIMINGS._overhead_ms / 1000} s): `
+    + 'a slow runner mirror, not the packing. Re-run the job; if it trips again, the install itself grew: re-measure _overhead_ms'
+    : 'Re-measure _overhead_ms with scripts/shard-timings-from-run.mjs';
+  return `smoke: the job's first attempts ran ${Math.ceil(wall / 1000)} s (${outside / 1000} s of it outside the steps), over the ${ceiling / 1000} s ceiling: `
+    + `${ms / 1000} s of sections (budget ${SECTION_BUDGET_MS / 1000} s), ${inst === null ? `no readable install time (E2E_INSTALL_S ${JSON.stringify(env.E2E_INSTALL_S)}), `
+    + `${rest} s of everything else, installs included` : `${inst / 1000} s installing browsers, ${rest} s of everything else`}. ${why}`;
 }
 
 // Node takes import.meta.url from the realpath: compare argv[1]'s, or a symlinked path skips the check, exit 0.

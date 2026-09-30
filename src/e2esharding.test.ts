@@ -712,6 +712,18 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
     'retries in the main and §47 logs are not charged to the wall; 1 ms more is');
   for (const t0 of [undefined, '', ' 1800000000', '1.8e9', String(T + 1)])
     assert.match(wall(log(s1), 0, t0), /^smoke: E2E_JOB_T0 .* is not this job's start in epoch seconds, so its wall is unreadable$/, `an E2E_JOB_T0 of ${JSON.stringify(t0)} fails, never passes as NaN`);
+  // Sweep 6: a trip says where its time went. Verbatim CI 36734588115 smoke 14/35 (job 109953208691): 621 s, 234.103 s of
+  // sections, a 342 s browser install (apt 34.9 MB at 109 kB/s). Blamed on the mirror only past the whole overhead; never a pass.
+  const s14 = shardCases('smoke', { E2E_SHARD: `14/${SHARD_COUNT}` }, smoke), job14 = at(s14, 234103).replaceAll('shard 1/', 'shard 14/');
+  const trip = (install: string | undefined, ms = 613000) => checkLog('smoke', job14, { E2E_SHARD: `14/${SHARD_COUNT}`, E2E_JOB_T0: String(T), ...(install === undefined ? {} : { E2E_INSTALL_S: install }) }, [], T * 1000 + ms);
+  const mirror = /The browser install alone outran the whole measured overhead \(124 s\): a slow runner mirror, not the packing\. Re-run the job/;
+  assert.match(trip('342'), /^smoke: the job's first attempts ran 621 s \(8 s of it outside the steps\), over the 420 s ceiling: 234\.103 s of sections \(budget 296 s\), 342 s installing browsers, 37 s of everything else\. /, 'the verbatim CI trip names its section, install and remaining seconds');
+  assert.match(trip('342'), mirror, 'a 342 s install is named as the slow mirror');
+  const O1 = SHARD_TIMINGS._overhead_ms / 1000;
+  assert.deepStrictEqual([String(O1), String(O1 + 1), undefined, '', '3e2', '-400'].map((i) => mirror.test(trip(i))), [false, true, false, false, false, false],
+    'only an install past the whole measured overhead is blamed on the mirror; one at it, or unread, says re-measure');
+  assert.match(trip(undefined), /no readable install time \(E2E_INSTALL_S undefined\), 379 s of everything else, installs included\. Re-measure _overhead_ms/, 'an unread install time is said, never read as 0 s');
+  assert.deepStrictEqual([trip('9999', C - O), trip('0', C - O + 1) !== '', trip('9999', C - O + 1) !== ''], ['', true, true], 'the install time only explains a trip: it never passes or fails a job');
   const w1 = walkShard(1), sc1 = scrollShard(1), tour = (tags: string[]) => tags.map((t) => `  · ${t} 9 s, load 1.0 at start`).join('\n');
   assert.strictEqual(checkLog('smoke', log(s1), e1), '', 'shard 1\'s own sections pass');
   assert.strictEqual(checkLog('walk', tour(w1), { TOUR_WALK_SHARD: '1/9' }), '', 'walk shard 1\'s own cases pass');
@@ -887,6 +899,8 @@ assert.match(e2eSmokeJob, /if printf '%s\\n' "\$webkit_shards" \| grep -qx "\$SH
   'the shard-needs-WebKit branch must echo "browsers=chromium webkit" and the else branch "browsers=chromium" — not both branches emitting the same thing');
 assert.match(e2eSmokeJob, /playwright install --with-deps \$\{\{ steps\.webkit_need\.outputs\.browsers \}\}/,
   'the e2e_smoke job must install exactly the browser set webkit_need computed');
+assert.match(e2eSmokeJob, /\n\s+t=\$\(date \+%s\)\n\s+npx playwright install --with-deps \$\{\{ steps\.webkit_need\.outputs\.browsers \}\}\n\s+echo "E2E_INSTALL_S=\$\(\( \$\(date \+%s\) - t \)\)" >> "\$GITHUB_ENV"\n[\s\S]*- name: Boot the production server and run the smoke suite/,
+  'the browser install is timed around exactly its own command, into E2E_INSTALL_S, before the Boot step\'s wall check reads it');
 assert.doesNotMatch(e2eSmokeJob, /playwright install --with-deps chromium\s*$/m,
   'the e2e_smoke job must not fall back to an unconditional chromium-only install (that would silently skip WebKit again)');
 
