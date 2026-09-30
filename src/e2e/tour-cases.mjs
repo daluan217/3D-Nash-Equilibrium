@@ -1,6 +1,7 @@
 // The tour e2e cases in run order (engine-major), shared by the scripts and e2esharding.test.ts: tour-timings.json
 // must name exactly these tags, so a case with no CI timing, or a timing for a case that no longer runs, fails the
 // shard-budget guard by name. The tag is the script's own case-line tag.
+import { readFileSync } from 'node:fs';
 const LAND = [1440, 900], PORTRAIT = [1024, 1366], SHEET = [390, 844];
 /** @type {[kind: string, viewport: number[], hogMs: number, a: any, b?: string][]} typed rows: an inferred union broke tsc (CI 36540950287) */
 export const WALK_CASES = [
@@ -28,3 +29,16 @@ export const SCROLL_CASES = [['normal frames', 0, false, L], ['550 ms frames', 5
   ['portrait mid-scroll re-target 550 ms frames', 550, true, P], ['sheet mid-scroll re-target', 0, true, SH],
   ['sheet mid-scroll re-target 550 ms frames', 550, true, SH], ['reopen', 0, 'reopen', L], ['portrait reopen 550 ms frames', 550, 'reopen', P]];
 export const scrollTags = (engines = ['chromium', 'webkit']) => engines.flatMap((en) => SCROLL_CASES.map(([label]) => `[${en} ${label}]`));
+
+// Tour shards pack like smoke's: slowest case first (run order on ties) onto the lightest shard, by tour-timings.json's
+// CI seconds. Round-robin packed walk shard 2 at 759 s against a 646 s mean, and it ended the e2e gate (sweep 5).
+// Returns each shard's tags in run order; a case with no CI time throws (it would otherwise run on no shard).
+export function packTour(tags, rows, n) {
+  const secs = new Map(rows), load = Array(n).fill(0), shardOf = new Map();
+  for (const t of tags) if (typeof secs.get(t) !== 'number') throw new Error(`tour-timings.json has no CI time for ${t}: refresh it with scripts/shard-timings-from-run.mjs`);
+  [...tags].sort((a, b) => secs.get(b) - secs.get(a)) // stable: ties keep run order
+    .forEach((t) => { const i = load.indexOf(Math.min(...load)); shardOf.set(t, i); load[i] += secs.get(t); });
+  return load.map((_, i) => tags.filter((t) => shardOf.get(t) === i));
+}
+export const TOUR_TIMINGS = JSON.parse(readFileSync(new URL('./tour-timings.json', import.meta.url), 'utf8'));
+export const tourShards = (job, n) => packTour(job === 'walk' ? walkTags() : scrollTags(), TOUR_TIMINGS[`tour-${job}`], n);

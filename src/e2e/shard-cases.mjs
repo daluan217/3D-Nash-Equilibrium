@@ -7,18 +7,18 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseSections, selectSmokeSections, SECTION_BUDGET_MS, SHARD_TIMINGS } from './selection.js';
-import { walkTags, scrollTags } from './tour-cases.mjs';
+import { tourShards } from './tour-cases.mjs';
 
-const TOUR = { walk: [walkTags, 'TOUR_WALK_SHARD'], scroll: [scrollTags, 'TOUR_SCROLL_SHARD'] };
+const TOUR = { walk: 'TOUR_WALK_SHARD', scroll: 'TOUR_SCROLL_SHARD' };
 
 export function shardCases(job, env, smoke = readFileSync(new URL('./smoke.mjs', import.meta.url), 'utf8')) {
   if (job === 'smoke') {
     return selectSmokeSections(parseSections(smoke), env).selected.map(({ id }) => id);
   }
   if (!TOUR[job]) throw new Error(`unknown job ${JSON.stringify(job)}: smoke, walk or scroll`);
-  const [tags, key] = TOUR[job], raw = env[key] ?? '1/1', m = /^(\d+)\/(\d+)$/.exec(raw);
+  const key = TOUR[job], raw = env[key] ?? '1/1', m = /^(\d+)\/(\d+)$/.exec(raw);
   if (!m || +m[1] < 1 || +m[1] > +m[2]) throw new Error(`${key} must look like 2/9; got ${JSON.stringify(raw)}`);
-  return tags().filter((_, j) => j % +m[2] === +m[1] - 1);
+  return tourShards(job, +m[2])[+m[1] - 1];
 }
 
 // smoke: first attempts only. A retried section prints its header again after the RETRYING line, and a
@@ -57,7 +57,8 @@ export function checkLog(job, log, env, extraLogs = [], now = Date.now()) {
   if (!(t0 <= now)) return `smoke: E2E_JOB_T0 ${JSON.stringify(env.E2E_JOB_T0)} is not this job's start in epoch seconds, so its wall is unreadable`;
   const wall = now - t0 - [log, ...extraLogs].reduce((a, l) => a + retryMs(l), 0) + outside;
   return !(wall <= ceiling) ? `smoke: the job's first attempts ran ${Math.ceil(wall / 1000)} s (${outside / 1000} s of it outside the steps), over the `
-    + `${ceiling / 1000} s ceiling: re-measure _overhead_ms with scripts/shard-timings-from-run.mjs` : '';
+    + `${ceiling / 1000} s ceiling: re-measure _overhead_ms with scripts/shard-timings-from-run.mjs, or re-run the job if its `
+    + 'install steps ran slow (a 269 kB/s apt mirror once cost 89 s)' : '';
 }
 
 // Node takes import.meta.url from the realpath: compare argv[1]'s, or a symlinked path skips the check, exit 0.

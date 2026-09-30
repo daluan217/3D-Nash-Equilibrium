@@ -58,7 +58,7 @@ export function refresh(jobs, current, smokeSource, runIds) {
       ...Object.keys(tour[k]).filter((t) => !want.includes(t)).map((t) => `run ${runs} timed tour ${k} case ${t}, which this tree does not run`)]));
   const ids = registered.filter((id) => fresh[id] !== undefined).sort((a, b) => a.length - b.length || a.localeCompare(b));
   const why = `CI seconds per case in run order, max over CI ${runIds.join(', ')} (scripts/shard-timings-from-run.mjs). _setup_s: the most a tour `
-    + 'job spent outside its cases (wall minus case seconds). e2esharding packs each job round-robin: its slowest shard plus _setup_s must fit 75% of the timeout.';
+    + 'job spent outside its cases (wall minus case seconds). Each job packs slowest-first (tour-cases.mjs packTour): its slowest shard plus _setup_s must fit 75% of the timeout.';
   return { problems, overheadMs, setupS,
     shard: JSON.stringify(Object.fromEntries([...ids, ...Object.keys(meta)].map((k) => [k, fresh[k]])), null, 1) + '\n',
     tour: `{\n"_why": ${JSON.stringify(why)},\n"_setup_s": ${setupS},\n${Object.entries(tags).map(([k, want]) =>

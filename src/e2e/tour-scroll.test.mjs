@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { loadavg } from 'node:os';
 import { chromium, webkit } from 'playwright';
 import { waitForOwnServer } from '../integration/ownserver.mjs';
-import { SCROLL_CASES as cases, SCROLL_VIEWPORTS } from './tour-cases.mjs';
+import { SCROLL_CASES as cases, SCROLL_VIEWPORTS, tourShards } from './tour-cases.mjs';
 
 const PORT = Number(process.env.TOUR_SCROLL_PORT || 4746);
 const base = `http://localhost:${PORT}`;
@@ -67,16 +67,17 @@ const settled = (page) => page.evaluate(() => new Promise((resolve) => {
 const failures = [];
 const check = (ok, name) => { if (!ok) { failures.push(name); console.error(`  ✗ ${name}`); } };
 const { LAND, PORTRAIT } = SCROLL_VIEWPORTS;
-const [SHARD, SHARDS] = (process.env.TOUR_SCROLL_SHARD || '1/1').split('/').map(Number); // CI: 2 runners, 21 cases each
+const [SHARD, SHARDS] = (process.env.TOUR_SCROLL_SHARD || '1/1').split('/').map(Number); // CI: test.yml's e2e_tour_scroll matrix (its want counts each shard's share)
 const ONLY = new RegExp(process.env.TOUR_SCROLL_ONLY || '.'); // local mutant runs; CI runs every case
 try {
   await waitForOwnServer(server, base);
-  let ran = 0, j = -1;
+  let ran = 0;
+  const mine = new Set(tourShards('scroll', SHARDS)[SHARD - 1]);
   for (const [engineName, engine] of [['chromium', chromium], ['webkit', webkit]]) {
     const browser = await engine.launch();
     try {
       for (const [label, hogMs, shift, viewport] of cases) {
-        if (++j % SHARDS !== SHARD - 1 || !ONLY.test(`[${engineName} ${label}]`)) continue; ran++;
+        if (!mine.has(`[${engineName} ${label}]`) || !ONLY.test(`[${engineName} ${label}]`)) continue; ran++;
         const t0 = Date.now(), load = loadavg()[0].toFixed(1);
         const ctx = await browser.newContext({ viewport });
         const page = await ctx.newPage();

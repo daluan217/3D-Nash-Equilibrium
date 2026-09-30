@@ -9,7 +9,7 @@ import { loadavg } from 'node:os';
 import { chromium, webkit } from 'playwright';
 import { waitForOwnServer } from '../integration/ownserver.mjs';
 import { throttleEveryPage } from './throttle.mjs';
-import { WALK_CASES as CASES, walkTag } from './tour-cases.mjs';
+import { WALK_CASES as CASES, walkTag, tourShards } from './tour-cases.mjs';
 
 const PORT = Number(process.env.TOUR_WALK_PORT || 4749);
 const base = `http://localhost:${PORT}`;
@@ -250,7 +250,8 @@ async function cancels(page, tag, portrait, s, kind) {
 
 try {
   await waitForOwnServer(server, base);
-  const jobs = ENGINES.flatMap((en) => CASES.map((c) => [en, ...c])).filter((_, j) => j % SHARDS === SHARD - 1);
+  const mine = new Set(tourShards('walk', SHARDS)[SHARD - 1]);
+  const jobs = ENGINES.flatMap((en) => CASES.map((c) => [en, ...c])).filter(([en, ...c]) => mine.has(walkTag(en, c)));
   let ran = 0;
   for (const [en, engine] of [['chromium', chromium], ['webkit', webkit]].filter(([n]) => ENGINES.includes(n))) {
     const browser = en === 'chromium' ? throttleEveryPage(await engine.launch()) : await engine.launch();

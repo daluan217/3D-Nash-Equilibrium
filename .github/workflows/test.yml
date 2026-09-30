@@ -899,13 +899,15 @@ jobs:
         # The step-1 scroll re-ran mid-flight; WebKit stacked the two relative scrolls (y=996, target off
         # screen, card clamped to the top) and cancelled a repeated portrait scrollIntoView (y=0, H20).
         # 42 cases (2 engines x layouts, 550 ms frames, sub-pixel re-layouts, mid-scroll re-targets, reopens),
-        # round-robin over 2 shards of 21 (budget: tour-timings.json); non-zero exit on any failed check, the grep proves each ran.
+        # packed slowest-first over 2 shards by tour-timings.json (tour-cases.mjs packTour); non-zero exit on any failed check,
+        # the grep proves each ran.
         run: |
           set -o pipefail
           node src/e2e/tour-scroll.test.mjs | tee "$RUNNER_TEMP/tour-scroll.log"
           node src/e2e/shard-cases.mjs scroll "$RUNNER_TEMP/tour-scroll.log"
-          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq 21
-          grep -q '^✓ tour scroll: shard ${{ matrix.shard }}/2, 21 cases:' "$RUNNER_TEMP/tour-scroll.log"
+          want=$(node --input-type=module -e "import { shardCases } from './src/e2e/shard-cases.mjs'; process.stdout.write(String(shardCases('scroll', process.env).length))")
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq "$want"
+          grep -q "^✓ tour scroll: shard ${{ matrix.shard }}/2, $want cases:" "$RUNNER_TEMP/tour-scroll.log"
         env:
           TOUR_SCROLL_PORT: '3099'
           TOUR_SCROLL_SHARD: ${{ matrix.shard }}/2
@@ -941,14 +943,14 @@ jobs:
 
       - name: All 19 tour steps land, with scrollend removed, in chromium and webkit (TASK-18 H22)
         # A same-target Next met a live flight WebKit then cancelled (step 16 at y=0, target off screen). 66 cases
-        # (2 engines x walk/flight/interrupt/long frame/slow/held start/page cancels in 3 Next modes), round-robin over
-        # 9 shards (8, 8, 8, then 7 each); the grep proves each ran. The packed CI timings fit the budget e2esharding
-        # checks (tour-timings.json); 8 cases a shard once ran 1071 s of this job's 1200 s (CI 36533916769).
+        # (2 engines x walk/flight/interrupt/long frame/slow/held start/page cancels in 3 Next modes), packed slowest-first
+        # over 9 shards by tour-timings.json (tour-cases.mjs packTour); the grep proves each ran. The packed CI timings fit
+        # the budget e2esharding checks; 8 cases a shard once ran 1071 s of this job's 1200 s (CI 36533916769).
         run: |
           set -o pipefail
           node src/e2e/tour-walk.test.mjs | tee "$RUNNER_TEMP/tour-walk.log"
           node src/e2e/shard-cases.mjs walk "$RUNNER_TEMP/tour-walk.log"
-          want=$(( (66 + 9 - ${{ matrix.shard }}) / 9 ))
+          want=$(node --input-type=module -e "import { shardCases } from './src/e2e/shard-cases.mjs'; process.stdout.write(String(shardCases('walk', process.env).length))")
           test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-walk.log")" -eq "$want"
           grep -q "^✓ tour walk: shard ${{ matrix.shard }}/9, $want cases:" "$RUNNER_TEMP/tour-walk.log"
         env:
