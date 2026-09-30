@@ -219,6 +219,14 @@ for (const [method, t] of [['GET', '/\\evil.example/%2e%2e/assets'], ['HEAD', '/
   // planted file and of the assets directory by some spelling; else the marker checks prove nothing.
   const want = ['200', '404', '400', '301 www', 'GET /server.cjs', 'GET /.env', 'GET /package.json', 'GET /assets'];
   assert(want.every((s) => seen.has(s)), `fuzz fixture: missing ${want.filter((s) => !seen.has(s))}`); n++;
+  // Every other method off /api (sweep 5): only GET/HEAD read files, so each is a 404 (Express's own page carries
+  // its default-src 'none' CSP), hardened, never a planted file, never the markup echoed back.
+  for (const m of ['POST', 'PUT', 'DELETE', 'PATCH', 'TRACE', 'PROPFIND']) for (const t of ['/', '/index.html', '/assets/app-AAAA1111.js', '/server.cjs', '/.env', '/x%3Cb%3E']) {
+    // Content-Length set: Node's client sends a DELETE body unframed, which the server rightly reads as a bad request.
+    const r = await named(`${m} ${t}`, m === 'TRACE' ? h(m, t) : h(m, t, { ...J, 'content-length': '2' }, '{}'));
+    assert(r.status === 404 && !r.body.includes(MARK) && !r.body.includes('<b>'), `${m} ${t}: ${r.status} ${r.body.slice(0, 80)}, want a 404 that serves and echoes nothing`);
+    hardened(`${m} ${t}`, r, { hsts: true, libCsp: /^text\/html/.test(String(r.h['content-type'])) });
+  }
 }
 
 // live-smoke section 3, the real script against the real server: every new row passes.
