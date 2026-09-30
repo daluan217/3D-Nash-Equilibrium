@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { parseSections, selectSmokeSections, measuredMs, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './selection.js';
+import { parseSections, selectSmokeSections, SECTION_BUDGET_MS } from './selection.js';
 import { walkTags, scrollTags } from './tour-cases.mjs';
 
 const TOUR = { walk: [walkTags, 'TOUR_WALK_SHARD'], scroll: [scrollTags, 'TOUR_SCROLL_SHARD'] };
@@ -28,7 +28,14 @@ export function logCases(job, log) {
   return [...log.split(/^════ RETRYING ONLY FAILED SECTIONS/m)[0].matchAll(/^════ SECTION (\S+) \[shard \d+\/\d+\] .* ════$/gm)].map((m) => m[1]);
 }
 
-export function checkLog(job, log, env) {
+// A log's first-attempt section time, or null if a section run has no readable result line (it would sum to 0 s).
+function sectionMs(log) {
+  const first = log.split(/^════ RETRYING ONLY FAILED SECTIONS/m)[0], results = [...first.matchAll(/^SECTION-(?:PASS|FAIL) (\S+) .*\((\d+)ms\)$/gm)];
+  return JSON.stringify(results.map((m) => m[1])) === JSON.stringify(logCases('smoke', first)) ? results.reduce((a, m) => a + +m[2], 0) : null;
+}
+
+// extraLogs: the same job's later steps (shard 24's §47 step), whose section time shares the shard's budget.
+export function checkLog(job, log, env, extraLogs = []) {
   const want = shardCases(job, env), got = logCases(job, log); // e2esharding: want is never empty in CI
   if (JSON.stringify(got) !== JSON.stringify(want)) {
     const missing = want.filter((c) => !got.includes(c)), extra = got.filter((c) => !want.includes(c));
@@ -38,19 +45,16 @@ export function checkLog(job, log, env) {
   // Per shard only: tour timeouts sit 1.33x over their budget, smoke's 25 min 3.6x its ceiling; E2E_SECTION has no shard.
   if (job !== 'smoke' || !env.E2E_SHARD) return '';
   // The packing's budget holds at run time: a stale table once ran a shard 1,228 s, green (PR #211). First attempts only
-  // (a retry is its own signal). ponytail: shard 24's §47 step is charged its table value, not its own log.
-  const results = [...log.split(/^════ RETRYING ONLY FAILED SECTIONS/m)[0].matchAll(/^SECTION-(?:PASS|FAIL) (\S+) .*\((\d+)ms\)$/gm)];
-  if (JSON.stringify(results.map((m) => m[1])) !== JSON.stringify(got)) // an unread result line would sum to 0 s and pass
-    return `smoke: result lines ${JSON.stringify(results.map((m) => m[1]))} do not match the sections run ${JSON.stringify(got)}: the time is unreadable`;
-  const ms = results.reduce((a, m) => a + +m[2], 0);
-  const step = EXTRA_STEP_SECTIONS[Number.parseInt(env.E2E_SHARD)], budget = SECTION_BUDGET_MS - (step ? measuredMs(step) : 0);
-  return ms > budget ? `smoke: the first attempts ran ${ms / 1000} s of sections, over this shard's ${budget / 1000} s budget `
-    + `(${SECTION_BUDGET_MS / 1000} s less its extra steps): refresh shard-timings.json with scripts/shard-timings-from-run.mjs, or split a section` : '';
+  // (a retry is its own signal).
+  const each = [log, ...extraLogs].map(sectionMs), ms = each.reduce((a, t) => a + (t ?? 0), 0);
+  if (each.includes(null)) return `smoke: a section ran with no readable SECTION-PASS/FAIL (…ms) line, so the time is unreadable`;
+  return ms > SECTION_BUDGET_MS ? `smoke: the first attempts ran ${ms / 1000} s of sections${extraLogs.length ? ' with the extra steps' : ''}, over the `
+    + `${SECTION_BUDGET_MS / 1000} s budget: refresh shard-timings.json with scripts/shard-timings-from-run.mjs, or split a section` : '';
 }
 
 // Node takes import.meta.url from the realpath: compare argv[1]'s, or a symlinked path skips the check, exit 0.
 if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  const [job, file] = process.argv.slice(2), problem = checkLog(job, readFileSync(file, 'utf8'), process.env);
+  const [job, file, ...extra] = process.argv.slice(2), problem = checkLog(job, readFileSync(file, 'utf8'), process.env, extra.map((f) => readFileSync(f, 'utf8')));
   if (problem) { console.error(`::error::${problem}`); process.exit(1); }
   console.log(`✓ ${job}: the log ran exactly the ${logCases(job, readFileSync(file, 'utf8')).length} case(s) the packing gives this job`);
 }

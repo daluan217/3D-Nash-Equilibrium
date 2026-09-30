@@ -480,7 +480,7 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
 // catch.
 // TASK-18 sweep 4: the extra §47 step test.yml runs on shard 24 is packed, not ignored.
 assert.deepStrictEqual(EXTRA_STEP_SECTIONS, { 24: '47' }, 'the packer knows test.yml\'s one extra-step section');
-assert.match(workflow, /- name: Exercise section 47 after natural simulation completion\n\s+if: matrix\.shard == 24\n[\s\S]{0,160}?run: \|\n[\s\S]{0,40}?node src\/e2e\/smoke\.mjs[^\n]*\n[^\n]*\n\s+env:\n\s+E2E_SECTION: '47'/,
+assert.match(workflow, /- name: Exercise section 47 after natural simulation completion\n\s+if: matrix\.shard == 24\n[\s\S]{0,160}?run: \|\n[\s\S]{0,40}?node src\/e2e\/smoke\.mjs[^\n]*\n(?:[^\n]*\n){3}\s+env:\n\s+E2E_SECTION: '47'/,
   'test.yml\'s extra step is still §47 on shard 24, as EXTRA_STEP_SECTIONS says');
 {
   const on24 = definitions.filter((d) => d.shard === 24).reduce((sum, d) => sum + measuredMs(d.id), 0);
@@ -583,10 +583,14 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
     ids.map((id) => `\n════ SECTION ${id} [shard ${shard}/${SHARD_COUNT}] x ════\nSECTION-PASS ${id} x (RED-APP-15/003) (${ms}ms)`).join('\n');
   // The budget holds at run time, first attempts only: CI 36646092049 shard 32 ran 304 s of 345 on a stale table (sweep 1).
   const at = (ids: string[], total: number, q = Math.floor(total / ids.length)) => ids.map((id, j) => log([id], j ? q : total - q * (ids.length - 1))).join('\n'), s24 = shardCases('smoke', { E2E_SHARD: `24/${SHARD_COUNT}` }, smoke);
-  const b24 = SECTION_BUDGET_MS - measuredMs(EXTRA_STEP_SECTIONS[24]), over = /over this shard's [\d.]+ s budget/;
+  const e24 = { E2E_SHARD: `24/${SHARD_COUNT}` }, main24 = (ms: number) => at(s24, ms).replaceAll('shard 1/', 'shard 24/'), step47 = (ms: number) => log(['47'], ms).replaceAll('shard 1/', 'shard 24/');
+  const over = /over the 345 s budget/;
   assert.strictEqual(checkLog('smoke', at(s1, SECTION_BUDGET_MS), { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'a shard at its section budget passes');
-  assert.match(checkLog('smoke', at(s1, SECTION_BUDGET_MS + 1), { E2E_SHARD: `1/${SHARD_COUNT}` }), /first attempts ran [\d.]+ s of sections, over this shard's 345 s budget/, 'a shard over its section budget fails by name');
-  assert.match(checkLog('smoke', at(s24, b24 + 1).replaceAll('shard 1/', 'shard 24/'), { E2E_SHARD: `24/${SHARD_COUNT}` }), new RegExp(`over this shard's ${b24 / 1000} s budget`), 'shard 24\'s budget leaves room for its §47 step');
+  assert.match(checkLog('smoke', at(s1, SECTION_BUDGET_MS + 1), { E2E_SHARD: `1/${SHARD_COUNT}` }), /first attempts ran [\d.]+ s of sections, over the 345 s budget/, 'a shard over its section budget fails by name');
+  // Shard 24's §47 step is charged its own log's time: at its 92 s table entry, a 120 s §47 once went unseen (sweep 2).
+  assert.strictEqual(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120000)]), '', 'shard 24 with its §47 step at the budget passes');
+  assert.match(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120001)]), /ran 345.001 s of sections with the extra steps, over the 345 s budget/, 'shard 24\'s §47 step is charged its measured time');
+  assert.match(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120000).replace('(120000ms)', '(2 min)')]), /the time is unreadable/, 'a §47 step time the budget cannot read fails');
   assert.strictEqual(checkLog('smoke', `${log(s1)}\n════ RETRYING ONLY FAILED SECTIONS: ${s1[0]} x ════\n${log([s1[0]], SECTION_BUDGET_MS)}`, { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'a retry\'s time is not a first attempt\'s');
   assert.match(checkLog('smoke', log(s1).replace(/\(1000ms\)$/, '(1 s)'), { E2E_SHARD: `1/${SHARD_COUNT}` }), /the time is unreadable/, 'a result line the budget cannot read fails, never sums to 0 s');
   assert.doesNotMatch(checkLog('smoke', at(s1, SECTION_BUDGET_MS * 2), { E2E_SECTION: s1.join(',') }), over, 'a local E2E_SECTION run has no shard budget to break');
@@ -607,6 +611,9 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   const cli = (script: string, text: string) => (writeFileSync(join(dir, 'walk.log'), text), run(script, ['walk', join(dir, 'walk.log')], { TOUR_WALK_SHARD: '1/9' }).status);
   for (const script of ['src/e2e/shard-cases.mjs', link('shard-cases.mjs')])
     assert.deepStrictEqual([cli(script, tour(w1)), cli(script, tour(w1.slice(1)))], [0, 1], `the shard-cases.mjs CLI (${script}) exits 0 on its own cases and 1 on a missing one`);
+  const cli24 = (ms47: number) => (writeFileSync(join(dir, '24.log'), main24(SECTION_BUDGET_MS - 120000)), writeFileSync(join(dir, '47.log'), step47(ms47)),
+    run('src/e2e/shard-cases.mjs', ['smoke', join(dir, '24.log'), join(dir, '47.log')], { E2E_SHARD: `24/${SHARD_COUNT}` }).status);
+  assert.deepStrictEqual([cli24(120000), cli24(120001)], [0, 1], 'the shard-cases.mjs CLI reads the extra step logs it is given');
   for (const script of ['src/e2e/webkit-shards.mjs', link('webkit-shards.mjs')])
     assert.strictEqual(run(script, []).stdout, `${shardsNeedingWebkit().join('\n')}\n`, `the webkit-shards.mjs CLI (${script}) prints the shards that need WebKit`);
   // Importing either module from stdin (argv[1] '-', no such file) must not throw: only a run as the entry is a CLI.
@@ -636,8 +643,8 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   // Each step checks its own log; the smoke step's check turns a green exit red, never red green.
   assert.match(workflowJob('e2e_smoke'), /status=\$\{PIPESTATUS\[0\]\}\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-\$\{\{ matrix\.shard \}\}\.log" \|\| \[ "\$status" -ne 0 \] \|\| status=1\n\s+set -e\n/,
     'the smoke step checks its log before it takes the exit code');
-  assert.match(workflowJob('e2e_smoke'), /run: \|\n\s+set -o pipefail\n\s+node src\/e2e\/smoke\.mjs 2>&1 \| tee "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+env:\n\s+E2E_SECTION: '47'/,
-    'the §47 step checks its own log');
+  assert.match(workflowJob('e2e_smoke'), /run: \|\n\s+set -o pipefail\n\s+node src\/e2e\/smoke\.mjs 2>&1 \| tee "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+#[^\n]*\n\s+env -u E2E_SECTION E2E_SHARD=24\/35 node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-24\.log" "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+env:\n\s+E2E_SECTION: '47'/,
+    'the §47 step checks its own log, then shard 24\'s budget with both logs');
   for (const job of ['walk', 'scroll'])
     assert.match(workflowJob(`e2e_tour_${job}`), new RegExp(`set -o pipefail\\n\\s+node src/e2e/tour-${job}\\.test\\.mjs \\| tee "\\$RUNNER_TEMP/tour-${job}\\.log"\\n\\s+node src/e2e/shard-cases\\.mjs ${job} "\\$RUNNER_TEMP/tour-${job}\\.log"\\n`),
       `the tour ${job} step checks its log right after the run`);

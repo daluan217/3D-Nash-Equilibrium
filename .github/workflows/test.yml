@@ -781,6 +781,8 @@ jobs:
           set -o pipefail
           node src/e2e/smoke.mjs 2>&1 | tee "$RUNNER_TEMP/e2e-smoke-47.log"
           node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-47.log"
+          # Shard 24's section budget, charged this step's measured time, not its table entry.
+          env -u E2E_SECTION E2E_SHARD=24/35 node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-24.log" "$RUNNER_TEMP/e2e-smoke-47.log"
         env:
           E2E_SECTION: '47'
           E2E_SECTION47_NATURAL_STOP: '1'
