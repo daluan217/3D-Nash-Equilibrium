@@ -28,11 +28,15 @@ runs:
       shell: bash
       # partial/ belongs to _apt so the download stays sandboxed; the archive itself belongs to the runner user so the
       # cache restores into it. apt-get keeps what it downloads there (Keep-Downloaded-Packages for `apt` too).
+      # Upgrade "false" is --no-upgrade: a dependency the image already ships stays as shipped. Sweep 11 (CI 36774742769):
+      # the filling runner had glib, xvfb and libxml2 at the archive's newest, so none were cached, while 27 of 48 jobs
+      # on the same image upgraded them from the mirror (2.8-4.3 MB each, about 70 s at the incident's 64 kB/s).
       run: |
         sudo install -d -o "$(id -u)" /var/cache/pw-apt
         sudo install -d -o _apt -m 700 /var/cache/pw-apt/partial
         printf '%s\n' 'Dir::Cache::Archives "/var/cache/pw-apt/";' 'APT::Keep-Downloaded-Packages "true";' \
-          'Binary::apt::APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99pw-apt-cache > /dev/null
+          'Binary::apt::APT::Keep-Downloaded-Packages "true";' 'APT::Get::Upgrade "false";' \
+          | sudo tee /etc/apt/apt.conf.d/99pw-apt-cache > /dev/null
 
     - id: restore
       uses: actions/cache/restore@v4

@@ -957,6 +957,8 @@ function browserDepsProblems(wf: string, action: string): string[] {
   const problems: string[] = [], restore = '- name: Restore the browser system packages', uses = 'uses: ./.github/actions/browser-deps';
   const archive = action.match(/Dir::Cache::Archives "([^"]+)\/";/)?.[1], path = action.match(/uses: actions\/cache\/restore@v4\n\s+with:[\s\S]*?\n\s+path: (\S+)\n/)?.[1];
   if (!archive || path !== `${archive}/*.deb`) problems.push(`the action restores ${path}, not the .debs of the archive apt writes (${archive}); apt's lock and partial/ are unreadable to the save`);
+  // Sweep 11 (CI 36774742769): 27 of 48 jobs upgraded glib/xvfb/libxml2 the filling runner already had at newest.
+  if (!/'APT::Get::Upgrade "false";'/.test(action)) problems.push('apt must not upgrade what the image ships (APT::Get::Upgrade "false"): those upgrades are never cached');
   if (!/jq -r '\.packages\["node_modules\/playwright-core"\]\.version \/\/ empty' package-lock\.json/.test(action) || !/key=pw-apt-\$ImageOS-playwright-\$v-\$ImageVersion"/.test(action))
     problems.push('the cache key must follow the runner image and the locked playwright-core version');
   const fill = jobs.get('browser_deps') ?? '';
@@ -994,6 +996,7 @@ for (const [wf, action, want] of [
   [depsMutant(/(uses: actions\/cache\/save@v4\n\s+with:\n\s+path: )\/var\/cache\/pw-apt\/\*\.deb/, '$1/var/cache/pw-apt'), browserDepsAction, 'must save the path the action restores'],
   [workflow, depsMutant('path: /var/cache/pw-apt/*.deb', 'path: /var/cache/pw-apt', browserDepsAction), 'not the .debs of the archive apt writes'],
   [workflow, depsMutant('-$ImageVersion"', '"', browserDepsAction), 'the cache key must follow the runner image'],
+  [workflow, depsMutant(` 'APT::Get::Upgrade "false";'`, '', browserDepsAction), 'apt must not upgrade what the image ships'],
   [depsMutant("        if: steps.deps.outputs.cache-hit != 'true'\n        run: npx playwright install-deps", '        run: npx playwright install-deps'), browserDepsAction, 'skipped on a cache hit'],
   [depsMutant('echo "browsers=chromium webkit"', 'echo "browsers=chromium firefox"'), browserDepsAction, 'a shard installs chromium firefox'],
   [depsMutant('      - name: Install headless browsers for this shard\n', '      - uses: actions/cache@v4\n        with:\n          path: x\n          key: x\n\n      - name: Install headless browsers for this shard\n'), browserDepsAction, 'e2e_smoke saves a cache'],
