@@ -5095,7 +5095,7 @@ try {
   });
 
   // ── 66b. Part B of 66, its own section: 66 alone ran 275 s in CI (section time), over the
-  //       300 s job ceiling with the ~75 s fixed overhead; a job holds ≤ 225 s of sections.
+  //       300 s job ceiling with the ~75 s fixed overhead of the time (a job then held ≤ 225 s of sections).
   section('66b', 'ModalSurface: Save + Edit dialogs — own Tab trap, Escape return, and the 401-mid-submit shape', async () => {
     // ── Part B: Save + Edit — each dialog's own Tab trap/Escape-return
     // (same shape as Part A), THEN the 401-mid-submit shape RED-APP-13/002

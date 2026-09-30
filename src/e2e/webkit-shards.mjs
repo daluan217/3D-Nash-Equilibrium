@@ -1,5 +1,5 @@
 /**
- * Which of the 28 e2e-smoke shards must have WebKit installed.
+ * Which of the e2e-smoke shards (SHARD_COUNT, selection.js) must have WebKit installed.
  *
  * Sections are packed into shards by MEASURED duration (selection.js +
  * shard-timings.json), longest-first, so a new section or a re-measured

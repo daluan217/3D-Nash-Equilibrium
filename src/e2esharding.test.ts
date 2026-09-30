@@ -519,12 +519,12 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
 }
 // Headroom: CI ran ~5% slower than the table the first 20-shard matrix was packed from (285 s on a
 // 207 s-packed shard). Keep every MULTI-section packed shard ≤ 0.9 x the section budget (TASK-18;
-// it was 200 s of 225 s) so that slack cannot reach the budget. A shard holding exactly ONE section is exempted from the 200 s line (bounded instead
-// by the per-section SECTION_BUDGET_MS assert above): the 200 s line exists to catch a PILEUP —
+// it was 200 s of 225 s) so that slack cannot reach the budget. A shard holding exactly ONE section is exempted from the headroom line (bounded instead
+// by the per-section SECTION_BUDGET_MS assert above): the headroom line exists to catch a PILEUP —
 // several sections landing on one shard close enough to the ceiling that CI's ~5% slop could tip it
 // over — and no amount of splitting into more shards makes one already-isolated section smaller
 // (OPUS-REVIEW-WEBKIT N1: §70 alone now measures 207,990 ms after WebKit started actually running
-// there). Silently raising the 200 s line instead would have hidden the other 7 shards this same
+// there). Silently raising the headroom line instead would have hidden the other 7 shards this same
 // repack pushed over it for ordinary multi-section reasons — those are exactly what this must still
 // catch.
 // TASK-18 sweep 4: the extra §47 step test.yml runs on shard 24 is packed, not ignored.
@@ -555,9 +555,9 @@ for (let shard = 1; shard <= SHARD_COUNT; shard++) {
     + `— over the ${HEADROOM_MS / 1000} s headroom line for a MULTI-section shard; raise SHARD_COUNT`);
 }
 // A single-section shard is still bounded — just by SECTION_BUDGET_MS (the per-section assert
-// above), not the tighter 200 s multi-section line. Restated here as an explicit, separately-named
+// above), not the tighter multi-section headroom line. Restated here as an explicit, separately-named
 // check so a shard that quietly grows a SECOND section (no longer "single") is not silently exempted
-// from the 200 s line by an earlier, now-stale membership snapshot.
+// from the headroom line by an earlier, now-stale membership snapshot.
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   const members = shardMembers.get(shard) ?? [];
   if (members.length !== 1) continue;
