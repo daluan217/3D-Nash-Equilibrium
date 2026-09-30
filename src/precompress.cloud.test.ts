@@ -125,6 +125,11 @@ assert(at(/^vite build\b/) === 0 && at(/^node scripts\/precompress\.mjs$/) === 1
   assert(chowns.includes(`RUN chown node:node ${wd}`), `Dockerfile: node does not own ${wd}, where the no-bucket server writes db.json`); n++;
   assert(chowns.length === 1, `Dockerfile: the runtime stage chowns or chmods more than the folder the server writes to: ${chowns.join(' | ')}`); n++;
   // A RUN after USER node leaves node owning what it creates (npm ci there = writable dependencies).
+  // What USER node could regress: it cannot bind below 1024. Cloud Run's port is 8080 unless the deploy passes
+  // --port, and Docker (the CI container job) lets non-root bind low ports, so only this sees a --port=80.
+  const deployArgs = (yaml.load(read('cloudbuild.yaml')) as { steps: { args?: string[] }[] }).steps.flatMap((s) => s.args ?? []).join(' ');
+  const low = [...deployArgs.matchAll(/--port[= ]+(\S+)/g)].map((m) => m[1]).filter((p) => !(Number(p) >= 1024));
+  assert(low.length === 0, `cloudbuild.yaml: --port ${low.join(', ')}, which USER node cannot bind`); n++;
   const lastAt = (re: RegExp) => rt.map((l) => re.test(l)).lastIndexOf(true);
   assert(lastAt(/^RUN /) < lastAt(/^USER /), 'Dockerfile: a RUN after USER node, so node owns what it creates'); n++;
 }
