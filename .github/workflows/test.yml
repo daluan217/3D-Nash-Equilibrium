@@ -749,7 +749,8 @@ jobs:
         # smoke.mjs retries only the failed named sections once. It never
         # repeats the whole shard for a one-check SwiftShader stall. The exit
         # code cannot see WHICH sections ran: shard-cases.mjs checks the log
-        # lists exactly this shard's, first attempts, in order (TASK-18 sweep 14).
+        # lists exactly this shard's, first attempts, in order (TASK-18 sweep 14),
+        # and that their time fits the 345 s section budget the packing assumed.
         id: smoke
         run: |
           set +e

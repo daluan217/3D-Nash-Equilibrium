@@ -577,7 +577,17 @@ assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id)
   assert.deepStrictEqual(logCases('smoke', retried), ['24', '25', '47', '76'], 'a retried section counts once, from its first attempt');
   assert.deepStrictEqual(logCases('smoke', retried.replace('════ SECTION 76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) ════\n', '')),
     ['24', '25', '47'], 'a section that only ran as a retry did not run in the first pass');
-  const s1 = shardCases('smoke', { E2E_SHARD: `1/${SHARD_COUNT}` }, smoke), log = (ids: string[]) => ids.map((id) => `════ SECTION ${id} [shard 1/${SHARD_COUNT}] x ════`).join('\n');
+  const s1 = shardCases('smoke', { E2E_SHARD: `1/${SHARD_COUNT}` }, smoke), log = (ids: string[], ms = 1000, shard = 1) =>
+    ids.map((id) => `\n════ SECTION ${id} [shard ${shard}/${SHARD_COUNT}] x ════\nSECTION-PASS ${id} x (RED-APP-15/003) (${ms}ms)`).join('\n');
+  // The budget holds at run time, first attempts only: CI 36646092049 shard 32 ran 304 s of 345 on a stale table (sweep 1).
+  const at = (ids: string[], total: number, q = Math.floor(total / ids.length)) => ids.map((id, j) => log([id], j ? q : total - q * (ids.length - 1))).join('\n'), s24 = shardCases('smoke', { E2E_SHARD: `24/${SHARD_COUNT}` }, smoke);
+  const b24 = SECTION_BUDGET_MS - measuredMs(EXTRA_STEP_SECTIONS[24]), over = /over this shard's [\d.]+ s budget/;
+  assert.strictEqual(checkLog('smoke', at(s1, SECTION_BUDGET_MS), { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'a shard at its section budget passes');
+  assert.match(checkLog('smoke', at(s1, SECTION_BUDGET_MS + 1), { E2E_SHARD: `1/${SHARD_COUNT}` }), /first attempts ran [\d.]+ s of sections, over this shard's 345 s budget/, 'a shard over its section budget fails by name');
+  assert.match(checkLog('smoke', at(s24, b24 + 1).replaceAll('shard 1/', 'shard 24/'), { E2E_SHARD: `24/${SHARD_COUNT}` }), new RegExp(`over this shard's ${b24 / 1000} s budget`), 'shard 24\'s budget leaves room for its §47 step');
+  assert.strictEqual(checkLog('smoke', `${log(s1)}\n════ RETRYING ONLY FAILED SECTIONS: ${s1[0]} x ════\n${log([s1[0]], SECTION_BUDGET_MS)}`, { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'a retry\'s time is not a first attempt\'s');
+  assert.match(checkLog('smoke', log(s1).replace(/\(1000ms\)$/, '(1 s)'), { E2E_SHARD: `1/${SHARD_COUNT}` }), /the time is unreadable/, 'a result line the budget cannot read fails, never sums to 0 s');
+  assert.doesNotMatch(checkLog('smoke', at(s1, SECTION_BUDGET_MS * 2), { E2E_SECTION: s1.join(',') }), over, 'a local E2E_SECTION run has no shard budget to break');
   const w1 = walkShard(1), sc1 = scrollShard(1), tour = (tags: string[]) => tags.map((t) => `  · ${t} 9 s, load 1.0 at start`).join('\n');
   assert.strictEqual(checkLog('smoke', log(s1), { E2E_SHARD: `1/${SHARD_COUNT}` }), '', 'shard 1\'s own sections pass');
   assert.strictEqual(checkLog('walk', tour(w1), { TOUR_WALK_SHARD: '1/9' }), '', 'walk shard 1\'s own cases pass');

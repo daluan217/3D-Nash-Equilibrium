@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { selectSmokeSections } from './selection.js';
+import { selectSmokeSections, measuredMs, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './selection.js';
 import { walkTags, scrollTags } from './tour-cases.mjs';
 
 const TOUR = { walk: [walkTags, 'TOUR_WALK_SHARD'], scroll: [scrollTags, 'TOUR_SCROLL_SHARD'] };
@@ -31,10 +31,22 @@ export function logCases(job, log) {
 
 export function checkLog(job, log, env) {
   const want = shardCases(job, env), got = logCases(job, log); // e2esharding: want is never empty in CI
-  if (JSON.stringify(got) === JSON.stringify(want)) return '';
-  const missing = want.filter((c) => !got.includes(c)), extra = got.filter((c) => !want.includes(c));
-  return `${job}: the log ran ${got.length} case(s), the packing gives ${want.length}: missing ${JSON.stringify(missing)}, `
-    + `not this job's ${JSON.stringify(extra)}, in order ${JSON.stringify(got)} vs ${JSON.stringify(want)}`;
+  if (JSON.stringify(got) !== JSON.stringify(want)) {
+    const missing = want.filter((c) => !got.includes(c)), extra = got.filter((c) => !want.includes(c));
+    return `${job}: the log ran ${got.length} case(s), the packing gives ${want.length}: missing ${JSON.stringify(missing)}, `
+      + `not this job's ${JSON.stringify(extra)}, in order ${JSON.stringify(got)} vs ${JSON.stringify(want)}`;
+  }
+  // Per shard only: tour timeouts sit 1.33x over their budget, smoke's 25 min 3.6x its ceiling; E2E_SECTION has no shard.
+  if (job !== 'smoke' || !env.E2E_SHARD) return '';
+  // The packing's budget holds at run time: a stale table once ran a shard 1,228 s, green (PR #211). First attempts only
+  // (a retry is its own signal). ponytail: shard 24's §47 step is charged its table value, not its own log.
+  const results = [...log.split(/^════ RETRYING ONLY FAILED SECTIONS/m)[0].matchAll(/^SECTION-(?:PASS|FAIL) (\S+) .*\((\d+)ms\)$/gm)];
+  if (JSON.stringify(results.map((m) => m[1])) !== JSON.stringify(got)) // an unread result line would sum to 0 s and pass
+    return `smoke: result lines ${JSON.stringify(results.map((m) => m[1]))} do not match the sections run ${JSON.stringify(got)}: the time is unreadable`;
+  const ms = results.reduce((a, m) => a + +m[2], 0);
+  const step = EXTRA_STEP_SECTIONS[Number.parseInt(env.E2E_SHARD)], budget = SECTION_BUDGET_MS - (step ? measuredMs(step) : 0);
+  return ms > budget ? `smoke: the first attempts ran ${ms / 1000} s of sections, over this shard's ${budget / 1000} s budget `
+    + `(${SECTION_BUDGET_MS / 1000} s less its extra steps): refresh shard-timings.json with scripts/shard-timings-from-run.mjs, or split a section` : '';
 }
 
 // Node takes import.meta.url from the realpath: compare argv[1]'s, or a symlinked path skips the check, exit 0.
