@@ -546,14 +546,18 @@ for (const { id, shard } of definitions) {
   list.push(id);
   shardMembers.set(shard, list);
 }
-for (let shard = 1; shard <= SHARD_COUNT; shard++) {
-  const members = shardMembers.get(shard) ?? [];
-  const total = totals[shard - 1];
-  if (members.length <= 1) continue; // a single section is bounded by SECTION_BUDGET_MS above, not this line
-  assert(total <= HEADROOM_MS,
-    `shard ${shard} packs ${members.length} sections (${members.join(', ')}) totalling ${Math.round(total / 1000)} s `
-    + `— over the ${HEADROOM_MS / 1000} s headroom line for a MULTI-section shard; raise SHARD_COUNT`);
-}
+const overLine = (defs: { id: string, shard?: number }[], tot: number[]) => tot.flatMap((total, i) => {
+  const members = defs.filter((d) => d.shard === i + 1).map((d) => d.id); // one section: bounded by SECTION_BUDGET_MS above
+  return members.length > 1 && !(total <= HEADROOM_MS) ? [`shard ${i + 1} packs ${members.length} sections (${members.join(', ')}) totalling `
+    + `${Math.round(total / 1000)} s — over the ${HEADROOM_MS / 1000} s headroom line for a MULTI-section shard; raise SHARD_COUNT`] : [];
+});
+assert.deepStrictEqual(overLine(definitions, totals), [], 'every multi-section shard packs under the headroom line');
+// Sweep 5: a 1.0x line passed every check. Why 0.9: out of sample, a multi-section shard ran 1.068x its table sum on CI
+// (36695839492 shard 14: 6b+20+67, 252.3 s vs 236.1 s), so a shard packed at the line must still fit the budget at that ratio.
+assert.ok(HEADROOM_MS * 1.068 <= SECTION_BUDGET_MS, `a shard at the ${HEADROOM_MS / 1000} s line, run 1.068x slower as CI did, fits the ${SECTION_BUDGET_MS / 1000} s budget`);
+assert.deepStrictEqual(overLine([{ id: 'a', shard: 1 }, { id: 'b', shard: 1 }, { id: 'c', shard: 2 }, { id: 'd', shard: 2 }, { id: 'e', shard: 3 }],
+  [0.9 * SECTION_BUDGET_MS, 0.9 * SECTION_BUDGET_MS + 1, SECTION_BUDGET_MS]).map((p) => p.split(' totalling')[0]), ['shard 2 packs 2 sections (c, d)'],
+'the headroom line: two sections at 0.9x the budget pass, 1 ms more fails by name, one section alone is exempt');
 // A single-section shard is still bounded — just by SECTION_BUDGET_MS (the per-section assert
 // above), not the tighter multi-section headroom line. Restated here as an explicit, separately-named
 // check so a shard that quietly grows a SECOND section (no longer "single") is not silently exempted
