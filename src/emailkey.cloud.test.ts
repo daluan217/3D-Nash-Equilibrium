@@ -54,7 +54,7 @@ const bypass = stripped.match(BYPASS) ?? [];
 assert.deepEqual(bypass, [], 'an email comparison bypasses emailKey'); n++;
 // A lookup of one account by email is findByEmail, never a hand-rolled find over emailKey.
 assert.deepEqual(stripped.match(/\.find(?:Index)?\(\s*\(?\w+\)?\s*=>\s*emailKey\(\w+\.email\)\s*===/g) ?? [], [], 'an email lookup bypasses findByEmail'); n++;
-assert.equal(stripped.match(/findByEmail\(/g)?.length, 4, 'fixture: login/verify, register, forgot and reset look up through findByEmail'); n++;
+assert.equal(stripped.match(/findByEmail\(/g)?.length, 5, 'fixture: login/verify, register (before and after its hash), forgot and reset look up through findByEmail'); n++;
 assert(stripped.match(/emailKey\((?:u|user)\.email\)/g)!.length >= 6, 'fixture: dedupe 3, register-name 1, delete 2 fold the stored side'); n++;
 // Self-test: the bypass pattern catches each shape this file replaced.
 for (const old of ['u.email === id', 'u.email.trim().toLowerCase() === e', 'user.email.toLowerCase().trim()', 'x === u.email', 'email.trim().toLowerCase();']) {

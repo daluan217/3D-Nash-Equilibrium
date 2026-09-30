@@ -73,7 +73,9 @@ const serve = async (distPath: string, code = block, pre?: Pre, env: Record<stri
   if (pre) app.use(pre); // a misbehaving CDN/origin in front of the real block
   app.use('/api', (_req, res) => { res.status(404).json({ error: 'Not found' }); }); // server.ts mounts this first
   const proc = { env: { ...env } }; // the block reads process.env.IS_ELECTRON: hosted unless given
-  new Function('app', 'express', 'path', 'fs', 'distPath', 'process', 'logUnhandled', compile(code + eh))(app, express, path, fs, distPath, proc, () => {});
+  // The handler's other free names: an asset error is never ServerBusy (the hash queue's 503).
+  new Function('app', 'express', 'path', 'fs', 'distPath', 'process', 'logUnhandled', 'ServerBusy', 'setRetryAfter', compile(code + eh))(
+    app, express, path, fs, distPath, proc, () => {}, class ServerBusy extends Error {}, () => { throw new Error('setRetryAfter on an asset error'); });
   const srv = app.listen(0, '127.0.0.1'); await new Promise((r) => srv.once('listening', r));
   return { base: `http://127.0.0.1:${(srv.address() as net.AddressInfo).port}`, close: () => srv.close() };
 };

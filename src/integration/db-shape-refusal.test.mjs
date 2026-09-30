@@ -1038,6 +1038,57 @@ for (const [label, doc, expectMsg] of [
   port += 1;
 }
 
+// 16. PASSWORD HASHING UNDER LOAD (cloud sweep 17: pbkdf2Sync held /api/health at p50 636 ms under a login flood).
+//     80 logins at once for an unknown address (the dummy hash: full 210k-iteration cost), one IPv4 each: the ones
+//     past the hash queue are a 503 with Retry-After, and /api/health answers mid-flood. Then a login that arrives
+//     while a password reset of the same row is hashing is refused (the old password must not sign in after it).
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-hash-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_hq', username: 'hq', email: 'hq@example.test', passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0,
+      recoveryCode: '424242', recoveryCodeExpires: Date.now() + 6e5 }] }));
+  const child = spawnHostedServer(userData, port, { TRUST_PROXY: '1' });
+  let ip = 0;
+  const call = (route, body) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method: 'POST', body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.${(++ip >> 8) & 255}.${ip & 255}.3` } })
+    .then(async (r) => ({ status: r.status, retry: r.headers.get('retry-after'), json: await r.json().catch(() => null) }), () => ({ status: 0, retry: null, json: null }));
+  try {
+    const ready = await waitReady(child, port);
+    const flood = Promise.all([...Array(80)].map(() => call('auth/login', { email: 'nobody@example.test', password: 'Wrong-password-1' })));
+    await new Promise((r) => setTimeout(r, 15));
+    const t0 = performance.now(), health = (await fetch(`http://127.0.0.1:${port}/api/health`)).status, healthMs = performance.now() - t0;
+    const answers = await flood, by = {};
+    for (const a of answers) by[a.status] = (by[a.status] ?? 0) + 1;
+    const busy = answers.filter((a) => a.status === 503);
+    record('hashing: FIXTURE, the flood really hashed (some logins answered 401 after a full-cost hash)', (by[401] ?? 0) >= 1, JSON.stringify(by));
+    record('hashing: logins past the hash queue are a 503 with Retry-After and an error, never a 500 or a hang',
+      busy.length >= 20 && busy.every((a) => Number(a.retry) >= 1 && typeof a.json?.error === 'string') && (by[401] ?? 0) + busy.length === 80, JSON.stringify(by));
+    record('hashing: /api/health answers within 500 ms in the middle of the flood', health === 200 && healthMs < 500, `${health} in ${healthMs.toFixed(0)} ms`);
+    const ok = await call('auth/login', { email: 'hq@example.test', password: PW });
+    record('hashing: CONTROL, after the flood the account signs in', ok.status === 200 && !!ok.json?.token, `${ok.status}`);
+    // The reset takes the only hash slot (a 210k-iteration hash), the old-password login queues behind it and runs
+    // after the reset is written. Before the re-read it answered 200 with the password the reset had just killed.
+    const reset = call('auth/reset-password', { email: 'hq@example.test', code: '424242', newPassword: 'Brand-new-pw-9' });
+    await new Promise((r) => setTimeout(r, 5));
+    const stale = await call('auth/login', { email: 'hq@example.test', password: PW });
+    const r = await reset;
+    record('hashing: FIXTURE, the reset went through', r.status === 200, `${r.status} ${r.json?.error ?? ''}`);
+    record('hashing: a login with the old password that was hashing during the reset is refused, not signed in', stale.status === 503 || stale.status === 401, `${stale.status}`);
+    const after = await call('auth/login', { email: 'hq@example.test', password: PW });
+    record('hashing: CONTROL, the old password is dead after the reset', after.status === 401, `${after.status}`);
+    record('hashing: the server logged no unhandled error', !/Unhandled error/.test(ready.log()), (ready.log().match(/.*Unhandled error.*/) ?? [''])[0].slice(0, 120));
+  } catch (err) {
+    record('hashing: the hosted server boots', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
 const fails = results.filter((r) => !r.pass);
 console.log(`\n══════ DB-SHAPE REFUSAL: ${results.length - fails.length}/${results.length} checks passed ══════`);
 if (fails.length > 0) {

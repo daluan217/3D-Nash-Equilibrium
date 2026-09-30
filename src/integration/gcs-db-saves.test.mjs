@@ -2452,9 +2452,13 @@ try {
       await fetch(`http://127.0.0.1:${zApp}/api/games`); // Z re-reads now: for 2 s it answers from this copy
       const n0 = fz.count412(), cur = JSON.parse(fz.getStored());
       fz.peerWrite(JSON.stringify({ ...cur, users: [...cur.users, seededUser('u_dv', 'Dave', 'dv@example.test', pw), seededUser('u_ev', 'Ｅｖｅ', 'ev@example.test', pw)] }));
+      // Sign-ups hash one at a time, so the second is answered ~40 ms after the first: hold the first's upload
+      // (its 412 merges in "Ｅｖｅ") until both are answered, or "eve" is refused from the merged copy instead.
+      fz.setUploadDelayMs(800);
       const [stale, staleEve] = await Promise.all([reg('ｄａｖｅ'), reg('eve')]);
       const onGcs = () => JSON.parse(fz.getStored()).users;
       await waitUntil(() => fz.count412() > n0 && [stale, staleEve].every((x) => onGcs().some((u) => u.email === x.email)), 5000);
+      fz.setUploadDelayMs(0);
       const end = onGcs(), nameOf = (email) => end.find((u) => u.email === email)?.username;
       // (merge, reborn) a peer re-creates the store without Z's rows (new lineage) holding "Frank"; Z answers
       // "ｆｒａｎｋ" from its copy. Both are added (not in Z's baseline), so they meet INSIDE the rename loop.

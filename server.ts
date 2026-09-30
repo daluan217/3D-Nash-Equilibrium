@@ -9,7 +9,7 @@ import fs from "fs";
 import crypto from "crypto";
 import net from "net";
 import zlib from "zlib";
-import { isDeepStrictEqual } from "util";
+import { isDeepStrictEqual, promisify } from "util";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -2590,10 +2590,29 @@ function makeId(prefix: "u" | "g"): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
-function hashPassword(password: string): string {
+// pbkdf2 runs off the event loop (sweep 17: pbkdf2Sync, 37 ms a call, held /api/health at p50 636 ms under a
+// login flood). HASH_SLOTS hash at once (no more than cloudbuild's --cpu, so the event loop keeps a core's share),
+// up to HASH_QUEUE (~1 s of work) wait their turn in order, and past that the request is a 503 with Retry-After.
+class ServerBusy extends Error {}
+const HASH_SLOTS = 1, HASH_QUEUE = 24;
+const pbkdf2 = promisify(crypto.pbkdf2);
+let hashing = 0;
+const hashWaiters: (() => void)[] = [];
+async function derive(password: string, salt: Buffer, iterations: number): Promise<Buffer> {
+  if (hashing < HASH_SLOTS) hashing++;
+  else if (hashWaiters.length < HASH_QUEUE) await new Promise<void>((r) => hashWaiters.push(r)); // the slot is handed over
+  else throw new ServerBusy();
+  try {
+    return await pbkdf2(password, salt, iterations, 32, "sha256");
+  } finally {
+    const next = hashWaiters.shift();
+    if (next) next(); else hashing--;
+  }
+}
+
+async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16);
-  const hash = crypto.pbkdf2Sync(password, salt, PASSWORD_ITERATIONS, 32, "sha256");
-  return `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(salt)}$${b64url(hash)}`;
+  return `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(salt)}$${b64url(await derive(password, salt, PASSWORD_ITERATIONS))}`;
 }
 
 // Login/verify identifier: an email match wins over a username match, so a
@@ -2673,13 +2692,13 @@ const nfkcBare = (s: string) => s.replace(/\p{Default_Ignorable_Code_Point}/gu, 
 const usernameKey = (s: string) => nfkcBare(nfkcBare(s).toLowerCase().toUpperCase().toLowerCase()).replace(/\s+/g, " ").trim();
 const cleanUsername = (v: unknown): string => { const name = cleanText(v, 40); return usernameKey(name) ? name : ""; };
 
-function verifyPassword(password: string, stored: string): boolean {
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
   if (stored.startsWith("pbkdf2$")) {
     const [, iterRaw, saltRaw, hashRaw] = stored.split("$");
     const iterations = Number(iterRaw);
     if (!iterations || !saltRaw || !hashRaw) return false;
     const salt = Buffer.from(saltRaw.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-    const actual = b64url(crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256"));
+    const actual = b64url(await derive(password, salt, iterations));
     return safeEqual(actual, hashRaw);
   }
 
@@ -2691,10 +2710,10 @@ function needsPasswordRehash(stored: string): boolean {
   return !stored.startsWith("pbkdf2$");
 }
 
-// Precomputed hash for a random password. Used to spend the same pbkdf2 work on
+// A hash no password matches (a random 32-byte digest: 2^-256 a try). Used to spend the same pbkdf2 work on
 // a login miss as on a hit, so response timing doesn't reveal whether an
 // account exists (user enumeration).
-const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(16).toString("hex"));
+const DUMMY_PASSWORD_HASH = `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(crypto.randomBytes(16))}$${b64url(crypto.randomBytes(32))}`;
 
 // Escape user-controlled text before interpolating it into HTML (email bodies).
 function escapeHtml(value: string): string {
@@ -4821,8 +4840,11 @@ async function startServer() {
     if (emailTrimmed.length > 254 || !EMAIL_SHAPE.test(emailTrimmed)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
-    const db = loadDB();
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
+    // Hashed BEFORE the store is read (nothing below awaits until the row is written) and only where a row takes it:
+    // a hosted re-register of a pending address stores no password. A row that left meanwhile is a 503 (no hash to store).
+    const passwordHash = isElectron || !findByEmail(loadDB().users, emailTrimmed) ? await hashPassword(password) : "";
+    const db = loadDB();
 
     // Check for duplicate username (case-insensitive)
     const usernameTaken = db.users.find(
@@ -4835,6 +4857,7 @@ async function startServer() {
 
     // Check if user exists using trimmed, lowercased comparison
     const existingUser = findByEmail(db.users, emailTrimmed);
+    if (!existingUser && !passwordHash) throw new ServerBusy();
     if (existingUser) {
       if (existingUser.isVerified) {
         return res.status(400).json({ error: "An account with this email already exists." });
@@ -4842,7 +4865,7 @@ async function startServer() {
 
       // If we are in Electron local mode, mark them verified instantly and save
       if (isElectron) {
-        const verified = { ...existingUser, isVerified: true, username: usernameTrimmed, passwordHash: hashPassword(password) };
+        const verified = { ...existingUser, isVerified: true, username: usernameTrimmed, passwordHash };
         if (!saveDB({ users: db.users.map((u) => (u === existingUser ? verified : u)), games: db.games })) {
           return res.status(500).json({ error: "Could not create your account: nothing was saved. Please try again." });
         }
@@ -4914,7 +4937,7 @@ async function startServer() {
         id: makeId("u"),
         username: usernameTrimmed,
         email: emailTrimmed,
-        passwordHash: hashPassword(password),
+        passwordHash,
         isVerified: true,
         verificationCode: "",
         verificationCodeExpires: 0
@@ -4947,7 +4970,7 @@ async function startServer() {
       id: makeId("u"),
       username: usernameTrimmed,
       email: emailTrimmed,
-      passwordHash: hashPassword(password),
+      passwordHash,
       isVerified: false,
       verificationCode,
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
@@ -4997,7 +5020,7 @@ async function startServer() {
   }));
 
   // Verify Endpoint
-  app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), (req, res) => {
+  app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), asyncHandler(async (req, res) => {
     const { email, code, password, username } = req.body;
     // Hosted: the code proves the mailbox, so its holder's password (and name)
     // become the account's. Verifying whatever the LAST registrant stored let a
@@ -5009,10 +5032,17 @@ async function startServer() {
     }
 
     const emailTrimmed = emailKey(email);
+    // The password work runs first, off the event loop; every check below reads the store as it is after it,
+    // and a row whose hash changed meanwhile is a 503 (never a decision or a write on a stale row, sweep 17).
+    const before = findByIdentifier(loadDB().users, emailTrimmed);
+    const stored = hosted && before && !before.isVerified ? before.passwordHash : null;
+    const same = stored !== null && await verifyPassword(password, stored);
+    const newHash = stored !== null && !same ? await hashPassword(password) : null;
     const db = loadDB();
     // Login's lookup: a username login's 403 opens this screen with the
     // username as `email`, which used to dead-end in a 404 here.
     const found = findByIdentifier(db.users, emailTrimmed);
+    if (stored !== null && (found?.id !== before?.id || found?.passwordHash !== stored)) throw new ServerBusy();
     const userIndex = found ? db.users.indexOf(found) : -1;
 
     if (userIndex === -1) {
@@ -5034,7 +5064,7 @@ async function startServer() {
     // stranger's pick. The UI always has both: register sends them, and
     // login's 403 path sends the stored password. Checked before any attempt.
     const name = hosted ? cleanUsername(username) : "";
-    const newPassword = hosted && !verifyPassword(password, user.passwordHash);
+    const newPassword = hosted && !same;
     if (newPassword && !/^(?=.*[a-z])(?=.*[A-Z]).{8,}$/.test(password)) {
       return res.status(400).json({
         error: "Password must be at least 8 characters long and contain at least one uppercase and one lowercase letter."
@@ -5058,7 +5088,7 @@ async function startServer() {
     }
 
     // Mark verified — in memory only once it is on disk (STRUCT-DESKTOP-19's order).
-    const owned = { ...(newPassword ? { passwordHash: hashPassword(password) } : {}), ...(name ? { username: name } : {}) };
+    const owned = { ...(newPassword && newHash ? { passwordHash: newHash } : {}), ...(name ? { username: name } : {}) };
     const verified = { ...user, ...owned, isVerified: true };
     if (!saveDB({ users: db.users.map((u) => (u === user ? verified : u)), games: db.games })) {
       return res.status(500).json({ error: "Could not verify your account: nothing was saved. Please try again." });
@@ -5069,22 +5099,27 @@ async function startServer() {
       message: "Email verified successfully! You can now log in.",
       username: verified.username
     });
-  });
+  }));
 
   // Login Endpoint
-  app.post("/api/auth/login", rateLimit("login", 10, 60_000), (req, res) => {
+  app.post("/api/auth/login", rateLimit("login", 10, 60_000), asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: "Email/username and password are required." });
     }
 
     const identifier = emailKey(email);
-    const db = loadDB();
-    const candidate = findByIdentifier(db.users, identifier);
+    const candidate = findByIdentifier(loadDB().users, identifier);
     // Always run pbkdf2 (against a dummy hash on a miss) so a non-existent
     // account isn't revealed by a faster response — see DUMMY_PASSWORD_HASH.
-    const passwordOk = verifyPassword(password, candidate ? candidate.passwordHash : DUMMY_PASSWORD_HASH);
-    const user = candidate && passwordOk ? candidate : null;
+    const stored = candidate ? candidate.passwordHash : DUMMY_PASSWORD_HASH;
+    const passwordOk = await verifyPassword(password, stored);
+    const upgrade = candidate && passwordOk && needsPasswordRehash(stored) ? await hashPassword(password) : null;
+    // Read again after the hash: a row that changed hands, password or existence meanwhile is a 503, never a stale sign-in.
+    const db = loadDB();
+    const fresh = findByIdentifier(db.users, identifier);
+    if (fresh?.id !== candidate?.id || (fresh && fresh.passwordHash !== stored)) throw new ServerBusy();
+    const user = fresh && passwordOk ? fresh : null;
 
     if (!user) {
       return res.status(401).json({ error: "Invalid email/username or password." });
@@ -5098,8 +5133,8 @@ async function startServer() {
       });
     }
 
-    if (needsPasswordRehash(user.passwordHash)) {
-      user.passwordHash = hashPassword(password);
+    if (upgrade) {
+      user.passwordHash = upgrade;
       saveDB(db);
     }
     // Signing in never moves games by itself. Until RED-DESKTOP-11/001 this
@@ -5120,7 +5155,7 @@ async function startServer() {
       },
       localGames
     });
-  });
+  }));
 
   // Get Current Session
   app.get("/api/auth/me", rateLimit("me", 60, 60_000), (req, res) => {
@@ -5207,7 +5242,7 @@ async function startServer() {
   }));
 
   // Reset Password — verify code and set new password
-  app.post("/api/auth/reset-password", rateLimit("reset", 8, 60_000), (req, res) => {
+  app.post("/api/auth/reset-password", rateLimit("reset", 8, 60_000), asyncHandler(async (req, res) => {
     const { email, code, newPassword } = req.body;
     if (!email || !code || !newPassword) {
       return res.status(400).json({ error: "Email, recovery code, and new password are required." });
@@ -5221,6 +5256,8 @@ async function startServer() {
     }
 
     const emailTrimmed = emailKey(email);
+    // Hashed BEFORE the store is read: nothing below awaits, so the code check and the write see one store.
+    const passwordHash = await hashPassword(newPassword);
     const db = loadDB();
     const user = findByEmail(db.users, emailTrimmed);
 
@@ -5256,7 +5293,7 @@ async function startServer() {
     // Same shape as delete-confirm: a CANDIDATE, committed only once written.
     const updated: User = {
       ...user,
-      passwordHash: hashPassword(newPassword),
+      passwordHash,
       recoveryCode: undefined,
       recoveryCodeExpires: undefined,
       tokenVersion: (user.tokenVersion ?? 0) + 1, // invalidate existing sessions
@@ -5268,7 +5305,7 @@ async function startServer() {
     }
 
     res.json({ success: true, message: "Password reset successfully! You can now log in with your new password." });
-  });
+  }));
 
   // Request account deletion code
   app.post("/api/auth/delete-request", rateLimit("delete-request", 6, 60_000), asyncHandler(async (req, res) => {
@@ -5874,6 +5911,11 @@ async function startServer() {
       ?? (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.statusCode;
     // Not logged: the client's own error, and body-parser's message echoes its
     // raw bytes (a newline in a bad body forged a separate log line, sweep 16).
+    if (err instanceof ServerBusy) {
+      setRetryAfter(res, 5_000);
+      res.status(503).json({ error: "The server is busy right now. Please try again in a few seconds." });
+      return;
+    }
     if (typeof upstreamStatus === "number" && upstreamStatus >= 400 && upstreamStatus < 500) {
       res.status(upstreamStatus).json({ error: "Invalid request." });
       return;
