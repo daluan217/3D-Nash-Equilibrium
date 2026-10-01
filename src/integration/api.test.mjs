@@ -520,6 +520,55 @@ try {
     record('a suffix-attack host is not caught by a loose www match', r4.status !== 301, `status=${r4.status}`);
   }
 
+  // ══ 12c. One game, many spellings, one report (sweep 16): the report reads
+  //      cleanPayoffs' rounded numbers (no report cache exists), so "-0", "2", 2e0,
+  //      2.0 and a11=2.0004 are the same game and must get byte-identical answers.
+  //      Mixed NE (x=3/4, y=1/3): unrounded, a11 alone moves y (a uniform shift would not).
+  {
+    const P = { a11: 2, a12: 0, a21: 0, a22: 1, b11: 0, b12: 1, b21: 3, b22: 0 };
+    const post = async (raw) => (await fetch(`${BASE}/api/report`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: raw })).text();
+    const as = (f) => `{"payoffs":{${Object.entries(P).map(([k, v]) => `"${k}":${f(v, k)}`).join(',')}}}`;
+    const canon = await post(JSON.stringify({ payoffs: P }));
+    const spelled = await Promise.all([as((v) => (v ? `"${v}"` : '-0')), as((v) => `${v}e0`), as((v) => `${v}.0`), as((v, k) => String(k === 'a11' ? v + 0.0004 : v))].map(post));
+    record('one game in four spellings gets the byte-identical report',
+      /"groundTruth"/.test(canon) && /0\.75|0\.333/.test(canon) && spelled.every((t) => t === canon), spelled.map((t) => (t === canon ? 'same' : t.slice(0, 80))).join(' | '));
+  }
+
+  // ══ 12d. A body nested past the stack's depth (sweep 16) in every game field
+  //      saves as cleaned primitives. Stored as-is, every JSON.stringify of the
+  //      store (each save, each GCS upload, the list) would throw from then on.
+  {
+    const deep = '['.repeat(40000) + ']'.repeat(40000);
+    const fields = ['description', 'row1Label', 'colorTermsA']; // 12d + 12e = the last 4 of 20 games writes/min
+    const st = [];
+    for (const f of fields) {
+      const raw = `{"name":"deep ${f}","payoffs":${JSON.stringify(MP)},"${f}":${deep}}`;
+      st.push((await fetch(`${BASE}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: raw })).status);
+    }
+    const list = await call('GET', '/api/games', { token }); // serializes every stored row
+    const mine = (Array.isArray(list.json) ? list.json : []).filter((g) => /^deep /.test(g.name));
+    const flat = mine.length === 3 && mine.every((g) => [g.description, g.row1Label].every((v) => v == null || typeof v === 'string')
+      && (g.colorTermsA ?? []).every((t) => typeof t === 'string'));
+    record('a 40000-deep array in any game field saves as primitives, each save re-serializing the whole store, and the list still serializes',
+      st.every((x) => x === 200) && list.status === 200 && flat, JSON.stringify({ st, list: list.status, n: mine.length, flat }));
+  }
+
+  // ══ 12e. Prototype keys in a body (sweep 16) never reach an object the
+  //      server keeps: a game saved with "__proto__"/"constructor" fields stores
+  //      only its known keys, and no later object inherits "polluted".
+  {
+    const raw = `{"name":"proto","payoffs":${JSON.stringify(MP)},"__proto__":{"polluted":"yes","userId":"u_other"},`
+      + `"constructor":{"prototype":{"polluted":"yes"}},"row1Label":"Up","extra":"x"}`;
+    const r = await fetch(`${BASE}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: raw });
+    const game = (await r.json().catch(() => ({})))?.game ?? {};
+    const KNOWN = ['clientRequestId', 'colorTermsA', 'colorTermsB', 'col1Label', 'col2Label', 'createdAt', 'description', 'id', 'name', 'payoffs', 'row1Label', 'row2Label', 'userId'];
+    const me = await call('GET', '/api/auth/me', { token });
+    record('a body carrying __proto__ / constructor keys saves only the known game keys under its own owner; nothing is polluted',
+      r.status === 200 && Object.keys(game).every((k) => KNOWN.includes(k)) && game.userId === me.json?.id && !('polluted' in game)
+        && !JSON.stringify(me.json ?? {}).includes('polluted'),
+      JSON.stringify({ status: r.status, keys: Object.keys(game), owner: game.userId, me: me.json?.id }));
+  }
+
   // ══ 13. SECURITY — rate limiting (the brute-force surface of login and
   //      registration; run LAST because it burns the register bucket)
   {

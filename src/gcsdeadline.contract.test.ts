@@ -44,6 +44,10 @@ const NETWORK_METHODS = new Set([
   'delete', 'copy', 'move', 'setMetadata', 'getFiles', 'deleteFiles',
   'makePublic', 'makePrivate', 'createResumableUpload', 'getSignedUrl',
   'combine', 'rotateEncryptionKey', 'setStorageClass',
+  // Not GCS, same class: a mail server that accepts and goes quiet held four
+  // routes open past the client's 22s (BLUE-LOOP-CLOUD-22). Matched by name
+  // like the rest, so a new send is guarded on arrival.
+  'sendMail',
 ]);
 
 type Site = { method: string; line: number; deadlined: boolean; text: string };
@@ -104,7 +108,7 @@ const NON_GCS_RECEIVERS = new Set([
   'res',          // express: res.download(path)
   'app',          // express: app.delete(route, ...)
   'rateBuckets',  // Map.delete
-  'reportCache',  // Map.delete
+  'lastCodeMail', // Map.delete: the per-address mail cooldown prunes expired entries (BLUE-LOOP-CLOUD-22)
 ]);
 
 /**
@@ -162,8 +166,10 @@ collect(sf, (n) => sites.push(buildSite(n, sf)));
 
 // The scan must be LIVE. If the AST walk silently matched nothing, every
 // "all sites deadlined" claim below would be vacuously true.
+// 7 GCS sites since BLUE-LOOP-CLOUD-22 folded three copies of the db.json read
+// into readGcsDb and dropped its exists() (was 13), plus the 4 SMTP sends.
 check('the AST scan actually found GCS network calls in server.ts',
-  sites.length >= 13, `found only ${sites.length}`);
+  sites.length >= 11, `found only ${sites.length}`);
 
 // This contract reads server.ts and nothing else, which is only sufficient
 // while server.ts is the only product file that talks to GCS. Gate review #10
@@ -191,7 +197,7 @@ check('every GCS network call is wrapped in withDeadline',
 // so a refactor that drops a whole call shape cannot quietly shrink what this
 // contract covers. The rest of NETWORK_METHODS is forward cover for calls not
 // written yet, so it is deliberately NOT required to appear.
-const IN_USE = ['exists', 'getMetadata', 'download', 'save'] as const;
+const IN_USE = ['exists', 'getMetadata', 'download', 'save', 'sendMail'] as const;
 for (const m of IN_USE) {
   check(`the scan covers file.${m}() calls`,
     sites.some((s) => s.method === m), `no ${m}() site found`);
@@ -218,7 +224,7 @@ check('the non-GCS receiver allowlist stays minimal',
 // membership too: exempting anything that could be a GCS File must fail here,
 // not silently drop call sites out of the scan.
 check('the allowlist is exactly the four known non-GCS receivers',
-  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,rateBuckets,reportCache,res',
+  [...NON_GCS_RECEIVERS].sort().join(',') === 'app,lastCodeMail,rateBuckets,res',
   `allowlist is now: ${[...NON_GCS_RECEIVERS].sort().join(',')}`);
 
 // SHADOWING is the attack the membership check cannot see: bind a GCS File to
@@ -231,7 +237,7 @@ const EXPECTED_BINDING: Record<string, RegExp | null> = {
   res: null,                       // express parameter only — must never be declared
   app: /^express\(\)/,
   rateBuckets: /^new Map\b/,
-  reportCache: /^new Map\b/,
+  lastCodeMail: /^new Map\b/,
 };
 const shadowed: string[] = [];
 for (const [name, expected] of Object.entries(EXPECTED_BINDING)) {
@@ -325,7 +331,7 @@ check('SELF-TEST: a not-yet-used blocking method (file.delete) is REPORTED',
 check('SELF-TEST: file.setMetadata() is REPORTED',
   analyse('async function f(){ await file.setMetadata(md); }').bare === 1);
 check('SELF-TEST: allowlisted Map.delete is NOT reported',
-  analyse('function f(){ rateBuckets.delete(k); reportCache.delete(k); }').total === 0);
+  analyse('function f(){ rateBuckets.delete(k); lastCodeMail.delete(k); }').total === 0);
 check('SELF-TEST: allowlisted app.delete route registration is NOT reported',
   analyse('function f(){ app.delete("/api/games/:id", h); }').total === 0);
 // Gate review #10: the site BUILDER, not just the matcher. These name the
@@ -334,6 +340,172 @@ check('SELF-TEST: an element-access site reports its resolved method name',
   analyse('async function f(){ const [e] = await file["exists"](); }').methods.join() === 'exists');
 check('SELF-TEST: a computed site is labelled rather than crashing the walk',
   analyse('async function f(){ const m = "x"; await file[m](); }').methods.join().startsWith('[computed]'));
+
+// Every route that reads or writes the DB sits behind the GCS store gate: an
+// ungated reader on hosted serves an unread (empty) or blocked store (sweep 1).
+const gatedRoutes = (file: ts.SourceFile) => {
+  let gate: { pos: number; prefixes: string[] } | null = null;
+  const routes: { path: string; pos: number; db: boolean }[] = [];
+  // DB readers are loadDB/saveDB and, to a fixpoint, every top-level function that calls one (getAuthUser).
+  const readers = new Set(['loadDB', 'saveDB']);
+  const touchesDb = (n: ts.Node): boolean => (ts.isCallExpression(n) && ts.isIdentifier(n.expression)
+    && readers.has(n.expression.text)) || (ts.forEachChild(n, touchesDb) ?? false);
+  const fns = file.statements.filter(ts.isFunctionDeclaration).filter((f) => f.name && f.body);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const f of fns) if (!readers.has(f.name!.text) && touchesDb(f.body!)) { readers.add(f.name!.text); grew = true; }
+  }
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.expression)
+      && n.expression.expression.text === 'app') {
+      const verb = n.expression.name.text, [first, ...rest] = n.arguments;
+      if (verb === 'use' && rest.some((a) => ts.isIdentifier(a) && a.text === 'requireGcsStore') && first && ts.isArrayLiteralExpression(first)) {
+        gate = { pos: n.getStart(), prefixes: first.elements.filter(ts.isStringLiteral).map((e) => e.text) };
+      } else if (['get', 'post', 'put', 'patch', 'delete'].includes(verb) && first && ts.isStringLiteral(first)) {
+        routes.push({ path: first.text, pos: n.getStart(), db: rest.some(touchesDb) });
+      }
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(file);
+  const g = gate as { pos: number; prefixes: string[] } | null;
+  const ungated = routes.filter((r) => r.db && !(g && r.pos > g.pos && g.prefixes.some((p) => r.path === p || r.path.startsWith(`${p}/`))));
+  return { dbRoutes: routes.filter((r) => r.db).length, ungated: ungated.map((r) => r.path) };
+};
+const gated = gatedRoutes(sf);
+check('the route scan found the DB routes (auth, games, admin)', gated.dbRoutes >= 15, `found ${gated.dbRoutes}`);
+check('every route that reads or writes the DB is registered behind requireGcsStore',
+  gated.ungated.length === 0, gated.ungated.join(', '));
+const gateOf = (src: string) => gatedRoutes(ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)).ungated.join();
+const GATE = 'app.use(["/api/games"], requireGcsStore);';
+check('SELF-TEST: a DB route outside the gated prefixes is REPORTED',
+  gateOf(`${GATE} app.get("/api/report", (q, r) => { const db = loadDB(); });`) === '/api/report');
+check('SELF-TEST: a DB route registered BEFORE the gate is REPORTED',
+  gateOf(`app.get("/api/games", (q, r) => saveDB(x)); ${GATE}`) === '/api/games');
+check('SELF-TEST: a gated DB route and an ungated non-DB route are accepted',
+  gateOf(`${GATE} app.get("/api/games/:id", async (q, r) => { await f(); loadDB(); }); app.get("/api/health", (q, r) => r.json(1));`) === '');
+check('SELF-TEST: a route reaching the DB through a helper (getAuthUser) is REPORTED',
+  gateOf(`function who() { return loadDB().users; } function getAuthUser() { return who()[0]; } ${GATE} app.get("/api/me", (q, r) => getAuthUser(q));`) === '/api/me');
+check('SELF-TEST: a prefix match needs a path boundary ("/api/gamesX" is not "/api/games")',
+  gateOf(`${GATE} app.get("/api/gamesX", (q, r) => loadDB());`) === '/api/gamesX');
+
+// Every model call carries an AbortSignal: generateReport/generateScenario
+// have no deadline of their own, and a provider that accepts and never answers
+// held a flags-off /api/report past the client's give-up (sweep 1, 60s+).
+const unsignalled = (file: ts.SourceFile): string[] => {
+  const out: string[] = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && ['generateReport', 'generateScenario'].includes(n.expression.text)) {
+      const opts = n.arguments[1];
+      const has = !!opts && ts.isObjectLiteralExpression(opts) && opts.properties.some((p) =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && p.name.getText(file) === 'signal');
+      if (!has) out.push(`${n.expression.text}@${file.getLineAndCharacterOfPosition(n.getStart()).line + 1}`);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(file);
+  return out;
+};
+const modelCalls = [...source.matchAll(/\b(?:generateReport|generateScenario)\(/g)].length;
+check('the model-call scan found the report and scenario calls', modelCalls >= 4, `found ${modelCalls}`);
+check('every generateReport/generateScenario call passes a signal', unsignalled(sf).length === 0, unsignalled(sf).join(', '));
+const sig = (src: string) => unsignalled(ts.createSourceFile('t.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)).length;
+check('SELF-TEST: a call without a signal is REPORTED', sig('async function f(){ await generateReport(p, { model: m }); }') === 1);
+check('SELF-TEST: a call with no options object is REPORTED', sig('async function f(){ await generateScenario(p); }') === 1);
+check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
+  sig('async function f(){ await generateReport(p, { signal: s }); await generateScenario(p, { model, signal }); }') === 0);
+
+// The mail cooldown's Map is exempt above because it PRUNES: run the real
+// source (sliced out of server.ts) over 5,000 distinct addresses with a
+// clock that moves past the cooldown, and the map must stay under its cap.
+{
+  const start = source.indexOf('const lastCodeMail = new Map');
+  const end = source.indexOf('\nconst releaseCodeMail', start);
+  const MS = /const MAIL_COOLDOWN_MS = ([\d_]+);/.exec(source)?.[1]?.replace(/_/g, '');
+  let size = -1, maxSize = 0, stillCools = false, skew = '', steps = 0, fillSteps = 0;
+  if (start > 0 && end > start && MS) {
+    const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    let now = 0, wall = 0;
+    // Counts entries visited by every scan of the map: the prune's work per call (sweep 20).
+    class CountingMap<K, V> extends Map<K, V> { *[Symbol.iterator]() { for (const e of super.entries()) { steps++; yield e; } } }
+    const run = new Function('performance', 'Date', 'MAIL_COOLDOWN_MS', 'Map', `${js}; return { left: mailCooldownLeft, map: lastCodeMail };`);
+    const { left, map } = run({ now: () => now }, { now: () => wall }, Number(MS), CountingMap);
+    for (let i = 0; i < 5000; i++) { now += 50; left('verification', `a${i}@example.test`); maxSize = Math.max(maxSize, map.size); }
+    fillSteps = steps;
+    size = map.size;
+    stillCools = left('verification', 'a4999@example.test') > 0; // a fresh entry survives pruning
+    // Clock skew (sweep 17): the cooldown runs on the monotonic clock, so a wall clock stepped
+    // back 10 min neither extends it past MAIL_COOLDOWN_MS nor, stepped forward, ends it early.
+    const got: number[] = [];
+    for (const step of [-600_000, 600_000]) {
+      const addr = `skew${step}@example.test`;
+      wall = now; left('verification', addr);
+      wall = now + step; now += 1000;
+      got.push(left('verification', addr));
+      now += Number(MS); got.push(left('verification', addr));
+    }
+    skew = got.join();
+  }
+  check('a wall-clock step (-10 min, +10 min) neither extends nor ends the mail cooldown',
+    skew === `${Number(MS) - 1000},0,${Number(MS) - 1000},0`, `left after 1 s, after the cooldown: ${skew}`);
+  check('the mail-cooldown map stays bounded over 5,000 distinct addresses (expired entries pruned)',
+    size > 0 && maxSize <= Number(MS) / 50 + 1 && stillCools,
+    `size ${size}, max ${maxSize}, fresh entry still cooling ${stillCools}`);
+  check('the mail-cooldown prune visits O(1) entries per call (expired ones leave from the front), not the whole map',
+    fillSteps > 0 && fillSteps <= 2 * 5000, `${fillSteps} entries visited over 5,000 calls with ~${Number(MS) / 50} live`);
+}
+
+// In-process intervals run on the monotonic clock (sweep 17): a wall-clock step backward
+// locked a client out past its window, and one forward cut the SIGTERM drain short. The
+// drain runs from source with a wall clock that jumps an hour ahead after its first read.
+{
+  const start = source.indexOf('async function drainGcsSaves(');
+  const end = source.indexOf('\n}\n', start) + 2;
+  let returnedAt = -1, landedAt = -1, gameLandedAt = -1, gameReturnedAt = -1, rowsLandedAt = -1, rowsReturnedAt = -1;
+  if (start > 0 && end > start) {
+    const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    const t0 = Date.now();
+    let reads = 0;
+    const hostile = { now: () => t0 + (reads++ ? 3_600_000 : 0) };
+    // `accountGames`: the hosted per-account game store; null = no saved-game write in flight.
+    // `state.inFlight`: a db.json upload is out when the drain starts; `state.request` lets a route ask for one.
+    const drainWith = (accountGames: unknown, landed: () => void, inFlight = true, state: { request?: () => void } = {}) => new Function('Date', 'performance', 'setTimeout', 'state', 'accountGames', `
+      let gcsStoreBlocked = null, gcsUploadInFlight = false, gcsSaveRequested = false, wakeGcsPump = null, gcsPumpDone = Promise.resolve();
+      const upload = () => { gcsUploadInFlight = true; gcsSaveRequested = false; return new Promise((r) => setTimeout(() => { gcsUploadInFlight = false; state.landed(); r(); }, 300)); };
+      function scheduleGcsSave() { if (!gcsUploadInFlight) gcsPumpDone = upload(); else gcsSaveRequested = true; }
+      state.request = () => { gcsSaveRequested = true; };
+      if (state.inFlight) gcsPumpDone = upload();
+      ${js}; return drainGcsSaves;`)(hostile, performance, setTimeout, Object.assign(state, { landed, inFlight }), accountGames);
+    // A fake store whose one write lands after `ms` (then `after` runs, as the route the write unblocks would).
+    const gamesFor = (ms: number, after: () => void) => {
+      let busy = true;
+      const done = new Promise((r) => setTimeout(() => { busy = false; after(); r(undefined); }, ms));
+      return { busy: () => busy, idle: () => done };
+    };
+    await drainWith(null, () => { landedAt = performance.now(); })(8_000);
+    returnedAt = performance.now();
+    // A saved-game write still in flight (answered only once it lands) outlasts the db.json pump.
+    await drainWith(gamesFor(900, () => { gameLandedAt = performance.now(); }), () => {})(8_000);
+    gameReturnedAt = performance.now();
+    // Sweep 28: the pump idle, a tombstone out; once it lands its route removes the rows (a db.json
+    // write). The drain must not exit with that write unlanded (its 200 already said "deleted").
+    const st: { request?: () => void } = {};
+    await drainWith(gamesFor(500, () => st.request!()), () => { rowsLandedAt = performance.now(); }, false, st)(8_000);
+    rowsReturnedAt = performance.now();
+  }
+  check('SIGTERM drain waits for the in-flight upload through a wall-clock jump', landedAt > 0 && returnedAt >= landedAt,
+    `landed ${landedAt.toFixed(0)}, returned ${returnedAt.toFixed(0)}`);
+  check('SIGTERM drain also waits for an in-flight saved-game write, not only the db.json pump', gameLandedAt > 0 && gameReturnedAt >= gameLandedAt,
+    `game write landed ${gameLandedAt.toFixed(0)}, returned ${gameReturnedAt.toFixed(0)}`);
+  check('SIGTERM drain lands the db.json write a route makes once its saved-game write lands (Sweep 28)', rowsLandedAt > 0 && rowsReturnedAt >= rowsLandedAt,
+    `rows landed ${rowsLandedAt.toFixed(0)}, returned ${rowsReturnedAt.toFixed(0)}`);
+  const body = (name: string) => { const i = source.indexOf(`function ${name}(`); return i < 0 ? '' : source.slice(i, source.indexOf('\n}\n', i)); };
+  const onWall = ['rateLimit', 'pruneRateBuckets', 'mailCooldownLeft', 'requireGcsStore', 'syncFromGcs', 'drainGcsSaves']
+    .filter((f) => !body(f) || /Date\.now\(/.test(body(f)));
+  const wallLines = source.split('\n').filter((l) => /Date\.now\(/.test(l) && /gcsFreshUntil|resetAt|lastCodeMail|\buntil\b/.test(l));
+  check('interval state (freshness, drain, cooldown, rate windows) never reads the wall clock',
+    onWall.length === 0 && wallLines.length === 0, JSON.stringify({ onWall, wallLines }));
+}
 
 console.log(failures === 0
   ? `\n✓ GCS deadline contract: ${sites.length} GCS network calls, all deadlined`

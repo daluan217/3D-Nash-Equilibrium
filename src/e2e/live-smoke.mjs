@@ -133,18 +133,55 @@ if (process.env.EXPECTED_INDEX) {
   record('the live site serves the app page', ok, `status=${home.status}`);
 }
 
-// ══ 2. the page's own bundle resolves (catches a deploy where index.html
-//      references a chunk that did not upload)
+// ══ 2. EVERY asset the page references (script src, modulepreload, stylesheet: any /assets/*.js|css in it)
+//      resolves AS that asset. A missing /assets/* fell through to the SPA shell (200 text/html) and this read
+//      only the first .js by status and size, so a chunk that never uploaded passed (sweep 25). Content-type
+//      is the primary check. Byte floor, measured 2026-09-29 on live 0.0.226 and local dist 0.0.227: the shell
+//      is 2,493-2,497 B, the smallest referenced asset is index-*.css at 162,365 B; 20,000 ~ their geometric mean.
+const ASSET_MIN_BYTES = 20_000;
 {
+  // Chrome's Accept-Encoding: fetch decodes br/gzip, so r.text is the asset itself.
+  const CHROME_AE = 'gzip, deflate, br, zstd';
+  const bounded = (p, ae = CHROME_AE) => getText(p, { headers: { 'accept-encoding': ae }, signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) })
+    .catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
   const home = await getText('/');
-  const asset = (home.text.match(/assets\/[\w.-]+\.js/) || [])[0];
-  if (asset) {
-    const js = await getText(`/${asset}`);
-    record('the live page\'s JS bundle resolves', js.status === 200 && js.text.length > 1000,
-      `status=${js.status} bytes=${js.text.length}`);
-  } else {
-    record('the live page\'s JS bundle resolves', false, 'no asset reference found in the page');
+  const refs = [...new Set(home.text.match(/\/assets\/[\w.-]+\.(?:js|css)\b/g))];
+  record('the live page references its JS entry', refs.some((u) => u.endsWith('.js')),
+    refs.join(', ') || 'no asset reference found in the page');
+  for (const url of refs) {
+    const r = await bounded(url);
+    const want = url.endsWith('.css') ? 'text/css' : 'javascript';
+    const ct = r.headers.get('content-type') || '';
+    record(`the live page's ${url} resolves as ${want}`,
+      r.status === 200 && ct.includes(want) && r.text.length >= ASSET_MIN_BYTES,
+      `status=${r.status} content-type=${ct} bytes=${r.text.length}` + (r.error ? ` error=${r.error}` : ''));
+    // Sweep 27: Cloud Run compresses nothing, and every asset went out raw (4.66 MB) at max-age=0.
+    const [ce, cc, vary] = ['content-encoding', 'cache-control', 'vary'].map((k) => r.headers.get(k) || '');
+    record(`the live page's ${url} arrives brotli-compressed and immutable`,
+      r.status === 200 && ce === 'br' && /\bimmutable\b/.test(cc) && Number(/max-age=(\d+)/.exec(cc)?.[1]) >= 31_536_000 && /\baccept-encoding\b/i.test(vary),
+      `status=${r.status} content-encoding=${ce || '(none)'} cache-control=${cc || '(none)'} vary=${vary || '(none)'}`);
   }
+  const entry = refs.find((u) => u.endsWith('.js'));
+  if (entry) {
+    const r = await bounded(entry, 'identity');
+    record('an identity-only client gets the asset uncompressed', r.status === 200 && !r.headers.get('content-encoding') && r.text.length >= ASSET_MIN_BYTES,
+      `status=${r.status} content-encoding=${r.headers.get('content-encoding') || '(none)'} bytes=${r.text.length}`);
+  }
+  // The shell names the hashes, so it must revalidate: explicitly (a missing header lets caches guess a lifetime).
+  const cc = home.headers.get('cache-control') || '';
+  record('the live page itself is revalidated on every load (never immutable)',
+    !/immutable/i.test(cc) && (/\bno-(?:cache|store)\b/i.test(cc) || /(?:^|[,\s])max-age=0(?:$|[,\s])/i.test(cc)), `cache-control=${cc || '(none)'}`);
+  // A failed conditional request is the error handler's JSON, never cached (send had set the asset's type and cache).
+  if (entry) {
+    const r = await getText(entry, { headers: { 'if-match': '"never-this-etag"' }, signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) })
+      .catch((error) => ({ status: 0, text: '', headers: new Headers(), error: String(error) }));
+    const [ct, rc] = [r.headers.get('content-type') || '', r.headers.get('cache-control') || ''];
+    record('a failed conditional asset request is an uncached JSON 412', r.status === 412 && ct.startsWith('application/json') && /\bno-store\b/.test(rc),
+      `status=${r.status} content-type=${ct || '(none)'} cache-control=${rc || '(none)'}` + (r.error ? ` error=${r.error}` : ''));
+  }
+  const miss = await bounded('/assets/index-NEVERUPLOADED.js');
+  record('a hashed asset that is not deployed is a 404, not the SPA page', miss.status === 404,
+    `status=${miss.status} content-type=${miss.headers.get('content-type')}` + (miss.error ? ` error=${miss.error}` : ''));
 }
 
 // ══ 3. API liveness behind the same domain, PLUS (when an expected version
@@ -158,6 +195,18 @@ if (process.env.EXPECTED_INDEX) {
   const xfo = r.headers.get('x-frame-options');
   record('live security headers present', nosniff === 'nosniff' && xfo === 'DENY',
     `nosniff=${nosniff} xfo=${xfo}`);
+  // Sweep 26: body-parser errors answered before the header middleware (bare 400s), no HSTS, X-Powered-By
+  // on every response. The malformed body is refused by the parser before any route, limit or write.
+  const bad = await getText('/api/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad',
+    signal: AbortSignal.timeout(API_CHECK_TIMEOUT_MS) }).catch((e) => ({ status: 0, text: String(e), headers: new Headers() }));
+  const hsts = [r, bad].map((x) => x.headers.get('strict-transport-security'));
+  record('live HSTS is on (max-age of at least one year)', hsts.every((v) => Number(/max-age=(\d+)/i.exec(v ?? '')?.[1]) >= 31_536_000),
+    `health=${hsts[0]} malformed-400=${hsts[1]}`);
+  const powered = [r, bad].map((x) => x.headers.get('x-powered-by'));
+  record('live responses do not name the framework (no X-Powered-By)', powered.every((v) => v === null), `health=${powered[0]} malformed-400=${powered[1]}`);
+  const [bn, bx, bc] = ['x-content-type-options', 'x-frame-options', 'content-security-policy'].map((k) => bad.headers.get(k));
+  record('live malformed-JSON 400 carries the security headers', bad.status === 400 && bn === 'nosniff' && bx === 'DENY' && /frame-ancestors 'none'/.test(bc ?? ''),
+    `status=${bad.status} nosniff=${bn} xfo=${bx} csp=${bc}`);
 
   let health = {};
   try { health = JSON.parse(r.text); } catch { /* not json */ }

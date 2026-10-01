@@ -1132,6 +1132,9 @@ export default function App() {
 
   // Auth Inputs
   const [authUsername, setAuthUsername] = useState('');
+  // The name typed on the register path, sent with the code (the code holder
+  // names the account); '' when verify was reached from login's 403.
+  const verifyNameRef = useRef('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authConfirmPassword, setAuthConfirmPassword] = useState('');
@@ -3874,6 +3877,7 @@ export default function App() {
         // for the user (go verify), not a failure to word.
         const verdict = accountVerdict(res, { failure: 'Invalid credentials.', badSuccessShape: !isLoginSuccess(data) });
         if (verdict.outcome === 'error' && res.kind === 'response' && !res.ok && data?.needVerification) {
+          verifyNameRef.current = '';
           changeAuthMode('verify');
           setAuthSuccess('Please complete email verification first.');
         } else if (verdict.outcome === 'error') {
@@ -3938,6 +3942,7 @@ export default function App() {
             changeAuthMode('login');
             setAuthSuccess(data.message || 'Account created successfully inside local database! You are ready to log in.');
           } else {
+            verifyNameRef.current = authUsername;
             changeAuthMode('verify');
             setAuthSuccess(data.message || 'Registration successful! A 6-digit confirmation code has been sent to your email address.');
             if (data.verificationCode) {
@@ -3959,7 +3964,7 @@ export default function App() {
       const authRequest = beginAuthRequest();
       try {
         const res = await api.request('/api/auth/verify', {
-          method: 'POST', token: null, json: { email: authEmail, code: authCode },
+          method: 'POST', token: null, json: { email: authEmail, code: authCode, password: authPassword, username: verifyNameRef.current || undefined },
           isStale: authRequest.isStale,
         });
         const data = res.data;

@@ -32,6 +32,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
@@ -48,16 +49,31 @@ function record(name, pass, detail) {
   console.log(`${pass ? 'PASS' : 'FAIL'} ${name}${detail ? ' — ' + detail : ''}`);
 }
 
-/** A fake GCS JSON API: only the two calls this endpoint makes. */
-function startFakeGcs({ dmgExists }) {
+/** A fake GCS JSON API: only the two calls this endpoint makes. `huge` streams HUGE bytes with backpressure. */
+const HUGE = 64 * 1024 * 1024;
+function startFakeGcs({ dmgExists, huge = false }) {
   const objectPath = `/b/${BUCKET}/o/${encodeURIComponent(DMG_OBJECT)}`;
   // Counts requests that actually fetch OBJECT BYTES (?alt=media) — the
   // thing a HEAD probe must never trigger. Exposed on the returned server so
   // the HEAD test below can assert on it directly, not infer it from timing.
-  let mediaRequests = 0;
+  let mediaRequests = 0, mediaOpen = 0, mediaSent = 0, metaDelayMs = 0;
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     if (u.pathname === objectPath && u.searchParams.get('alt') === 'media') mediaRequests++;
+    if (huge && u.pathname === objectPath) {
+      if (u.searchParams.get('alt') !== 'media') {
+        return setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ name: DMG_OBJECT, bucket: BUCKET, size: String(HUGE) }));
+        }, metaDelayMs);
+      }
+      const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? ''), from = m ? Number(m[1]) : 0, to = m ? Number(m[2]) : HUGE - 1;
+      mediaOpen++; res.on('close', () => { mediaOpen--; });
+      res.writeHead(m ? 206 : 200, { 'content-type': 'application/octet-stream', 'content-length': to - from + 1 });
+      let left = to - from + 1; const chunk = Buffer.alloc(64 * 1024, 7);
+      const pump = () => { while (left > 0 && !res.destroyed) { const c = chunk.subarray(0, Math.min(left, chunk.length)); left -= c.length; mediaSent += c.length; if (!res.write(c)) return res.once('drain', pump); } res.end(); };
+      return pump();
+    }
     // db.json's own exists() check at startup (initDB) — always "not found" so
     // the server falls back to a fresh in-memory DB without touching disk.
     if (u.pathname !== objectPath) {
@@ -97,6 +113,9 @@ function startFakeGcs({ dmgExists }) {
     }));
   });
   server.mediaRequestCount = () => mediaRequests;
+  server.mediaOpenCount = () => mediaOpen;
+  server.mediaSentBytes = () => mediaSent;
+  server.setMetaDelay = (ms) => { metaDelayMs = ms; };
   return new Promise((resolve) => server.listen(fakeGcsPort, () => resolve(server)));
 }
 
@@ -413,6 +432,136 @@ try {
   await stop(srv); srv = null;
   await stopFakeGcs(fakeGcs); fakeGcs = null;
 
+  // 1b. Sweep 22: `stream.pipe(res)` never ends the SOURCE when the client drops, so every aborted
+  // download kept its GCS read open, paused, for the process's life (120 of 120, still open 130 s on).
+  // A 64 MiB object with real backpressure; the client reads 256 KiB and hangs up.
+  fakeGcs = await startFakeGcs({ dmgExists: true, huge: true });
+  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`);
+  const abortAfter = (range) => new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1', () => s.write(`GET /api/download/dmg HTTP/1.1\r\nHost: x\r\n${range ? `Range: ${range}\r\n` : ''}\r\n`));
+    let got = 0; s.on('data', (d) => { got += d.length; if (got > 256 * 1024) s.destroy(); });
+    s.on('close', () => resolve(got)); s.on('error', () => {});
+  });
+  const drained = async () => { for (let i = 0; i < 50 && fakeGcs.mediaOpenCount() > 0; i++) await new Promise((r) => setTimeout(r, 100)); return fakeGcs.mediaOpenCount(); };
+  // Checked after EACH abort: one released read can tear down its siblings (a mutant that freed only
+  // ranged reads passed an end-of-run count), so every abort must free its own. And by BYTES: draining
+  // the rest (unpipe + resume) also closes the read, after pulling the whole object (the egress we pay).
+  const got = [], open = [], sent = [];
+  for (const range of [undefined, undefined, 'bytes=1000-']) {
+    const before = fakeGcs.mediaSentBytes();
+    got.push(await abortAfter(range)); open.push(await drained()); sent.push(fakeGcs.mediaSentBytes() - before);
+  }
+  const leftOpen = open.at(-1);
+  record('THE DEFECT: a client that hangs up mid-download releases its GCS read (full and ranged), within 5 s, without pulling the rest',
+    got.every((g) => g > 256 * 1024 && g < HUGE) && fakeGcs.mediaRequestCount() === 3 && open.every((o) => o === 0) && sent.every((s) => s < HUGE / 4),
+    `read ${got.join('/')} bytes, ${fakeGcs.mediaRequestCount()} GCS reads opened, still open after each abort: ${open.join('/')}, GCS sent ${sent.join('/')} of ${HUGE}`);
+  const whole = await fetch(`http://127.0.0.1:${port}/api/download/dmg`);
+  const wholeLen = (await whole.arrayBuffer()).byteLength;
+  record('…and a download read to the end still delivers every byte (the release is abort-only)',
+    whole.status === 200 && wholeLen === HUGE && (await drained()) <= leftOpen, `status ${whole.status}, ${wholeLen} of ${HUGE} bytes, ${fakeGcs.mediaOpenCount()} GCS reads open (${leftOpen} before)`);
+  // Sweep 23: a client gone BEFORE the pipe (here while exists()/getMetadata() take 300 ms) had
+  // already fired 'close', so a listener attached at pipe time never ran: 10 of 10 reads stayed open.
+  fakeGcs.setMetaDelay(300);
+  const early0 = { opened: fakeGcs.mediaRequestCount(), sent: fakeGcs.mediaSentBytes() };
+  for (let i = 0; i < 3; i++) await new Promise((resolve) => {
+    const s = net.connect(port, '127.0.0.1', () => { s.write('GET /api/download/dmg HTTP/1.1\r\nHost: x\r\n\r\n'); setTimeout(() => s.destroy(), 50); });
+    s.on('close', resolve); s.on('error', () => {});
+  });
+  await new Promise((r) => setTimeout(r, 1500)); // both 300 ms metadata calls answer, then the pipe would start
+  const earlyOpen = await drained(), earlySent = fakeGcs.mediaSentBytes() - early0.sent;
+  record('THE DEFECT: a client gone before the pipe starts leaves no GCS read open and pulls nothing',
+    earlyOpen === 0 && earlySent < HUGE / 4, `3 hang-ups at 50 ms: ${fakeGcs.mediaRequestCount() - early0.opened} GCS reads opened, ${earlyOpen} still open, GCS sent ${earlySent} bytes`);
+  await stop(srv); srv = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
+
+  // 1c. Sweep 24: a release (`gcloud storage cp`) replaces the object, and an unversioned bucket 404s the
+  // old generation. A resume across it spliced v1's head onto v2's tail (the route sent no validator), and a
+  // release between getMetadata() and the read sent v2's bytes under v1's length. Every generation is filled
+  // with its own letter, so a splice cannot pass as a whole file. Two boots: the route allows 10 per minute.
+  const gens = new Map(), mediaQ = []; let cur = 0, flip = null;
+  const release = (size) => { cur++; gens.set(cur, Buffer.alloc(size, 64 + cur)); };
+  release(8000);
+  fakeGcs = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (u.pathname !== `/b/${BUCKET}/o/${encodeURIComponent(DMG_OBJECT)}`) return json(404, { error: { code: 404 } });
+    if (u.searchParams.get('alt') !== 'media') {
+      json(200, { name: DMG_OBJECT, bucket: BUCKET, size: String(gens.get(cur).length), generation: String(cur) });
+      if (flip && --flip.after === 0) { release(flip.size); flip = null; } // exists() then getMetadata(): after the 2nd
+      return;
+    }
+    mediaQ.push(u.searchParams.get('generation'));
+    const g = u.searchParams.has('generation') ? Number(u.searchParams.get('generation')) : cur;
+    if (g !== cur) return json(404, { error: { code: 404, message: 'No such object' } });
+    const body = gens.get(g), m = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
+    const s = m ? Number(m[1]) : 0, e = m && m[2] ? Number(m[2]) : body.length - 1;
+    res.writeHead(m ? 206 : 200, { 'content-type': 'application/octet-stream', 'content-length': e - s + 1 });
+    res.end(body.subarray(s, e + 1));
+  });
+  await new Promise((r) => fakeGcs.listen(fakeGcsPort, r));
+  srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`);
+  const dl = (headers = {}, method = 'GET') => fetch(`http://127.0.0.1:${port}/api/download/dmg`, { method, headers, signal: AbortSignal.timeout(5000) })
+    .then(async (r) => ({ status: r.status, h: r.headers, body: Buffer.from(await r.arrayBuffer()) }))
+    .catch((err) => ({ status: `fetch failed: ${err.cause?.code ?? err.name}`, h: new Headers(), body: Buffer.alloc(0) }));
+  const seen = (r) => `status ${r.status}, ETag ${r.h.get('etag')}, ${r.body.length} bytes (${[...new Set(r.body.toString('latin1'))].join('')})`;
+  const v1 = await dl(), tag1 = v1.h.get('etag'), head = await dl({}, 'HEAD');
+  record('a GCS-served DMG carries a STRONG ETag, the object generation (If-Range needs one to resume at all)',
+    v1.status === 200 && tag1 === '"1"' && v1.body.equals(gens.get(1)), seen(v1));
+  record('HEAD (DownloadModal checks first) carries the same ETag and Accept-Ranges as GET',
+    head.status === 200 && head.h.get('etag') === tag1 && head.h.get('accept-ranges') === 'bytes', `HEAD ${seen(head)}, Accept-Ranges ${head.h.get('accept-ranges')}`);
+  const same = await dl({ range: 'bytes=3000-', 'if-range': tag1, 'if-match': tag1 });
+  record('If-Range and If-Match naming the current ETag still resume: 206 with exactly the requested bytes',
+    same.status === 206 && same.h.get('content-range') === 'bytes 3000-7999/8000' && same.body.equals(gens.get(1).subarray(3000)), seen(same));
+  const q0 = mediaQ.length, stale = await dl({ range: 'bytes=3000-', 'if-match': '"999"' });
+  record('If-Match naming another generation is 412, and no GCS read is opened',
+    stale.status === 412 && mediaQ.length === q0, `${seen(stale)}, GCS reads opened ${mediaQ.length - q0}`);
+  release(9000); // the release lands while the client holds 3000 bytes of v1 and tag1
+  const resumed = await dl({ range: 'bytes=3000-', 'if-range': tag1 });
+  record('THE DEFECT: a resume across a release (If-Range: the old ETag) gets the whole new file and its ETag, never v1 + v2 spliced',
+    resumed.status === 200 && resumed.h.get('etag') === '"2"' && resumed.body.equals(gens.get(2)), seen(resumed));
+  const byDate = await dl({ range: 'bytes=3000-', 'if-range': 'Tue, 29 Sep 2026 06:19:50 GMT' }), weak = await dl({ range: 'bytes=3000-', 'if-range': 'W/"2"' });
+  record('an If-Range carrying a date or a weak tag never resumes (strong comparison): 200 with the whole file',
+    [byDate, weak].every((r) => r.status === 200 && r.h.get('etag') === '"2"' && r.body.equals(gens.get(2))), `date: ${seen(byDate)}; W/: ${seen(weak)}`);
+  await stop(srv); srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`);
+  // If-Match (RFC 9110 §13.1.1): "*" matches any current representation, a list matches if any member does,
+  // and the comparison is strong, so W/"<current>" fails. Director audit of 30f2461: P6/P7 survived without these.
+  const tag2 = `"${cur}"`, tail2 = (r) => r.status === 206 && r.h.get('content-range') === 'bytes 3000-8999/9000' && r.body.equals(gens.get(cur).subarray(3000));
+  const star = await dl({ range: 'bytes=3000-', 'if-match': '*' });
+  record('If-Match: * matches the current representation: 206 with exactly the requested bytes', tail2(star), seen(star));
+  const list = await dl({ range: 'bytes=3000-', 'if-match': `"0", ${tag2}` });
+  record('If-Match listing another tag and the current one matches: 206 with exactly the requested bytes', tail2(list), seen(list));
+  const q1 = mediaQ.length, weakMatch = await dl({ range: 'bytes=3000-', 'if-match': `W/${tag2}` });
+  record('If-Match with the current generation as a WEAK tag is 412 (strong comparison), and no GCS read is opened',
+    weakMatch.status === 412 && mediaQ.length === q1, `${seen(weakMatch)}, GCS reads opened ${mediaQ.length - q1}`);
+  // Straddle: the release lands between the route's getMetadata() and its media read.
+  const straddle = async (grow, headers) => { const was = cur; flip = { after: 2, size: gens.get(cur).length + grow }; const r = await dl(headers); return { r, was, pin: mediaQ.at(-1) }; };
+  for (const grow of [1000, -1000]) {
+    const { r, was, pin } = await straddle(grow);
+    record(`THE DEFECT: a release between getMetadata() and the read (v2 ${grow > 0 ? 'larger' : 'smaller'}) never sends v2's bytes under v1's length`,
+      pin === String(was) && (r.status === 500 || (r.status === 200 && r.body.equals(gens.get(was)))), `read pinned to generation ${pin} (measured ${was}); ${seen(r)}`);
+  }
+  const { r: err500 } = await straddle(500, { range: 'bytes=10-' });
+  const dlHeaders = ['content-disposition', 'content-range', 'accept-ranges'].filter((h) => err500.h.has(h));
+  record('the read-failed 500 is plain JSON: none of the download headers (attachment, octet-stream, Content-Range, the ETag) leak onto it',
+    err500.status === 500 && /^application\/json/.test(err500.h.get('content-type') ?? '') && dlHeaders.length === 0 && !/^"/.test(err500.h.get('etag') ?? ''),
+    `status ${err500.status}, content-type ${err500.h.get('content-type')}, leaked [${dlHeaders.join(', ')}], ETag ${err500.h.get('etag')}`);
+  // Range edges (sweep 5, cloud-loop-22): a suffix of 0 and a first byte AT the size are unsatisfiable (RFC 9110
+  // §14.1.1); a 400-digit position parses to Infinity: past the end as a first byte, "to the end" as a last byte or
+  // suffix. Mutants `Number(m[1]) | 0`, `-0 = whole file` and `start <= end + 1` each fail a check here by name.
+  await stop(srv); srv = await boot(userData, `http://127.0.0.1:${fakeGcsPort}`); // a fresh dmg bucket (10/min)
+  const body = gens.get(cur), size = body.length, BIG = '9'.repeat(400), all = `bytes 0-${size - 1}/${size}`;
+  for (const [label, range, want] of [['a zero-length suffix (bytes=-0)', 'bytes=-0', 416], ['a first byte AT the size', `bytes=${size}-`, 416],
+    ['a 400-digit first byte', `bytes=${BIG}-`, 416], ['a 400-digit last byte', `bytes=0-${BIG}`, all], ['a 400-digit suffix', `bytes=-${BIG}`, all],
+    ['the last byte, control', `bytes=${size - 1}-`, `bytes ${size - 1}-${size - 1}/${size}`]]) {
+    const r = await dl({ range });
+    record(`Range edge: ${label} is ${want === 416 ? '416 bytes */size, empty' : `206 ${want}`}`, want === 416
+      ? r.status === 416 && r.h.get('content-range') === `bytes */${size}` && r.body.length === 0
+      : r.status === 206 && r.h.get('content-range') === want && r.body.equals(body.subarray(Number(/ (\d+)-/.exec(want)[1]))),
+    `${range.slice(0, 24)}: ${seen(r)}, Content-Range ${r.h.get('content-range')}`);
+  }
+  await stop(srv); srv = null;
+  await stopFakeGcs(fakeGcs); fakeGcs = null;
+
   // ───────────────────────────────────────────────────────────────────────────
   // 2. GCS says the object does not exist -> the existing 404 contract holds
   // ───────────────────────────────────────────────────────────────────────────
@@ -613,7 +762,7 @@ try {
 // otherwise prints "N/N checks passed" and exits 0. Measured: filtering one
 // data array to empty in desktop-dead-token-owner removed six checks and the
 // run said "37/37 checks passed".
-const EXPECTED_CHECKS = 47;
+const EXPECTED_CHECKS = 68;
 if (results.length < EXPECTED_CHECKS) {
   console.error(`FAILED: only ${results.length} checks ran, expected at least ${EXPECTED_CHECKS} — a block was skipped.`);
   process.exit(1);

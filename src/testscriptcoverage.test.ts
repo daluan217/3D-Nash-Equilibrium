@@ -35,8 +35,9 @@ const files = readdirSync('src').filter((f) => f.endsWith('.test.ts')).sort();
 // `echo`, would "wire" a test CI never actually runs. Require an executable
 // `tsx src/<file>` invocation specifically.
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Node flags may precede the file (`tsx --expose-gc src/breakaheap.test.ts`).
 const isWiredIn = (script: string, file: string): boolean =>
-  new RegExp(`(?:^|&&\\s*)tsx\\s+src/${escapeRegex(file)}(?=\\s|$)`).test(script);
+  new RegExp(`(?:^|&&\\s*)tsx(?:\\s+--[a-z][\\w-]*)*\\s+src/${escapeRegex(file)}(?=\\s|$)`).test(script);
 const isWired = (file: string): boolean => isWiredIn(testScript, file);
 
 // A count is not coverage (this campaign's own repeated lesson) — list every
@@ -70,6 +71,8 @@ check('found a plausible number of test files (this repo has 30+)', files.length
     check(`fixture sanity: "${wiredFile}" named only as inert text (its invocation replaced by a bare echo) is STILL flagged as missing`,
       !isWiredIn(textOnlyScript, wiredFile) && textOnlyScript.includes(wiredFile));
   }
+  check('a tsx invocation with a node flag counts; the same words after echo do not',
+    isWiredIn('tsx a && tsx --expose-gc src/x.test.ts', 'x.test.ts') && !isWiredIn('tsx a && echo --expose-gc src/x.test.ts', 'x.test.ts'));
 }
 
 // The development middleware boundary is not exercised by the production

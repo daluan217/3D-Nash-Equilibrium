@@ -16,6 +16,7 @@ COPY src/ ./src/
 COPY public/ ./public/
 COPY index.html ./
 COPY vite.config.ts ./
+COPY scripts/precompress.mjs ./scripts/
 # Build frontend (Vite) and server (esbuild)
 RUN npm run build
 
@@ -47,6 +48,11 @@ RUN npm ci --omit=dev
 
 # Copy built server and frontend from builder
 COPY --from=builder /app/dist/ ./dist/
+
+# Not root. node (uid 1000, from the base image) owns only /app itself, where the no-bucket path writes db.json
+# and its temp/moved-aside siblings. The files under it stay root's: chown reaches only where the server writes.
+RUN chown node:node /app
+USER node
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

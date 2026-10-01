@@ -16,6 +16,7 @@
  * asserting anything decidable, and a stakes line that leaked "A does better
  * here" would reintroduce exactly the defect rung 3 removes.
  */
+import { seededRandom } from './testing/prng.ts';
 import { describeStakes, stakesHint } from './utils/scenarioStakes';
 import type { GamePayoffs } from './types';
 
@@ -179,8 +180,7 @@ for (const [want, g] of SIZE_FIXTURES) {
  * assertion itself is reproducible.
  */
 {
-  let seed = 424242;
-  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const rand = seededRandom(424242);
   const g = G(90, 0, 0, 60, 80, 0, 0, 55); // very-large fixture, deep interior
   const N = 4000;
   let strongCount = 0;
@@ -229,13 +229,11 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
   // The hint is prepended to a prompt that forbids the description from
   // asserting anything decidable. It must not smuggle one in itself.
   const CLAIM_WORDS = /\b(equilibri\w*|dominan\w*|best response|should choose|will choose|better off|prefers?|optimal|wins?|loses?)\b/i;
-  let seed = 7;
-  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const rand = seededRandom(7);
   // A SEPARATE seeded stream drives `pick`, so this test is reproducible
   // end-to-end rather than depending on the real Math.random default — the
   // stream must visit BOTH branches for the claim below to mean anything.
-  let pickSeed = 71;
-  const pick = () => { pickSeed = (pickSeed * 1103515245 + 12345) & 0x7fffffff; return pickSeed / 0x7fffffff; };
+  const pick = seededRandom(71);
   let claims = 0, digits = 0;
   for (let i = 0; i < 20000; i++) {
     const p = () => Math.round((rand() * 200 - 100) * 1000) / 1000;
@@ -251,10 +249,8 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
 
 /* ------------------------------------------------------------------ reach */
 {
-  let seed = 99;
-  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-  let pickSeed = 991;
-  const pick = () => { pickSeed = (pickSeed * 1103515245 + 12345) & 0x7fffffff; return pickSeed / 0x7fffffff; };
+  const rand = seededRandom(99);
+  const pick = seededRandom(991);
   const seen: Record<string, number> = {};
   let neutral = 0;
   const N = 20000;
@@ -290,10 +286,8 @@ check('hasIrrelevantChoice still computed', describeStakes(G(5, 9, 5, 1, 2, 8, 3
 // have been better, so the length is now a guarded property and not a matter
 // of taste.
 {
-  let seed = 3;
-  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
-  let pickSeed = 31;
-  const pick = () => { pickSeed = (pickSeed * 1103515245 + 12345) & 0x7fffffff; return pickSeed / 0x7fffffff; };
+  const rand = seededRandom(3);
+  const pick = seededRandom(31);
   let longest = 0, longestNoGap = 0;
   for (let i = 0; i < 5000; i++) {
     const mag = [0.5, 5, 30, 100][i % 4];

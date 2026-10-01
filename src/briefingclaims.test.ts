@@ -8,6 +8,7 @@
  *
  *   npx tsx src/briefingclaims.test.ts
  */
+import { seededRandom } from './testing/prng.ts';
 import assert from 'node:assert';
 import { describeGeometry, geometryBriefing } from './utils/geometry';
 import { computeAllNE, PRESETS } from './utils/gameEngine';
@@ -178,8 +179,7 @@ check('a NEAR-miss is not a strategic equivalence (one cell off by 0.01)',
   // Reach, over a corpus that INCLUDES the one range where the class is
   // reachable — a byte-identity sweep that never exercises the moving branch
   // would prove nothing.
-  let seed = 12345;
-  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const rnd = seededRandom(12345);
   const ri = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
   let wide = 0; let narrow = 0;
   const isNew = (g: GamePayoffs) => { const d = describeGeometry(g); return d.strictlyCompetitive && !d.zeroSum && !d.constantSum; };
@@ -291,8 +291,7 @@ console.log(`✓ geometry/minimax + rung-3 refusal: ${checks} checks passed`);
     wouldFire(AGREE, true) && wouldFire(AGREE, false));
 
   // COST, and the byte-identity claim, over a corpus rather than an anecdote.
-  let seed = 555;
-  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const rnd = seededRandom(555);
   const ri = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
   let fires = 0; let conflict = 0;
   for (let i = 0; i < 20000; i++) {

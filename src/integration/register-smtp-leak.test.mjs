@@ -129,7 +129,6 @@ try {
   // still-unverified email, takes the resend-to-an-unverified-user branch
   // (~3903). Asserting only the first left half the fix unguarded (reviewer F5).
   const first = await register();
-  const second = await register();
   const res = { status: first.status };
   const shown = first.shown;
 
@@ -139,9 +138,6 @@ try {
   record('the first registration succeeded, leaving an UNVERIFIED user for the resend path',
     first.status === 200 || first.status === 201,
     `status=${first.status} body=${JSON.stringify(first.shown.slice(0, 80))}`);
-  record('the RESEND branch (same unverified email, send now refused) took its 500 error branch',
-    second.status === 500 && second.shown.length > 0,
-    `status=${second.status} errorChars=${second.shown.length}`);
   // A FRESH email takes the NEW-REGISTRATION branch (server.ts ~3962) with the
   // send already refused. Re-using `uniq` does NOT work: the resend site (~3903)
   // returns WITHOUT deleting the user, so a repeat lands on 3903 again -- and a
@@ -159,6 +155,18 @@ try {
   record('a FRESH email takes the new-registration 500 branch (the other leak site)',
     third.status === 500 && third.shown.length > 0,
     `status=${third.status} errorChars=${third.shown.length}`);
+  // The resend arm: `uniq`'s own resend inside the minute answers "enter the
+  // code" and sends nothing (sweep 6 cooldown), so it is driven on `fresh`,
+  // whose failed send handed its slot back: this retry re-sends, is refused.
+  const second = await (async () => {
+    const r = await fetch(`${BASE}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: fresh, email: `${fresh}@example.invalid`, password: 'TestPass123' }) });
+    const b = await r.json().catch(() => ({}));
+    return { status: r.status, shown: String(b.error ?? '') };
+  })();
+  record('the RESEND branch (same unverified email, send now refused) took its 500 error branch',
+    second.status === 500 && second.shown.length > 0,
+    `status=${second.status} errorChars=${second.shown.length}`);
 
   // Each needle is something the provider's own text carries and a user-facing
   // sentence never should. Checked individually so a failure NAMES the leak.
@@ -254,7 +262,7 @@ try {
     await waitForOwnServer(server2, BASE2, { timeoutMs: 20000 });
     const V = 'victim@example.invalid';
     const reg = await post('/api/auth/register', { username: 'victim', email: V, password: 'TestPass123' });
-    const ver = await post('/api/auth/verify', { email: V, code: codes[V] });
+    const ver = await post('/api/auth/verify', { email: V, code: codes[V], password: 'TestPass123' });
     record('rollback setup: a verified hosted account exists (code read from the mail)', reg.status === 200 && ver.status === 200,
       `register=${reg.status} verify=${ver.status} code=${codes[V] ? 'captured' : 'none'}`);
     delete codes[V];
@@ -272,14 +280,14 @@ try {
     await new Promise((r) => setTimeout(r, 800));
     const retry = await post('/api/auth/register', { username: 'retry', email: RETRY, password: 'TestPass123' });
     const firstDone = await first;
-    const retryVer = await post('/api/auth/verify', { email: RETRY, code: codes[RETRY] });
+    const retryVer = await post('/api/auth/verify', { email: RETRY, code: codes[RETRY], password: 'TestPass123' });
     record("a retry whose code went out survives the first attempt's rollback: that code verifies",
       retry.status === 200 && firstDone.status === 500 && !!codes[RETRY] && retryVer.status === 200,
       `retry=${retry.status} first=${firstDone.status} verify=${retryVer.status} ${JSON.stringify(retryVer.json).slice(0, 100)}`);
 
     const late = post('/api/auth/register', { username: 'late', email: LATE, password: 'TestPass123' });
     await new Promise((r) => setTimeout(r, 800));
-    const lateVer = await post('/api/auth/verify', { email: LATE, code: codes[LATE] });
+    const lateVer = await post('/api/auth/verify', { email: LATE, code: codes[LATE], password: 'TestPass123' });
     const lateDone = await late;
     const lateLogin = await post('/api/auth/login', { email: LATE, password: 'TestPass123' });
     record('an account verified from a mail delivered before the send failed is not rolled back: login works',

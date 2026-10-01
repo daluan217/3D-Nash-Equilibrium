@@ -19,6 +19,20 @@
 import { tieProseFull, type TieLabels } from '../src/utils/tieProse.ts';
 import { equilibriumSet, kindOf, EA, EB, type Rect } from '../src/utils/gameEngine.ts';
 import type { GamePayoffs } from '../src/types.ts';
+import { readFileSync } from 'node:fs';
+import { seededRandom } from '../src/testing/prng.ts';
+import ts from 'typescript';
+
+// server.ts's own `cleanPayoffs`, sliced and transpiled: the clamp every served
+// game passes through, so the inputs below cannot drift from what is accepted.
+const cleanPayoffs = (() => {
+  const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8');
+  const start = src.indexOf('function cleanPayoffs(');
+  const end = src.indexOf('\n}\n', start) + 2;
+  if (start < 0 || end < 2) throw new Error('cleanPayoffs is gone from server.ts');
+  const js = ts.transpileModule(src.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  return new Function(`${js}; return cleanPayoffs;`)() as (v: unknown) => GamePayoffs | null;
+})();
 
 const N = Number(process.env.V_N || 200000);
 const VERBOSE = process.env.V_VERBOSE === '1';
@@ -383,8 +397,7 @@ function* exhaustive(values: number[]): Generator<GamePayoffs> {
   }
 }
 
-let seed = 20260829;
-const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+const rnd = seededRandom(20260829); // src/testing/prng.ts: exact 32-bit LCG (the float form cycled every 10,466 draws)
 
 let checked = 0, ties = 0, continua = 0, areas = 0, multi = 0;
 const failures: { g: GamePayoffs; labels: TieLabels | null; text: string; why: string }[] = [];
@@ -452,6 +465,27 @@ function check(g: GamePayoffs, labels: TieLabels | null): void {
   console.log(`near-boundary: ${checkedNB} renderings with equilibrium probabilities in and around the 0.0005 display threshold`);
 }
 
+// Phase 0b — the live tail families (RED-CLOUD-20 angle 5) plus the clamp's
+// edges, through the server's own clamp: 1e-6 scale, +-100, negative-only,
+// continua, and values past +-100 and between 3-dp steps.
+{
+  const FAM = [
+    { a11: 3, a12: 3, a21: 5, a22: 1, b11: 2, b12: 4, b21: 0, b22: 3 }, { a11: 4, a12: 1, a21: 2, a22: 5, b11: 3, b12: 3, b21: 0, b22: 0 },
+    { a11: 3, a12: 5, a21: 3, a22: 1, b11: 2, b12: 4, b21: 6, b22: 1 }, { a11: 2, a12: 4, a21: 6, a22: 1, b11: 3, b12: 3, b21: 5, b22: 1 },
+    { a11: -1, a12: -5, a21: 0, a22: -3, b11: -1, b12: 0, b21: -5, b22: -3 }, { a11: -3, a12: -1, a21: -5, a22: -9, b11: -3, b12: -5, b21: -1, b22: -9 },
+    { a11: 3e-6, a12: 0, a21: 5e-6, a22: 1e-6, b11: 3e-6, b12: 5e-6, b21: 0, b22: 1e-6 },
+    { a11: 100, a12: 0, a21: -100, a22: 50, b11: 100, b12: -100, b21: 0, b22: 50 },
+    { a11: 2, a12: 2, a21: 1, a22: 3, b11: 5, b12: 1, b21: 5, b22: 1 }, { a11: 4, a12: 4, a21: 0, a22: 6, b11: 2, b12: 7, b21: 2, b22: 1 },
+    { a11: 1e9, a12: -1e9, a21: 0.0004, a22: -0.0006, b11: 99.9995, b12: -99.9995, b21: 0.0005, b22: 0 },
+  ];
+  for (const f of FAM) {
+    const g = cleanPayoffs(f);
+    if (!g) throw new Error(`cleanPayoffs refused a tail family: ${JSON.stringify(f)}`);
+    for (const labels of LABEL_SETS) check(g, labels);
+  }
+  console.log(`tail families: ${FAM.length} x ${LABEL_SETS.length} label sets, through server.ts cleanPayoffs`);
+}
+
 // Phase 1 — EXHAUSTIVE over every 2x2 game whose eight cells come from {0,1}
 // and from {0,1,2}: 6,817 matrices, each under every label set.
 let exhaustiveGames = 0;
@@ -467,12 +501,16 @@ console.log(`exhaustive: ${exhaustiveGames.toLocaleString()} matrices x ${LABEL_
 for (let t = 0; t < N; t++) {
   // Mixed generator: small integers make ties and continua common; a wider
   // range and occasional halves exercise the display-rounding paths.
-  const wide = t % 7 === 0, half = t % 11 === 0;
+  // Every fifth game spans the server's whole accepted range instead (+-100,
+  // integers / 2 dp / 3 dp), clamped by server.ts itself.
+  const wide = t % 7 === 0, half = t % 11 === 0, full = t % 5 === 4, k = t % 3;
   const cell = () => {
+    if (full) return k === 0 ? Math.floor(rnd() * 201) - 100 : (rnd() * 200 - 100) / (k === 1 ? 1 : 10);
     const v = wide ? Math.floor(rnd() * 41) - 20 : Math.floor(rnd() * 7) - 3;
     return half ? v + (rnd() < 0.5 ? 0.5 : 0) : v;
   };
-  const g: GamePayoffs = { a11: cell(), a12: cell(), a21: cell(), a22: cell(), b11: cell(), b12: cell(), b21: cell(), b22: cell() };
+  const raw = { a11: cell(), a12: cell(), a21: cell(), a22: cell(), b11: cell(), b12: cell(), b21: cell(), b22: cell() };
+  const g = (full ? cleanPayoffs(raw) : raw) as GamePayoffs;
   check(g, LABEL_SETS[t % LABEL_SETS.length]);
 }
 

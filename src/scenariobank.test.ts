@@ -9,6 +9,7 @@
  * silently returns nothing, repeats itself, or reaches into the wrong stakes
  * band, the product regresses in a way no existing test would notice.
  */
+import { seededRandom } from './testing/prng.ts';
 import { bankAvailable, bankSize, allBankRows, bankScenario, bankScenarioAvoiding, bankRowFor, __resetBankSeen } from './utils/bankSource';
 import { scenarioIsClaimFree, validateScenario, validateProseDirections } from './utils/nashValidator';
 import { pickFromBank, stakesBand, bankKey, SERVE_PROBES, actorNounsOk, scenarioIsColourable, highlightWouldMatch, type BankEntry } from './utils/scenarioBank';
@@ -219,8 +220,7 @@ check('band cuts: >=50 very large', stakesBand(G(60)) === 3, `${stakesBand(G(60)
   // MEASURED, not just fixture-checked: over many seeds, the exact band wins
   // roughly 1 - BAND_NEIGHBOR_P (0.3) of the time, and it is NEVER anything
   // but the exact band or an immediate neighbour.
-  let seed = 555;
-  const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const rand = seededRandom(555);
   const N = 4000;
   let exact = 0, offByOne = 0, offByMore = 0;
   const bandOf: Record<string, number> = { Tiny: 0, Modest: 1, Substantial: 2, Large: 3 };

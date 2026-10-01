@@ -70,9 +70,11 @@
  *   node src/integration/db-shape-refusal.test.mjs
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { pbkdf2Sync, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createServer } from 'node:net';
 import { waitForOwnServer } from './ownserver.mjs';
 
 const serverDir = path.resolve(import.meta.dirname, '../..');
@@ -107,7 +109,7 @@ function spawnServer(userData, thePort) {
 // passed as a whole replacement object (never inherits the real process.env),
 // so this can never accidentally pick up real GCS credentials from the
 // machine running the test.
-function spawnHostedServer(userData, thePort) {
+function spawnHostedServer(userData, thePort, extraEnv = {}) {
   return spawn('node', [BUNDLE], {
     cwd: userData,
     env: {
@@ -115,6 +117,7 @@ function spawnHostedServer(userData, thePort) {
       HOME: userData,
       NODE_ENV: 'production',
       PORT: String(thePort),
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -589,6 +592,13 @@ for (const [label, doc, expectMsg] of [
     /"games\[1\]" is a number, not an object/],
   ['users[0] is an array (arrays are objects to typeof — the check must not be fooled)',
     { users: [[]], games: [] }, /"users\[0\]" is an array, not an object/],
+  // BLUE-LOOP-CLOUD-22: one level further. `users:[{}]` 500'd login and
+  // register for everyone (`u.email.trim()`, `passwordHash.startsWith`).
+  ['users[0] is {} (no email, no hash: every auth route dereferenced them)',
+    { users: [{}], games: [] }, /"users\[0\]\.id" is not a string/],
+  ['users[1].passwordHash is a number (the index and FIELD are the real ones)',
+    { users: [{ id: 'u1', username: 'a', email: 'a@x.test', passwordHash: '' }, { id: 'u2', username: 'b', email: 'b@x.test', passwordHash: 5 }], games: [] },
+    /"users\[1\]\.passwordHash" is not a string/],
 ]) {
   const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-el-'));
   const original = JSON.stringify(doc);
@@ -630,20 +640,23 @@ for (const [label, doc, expectMsg] of [
   port += 1;
 }
 
-// 9c. THE CONTROL. `{}` is a genuine object — not a recognised User, but
-// nothing about it is unguessable in the way `null`/`7`/`"nope"` are, and the
-// readers that crashed above (`u.id`, `g.userId`) simply read `undefined` from
-// it, which is a value they already handle. It must boot AND serve.
+// 9c. THE CONTROL. A user with its four string fields — passwordHash '' is
+// exactly the desktop local owner's own shape, so a "non-empty" check would
+// refuse every existing install — and a game `{}` (no reader crashes on game
+// fields; not validated on purpose). It must boot AND serve.
 {
   const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-el-control-'));
-  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ users: [{}], games: [{}] }));
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({
+    users: [{ id: 'local-owner', username: 'This device', email: 'local-owner@localhost.invalid', passwordHash: '' }], games: [{}] }));
 
   const child = spawnServer(userData, port);
   try {
-    await waitReady(child, port);
+    const ready = await waitReady(child, port);
     const list = await fetch(`http://127.0.0.1:${port}/api/games`);
-    record('CONTROL: an object element with no known fields still BOOTS and serves',
+    record('CONTROL: a local-owner-shaped user (passwordHash \'\') and a bare game object still BOOT and serve',
       list.ok, `GET /api/games status ${list.status}`);
+    record('CONTROL: no legacy-password SECURITY warning for the local owner (\'\' is no password, not a reversible one)',
+      !/SECURITY: \d+ account\(s\) still use legacy/.test(ready.log()), ready.log().slice(0, 200));
     const save = await fetch(`http://127.0.0.1:${port}/api/games`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'probe', description: 'd',
@@ -652,7 +665,423 @@ for (const [label, doc, expectMsg] of [
     record('CONTROL: and saving still works on it (the refusal did not widen to every array)',
       save.ok, `POST /api/games status ${save.status}`);
   } catch (err) {
-    record('CONTROL: an object element with no known fields still BOOTS and serves', false, String(err));
+    record('CONTROL: a local-owner-shaped user (passwordHash \'\') and a bare game object still BOOT and serve', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 10. A STORED EMAIL THE SHAPE CHECK ACCEPTS BUT REGISTER NEVER WRITES (sweep 22, S1-1). The
+//     validator asks only for a string, so a legacy or hand-edited "Kate@Example.test" loads. Register,
+//     forgot and reset folded it; login and verify compared it exactly: "already registered" at sign-up,
+//     401 at log-in, 404 at verify. Hosted, file-backed, the real bundle. The wrong-password control
+//     keeps the 200 from passing because login accepts anything.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-email-'));
+  const PW = 'Sup3rSecret!23';
+  const salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_kate', username: 'kate', email: 'Kate@Example.test', passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 },
+    { id: 'u_pat', username: 'pat', email: ' Pat@Example.test', passwordHash: hash, isVerified: false,
+      verificationCode: '123456', verificationCodeExpires: Date.now() + 3_600_000 },
+  ] }));
+  const child = spawnHostedServer(userData, port);
+  const post = (route, body) => fetch(`http://127.0.0.1:${port}/api/auth/${route}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    await waitReady(child, port);
+    const taken = await post('register', { username: 'kate2', email: 'kate@example.test', password: PW });
+    record('stored "Kate@Example.test": CONTROL, register already sees the account (400)', taken.status === 400, `status ${taken.status}`);
+    const login = await post('login', { email: 'kate@example.test', password: PW });
+    record('stored "Kate@Example.test": login by the typed email succeeds (200), as it does by username',
+      login.status === 200, `status ${login.status}`);
+    const wrong = await post('login', { email: 'kate@example.test', password: 'Wr0ngSecret!23' });
+    record('stored "Kate@Example.test": CONTROL, a wrong password is still 401', wrong.status === 401, `status ${wrong.status}`);
+    const verify = await post('verify', { email: 'pat@example.test', code: '123456', password: PW });
+    record('stored " Pat@Example.test" (pending): verify by the typed email succeeds (200)', verify.status === 200, `status ${verify.status}`);
+  } catch (err) {
+    record('stored mixed-case email: the hosted server boots', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 11. TWO ROWS, ONE MAILBOX (sweep 22, S1-2). A merged or legacy store can hold both (dedupe keeps
+//     duplicates GCS already held). delete-confirm removed every row with the email but only the
+//     signed-in row's games, then said "all saved game profiles ... deleted". A third account's game
+//     is the control: a wipe-everything fix would pass the first check and fail this one.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-dupmail-'));
+  const PW = 'Sup3rSecret!23';
+  const salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  const row = (id, username, email) => ({ id, username, email, passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 });
+  const payoffs = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({
+    users: [row('u_b', 'kate-old', 'Kate@Example.test'), row('u_a', 'kate', 'kate@example.test'), row('u_c', 'other', 'other@example.test')],
+    games: [{ id: 'g_a', userId: 'u_a', name: 'A', payoffs }, { id: 'g_b', userId: 'u_b', name: 'B', payoffs }, { id: 'g_c', userId: 'u_c', name: 'C', payoffs }] }));
+  const child = spawnServer(userData, port);
+  const call = (route, body, token) => fetch(`http://127.0.0.1:${port}/api/auth/${route}`, { method: 'POST',
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body ?? {}) })
+    .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
+  try {
+    await waitReady(child, port);
+    // One lookup rule for every route (findByEmail): u_b sorts first but u_a holds the typed spelling,
+    // so forgot, reset and login all land on u_a. Unfixed, reset hit u_b and login u_a (401); a plain
+    // fold moves login onto the legacy u_b.
+    const { json: forgot } = await call('forgot-password', { email: 'kate@example.test' });
+    const NEW = 'N3wSecret!456';
+    const reset = await call('reset-password', { email: 'kate@example.test', code: forgot?.recoveryCode, newPassword: NEW });
+    const relog = await call('login', { email: 'kate@example.test', password: NEW });
+    record('two rows, one mailbox: forgot, reset and login reach the same row (the new password logs in, as u_a)',
+      reset.status === 200 && relog.status === 200 && relog.json?.user?.id === 'u_a', `reset ${reset.status}, login ${relog.status} as ${relog.json?.user?.id}`);
+    const { json: login } = await call('login', { email: 'kate', password: NEW });
+    const { json: ask } = await call('delete-request', {}, login?.token);
+    const done = await call('delete-confirm', { code: ask?.deleteCode }, login?.token);
+    const after = JSON.parse(readFileSync(path.join(userData, 'db.json'), 'utf-8'));
+    const ids = (xs) => xs.map((x) => x.id).sort().join(',');
+    record('two rows, one mailbox: delete-confirm answers 200', done.status === 200, `status ${done.status}`);
+    record('two rows, one mailbox: both rows AND both rows\' games are gone from disk',
+      !after.games.some((g) => g.userId === 'u_a' || g.userId === 'u_b') && !after.users.some((u) => u.id === 'u_a' || u.id === 'u_b'),
+      `users ${ids(after.users)}; games ${ids(after.games)}`);
+    record('two rows, one mailbox: CONTROL, the other account and its game are untouched',
+      after.users.some((u) => u.id === 'u_c') && after.games.some((g) => g.id === 'g_c'), `users ${ids(after.users)}; games ${ids(after.games)}`);
+  } catch (err) {
+    record('two rows, one mailbox: the desktop server boots', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 12. VERIFIED VS PENDING, ONE MAILBOX (sweep 22, S1-4). A legacy store holds the owner's verified
+//     "Kate@Example.test" and a later pending "kate@example.test" (register once compared exactly).
+//     S1-3's exact-first lookup sent the owner's email login to the pending row (401) and forgot to it
+//     (no code), and the pending row's password opened a 403 "verify" path. Each check names u_owner or
+//     the status the owner's row gives, so a lookup that drops the pending row cannot pass them by luck.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-pending-'));
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hashOf = (pw) => { const s = randomBytes(16); return `pbkdf2$1000$${b64u(s)}$${b64u(pbkdf2Sync(pw, s, 1000, 32, 'sha256'))}`; };
+  const OWN = 'Own3rSecret!1', SQUAT = 'Squ4tter!pw9';
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_pend', username: 'kate2', email: 'kate@example.test', passwordHash: hashOf(SQUAT), isVerified: false,
+      verificationCode: '654321', verificationCodeExpires: Date.now() + 3_600_000 },
+    { id: 'u_owner', username: 'kate', email: 'Kate@Example.test', passwordHash: hashOf(OWN), isVerified: true, verificationCode: '', verificationCodeExpires: 0 },
+  ] }));
+  const child = spawnServer(userData, port);
+  const call = (route, body) => fetch(`http://127.0.0.1:${port}/api/auth/${route}`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
+  try {
+    await waitReady(child, port);
+    const own = await call('login', { email: 'kate@example.test', password: OWN });
+    record('verified vs pending: the owner logs in by the typed email (200, as u_owner)',
+      own.status === 200 && own.json?.user?.id === 'u_owner', `status ${own.status} as ${own.json?.user?.id}`);
+    const squat = await call('login', { email: 'kate@example.test', password: SQUAT });
+    record('verified vs pending: the pending row\'s password is a 401 (owner\'s row), not a 403 verify path', squat.status === 401, `status ${squat.status}`);
+    const forgot = await call('forgot-password', { email: 'kate@example.test' });
+    record('verified vs pending: forgot issues the owner a recovery code', typeof forgot.json?.recoveryCode === 'string',
+      `status ${forgot.status}, code ${forgot.json?.recoveryCode ? 'issued' : 'none'}`);
+  } catch (err) {
+    record('verified vs pending: the desktop server boots', false, String(err));
+  } finally {
+    await stop(child);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 13. HOSTILE BODIES, HOSTED (sweep 22, empty probes checked in). Every POST route answers a body that
+//     is not a JSON object with a 4xx; every game field given the wrong type answers without a 5xx and
+//     stores only strings (or string lists). TRUST_PROXY + one X-Forwarded-For per request keeps the
+//     rate limits out of it: the first probe run was 401/429 throughout and "passed" with nothing
+//     tested, so the 200 counts below are asserted, and a dead server fails as status 0.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-bodies-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_k', username: 'kate', email: 'kate@example.test', passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 },
+    { id: 'u_p', username: 'pend', email: 'pend@example.test', passwordHash: hash, isVerified: false, verificationCode: '123456', verificationCodeExpires: Date.now() + 6e5 }] }));
+  // Accept-all SMTP on an ephemeral port: without it every sent mail is a 500 by design, which would
+  // hide a junk-field 500 among them. Counted, so the fixture can show mail really went out.
+  let mails = 0;
+  const smtp = createServer((sock) => {
+    let inData = false;
+    sock.write('220 t ESMTP\r\n');
+    sock.on('data', (c) => { for (const l of c.toString().split(/\r?\n/)) {
+      if (!l) continue;
+      if (inData) { if (l === '.') { inData = false; mails++; sock.write('250 Ok\r\n'); } continue; }
+      const v = l.split(' ')[0].toUpperCase();
+      if (v === 'DATA') inData = true;
+      sock.write(v === 'EHLO' || v === 'HELO' ? '250-t\r\n250 AUTH PLAIN LOGIN\r\n' : v === 'AUTH' ? '235 Ok\r\n' : v === 'DATA' ? '354 Go\r\n' : v === 'QUIT' ? '221 Bye\r\n' : '250 Ok\r\n');
+    } });
+    sock.on('error', () => {});
+  });
+  await new Promise((r) => smtp.listen(0, '127.0.0.1', r));
+  const child = spawnHostedServer(userData, port, { TRUST_PROXY: 'true', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtp.address().port),
+    SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'dbshape@example.invalid', FEEDBACK_INBOX: 'inbox@example.invalid' });
+  let ip = 0;
+  const raw = (method, route, type, body, token) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method, body,
+    headers: { 'content-type': type, 'x-forwarded-for': `10.${(++ip >> 8) & 255}.${ip & 255}.1`, ...(token ? { authorization: `Bearer ${token}` } : {}) } })
+    .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }), () => ({ status: 0, json: null }));
+  const call = (method, route, body, token) => raw(method, route, 'application/json', body === undefined ? undefined : JSON.stringify(body), token);
+  try {
+    const ready = await waitReady(child, port);
+    const bodies = [['text/plain', 'x'], ['application/json', 'null'], ['application/json', '[1]'], ['application/json', '"s"'],
+      ['application/json', '{'], ['application/x-www-form-urlencoded', 'email=a']];
+    const routes = ['auth/register', 'auth/verify', 'auth/login', 'auth/forgot-password', 'auth/reset-password', 'auth/delete-request',
+      'auth/delete-confirm', 'feedback', 'report', 'games', 'games/adopt-local', 'scenario/regenerate'];
+    const off = [];
+    for (const r of routes) for (const [type, body] of bodies) {
+      const { status } = await raw('POST', r, type, body);
+      if (status < 400 || status >= 500) off.push(`${r} ${body} -> ${status}`);
+    }
+    record('hostile bodies: every POST route answers a non-object body with a 4xx (72 requests)', off.length === 0, off.join('; ') || 'all 4xx');
+    const token = (await call('POST', 'auth/login', { email: 'kate', password: PW })).json?.token;
+    const P = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+    const base = (await call('POST', 'games', { name: 'base', payoffs: P }, token)).json?.game?.id;
+    record('hostile bodies: CONTROL, a well-formed login and save succeed on the same server', !!token && !!base, `token ${!!token}, game ${base}`);
+    const junk = [null, 5, true, [], ['x'], [5], [{}], [null], ['a', 'a'], Array(500).fill('word'), {}, { toString: 'x' }, 'x'.repeat(5000), '‮\u0000', -0, 1e308];
+    const fields = ['name', 'description', 'row1Label', 'row2Label', 'col1Label', 'col2Label', 'colorTermsA', 'colorTermsB', 'clientRequestId', 'allowClear', 'scenarioSource'];
+    const shapeOk = (g) => Object.entries(g ?? {}).every(([k, v]) => (k === 'payoffs' ? Object.values(v).every(Number.isFinite)
+      : /^colorTerms[AB]$/.test(k) ? Array.isArray(v) && v.every((x) => typeof x === 'string') : typeof v === 'string'));
+    const bad = [], ok = { POST: 0, PATCH: 0 };
+    for (const f of fields) for (const v of junk) {
+      const tag = `${f}=${JSON.stringify(v)?.slice(0, 16)}`;
+      const a = await call('POST', 'games', { name: 'n', payoffs: P, [f]: v }, token);
+      if (a.status === 0 || a.status >= 500 || (a.status === 200 && !shapeOk(a.json?.game))) bad.push(`POST ${tag} -> ${a.status} ${JSON.stringify(a.json?.game?.[f])?.slice(0, 30)}`);
+      if (a.status === 200) { ok.POST++; await call('DELETE', `games/${a.json.game.id}`, undefined, token); }
+      const b = await call('PATCH', `games/${base}`, { name: 'n2', [f]: v }, token);
+      if (b.status === 0 || b.status >= 500 || (b.status === 200 && !shapeOk(b.json?.game))) bad.push(`PATCH ${tag} -> ${b.status} ${JSON.stringify(b.json?.game?.[f])?.slice(0, 30)}`);
+      if (b.status === 200) ok.PATCH++;
+    }
+    const stored = JSON.parse(readFileSync(path.join(userData, 'db.json'), 'utf-8')).games;
+    record('hostile bodies: every mistyped game field answers without a 5xx and stores only strings / string lists',
+      bad.length === 0 && stored.every(shapeOk), bad.slice(0, 4).join('; ') || `${stored.length} stored game(s) clean`);
+    record('hostile bodies: FIXTURE, the saves really ran (>= 150 POST and PATCH answered 200, not 401/429)',
+      ok.POST >= 150 && ok.PATCH >= 150, JSON.stringify(ok));
+    // Hostile :id, signed in (sweep 22 probe): prototype names, bad escapes, traversal, 8 kB, and near misses of a
+    // real id (padded, upper-cased). Each is a 4xx, and the base game is neither renamed nor deleted.
+    const ids = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', '%', '%E0%A4%A', '%00', '..%2F..%2Fdb.json', 'x'.repeat(8000), `${base}%20`, `%20${base}`, String(base).toUpperCase()];
+    const idOff = [];
+    for (const id of ids) for (const [m, body] of [['PATCH', { name: 'hijack' }], ['DELETE', undefined]]) {
+      const { status } = await call(m, `games/${id}`, body, token);
+      if (status < 400 || status >= 500) idOff.push(`${m} ${id.slice(0, 24)} -> ${status}`);
+    }
+    const kept = (await call('GET', 'games', undefined, token)).json;
+    record('hostile ids: PATCH and DELETE on a hostile or near-miss :id answer 4xx and leave the base game as it was',
+      idOff.length === 0 && Array.isArray(kept) && kept.some((g) => g.id === base && g.name === 'n2'), idOff.join('; ') || `${kept?.length} game(s), base kept`);
+    // Auth and feedback fields, each mistyped on an otherwise valid body.
+    const fb = await call('POST', 'feedback', { message: 'hello there', email: 'kate@example.test' });
+    record('hostile bodies: CONTROL, a well-formed feedback is mailed (200 and the stub got it)', fb.status === 200 && mails === 1, `${fb.status}, ${mails} mail(s)`);
+    const valid = {
+      'auth/register': { username: 'newbie', email: 'new@example.test', password: 'Abcdefgh1' },
+      'auth/verify': { email: 'pend@example.test', code: '123456', password: 'Abcdefgh1', username: 'pend' },
+      'auth/login': { email: 'kate', password: PW },
+      'auth/forgot-password': { email: 'kate@example.test' },
+      'auth/reset-password': { email: 'kate@example.test', code: '123456', newPassword: 'Abcdefgh2' },
+      'auth/delete-confirm': { code: '123456' },
+      feedback: { message: 'hello there', email: 'kate@example.test', rating: 4 },
+    };
+    const junk2 = [5, true, [], ['Abcdefgh1'], {}, { toString: 'x' }, [5], 1e308, 'x'.repeat(5000)]; // 5000: past every field cap, under the 100 kb body limit
+    const auth = [];
+    let answered = 0;
+    for (const [r, body] of Object.entries(valid)) for (const f of Object.keys(body)) for (const v of junk2) {
+      const { status } = await call('POST', r, { ...body, [f]: v }, r === 'auth/delete-confirm' ? token : undefined);
+      if (status === 0 || status >= 500) auth.push(`${r} ${f}=${JSON.stringify(v).slice(0, 16)} -> ${status}`); else answered++;
+    }
+    record('hostile bodies: every mistyped auth or feedback field answers without a 5xx (mail configured, so a 500 is the field)',
+      auth.length === 0 && answered === Object.values(valid).flatMap(Object.keys).length * junk2.length, auth.slice(0, 4).join('; ') || `${answered} answered, ${mails} mail(s)`);
+    // ~100 kB of nesting or width in one field (sweep 5): JSON.parse takes any depth, but a recursive walk
+    // (stringify, structuredClone, a deep cleaner) of req.body overflows the stack. Raw text: this test's own
+    // JSON.stringify would overflow on the value too. Mutant `JSON.stringify(req.body)` in a route fails here.
+    const DEEP = { '49000-deep array': '['.repeat(49000) + ']'.repeat(49000), '16000-deep object': '{"a":'.repeat(16000) + '1' + '}'.repeat(16000),
+      '9000-key object': `{${Array.from({ length: 9000 }, (_, i) => `"k${i}":1`).join(',')}}` };
+    const withRaw = (body, f, text) => JSON.stringify({ ...body, [f]: '\u0001' }).replace('"\\u0001"', text);
+    const deepBodies = [...Object.entries(valid).flatMap(([r, b]) => Object.keys(b).map((f) => ['POST', r, b, f])),
+      ...['name', 'description', 'payoffs', 'row1Label', 'colorTermsA', 'clientRequestId'].map((f) => ['POST', 'games', { name: 'n', payoffs: P }, f]),
+      ...['name', 'description', 'row1Label', 'colorTermsA', 'colorTermsB', 'allowClear'].map((f) => ['PATCH', `games/${base}`, { name: 'n2' }, f]),
+      ...['payoffs', 'scenario', 'scenarioOnly'].map((f) => ['POST', 'report', { payoffs: P }, f])];
+    const deepOff = [], deepSeen = new Set();
+    for (const [m, r, b, f] of deepBodies) for (const [dn, text] of Object.entries(DEEP)) {
+      const { status } = await raw(m, r, 'application/json', withRaw(b, f, text), /^(games|auth\/delete)/.test(r) ? token : undefined);
+      deepSeen.add(status);
+      if (status === 0 || status >= 500) deepOff.push(`${m} ${r.slice(0, 20)} ${f}=${dn} -> ${status}`);
+    }
+    record('hostile bodies: a ~100 kB nested or wide value in any field answers without a 5xx (FIXTURE: both 200 and 400 seen)',
+      deepOff.length === 0 && deepSeen.has(200) && deepSeen.has(400), deepOff.slice(0, 4).join('; ') || `${deepBodies.length * 3} answered: ${[...deepSeen]}`);
+    record('hostile bodies: the server logged no TypeError', !/TypeError/.test(ready.log()), (ready.log().match(/.*TypeError.*/) ?? [''])[0].slice(0, 120));
+    record('hostile bodies: the server logged no RangeError (stack overflow)', !/RangeError/.test(ready.log()), (ready.log().match(/.*RangeError.*/) ?? [''])[0].slice(0, 120));
+  } catch (err) {
+    record('hostile bodies: the hosted server boots', false, String(err));
+  } finally {
+    await stop(child);
+    smtp.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 14. NO BUCKET, CWD NOT WRITABLE (cloud sweep 6: the image now runs as `node`; a dropped chown leaves it here).
+//     A save is an honest 500 that changes neither memory nor disk; the same folder made writable saves.
+//     FIXTURE: the server's own EACCES proves the folder refused it. Mutant: saveDBAwaited's catch returns true.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-ro-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  const dbFile = path.join(userData, 'db.json');
+  writeFileSync(dbFile, JSON.stringify({ games: [], users: [{ id: 'u_ro', username: 'ro', email: 'ro@example.test',
+    passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 }] }));
+  chmodSync(userData, 0o555);
+  const child = spawnHostedServer(userData, port);
+  const api = (m, r, token, body) => fetch(`http://127.0.0.1:${port}/api/${r}`, { method: m, headers: { 'content-type': 'application/json',
+    ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: body && JSON.stringify(body) });
+  const game = (name) => ({ name, payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } });
+  const onDisk = () => JSON.parse(readFileSync(dbFile, 'utf8')).games.length;
+  try {
+    const ready = await waitReady(child, port);
+    const { token } = await (await api('POST', 'auth/login', null, { email: 'ro@example.test', password: PW })).json();
+    const save = await api('POST', 'games', token, game('ro-1'));
+    const listed = await (await api('GET', 'games', token)).json();
+    record('no bucket, read-only cwd: a save is an honest 500, not a success', save.status === 500, `status ${save.status}`);
+    record('no bucket, read-only cwd: the refused game is neither listed nor on disk', Array.isArray(listed) && listed.length === 0 && onDisk() === 0,
+      `listed ${JSON.stringify(listed).slice(0, 60)}, on disk ${onDisk()}`);
+    record('no bucket, read-only cwd: FIXTURE, the server itself hit EACCES', /EACCES/.test(ready.log()), ready.log().slice(-120));
+    chmodSync(userData, 0o700);
+    const again = await api('POST', 'games', token, game('ro-2'));
+    record('no bucket, cwd made writable: CONTROL, the same save lands (200, on disk)', again.status === 200 && onDisk() === 1, `status ${again.status}, on disk ${onDisk()}`);
+  } catch (err) {
+    record('no bucket, read-only cwd: the hosted server boots and signs in', false, String(err));
+  } finally {
+    await stop(child);
+    chmodSync(userData, 0o700);
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 15. MAIL POOLS (cloud sweep 17: rotated IPs spent Gmail's ~500/day and wrote a pending row per sign-up).
+//     The stub counts what really went out: 200 sign-ups reach it, the 201st is a 429 with Retry-After that
+//     neither mails nor writes a row, and recovery still mails. Feedback stops at 50, delete-request at 5 per
+//     address. FIXTURE: every refusal is preceded by the stub's own count of the sends it caps.
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-mail-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  const dbFile = path.join(userData, 'db.json');
+  const acct = (id) => ({ id, username: id, email: `${id}@example.test`, passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0 });
+  writeFileSync(dbFile, JSON.stringify({ games: [], users: [acct('u_mk'), acct('u_md')] }));
+  let mails = 0;
+  const smtp = createServer((sock) => {
+    let inData = false;
+    sock.write('220 t ESMTP\r\n');
+    sock.on('data', (c) => { for (const l of c.toString().split(/\r?\n/)) {
+      if (!l) continue;
+      if (inData) { if (l === '.') { inData = false; mails++; sock.write('250 Ok\r\n'); } continue; }
+      const v = l.split(' ')[0].toUpperCase();
+      if (v === 'DATA') inData = true;
+      sock.write(v === 'EHLO' || v === 'HELO' ? '250-t\r\n250 AUTH PLAIN LOGIN\r\n' : v === 'AUTH' ? '235 Ok\r\n' : v === 'DATA' ? '354 Go\r\n' : v === 'QUIT' ? '221 Bye\r\n' : '250 Ok\r\n');
+    } });
+    sock.on('error', () => {});
+  });
+  await new Promise((r) => smtp.listen(0, '127.0.0.1', r));
+  const child = spawnHostedServer(userData, port, { TRUST_PROXY: '1', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtp.address().port),
+    SMTP_USER: 'u', SMTP_PASS: 'p', SMTP_FROM: 'dbshape@example.invalid', FEEDBACK_INBOX: 'inbox@example.invalid' });
+  let ip = 0;
+  const call = (route, body, token) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method: 'POST', body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.${(++ip >> 8) & 255}.${ip & 255}.2`, ...(token ? { authorization: `Bearer ${token}` } : {}) } })
+    .then(async (r) => ({ status: r.status, retry: Number(r.headers.get('retry-after')), json: await r.json().catch(() => null) }), () => ({ status: 0, retry: 0, json: null }));
+  const rows = () => JSON.parse(readFileSync(dbFile, 'utf8')).users.length;
+  const refused = (r, m0) => r.status === 429 && r.retry > 0 && /try again in \d+ (minute|hour)s?\./.test(r.json?.error ?? '') && mails === m0;
+  try {
+    await waitReady(child, port);
+    const signups = [];
+    for (let i = 0; i < 200; i++) signups.push((await call('auth/register', { username: `mp${i}`, email: `mp${i}@example.test`, password: 'Abcdefgh1' })).status);
+    const [m0, r0] = [mails, rows()];
+    const over = await call('auth/register', { username: 'mpover', email: 'mpover@example.test', password: 'Abcdefgh1' });
+    record('mail pools: FIXTURE, 200 sign-ups answered 200 and reached the stub', signups.every((s) => s === 200) && m0 === 200 && r0 === 202, `${m0} mail(s), ${r0} row(s), ${[...new Set(signups)]}`);
+    record('mail pools: the 201st sign-up is a 429 with Retry-After and a wait, and mails nothing', refused(over, m0), `${over.status} retry ${over.retry} ${over.json?.error} (${mails - m0} mail(s))`);
+    record('mail pools: a refused sign-up writes no pending row', rows() === r0, `${r0} -> ${rows()}`);
+    const rec = await call('auth/forgot-password', { email: 'u_mk@example.test' });
+    record('mail pools: with sign-ups exhausted, recovery still mails', rec.status === 200 && mails === m0 + 1, `${rec.status}, ${mails - m0} mail(s)`);
+    const fb = [];
+    for (let i = 0; i < 50; i++) fb.push((await call('feedback', { message: `note ${i}` })).status);
+    const m1 = mails, fbOver = await call('feedback', { message: 'one more' });
+    record('mail pools: FIXTURE, 50 feedbacks answered 200 and reached the stub', fb.every((s) => s === 200) && m1 === m0 + 51, `${m1 - m0 - 1} mail(s), ${[...new Set(fb)]}`);
+    record('mail pools: the 51st feedback is a 429 with Retry-After, not mailed', refused(fbOver, m1), `${fbOver.status} retry ${fbOver.retry} (${mails - m1} mail(s))`);
+    const token = (await call('auth/login', { email: 'u_md@example.test', password: PW })).json?.token;
+    const del = [];
+    for (let i = 0; i < 5; i++) del.push((await call('auth/delete-request', {}, token)).status);
+    const m2 = mails, delOver = await call('auth/delete-request', {}, token);
+    record('mail pools: FIXTURE, 5 delete requests to one address answered 200 and reached the stub', !!token && del.every((s) => s === 200) && m2 === m1 + 5, `${m2 - m1} mail(s), ${del}`);
+    record('mail pools: the 6th delete request to one address is a 429 with Retry-After, not mailed', refused(delOver, m2), `${delOver.status} retry ${delOver.retry} (${mails - m2} mail(s))`);
+  } catch (err) {
+    record('mail pools: the hosted server boots', false, String(err));
+  } finally {
+    await stop(child);
+    smtp.close();
+    rmSync(userData, { recursive: true, force: true });
+  }
+  port += 1;
+}
+
+// 16. PASSWORD HASHING UNDER LOAD (cloud sweep 17: pbkdf2Sync held /api/health at p50 636 ms under a login flood).
+//     80 logins at once for an unknown address (the dummy hash: full 210k-iteration cost), one IPv4 each: the ones
+//     past the hash queue are a 503 with Retry-After, and /api/health answers mid-flood. Then a login that arrives
+//     while a password reset of the same row is hashing is refused (the old password must not sign in after it).
+{
+  const userData = mkdtempSync(path.join(tmpdir(), 'nash-dbshape-hash-'));
+  const PW = 'Sup3rSecret!23', salt = randomBytes(16);
+  const b64u = (b) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const hash = `pbkdf2$1000$${b64u(salt)}$${b64u(pbkdf2Sync(PW, salt, 1000, 32, 'sha256'))}`;
+  writeFileSync(path.join(userData, 'db.json'), JSON.stringify({ games: [], users: [
+    { id: 'u_hq', username: 'hq', email: 'hq@example.test', passwordHash: hash, isVerified: true, verificationCode: '', verificationCodeExpires: 0,
+      recoveryCode: '424242', recoveryCodeExpires: Date.now() + 6e5 }] }));
+  const child = spawnHostedServer(userData, port, { TRUST_PROXY: '1' });
+  let ip = 0;
+  const call = (route, body) => fetch(`http://127.0.0.1:${port}/api/${route}`, { method: 'POST', body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.${(++ip >> 8) & 255}.${ip & 255}.3` } })
+    .then(async (r) => ({ status: r.status, retry: r.headers.get('retry-after'), json: await r.json().catch(() => null) }), () => ({ status: 0, retry: null, json: null }));
+  try {
+    const ready = await waitReady(child, port);
+    const flood = Promise.all([...Array(80)].map(() => call('auth/login', { email: 'nobody@example.test', password: 'Wrong-password-1' })));
+    await new Promise((r) => setTimeout(r, 15));
+    const t0 = performance.now(), health = (await fetch(`http://127.0.0.1:${port}/api/health`)).status, healthMs = performance.now() - t0;
+    const answers = await flood, by = {};
+    for (const a of answers) by[a.status] = (by[a.status] ?? 0) + 1;
+    const busy = answers.filter((a) => a.status === 503);
+    record('hashing: FIXTURE, the flood really hashed (some logins answered 401 after a full-cost hash)', (by[401] ?? 0) >= 1, JSON.stringify(by));
+    record('hashing: logins past the hash queue are a 503 with Retry-After and an error, never a 500 or a hang',
+      busy.length >= 20 && busy.every((a) => Number(a.retry) >= 1 && typeof a.json?.error === 'string') && (by[401] ?? 0) + busy.length === 80, JSON.stringify(by));
+    record('hashing: /api/health answers within 500 ms in the middle of the flood', health === 200 && healthMs < 500, `${health} in ${healthMs.toFixed(0)} ms`);
+    const ok = await call('auth/login', { email: 'hq@example.test', password: PW });
+    record('hashing: CONTROL, after the flood the account signs in', ok.status === 200 && !!ok.json?.token, `${ok.status}`);
+    // The reset takes the only hash slot (a 210k-iteration hash), the old-password login queues behind it and runs
+    // after the reset is written. Before the re-read it answered 200 with the password the reset had just killed.
+    const reset = call('auth/reset-password', { email: 'hq@example.test', code: '424242', newPassword: 'Brand-new-pw-9' });
+    await new Promise((r) => setTimeout(r, 5));
+    const stale = await call('auth/login', { email: 'hq@example.test', password: PW });
+    const r = await reset;
+    record('hashing: FIXTURE, the reset went through', r.status === 200, `${r.status} ${r.json?.error ?? ''}`);
+    record('hashing: a login with the old password that was hashing during the reset is refused, not signed in', stale.status === 503 || stale.status === 401, `${stale.status}`);
+    const after = await call('auth/login', { email: 'hq@example.test', password: PW });
+    record('hashing: CONTROL, the old password is dead after the reset', after.status === 401, `${after.status}`);
+    record('hashing: the server logged no unhandled error', !/Unhandled error/.test(ready.log()), (ready.log().match(/.*Unhandled error.*/) ?? [''])[0].slice(0, 120));
+  } catch (err) {
+    record('hashing: the hosted server boots', false, String(err));
   } finally {
     await stop(child);
     rmSync(userData, { recursive: true, force: true });

@@ -7,6 +7,9 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import net from "net";
+import zlib from "zlib";
+import { isDeepStrictEqual, promisify } from "util";
 import { createServer as createViteServer } from "vite";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
@@ -320,10 +323,17 @@ function scenarioOutputWithinDisplayLimits(sc: SuggestedScenario): boolean {
  */
 function clientGoneSignal(res: express.Response): AbortSignal {
   const controller = new AbortController();
-  res.on("close", () => {
-    if (!res.writableEnded) controller.abort();
-  });
+  onClientGone(res, () => controller.abort());
   return controller.signal;
+}
+
+// 'close' fires once, so a listener attached after it never runs: a client that hung up during an
+// await or while express.json inflated a gzip body got a full provider ladder or GCS read (sweep 23).
+// res.destroyed is the attach-time test. Measured: req.destroyed is true on EVERY request once its
+// body is read (live ones too) and req.aborted stays false for a client that is gone.
+function onClientGone(res: express.Response, fn: () => void): void {
+  if (res.destroyed && !res.writableEnded) return fn();
+  res.on("close", () => { if (!res.writableEnded) fn(); });
 }
 
 async function inventScreenedScenario(
@@ -586,24 +596,11 @@ async function inventScenario(payoffs: GamePayoffs, avoid?: RegenAvoid, actorNou
   return { scenario: r.report?.suggestedScenario ?? null, failure: r.failure };
 }
 
-// Validated-report cache. The same eight numbers always have the same
-// equilibria, and only envelopes that passed EVERY gate are stored — so a
-// hit serves certified content instantly and for free. The six standard
-// presets are the common case (identical matrix + scenario on every visitor).
-// Explicit Regenerate clicks send bypassCache so the button still rolls a
-// fresh report (the cache is then overwritten with the new validated one);
-// scenario-only invention requests never touch the cache — freshness is
-// their point. In-memory on purpose: it dies with the process, which caps
-// staleness at one deploy cycle.
-const reportCache = new Map<string, object>();
-const REPORT_CACHE_MAX = 200;
-const reportCacheKey = (p: { a11: number; a12: number; a21: number; a22: number; b11: number; b12: number; b21: number; b22: number }, sc?: Scenario) =>
-  JSON.stringify([p.a11, p.a12, p.a21, p.a22, p.b11, p.b12, p.b21, p.b22,
-    sc ? [sc.name, sc.row1, sc.row2, sc.col1, sc.col2, sc.description] : null]);
 import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair, cleanUserColorTerms } from "./src/utils/colorTerms";
 import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
 import { bankAvailable, bankScenario, bankDomainFor, bankScenarioAvoiding } from "./src/utils/bankSource";
+import { createAccountGameStore, ACCOUNT_FULL, ACCOUNT_GONE, ACCOUNT_GAMES_PREFIX, type AccountBucket } from "./src/server/accountGameStore";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -765,6 +762,8 @@ interface User {
   recoveryCodeExpires?: number;
   recoveryCodeAttempts?: number;
   tokenVersion?: number;
+  /** Ids of duplicate-email accounts folded into this one (see dedupeAccounts). */
+  mergedFrom?: string[];
 }
 
 interface DB {
@@ -774,6 +773,11 @@ interface DB {
 
 const PASSWORD_ITERATIONS = 210_000;
 const AUTH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Hosted growth bounds (S14-1): a game flood OOM-crashed a 128 MB heap at ~23 MB
+// of db.json and crash-looped at ~31 MB. 8 MB of pretty JSON is ~40% of the lowest
+// measured crash point; the per-account cap keeps one account from filling it.
+const MAX_GAMES_PER_USER = 200;
+const DB_MAX_BYTES = (() => { const n = Number(process.env.DB_MAX_BYTES || 8 * 1024 * 1024); return Number.isFinite(n) && n > 0 ? n : 8 * 1024 * 1024; })();
 
 /**
  * THE DESKTOP'S SESSION SECRET, persisted beside its database.
@@ -1130,6 +1134,20 @@ function normalizeDbShape(parsed: unknown, filePath: string): DB {
         `${filePath}: "${name}[${bad}]" is ${el === null ? "null" : Array.isArray(el) ? "an array" : `a ${typeof el}`}, `
         + `not an object — refusing to guess its contents.`
       );
+    }
+    // One level further for users: every auth route calls string methods on
+    // these four (`u.email.trim()`, `passwordHash.startsWith`), so `users:[{}]`
+    // 500'd login and register for everyone. `''` stays legal (the desktop
+    // local owner's passwordHash). Games are not checked: no reader crashes.
+    if (name === "users") {
+      for (const [i, u] of value.entries()) {
+        const f = (["id", "username", "email", "passwordHash"] as const).find((k) => typeof u[k] !== "string");
+        if (f) throw new Error(`${filePath}: "users[${i}].${f}" is not a string — refusing to guess its contents.`);
+        const m = (u as { mergedFrom?: unknown }).mergedFrom;
+        if (m !== undefined && !(Array.isArray(m) && m.every((x) => typeof x === "string"))) {
+          throw new Error(`${filePath}: "users[${i}].mergedFrom" is not a list of ids — refusing to guess its contents.`);
+        }
+      }
     }
     return value;
   };
@@ -1954,10 +1972,10 @@ const GCS_DEADLINE_MS = (() => {
   return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
 })();
 
-function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS): Promise<T> {
+function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS, peer = 'GCS'): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`GCS deadline exceeded after ${ms}ms: ${what} never answered`)),
+      () => reject(new Error(`${peer} deadline exceeded after ${ms}ms: ${what} never answered`)),
       ms,
     );
     timer.unref?.();
@@ -1966,6 +1984,365 @@ function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS): Pro
       (error) => { clearTimeout(timer); reject(error); },
     );
   });
+}
+
+
+/**
+ * The hosted saved-game store's bucket (src/server/accountGameStore.ts, which
+ * makes no GCS call of its own): @google-cloud/storage, every call under
+ * `withDeadline`.
+ */
+function gcsAccountBucket(): AccountBucket {
+  const bucket = import('@google-cloud/storage').then(({ Storage }) => new Storage().bucket(GCS_BUCKET!));
+  const notFound = (err: unknown) => (err as { code?: unknown })?.code === 404;
+  return {
+    async stat(name) {
+      try {
+        const [meta] = await withDeadline((await bucket).file(name).getMetadata(), `${name} getMetadata()`);
+        if (meta.generation == null) throw new Error(`${name} metadata carried no generation`);
+        const custom = Object.entries((meta.metadata ?? {}) as Record<string, unknown>).filter(([, v]) => typeof v === 'string');
+        return { generation: String(meta.generation), metadata: Object.fromEntries(custom) as Record<string, string> };
+      } catch (err) { if (notFound(err)) return null; throw err; }
+    },
+    async read(name, generation) {
+      try {
+        const [content] = await withDeadline((await bucket).file(name, { generation }).download(), `${name} download()`);
+        return content.toString('utf-8');
+      } catch (err) { if (notFound(err)) return null; throw err; }
+    },
+    async write(name, body, ifGenerationMatch, metadata) {
+      const file = (await bucket).file(name);
+      await withDeadline(file.save(body, {
+        contentType: 'application/json', resumable: false, validation: false, metadata: { metadata },
+        timeout: 30_000, preconditionOpts: { ifGenerationMatch },
+      }), `${name} save()`);
+      const generation = file.metadata?.generation; // OUR write's, off the upload response (as uploadDbToGcs)
+      return generation != null ? String(generation) : null;
+    },
+    // One page per call, each under its own deadline: never every object at once (Sweep 30).
+    // With `fields` set, storage v7 hands back the raw JSON items (no File objects):
+    // `metadata` is then the object's custom metadata itself.
+    async list(prefix, pageToken) {
+      const [files, next] = await withDeadline((await bucket).getFiles({
+        prefix, autoPaginate: false, maxResults: 1000, fields: 'items(name,metadata),nextPageToken', ...(pageToken ? { pageToken } : {}),
+      }), `${prefix}* list page`);
+      const items = files as unknown as { name: string; metadata?: Record<string, string> }[];
+      return {
+        items: items.map((f) => ({ name: f.name, metadata: f.metadata ?? {} })),
+        next: (next as { pageToken?: string } | null | undefined)?.pageToken ?? null,
+      };
+    },
+  };
+}
+
+const ACCOUNT_GAMES_MAX_BYTES = (() => { const n = Number(process.env.ACCOUNT_GAMES_MAX_BYTES || 2 * 1024 * 1024); return Number.isFinite(n) && n > 0 ? n : 2 * 1024 * 1024; })();
+const ACCOUNT_GAMES_CACHE_BYTES = 16 * 1024 * 1024;
+const formatCap = (n: number) => (n % 1048576 === 0 ? `${n / 1048576} MB` : n % 1024 === 0 ? `${n / 1024} KB` : `${n} bytes`);
+const ACCOUNT_GAMES_FULL = `Saved games for this account exceeded the ${formatCap(ACCOUNT_GAMES_MAX_BYTES)} limit. Delete a saved game to make room, then save again.`;
+
+/** What a hosted game route answers, decided inside the object's write. */
+type RouteOutcome = { status: number; body: unknown };
+/** The objects an account's games live in: its own, then any duplicate account folded into it (dedupeAccounts). */
+const accountKeys = (u: User): string[] => [u.id, ...(u.mergedFrom ?? []).filter((k) => k !== u.id)];
+/**
+ * The account's games without the FIRST copy of `gameId`, or null when there is none. One DELETE is
+ * one copy, as on the file-backed route: the migration keeps legacy rows that share an id but differ
+ * as separate rows (accountGameStore's `id#k:` identities), and must not lose the others to one
+ * request (Sweep 32).
+ */
+function withoutFirstGame(games: readonly SavedGame[], gameId: string): SavedGame[] | null {
+  const i = games.findIndex((g) => g.id === gameId);
+  return i === -1 ? null : games.filter((_, k) => k !== i);
+}
+function accountGamesUnavailable(res: express.Response, err: unknown, error: string): express.Response {
+  console.error(`Saved-game store: ${err instanceof Error ? err.message : String(err)}`);
+  res.setHeader("Retry-After", "30");
+  return res.status(503).json({ error });
+}
+
+/**
+ * A tombstone on a LIVE account's object means its deletion was confirmed (a
+ * valid code reached delete-confirm, which tombstones before it removes the
+ * rows) but did not finish: a tombstone write past its deadline that landed
+ * anyway, or a db.json write lost to a scale-in. Finish it — every row the
+ * deletion covers goes and every object they own is tombstoned — rather than
+ * leave an account that signs in but can never save (Sweep 18, finding 2).
+ */
+async function finishAccountDeletion(user: User): Promise<void> {
+  const key = emailKey(user.email);
+  const ids = await tombstoneAccounts((u) => u.id === user.id || emailKey(u.email) === key);
+  const db = loadDB(); // after the awaits: other routes committed meanwhile (#208)
+  saveDB({ users: db.users.filter((u) => !ids.has(u.id)), games: db.games });
+  console.warn(`Finished an interrupted account deletion (its saved-game objects were already tombstoned): ${[...ids].join(", ")}`);
+}
+async function accountWasDeleted(res: express.Response, user: User): Promise<express.Response> {
+  try {
+    await finishAccountDeletion(user);
+  } catch (err) {
+    return accountGamesUnavailable(res, err, "Saved games are temporarily unavailable. Please try again shortly.");
+  }
+  return res.status(401).json({ error: "This account has been deleted." });
+}
+
+/**
+ * The objects of the accounts a merge removed: each one's own and its folded
+ * duplicates' (Sweep 24), bar any key a surviving account still reaches. An
+ * account that survived is never removed, whatever its record lost (Sweep 25:
+ * a merge that dropped its `mergedFrom` must not destroy its aliases' games).
+ */
+function removedAccountKeys(before: readonly { id: string; keys: readonly string[] }[], after: readonly User[]): string[] {
+  const left = new Set(after.flatMap((u) => [u.id, ...(u.mergedFrom ?? [])]));
+  return before.filter((b) => !left.has(b.id)).flatMap((b) => b.keys).filter((k) => !left.has(k));
+}
+
+/**
+ * Tombstones the objects of every account `matches` picks, own and folded,
+ * reading the accounts again after each await: a sync during it can bring in
+ * a fold or a duplicate row the first read lacked, and no game may outlive
+ * the account under an alias (Sweep 24). Resolves to the ids it covered as of
+ * its last read, with no await after it.
+ */
+async function tombstoneAccounts(matches: (u: User) => boolean): Promise<Set<string>> {
+  const covered = new Set<string>();
+  for (;;) {
+    const users = loadDB().users.filter(matches);
+    const keys = users.flatMap(accountKeys).filter((k) => !covered.has(k));
+    if (keys.length === 0) return new Set(users.map((u) => u.id));
+    for (const k of keys) covered.add(k);
+    await accountGames!.removeAll(keys);
+  }
+}
+
+/** Hosted only (GCS, not desktop): the desktop and the no-bucket server keep every game in db.json, unchanged. */
+const accountGames = !process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET
+  ? createAccountGameStore<SavedGame>({
+    bucket: gcsAccountBucket(), capBytes: ACCOUNT_GAMES_MAX_BYTES, freshMs: 2_000, cacheBytes: ACCOUNT_GAMES_CACHE_BYTES,
+    now: () => performance.now(), log: (msg) => console.error(msg),
+  })
+  : null;
+
+/**
+ * The ONE reader of the bucket's db.json, for boot, re-sync and the 412 retry.
+ * Metadata first, then a download BOUND to that generation (`download()`
+ * ignores `preconditionOpts` in @google-cloud/storage 7, so content and a
+ * separate generation could straddle a concurrent write — CodeRabbit, PR #85).
+ * Shape-checked by the same `normalizeDbShape` the local path uses: the boot
+ * branch used to `JSON.parse` straight into `inMemoryDb`, so `users:[null]`
+ * 500'd every auth route, and a legacy `{games:[...]}` threw AFTER the
+ * generation was adopted, so the first save replaced the bucket with an
+ * empty database (BLUE-LOOP-CLOUD-22, hit a).
+ */
+async function readGcsDb(unlessGeneration: string | null = null): Promise<{ db: DB; generation: string; lineage: string } | 'unchanged' | null> {
+  const { Storage } = await import('@google-cloud/storage');
+  const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
+  let meta: { generation?: string | number; metadata?: Record<string, unknown> } = {}, content: Buffer | null = null;
+  // One metadata GET per read (404 = no object). The download is bound to that
+  // generation; a peer write in between makes it 404 (buckets keep only the
+  // live generation), so re-read once rather than fail the re-check.
+  for (let attempt = 0; content === null; attempt++) {
+    try {
+      [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
+    } catch (err: any) {
+      if (err?.code === 404) return null;
+      throw err;
+    }
+    if (unlessGeneration !== null && meta.generation != null && String(meta.generation) === unlessGeneration) return 'unchanged';
+    try {
+      [content] = await withDeadline(file.bucket.file('db.json', { generation: meta.generation }).download(), 'db.json download()');
+    } catch (err: any) {
+      if (err?.code !== 404 || attempt >= 1) throw err;
+    }
+  }
+  let db: DB;
+  try {
+    db = normalizeDbShape(JSON.parse(content.toString('utf-8')), `gs://${GCS_BUCKET}/db.json`);
+  } catch (err) {
+    blockGcsStore(err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+  if (meta.generation == null) throw new Error('db.json metadata carried no generation');
+  const { lineage } = meta.metadata ?? ({} as Record<string, unknown>);
+  return { db, generation: String(meta.generation), lineage: typeof lineage === 'string' && lineage !== '' ? lineage : LEGACY };
+}
+
+/**
+ * Which history db.json holds: custom metadata on every upload, minted by the
+ * upload that CREATES the object and kept by every write after (GCS's own
+ * generation and timeCreated change on every write). A remote under another id
+ * was born after our read without our rows (lifecycle delete, then a fresh
+ * instance's sign-up), so their absence is no deletion (S18-1): we union and
+ * write back. Unstamped objects read as 'legacy', the id their writers keep.
+ * A restored generation keeps its id, so it still rolls back; an uploaded file
+ * carries none. ponytail: a deliberate wipe or edit-by-upload needs the service
+ * stopped (a live instance may write its rows back into the new object).
+ */
+const LEGACY = 'legacy';
+let gcsLineage = LEGACY; // of gcsBaselineDb; set by every read and landed upload
+
+// In-process intervals (freshness, drain, cooldown, rate windows) run on the
+// monotonic clock: a wall-clock step backward locked clients out past their
+// window, and one forward cut the SIGTERM drain short (sweep 17). Persisted or
+// cross-instance times (token exp, code expiry) stay on Date.now().
+const GCS_FRESH_MS = 2_000; // see requireGcsStore
+let gcsFreshUntil = 0;
+
+/**
+ * Set when the bucket's db.json was READ but is not a database we can trust.
+ * Exiting would crash-loop the whole site (max-instances=1, scale to zero)
+ * for a fault only the DB routes share, so the process keeps serving static,
+ * report and download routes; the DB routes answer 503 and the pump never
+ * writes, so the bytes stay in the bucket for the operator. Cleared only by a
+ * restart after the object is repaired.
+ */
+let gcsStoreBlocked: string | null = null;
+function blockGcsStore(reason: string): void {
+  gcsStoreBlocked = reason;
+  console.error(`GCS store BLOCKED for this process: ${reason.replace(/\.$/, '')}. Account and saved-game routes answer 503 and nothing `
+    + `is written to the bucket; repair or restore gs://${GCS_BUCKET}/db.json, then restart the service.`);
+}
+
+/**
+ * Establish what is on GCS: adopt it as the baseline and fold the process's
+ * own state in (a no-op at boot). Throws on any failure, leaving
+ * `gcsGeneration` null so every writer re-syncs first. `loadDB()` is read
+ * AFTER the awaits: routes commit meanwhile, and merging an older snapshot
+ * wrote it back over them (#208).
+ */
+let gcsAckEpoch = 0; // bumped when an upload of ours lands
+
+/**
+ * Verified accounts of a db.json read whose legacy rows a migration may have written into their
+ * objects, with that read's lineage. A migration that failed partway, or whose read was dropped,
+ * wrote objects for accounts this process may never have held; the next adopted merge counts them
+ * as held, so one deleted meanwhile (by a previous revision, mid-rollover) has its object tombstoned
+ * instead of left where no account reaches it (Sweep 33). Only within the same lineage: absence
+ * from another lineage (a restored db.json) proves no deletion. Cleared once a merge is adopted.
+ */
+const migratedAccounts = new Map<string, { lineage: string; keys: string[] }>();
+function noteMigratedAccounts(seen: Map<string, { lineage: string; keys: string[] }>, users: readonly User[], games: readonly SavedGame[], lineage: string): void {
+  const owners = new Set(games.map((g) => g.userId));
+  for (const u of users) if (u.isVerified && accountKeys(u).some((k) => owners.has(k))) seen.set(u.id, { lineage, keys: accountKeys(u) });
+}
+/** Verified accounts this process held, plus those a migration of this lineage wrote objects for, with the objects they reach. */
+function heldAccounts(local: readonly User[], seen: ReadonlyMap<string, { lineage: string; keys: string[] }>, lineage: string): { id: string; keys: string[] }[] {
+  const held = new Map(local.filter((u) => u.isVerified).map((u) => [u.id, accountKeys(u)] as const));
+  for (const [id, v] of seen) if (v.lineage === lineage) held.set(id, [...new Set([...(held.get(id) ?? []), ...v.keys])]);
+  return [...held].map(([id, keys]) => ({ id, keys }));
+}
+
+async function syncFromGcs(ifChanged = false): Promise<void> {
+  const epoch = gcsAckEpoch;
+  const remote = await readGcsDb(ifChanged ? gcsGeneration : null);
+  gcsFreshUntil = performance.now() + GCS_FRESH_MS;
+  // An upload of ours landed while this read was in flight, so the read may
+  // predate it: merged, it restored deleted games and accounts and moved the
+  // generation back (sweep 2). Our acked state is at least as new; drop the
+  // read. Anything a peer wrote meanwhile arrives by 412 merge or next re-check.
+  if (remote === 'unchanged') return;
+  // Legacy games in db.json (written before per-account objects, or by a
+  // previous revision still serving during a rollover) move into their
+  // accounts' objects BEFORE this generation is adopted: once adopted, our next
+  // upload writes `games: []` over it, so a row must already be verified in its
+  // object by then. A failure throws here, the generation stays unadopted and
+  // the legacy rows stay in db.json; the next read migrates again, adding only
+  // what is missing (see `migrate`).
+  let migrated = false, legacyKept: SavedGame[] = [];
+  if (accountGames && remote !== null && remote.db.games.length > 0) {
+    noteMigratedAccounts(migratedAccounts, remote.db.users, remote.db.games, remote.lineage);
+    const m = await accountGames.migrate(remote.db.games, remote.generation);
+    console.log(`Migrated ${m.rows} legacy game row(s) from db.json into ${m.accounts} per-account object(s) `
+      + `(${m.added} written by this run, the rest already there; every row written read back byte-identical).`);
+    if (m.conflicts.length > 0) {
+      console.warn(`Migration: ${m.conflicts.length} legacy row(s) not applied as they stand in db.json (the account's object `
+        + `stands, the account is deleted, or its object is blocked): ${m.conflicts.slice(0, 20).join(', ')}`);
+    }
+    migrated = true;
+    legacyKept = m.kept; // rows of a blocked account's object: they stay in db.json
+  }
+  if (gcsAckEpoch !== epoch) return;
+  if (remote === null) {
+    gcsBaselineDb = { users: [], games: [] };
+    gcsGeneration = '0'; // GCS's own "must not exist yet" precondition
+    // Our rows now live only in this process: write them back now, not at the
+    // next route write, which a scale-in may never see.
+    if (loadDB().users.length + loadDB().games.length > 0) scheduleGcsSave();
+    return;
+  }
+  // Hosted, db.json holds accounts only: its games now live in their objects
+  // (bar the rows of an account whose object is blocked, kept as they were).
+  const remoteDb: DB = accountGames ? { users: remote.db.users, games: legacyKept } : remote.db;
+  // Verified accounts this process held (or a migration wrote objects for), with the objects they reach, to see which the merge removes.
+  const heldBefore = accountGames ? heldAccounts(loadDB().users, migratedAccounts, remote.lineage) : [];
+  const baseline = jsonClone(remoteDb) as DB; // routes mutate records in place; the baseline must not follow
+  const descends = gcsBaselineDb === null || remote.lineage === gcsLineage;
+  // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
+  // without it, a game created in it and deleted since came back (main too).
+  applyMergedDb(unionMergeDb(remoteDb, loadDB(), gcsBaselineDb, gcsUnackedDb, descends));
+  if (accountGames) {
+    // An account the merge removed was deleted on another instance or revision
+    // (a folded duplicate is kept as an alias, not removed). A previous
+    // revision deleting it during a rollover never tombstoned its objects:
+    // do it here, so its games do not outlive it.
+    // Owed until they land: a failure is retried by the next sync, not forgotten.
+    accountGames.tombstoneEventually(removedAccountKeys(heldBefore, loadDB().users));
+    migratedAccounts.clear(); // every account they named is now held, or removed and owed its tombstone
+  }
+  gcsBaselineDb = baseline;
+  gcsGeneration = remote.generation;
+  gcsLineage = remote.lineage;
+  // The rows the remote lacked live only in this process until written back;
+  // a migrated legacy array is cleared by the same write; so are folds the
+  // remote lost (keepFolds restored them here only: Sweep 26).
+  if (!descends || migrated || (accountGames && foldsRemoteLacks(loadDB().users, remote.db.users))) scheduleGcsSave();
+}
+
+/** One sync at a time: the gate, the refresh and the pump share it. */
+let gcsSyncInFlight: Promise<void> | null = null;
+function syncShared(ifChanged = false): Promise<void> {
+  gcsSyncInFlight ??= syncFromGcs(ifChanged).finally(() => { gcsSyncInFlight = null; });
+  return gcsSyncInFlight;
+}
+
+/**
+ * Hosted DB routes serve only a store this process has READ. After a failed
+ * boot read, `inMemoryDb` is an empty stand-in: a real user got 401 from it
+ * and could register their own email a second time (hit b). Once read, the
+ * copy is re-checked at most every GCS_FRESH_MS (one metadata GET; a download
+ * only when the generation moved): in a rollover the new instance never saw
+ * the old one's later writes until it wrote itself, so a saved game or a new
+ * account stayed invisible there without bound (sweep 1). A re-check holds a
+ * request at most 2s (it finishes in the background); a failed one serves the
+ * copy it has and backs off 30s; a blocked store is an honest 503.
+ */
+function requireGcsStore(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (process.env.ELECTRON_USER_DATA_PATH || !GCS_BUCKET) return next();
+  // One wait budget per request: the account's games re-check (see
+  // `accountGames.snapshot`) spends what this one left, so a slow GCS costs
+  // about 2s in total, not 2s per object.
+  res.locals.gcsWaitUntil = performance.now() + 2_000;
+  const unavailable = () => {
+    res.setHeader('Retry-After', '30');
+    res.status(503).json({ error: 'Accounts and saved games are temporarily unavailable. Please try again shortly.' });
+  };
+  if (gcsStoreBlocked) return unavailable();
+  const unread = gcsGeneration === null;
+  // Not skipped while the pump is busy: in backoff it can stay busy for the
+  // whole outage, and reads went stale with it (sweep 4). A re-check during an
+  // upload is safe: that upload's precondition then 412s and it re-merges.
+  if (!unread && performance.now() < gcsFreshUntil) return next();
+  if (!unread) gcsFreshUntil = performance.now() + GCS_FRESH_MS;
+  const sync = syncShared(!unread);
+  const waited = unread ? sync : Promise.race([sync, new Promise<void>((r) => setTimeout(r, 2_000).unref?.())]);
+  waited.then(
+    () => (gcsGeneration !== null && !gcsStoreBlocked ? next() : unavailable()),
+    (err) => {
+      console.error(`GCS ${unread ? 'read' : 're-check'} before serving a DB route failed:`, err);
+      if (unread || gcsStoreBlocked) return unavailable();
+      gcsFreshUntil = performance.now() + 30_000; // serve the copy we have; retry the re-check later
+      next();
+    },
+  );
+  if (!unread) sync.catch(() => { gcsFreshUntil = performance.now() + 30_000; }); // a re-check that outlived the wait
 }
 
 // Load DB once at startup: GCS in Cloud Run, local file in Electron/dev.
@@ -1980,52 +2357,17 @@ async function initDB(): Promise<boolean> {
     if (db === null) return false;
     inMemoryDb = db;
   } else if (GCS_BUCKET) {
+    // A read failure keeps the S60 fallback (boot and serve), but the store is
+    // then UNREAD: `requireGcsStore` makes the DB routes sync or 503 rather
+    // than answer from an empty stand-in (hit b). A MALFORMED object blocks
+    // the store for this process instead of exiting — see `gcsStoreBlocked`.
+    inMemoryDb = { users: [], games: [] }; // the merge target; stays empty (and unread) if the read fails
     try {
-      const { Storage } = await import('@google-cloud/storage');
-      const storage = new Storage();
-      const file = storage.bucket(GCS_BUCKET).file('db.json');
-      // Deadlines here are what keep a hung GCS from blocking `app.listen`
-      // forever (see `withDeadline`). A breach lands in the same `catch` as
-      // any other GCS failure, so the existing local-file fallback applies
-      // unchanged — the process boots and serves instead of hanging dark.
-      const [exists] = await withDeadline(file.exists(), 'db.json exists()');
-      if (exists) {
-        // Metadata FIRST, then a download BOUND to that generation:
-        // `download()` ignores `preconditionOpts` in @google-cloud/storage 7,
-        // so content and a separately fetched generation could straddle a
-        // concurrent write, and the next conditional save would overwrite
-        // that write without ever seeing a 412 (CodeRabbit, PR #85).
-        const [meta] = await withDeadline(file.getMetadata(), 'db.json getMetadata()');
-        const [content] = await withDeadline(
-          file.bucket.file('db.json', { generation: meta.generation }).download(),
-          'db.json download()',
-        );
-        inMemoryDb = JSON.parse(content.toString('utf-8'));
-        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
-        // A genuine deep copy, not a reference to `inMemoryDb`: the object
-        // returned here would otherwise be the SAME live object every future
-        // caller mutates in place (every `saveDB` call site does
-        // `const db = loadDB(); db.games.push(...); saveDB(db);` against the
-        // one shared singleton), which would make this "baseline" silently
-        // track every future edit instead of staying pinned to what was
-        // actually on GCS at boot — exactly the state `unionMergeDb` needs to
-        // tell "deleted since we last synced" apart from "never existed."
-        gcsBaselineDb = JSON.parse(JSON.stringify(inMemoryDb));
-      } else {
-        inMemoryDb = { users: [], games: [] };
-        gcsBaselineDb = { users: [], games: [] };
-        // `0` is GCS's own convention for "this object must not exist yet" —
-        // protects the very first save of a brand-new bucket against a race
-        // with another instance's own first save landing in between this
-        // exists() check and that save.
-        gcsGeneration = '0';
-      }
-      console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb!.users.length} users, ${inMemoryDb!.games.length} games`);
+      await syncFromGcs();
+      console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb.users.length} users (saved games: one object per account under ${ACCOUNT_GAMES_PREFIX})`);
+      accountGames?.knownOwners(); // start the one listing the pending-row sweep needs
     } catch (err) {
-      console.error('Error loading DB from GCS, falling back to local file:', err);
-      const db = loadDBFromFile();
-      if (db === null) return false;
-      inMemoryDb = db;
+      if (!gcsStoreBlocked) console.error('Error loading DB from GCS; DB routes will retry the read before serving:', err);
     }
   } else {
     const db = loadDBFromFile();
@@ -2036,6 +2378,23 @@ async function initDB(): Promise<boolean> {
 }
 
 // Returns the in-memory DB (always synchronous after initDB resolves)
+/**
+ * JSON.parse(JSON.stringify(v)), without copying a single string: strings are
+ * immutable, so the GCS baseline can share them with the live store. A parsed or
+ * structuredClone'd baseline was a second full copy of db.json on the heap; with
+ * the upload's own copies, four copies OOM'd a 128 MB heap at ~23 MB (S14-1).
+ */
+function jsonClone(v: unknown): any {
+  if (v !== null && typeof v === "object" && typeof (v as { toJSON?: unknown }).toJSON === "function") return jsonClone((v as { toJSON: () => unknown }).toJSON());
+  if (Array.isArray(v)) return v.map((x) => (x === undefined || typeof x === "function" || typeof x === "symbol" ? null : jsonClone(x)));
+  if (v !== null && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) if (x !== undefined && typeof x !== "function" && typeof x !== "symbol") out[k] = jsonClone(x);
+    return out;
+  }
+  return typeof v === "number" ? (Number.isFinite(v) ? v + 0 : null) : v; // -0 -> 0, NaN/Infinity -> null
+}
+
 function loadDB(): DB {
   return inMemoryDb ?? { users: [], games: [] };
 }
@@ -2065,23 +2424,157 @@ function loadDB(): DB {
  * from both sides of the union honors that deletion even though `remote`
  * doesn't know about it yet.
  */
-function unionMergeDb(remote: DB, local: DB, baseline: DB | null): DB {
-  const baseUserIds = new Set((baseline?.users ?? []).map((u) => u.id));
-  const baseGameIds = new Set((baseline?.games ?? []).map((g) => g.id));
-  const localUserIds = new Set(local.users.map((u) => u.id));
-  const localGameIds = new Set(local.games.map((g) => g.id));
-  const deletedUserIds = new Set([...baseUserIds].filter((id) => !localUserIds.has(id)));
-  const deletedGameIds = new Set([...baseGameIds].filter((id) => !localGameIds.has(id)));
+/**
+ * An account changed on BOTH instances since the last read: keep one side's
+ * WHOLE record, never a field mix. Mixing verified an attacker's re-register
+ * password (owner verified on X, attacker re-registered on Y); plain local-wins
+ * reverted a peer's acked password reset (sweep 4). A credential rotation
+ * wins; two rotations keep the one GCS already holds (first landed, as on one
+ * instance); then verified; then local. A code used up on either side stays
+ * so; failed attempts on one code add up to the lockout.
+ */
+/**
+ * Folds never unfold. A record that comes back without the `mergedFrom` this
+ * side knew (a previous revision's merge copies the winning record whole)
+ * keeps those aliases: hosted, the folded account's games are reached only
+ * through them (Sweep 25).
+ */
+function keepFolds(users: User[], known: readonly User[]): User[] {
+  const folds = new Map<string, Set<string>>();
+  for (const u of known) for (const k of u.mergedFrom ?? []) folds.set(u.id, (folds.get(u.id) ?? new Set()).add(k));
+  return users.map((u) => {
+    const all = new Set([...(u.mergedFrom ?? []), ...(folds.get(u.id) ?? [])]);
+    return all.size === (u.mergedFrom?.length ?? 0) ? u : { ...u, mergedFrom: [...all] };
+  });
+}
 
-  const mergedUsers = new Map<string, User>();
-  for (const u of remote.users) if (!deletedUserIds.has(u.id)) mergedUsers.set(u.id, u);
-  for (const u of local.users) if (!deletedUserIds.has(u.id)) mergedUsers.set(u.id, u); // local wins a same-id collision
+/** Whether these accounts carry a fold the remote copy of the same account lacks (one to write back). */
+function foldsRemoteLacks(users: readonly User[], remote: readonly User[]): boolean {
+  const theirs = new Map(remote.map((u) => [u.id, new Set(u.mergedFrom ?? [])]));
+  return users.some((u) => (u.mergedFrom ?? []).some((k) => !theirs.get(u.id)?.has(k)));
+}
 
-  const mergedGames = new Map<string, SavedGame>();
-  for (const g of remote.games) if (!deletedGameIds.has(g.id)) mergedGames.set(g.id, g);
-  for (const g of local.games) if (!deletedGameIds.has(g.id)) mergedGames.set(g.id, g);
+function pickAccount(mine: User, theirs: User, was: User): User {
+  const tv = (u: User) => u.tokenVersion ?? 0;
+  const rank = (u: User) => [tv(u), u.isVerified ? 1 : 0]; // a reset, then verified
+  const d = rank(theirs).map((v, i) => v - rank(mine)[i]).find((v) => v !== 0) ?? 0;
+  const theirsWins = (tv(theirs) === tv(mine) && tv(mine) > tv(was)) || d > 0; // two resets: first landed
+  const win = (theirsWins ? theirs : mine) as unknown as Record<string, unknown>;
+  const lose = (theirsWins ? mine : theirs) as unknown as Record<string, unknown>, base = was as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...win };
+  // The accounts folded into this one stay folded whichever record wins: hosted,
+  // their games are reached only through `mergedFrom` (per-account objects).
+  const folded = [...new Set([...(mine.mergedFrom ?? []), ...(theirs.mergedFrom ?? []), ...(was.mergedFrom ?? [])])];
+  if (folded.length > 0) out.mergedFrom = folded;
+  for (const f of Object.values(CODE_FIELDS)) {
+    // A code the loser issued (and mailed) while the winner issued none stays
+    // usable, as if issued after the winner's change (sweep 4).
+    const fresh = (u: Record<string, unknown>) => !!u[f.code] && u[f.code] !== base[f.code];
+    if (fresh(lose) && !fresh(win)) {
+      for (const k of [f.code, f.expires, f.attempts]) out[k] = lose[k];
+      continue;
+    }
+    const spent = () => {
+      out[f.code] = f.code === "verificationCode" ? "" : undefined;
+      out[f.expires] = f.code === "verificationCode" ? 0 : undefined;
+      out[f.attempts] = undefined;
+    };
+    if (!win[f.code] || base[f.code] !== win[f.code]) continue; // no code, or a fresh one: the winner's stands
+    if (!lose[f.code]) { spent(); continue; } // the other side used it up
+    if (lose[f.code] !== win[f.code]) continue; // the other side issued a new one: the winner's stands
+    const n = (u: Record<string, unknown>) => Number(u[f.attempts] ?? 0);
+    const attempts = n(base) + Math.max(0, n(win) - n(base)) + Math.max(0, n(lose) - n(base));
+    if (attempts >= MAX_CODE_ATTEMPTS) spent(); else out[f.attempts] = attempts || undefined;
+  }
+  return JSON.parse(JSON.stringify(out)) as User;
+}
 
-  return { users: [...mergedUsers.values()], games: [...mergedGames.values()] };
+function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | null = null, descends = true): DB {
+  // THREE-way, not two (BLUE-LOOP-CLOUD-22, hit c): a stale instance's
+  // untouched copy of a record another instance DELETED (delete-confirm) or
+  // CHANGED (a reset's hash and tokenVersion) used to overwrite that. `unacked`
+  // is what uploads we gave up on carried: they may have landed, so their ids
+  // count as "known remotely" for deletions made HERE — never as proof of a
+  // remote deletion or edit (they may not have landed; data loss is worse).
+  const merge = <T extends { id: string }>(r: T[], l: T[], b: T[], u: T[], pick?: (mine: T, theirs: T, was: T) => T): T[] => {
+    const base = new Map(b.map((x) => [x.id, x]));
+    const sent = new Map(u.map((x) => [x.id, x]));
+    const inLocal = new Set(l.map((x) => x.id));
+    const inRemote = new Set(r.map((x) => x.id));
+    const out = new Map<string, T>();
+    for (const x of r) if (inLocal.has(x.id) || !(base.has(x.id) || sent.has(x.id))) out.set(x.id, x);
+    for (const x of l) {
+      const was = base.get(x.id);
+      // A remote born without our rows (see gcsLineage) is no evidence of a
+      // deletion or an edit: our row stands (pickAccount arbitrates accounts).
+      if (descends && was !== undefined && !inRemote.has(x.id)) continue; // deleted remotely
+      // Unchanged here since the baseline: remote's copy stands.
+      if (descends && was !== undefined && isDeepStrictEqual(JSON.parse(JSON.stringify(x)), was)) continue;
+      const theirs = out.get(x.id);
+      const both = pick && was !== undefined && theirs !== undefined && !isDeepStrictEqual(theirs, was);
+      out.set(x.id, both ? pick(x, theirs, was) : x); // new or changed here: local wins a same-id collision
+    }
+    return [...out.values()];
+  };
+  const users = keepFolds(merge(remote.users, local.users, baseline?.users ?? [], unacked?.users ?? [], pickAccount), [...local.users, ...(baseline?.users ?? [])]);
+  const kept = new Set(users.map((u) => u.id));
+  // A folded duplicate is not a deleted account: its games follow the alias.
+  const alias = new Map(users.flatMap((u) => (u.mergedFrom ?? []).map((from) => [from, u.id] as const)));
+  const known = [...(baseline?.users ?? []), ...(unacked?.users ?? [])].map((u) => u.id);
+  const goneUsers = new Set(known.filter((id) => !kept.has(id) && !alias.has(id)));
+  const games = merge(remote.games, local.games, baseline?.games ?? [], unacked?.games ?? [])
+    .map((g) => (alias.has(g.userId) ? { ...g, userId: alias.get(g.userId)! } : g))
+    .filter((g) => !goneUsers.has(g.userId));
+  // Against a store born without our rows, the accounts we had read are the
+  // established ones: a sign-up there that took one's email or name yields.
+  return dedupeAccounts({ users, games }, descends || !baseline?.users.length ? remote : baseline);
+}
+
+/**
+ * Two instances in a rollover each checked "is this email/username free?"
+ * against their own memory, so a merge could hold two accounts for one email
+ * (the second could neither verify nor log in) or one username. Only pairs
+ * involving an account this process ADDED (absent from `remote`) are touched;
+ * duplicates GCS already held together stay as they are. Same email: one
+ * account survives (verified first, then GCS's) and the other's games move to
+ * it — the mailbox owns both. Same username only: two people, so the added
+ * one is renamed, never merged.
+ */
+function dedupeAccounts(db: DB, remote: DB): DB {
+  const onGcs = new Set(remote.users.map((u) => u.id));
+  const byEmail = new Map<string, User>();
+  const movedTo = new Map<string, string>();
+  for (const u of [...db.users].sort((a, b) => Number(onGcs.has(b.id)) - Number(onGcs.has(a.id)))) {
+    const held = byEmail.get(emailKey(u.email));
+    if (!held || (onGcs.has(held.id) && onGcs.has(u.id))) { if (!held) byEmail.set(emailKey(u.email), u); continue; }
+    const [keep, drop] = !held.isVerified && u.isVerified ? [u, held] : [held, u];
+    movedTo.set(drop.id, keep.id);
+    for (const [from, to] of movedTo) if (to === drop.id) movedTo.set(from, keep.id);
+    byEmail.set(emailKey(u.email), keep);
+  }
+  // The kept account records what it absorbed, so a game the other instance
+  // saves for the folded id before it learns of the fold still finds a home.
+  const absorbed = new Map<string, string[]>();
+  for (const [from, to] of movedTo) {
+    const was = db.users.find((u) => u.id === from)?.mergedFrom ?? [];
+    absorbed.set(to, [...(absorbed.get(to) ?? []), from, ...was]);
+  }
+  const kept = db.users.filter((u) => !movedTo.has(u.id))
+    .map((u) => (absorbed.has(u.id) ? { ...u, mergedFrom: [...new Set([...(u.mergedFrom ?? []), ...absorbed.get(u.id)!])] } : u));
+  const taken = new Set(kept.filter((u) => onGcs.has(u.id)).map((u) => usernameKey(u.username)));
+  const renamed = new Map<string, string>();
+  for (const u of kept.filter((k) => !onGcs.has(k.id))) {
+    const name = taken.has(usernameKey(u.username)) ? `${clampGraphemeSafe(u.username.trim(), 33)}-${u.id.slice(-6)}` : u.username;
+    taken.add(usernameKey(name));
+    if (name !== u.username) renamed.set(u.id, name);
+  }
+  if (movedTo.size === 0 && renamed.size === 0) return db;
+  console.warn(`Account merge: ${movedTo.size} duplicate-email account(s) folded into the kept one `
+    + `(${[...movedTo].map(([from, to]) => `${from}->${to}`).join(', ')}); ${renamed.size} username(s) made unique.`);
+  return {
+    users: kept.map((u) => (renamed.has(u.id) ? { ...u, username: renamed.get(u.id)! } : u)),
+    games: db.games.map((g) => (movedTo.has(g.userId) ? { ...g, userId: movedTo.get(g.userId)! } : g)),
+  };
 }
 
 /**
@@ -2111,6 +2604,7 @@ function applyMergedDb(merged: DB): DB {
   target.users = merged.users;
   target.games = merged.games;
   inMemoryDb = target;
+  dbBytes = -1;
   return target;
 }
 
@@ -2128,101 +2622,63 @@ function applyMergedDb(merged: DB): DB {
  * TCP/TLS already guarantee byte-level integrity end to end, and it is what
  * the fake-GCS integration test also mocks against.
  */
-async function uploadDbToGcs(db: DB, attempt: number = 0): Promise<void> {
-  if (attempt > 2) {
-    console.error('GCS write failed after repeated generation conflicts — giving up on this save. A later save will try again with fresh state.');
-    return;
-  }
+async function uploadDbToGcs(): Promise<void> {
+  // Never write over state this process has not read: a failed boot read
+  // leaves `gcsGeneration` null, and an unconditional save would replace the
+  // bucket with the empty stand-in (CodeRabbit). Throws on any failure; the
+  // pump owns retrying.
+  if (gcsGeneration === null) await syncShared();
   const { Storage } = await import('@google-cloud/storage');
-  const storage = new Storage();
-  const file = storage.bucket(GCS_BUCKET!).file('db.json');
-
-  // `gcsGeneration === null` means we have NEVER established what is
-  // actually on GCS — most plausibly `initDB`'s GCS read threw and fell
-  // back to `loadDBFromFile()` (which, in hosted mode, reads a LOCAL file
-  // that does not exist in Cloud Run and returns an empty database).
-  // Uploading unconditionally in that state would be a real, unconditional
-  // write with no precondition at all, which would REPLACE the real remote
-  // object with that empty fallback — CodeRabbit caught this. Re-sync
-  // first rather than either writing blindly or refusing to ever write
-  // again: this makes the process self-healing once GCS is reachable,
-  // instead of a transient load failure at boot permanently disabling all
-  // future saves.
-  if (gcsGeneration === null) {
+  const file = new Storage().bucket(GCS_BUCKET!).file('db.json');
+  for (let attempt = 0; ; attempt++) {
+    if (gcsStoreBlocked) return;
+    // The CURRENT state, serialized at send time: routes commit while this
+    // awaits, and uploading an older snapshot wrote it back over them (#208).
+    const bodyStr = JSON.stringify(loadDB(), null, 2);
+    dbBytes = Buffer.byteLength(bodyStr); // exact at send time; later writes add their deltas
+    const sent = jsonClone(loadDB()); // what bodyStr carries, sharing the store's strings: not a second full copy
+    // A create is a new history, even ours re-created after a 404: a peer that
+    // read writes it never saw must not take their absence as deletions.
+    const stamp = gcsGeneration === '0' ? crypto.randomUUID() : gcsLineage;
     try {
-      const [exists] = await withDeadline(file.exists(), 're-sync exists()');
-      if (exists) {
-        const [meta] = await withDeadline(file.getMetadata(), 're-sync getMetadata()'); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await withDeadline(
-          file.bucket.file('db.json', { generation: meta.generation }).download(),
-          're-sync download()',
-        );
-        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
-        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        // Merge the CURRENT state, not `db`: `db` is the snapshot this upload
-        // started with, and routes commit new snapshots meanwhile. Merging `db`
-        // wrote it back over them (a game saved or a rollback committed during
-        // the upload was lost). Same at the 412 merge below.
-        db = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // mutates the SHARED object in place — see applyMergedDb's comment
-      } else {
-        gcsGeneration = '0'; // GCS's own "must not exist yet" convention, matching initDB
-      }
-    } catch (err) {
-      console.error('GCS write skipped: could not establish the object generation after a previous load failure. A later save will retry:', err);
-      return; // fail SAFE — do not write blindly over state we have never read
-    }
-  }
-
-  const bodyStr = JSON.stringify(db, null, 2);
-  const saveOpts: {
-    contentType: string; resumable: boolean; validation: boolean; timeout: number;
-    preconditionOpts?: { ifGenerationMatch: string };
-  } = {
-    contentType: 'application/json', resumable: false, validation: false,
-    // This existing request option becomes a query parameter, not a local
-    // deadline; `withDeadline` is what stops a hung upload pinning this pump.
-    timeout: 30_000,
-  };
-  if (gcsGeneration !== null) {
-    saveOpts.preconditionOpts = { ifGenerationMatch: gcsGeneration };
-  }
-  try {
-    await withDeadline(file.save(bodyStr, saveOpts), 'db.json save()');
-    // Read the generation OFF THE UPLOAD RESPONSE ITSELF
-    // (`@google-cloud/storage` populates `file.metadata` from it), not a
-    // separate `getMetadata()` call — CodeRabbit caught the TOCTOU: between
-    // our write completing and a follow-up GET landing, a DIFFERENT writer
-    // could have already written again, and we would then silently adopt
-    // THEIR generation as if it were the result of our own write, letting
-    // our next save overwrite theirs without ever seeing a 412.
-    const generation = file.metadata?.generation;
-    gcsGeneration = generation != null ? String(generation) : null;
-    gcsBaselineDb = JSON.parse(bodyStr); // see initDB's comment: a real copy, not a live reference
-  } catch (err: any) {
-    if (err?.code === 412) {
-      // Someone else wrote first. Re-download, merge OUR pending changes
-      // onto their state, and retry with the fresh generation.
-      try {
-        const [meta] = await withDeadline(file.getMetadata(), '412-retry getMetadata()'); // metadata first, generation-bound download — see initDB
-        const [remoteContent] = await withDeadline(
-          file.bucket.file('db.json', { generation: meta.generation }).download(),
-          '412-retry download()',
-        );
-        gcsGeneration = meta.generation != null ? String(meta.generation) : null;
-        const remote: DB = JSON.parse(remoteContent.toString('utf-8'));
-        const merged = applyMergedDb(unionMergeDb(remote, loadDB(), gcsBaselineDb)); // CURRENT state, see the re-sync above
-        await uploadDbToGcs(merged, attempt + 1);
-      } catch (mergeErr) {
-        console.error('GCS write conflict: re-download/merge failed:', mergeErr);
-      }
+      await withDeadline(file.save(bodyStr, {
+        contentType: 'application/json', resumable: false, validation: false,
+        metadata: { metadata: { lineage: stamp } },
+        // A query parameter, not a local deadline; `withDeadline` is that.
+        timeout: 30_000,
+        preconditionOpts: { ifGenerationMatch: gcsGeneration! },
+      }), 'db.json save()');
+      // The generation of OUR write, off the upload response itself, never a
+      // follow-up getMetadata() that could adopt another writer's (CodeRabbit).
+      const generation = file.metadata?.generation;
+      gcsGeneration = generation != null ? String(generation) : null;
+      gcsBaselineDb = sent; // a real copy, not a live reference
+      gcsLineage = stamp;
+      gcsUnackedDb = null; // an older write can no longer land: its precondition is now stale
+      gcsAckEpoch += 1;
       return;
+    } catch (err: any) {
+      // Anything but a definite refusal (a deadline, a reset socket) may still
+      // have landed; `unionMergeDb` needs to know what it carried.
+      if (err?.code !== 412) gcsUnackedDb = overlayDb(gcsUnackedDb ?? { users: [], games: [] }, sent);
+      if (err?.code !== 412 || attempt >= 2) throw err;
+      // Someone else wrote first: merge their state, retry. A sync already in
+      // flight may predate their write, so run a fresh one after it.
+      await gcsSyncInFlight?.catch(() => {});
+      await syncShared();
     }
-    console.error('GCS write failed:', err);
   }
 }
 
 let gcsUploadInFlight = false;
 let gcsSaveRequested = false;
+let gcsPumpDone: Promise<void> = Promise.resolve();
+let gcsUnackedDb: DB | null = null;
+const overlayDb = (a: DB, b: DB): DB => ({
+  users: [...new Map([...a.users, ...b.users].map((u) => [u.id, u] as const)).values()],
+  games: [...new Map([...a.games, ...b.games].map((g) => [g.id, g] as const)).values()],
+});
+let wakeGcsPump: (() => void) | null = null;
 
 /**
  * Serialize and COALESCE saves to GCS, per process.
@@ -2251,15 +2707,63 @@ function scheduleGcsSave(): void {
   gcsSaveRequested = true;
   if (gcsUploadInFlight) return;
   gcsUploadInFlight = true;
-  (async () => {
-    while (gcsSaveRequested) {
+  gcsPumpDone = (async () => {
+    // A failed upload keeps the request pending and retries with backoff: the
+    // save was already acknowledged, and waiting for the NEXT save to carry it
+    // lost it for good once the instance scaled in (hit d).
+    let backoffMs = 1000;
+    while (gcsSaveRequested && !gcsStoreBlocked) {
       gcsSaveRequested = false;
-      await uploadDbToGcs(inMemoryDb ?? { users: [], games: [] });
+      try {
+        await uploadDbToGcs();
+        backoffMs = 1000;
+      } catch (err) {
+        gcsSaveRequested = true;
+        console.error(`GCS write failed; the pending save stays queued and retries in ${backoffMs}ms:`, err);
+        await new Promise<void>((resolve) => { wakeGcsPump = resolve; setTimeout(resolve, backoffMs).unref?.(); });
+        wakeGcsPump = null;
+        backoffMs = Math.min(backoffMs * 2, 60_000);
+      }
     }
     gcsUploadInFlight = false;
   })().catch((err) => {
     console.error('Unexpected error in the GCS save pump:', err);
     gcsUploadInFlight = false;
+  });
+}
+
+/**
+ * Cloud Run sends SIGTERM before a rollover or scale-in and kills 10s later.
+ * Node's default exits at once, dropping a save still queued behind an
+ * in-flight upload (hit d, measured: gone in 7ms). Drain the pump first,
+ * bounded under the grace period.
+ */
+async function drainGcsSaves(ms: number): Promise<void> {
+  const until = performance.now() + ms;
+  const budget = () => new Promise((r) => setTimeout(r, Math.max(0, until - performance.now())));
+  const dbPending = () => !gcsStoreBlocked && (gcsUploadInFlight || gcsSaveRequested);
+  // A saved-game write in flight is answered only once it lands: let it land
+  // (its request then gets its 200) rather than cut the connection mid-upload.
+  // The route it unblocks may then write db.json (delete-confirm removing the
+  // rows after its tombstones): drain that too, until both are idle (Sweep 28).
+  while (performance.now() < until) {
+    if (dbPending()) {
+      wakeGcsPump?.();
+      if (!gcsUploadInFlight) scheduleGcsSave();
+      await Promise.race([gcsPumpDone, budget()]);
+      continue;
+    }
+    if (!accountGames?.busy()) break;
+    await Promise.race([accountGames.idle().catch(() => {}), budget()]);
+    await new Promise((r) => setImmediate(r)); // the unblocked route runs up to its db.json write
+  }
+  // The writes' own requests answer right after them: give those bytes a moment to leave.
+  if (accountGames) await new Promise((r) => setTimeout(r, Math.min(100, Math.max(0, until - performance.now()))));
+}
+if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+  process.once('SIGTERM', () => {
+    console.log('SIGTERM: flushing pending saves to GCS before exit');
+    void drainGcsSaves(8_000).finally(() => process.exit(0));
   });
 }
 
@@ -2325,19 +2829,115 @@ function makeId(prefix: "u" | "g"): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
-function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16);
-  const hash = crypto.pbkdf2Sync(password, salt, PASSWORD_ITERATIONS, 32, "sha256");
-  return `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(salt)}$${b64url(hash)}`;
+// pbkdf2 runs off the event loop (sweep 17: pbkdf2Sync, 37 ms a call, held /api/health at p50 636 ms under a
+// login flood). HASH_SLOTS hash at once (no more than cloudbuild's --cpu, so the event loop keeps a core's share),
+// up to HASH_QUEUE (~1 s of work) wait their turn in order, and past that the request is a 503 with Retry-After.
+class ServerBusy extends Error {}
+const HASH_SLOTS = 1, HASH_QUEUE = 24;
+const pbkdf2 = promisify(crypto.pbkdf2);
+let hashing = 0;
+const hashWaiters: (() => void)[] = [];
+async function derive(password: string, salt: Buffer, iterations: number): Promise<Buffer> {
+  if (hashing < HASH_SLOTS) hashing++;
+  else if (hashWaiters.length < HASH_QUEUE) await new Promise<void>((r) => hashWaiters.push(r)); // the slot is handed over
+  else throw new ServerBusy();
+  try {
+    return await pbkdf2(password, salt, iterations, 32, "sha256");
+  } finally {
+    const next = hashWaiters.shift();
+    if (next) next(); else hashing--;
+  }
 }
 
-function verifyPassword(password: string, stored: string): boolean {
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.randomBytes(16);
+  return `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(salt)}$${b64url(await derive(password, salt, PASSWORD_ITERATIONS))}`;
+}
+
+// Login/verify identifier: an email match wins over a username match, so a
+// username set to someone else's email no longer shadows them (sweep 5).
+// WHATWG input[type=email]: one address, no display name, list or header.
+const EMAIL_SHAPE = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+// One code mail per kind per address per minute (per instance; max-instances
+// =1): every re-register re-sends, so without it anyone could flood a pending
+// owner's inbox from many IPs (sweep 6). 0 = sent now (slot taken); a failed
+// send hands the slot back (releaseCodeMail).
+const MAIL_COOLDOWN_MS = 60_000;
+// A dead pending row is swept this long after its code expired: with the signup pool, at most ~200 rows live (sweep 17).
+const PENDING_TTL_MS = 60 * 60 * 1000;
+// Bounded: it holds only the addresses mailed in the last minute (register's
+// per-IP limit bounds that rate). One cooldown on a monotonic clock, so entries
+// sit in expiry order: expired ones leave from the front, O(1) amortized (sweep 20).
+const lastCodeMail = new Map<string, number>();
+function mailCooldownLeft(kind: "verification" | "recovery", email: string): number {
+  const now = performance.now(), key = `${kind}:${email}`;
+  for (const [k, t] of lastCodeMail) { if (now - t < MAIL_COOLDOWN_MS) break; lastCodeMail.delete(k); }
+  const left = MAIL_COOLDOWN_MS - (now - (lastCodeMail.get(key) ?? -Infinity));
+  if (left <= 0) lastCodeMail.set(key, now);
+  return Math.max(0, left);
+}
+const releaseCodeMail = (kind: "verification" | "recovery", email: string) => lastCodeMail.delete(`${kind}:${email}`);
+
+// Rolling 24 h mail pools (sweep 17): Gmail sends ~500 a day for the whole site and nothing capped the total, so
+// rotated IPs could spend it on sign-ups or feedback and silence every recovery mail; one known address took 1440
+// codes a day. Taken only where a mail really goes out (after every refusal), never refunded (a timed-out send may
+// have left); per address 5 a day. ponytail: in-process (max-instances=1), so a redeploy resets it; persist it if that changes.
+const MAIL_POOLS = { signup: 200, recovery: 150, delete: 50, feedback: 50 } as const; // 450 of Gmail's ~500
+const MAIL_PER_ADDRESS = 5, MAIL_DAY_MS = 24 * 60 * 60 * 1000;
+const mailSends: Record<keyof typeof MAIL_POOLS, { t: number; to: string }[]> = { signup: [], recovery: [], delete: [], feedback: [] };
+function takeMail(pool: keyof typeof MAIL_POOLS, to = ""): number { // 0 = taken; else ms until one frees
+  if (isDesktop() || process.env.ELECTRON_USER_DATA_PATH) return 0; // the desktop mails nothing it could exhaust
+  const now = performance.now(), sent = mailSends[pool];
+  while (sent.length && now - sent[0].t >= MAIL_DAY_MS) sent.shift();
+  const mine = to ? sent.filter((s) => s.to === to) : [];
+  const wait = Math.max(sent.length >= MAIL_POOLS[pool] ? sent[0].t : -Infinity, mine.length >= MAIL_PER_ADDRESS ? mine[0].t : -Infinity) + MAIL_DAY_MS - now;
+  if (wait > 0) return wait;
+  sent.push({ t: now, to });
+  return 0;
+}
+function mailRefused(res: express.Response, wait: number, what: string) {
+  setRetryAfter(res, wait);
+  const n = wait < 3_600_000 ? Math.ceil(wait / 60_000) : Math.ceil(wait / 3_600_000), unit = wait < 3_600_000 ? "minute" : "hour";
+  return res.status(429).json({ error: `We cannot send more ${what} right now. Please try again in ${n} ${unit}${n === 1 ? "" : "s"}.` });
+}
+
+// One email, one key (sweep 22, S1-1): login and verify compared the stored
+// email exactly while register, forgot and reset folded it, so a stored
+// "Kate@Example.test" was "taken" at sign-up yet unknown at log-in. Every
+// email equality goes through this; emailkey.cloud.test.ts greps the rest out.
+const emailKey = (s: string) => s.trim().toLowerCase();
+// Two rows, one mailbox: every lookup reaches the same one. Verified first (the
+// row dedupeAccounts keeps; S1-4: a pending claim took the owner's login and
+// recovery), then the spelling typed (S1-3), then store order.
+function findByEmail(users: User[], key: string): User | undefined {
+  const rank = (u: User) => (u.isVerified ? 2 : 0) + (u.email === key ? 1 : 0);
+  return users.filter((u) => emailKey(u.email) === key).reduce<User | undefined>((a, u) => (a && rank(a) >= rank(u) ? a : u), undefined);
+}
+
+// `id` arrives as emailKey(input) from both callers (login, verify).
+function findByIdentifier(users: User[], id: string): User | undefined {
+  const key = usernameKey(id);
+  return findByEmail(users, id) ?? users.find((u) => u.username.toLowerCase() === id)
+    ?? users.find((u) => usernameKey(u.username) === key);
+}
+
+// One username, one person (sweep 19): NFD "José", fullwidth "ａｌｉｃｅ" or a
+// zero-width space made a second account under a taken name; invisible-only
+// names passed "required". One key: NFKC case fold, ignorables out, whitespace
+// runs as one space (ẞ/ß need the first lower). ponytail: Cyrillic look-alikes
+// stay distinct (only owner+admin see names); add UTS #39 if names go public.
+const nfkcBare = (s: string) => s.replace(/\p{Default_Ignorable_Code_Point}/gu, "").normalize("NFKC");
+const usernameKey = (s: string) => nfkcBare(nfkcBare(s).toLowerCase().toUpperCase().toLowerCase()).replace(/\s+/g, " ").trim();
+const cleanUsername = (v: unknown): string => { const name = cleanText(v, 40); return usernameKey(name) ? name : ""; };
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
   if (stored.startsWith("pbkdf2$")) {
     const [, iterRaw, saltRaw, hashRaw] = stored.split("$");
     const iterations = Number(iterRaw);
     if (!iterations || !saltRaw || !hashRaw) return false;
     const salt = Buffer.from(saltRaw.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-    const actual = b64url(crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256"));
+    const actual = b64url(await derive(password, salt, iterations));
     return safeEqual(actual, hashRaw);
   }
 
@@ -2349,10 +2949,10 @@ function needsPasswordRehash(stored: string): boolean {
   return !stored.startsWith("pbkdf2$");
 }
 
-// Precomputed hash for a random password. Used to spend the same pbkdf2 work on
+// A hash no password matches (a random 32-byte digest: 2^-256 a try). Used to spend the same pbkdf2 work on
 // a login miss as on a hit, so response timing doesn't reveal whether an
 // account exists (user enumeration).
-const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(16).toString("hex"));
+const DUMMY_PASSWORD_HASH = `pbkdf2$${PASSWORD_ITERATIONS}$${b64url(crypto.randomBytes(16))}$${b64url(crypto.randomBytes(32))}`;
 
 // Escape user-controlled text before interpolating it into HTML (email bodies).
 function escapeHtml(value: string): string {
@@ -2762,13 +3362,52 @@ function cleanPayoffs(value: any): GamePayoffs | null {
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
-// Drop expired buckets so the Map can't grow unbounded under many distinct IPs.
-// Cheap: only sweeps once the Map gets large rather than on every request.
+// Every 429 names its real remaining wait, rounded UP: a client that waits
+// exactly this long is never refused again for the same window (sweep 16).
+function setRetryAfter(res: express.Response, waitMs: number): void {
+  res.setHeader("Retry-After", String(Math.max(1, Math.ceil(waitMs / 1000))));
+}
+
+// Drop expired buckets from the FRONT: every window is 60 s on a monotonic clock,
+// so Map insertion order is expiry order and the scan stops at the first live one
+// (O(1) amortized). A full scan per request once 1000 were live cost O(live) per
+// call, 1.75 ms at 200k distinct /56s (sweep 20). One window for every limiter
+// (ratekey.cloud pins it); a longer one would only delay pruning, never mis-answer.
 function pruneRateBuckets(now: number) {
-  if (rateBuckets.size < 1000) return;
   for (const [key, bucket] of rateBuckets) {
-    if (bucket.resetAt <= now) rateBuckets.delete(key);
+    if (bucket.resetAt > now) return;
+    rateBuckets.delete(key);
   }
+}
+
+// ponytail: IPv4 has no /24 tier (a /24 is not free to hold); add one beside the /48 if that changes.
+const PER_48 = 4;
+const to48 = (key: string) => key.replace(/:[0-9a-f]+::\/56$/, "::/48"); // "l:2001:db8:7:100::/56" -> "l:2001:db8:7::/48"
+// Counts one request in `key`'s window; returns the wait left if that puts it over `max`, else 0.
+function overBudget(key: string, max: number, windowMs: number, now: number): number {
+  const bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return 0;
+  }
+  return ++bucket.count > max ? bucket.resetAt - now : 0;
+}
+
+// The throttle's client key, from req.ip (after TRUST_PROXY). IPv4 as-is, an
+// IPv4-mapped address as its IPv4; IPv6 by its /56: one subscriber holds a /64
+// or more, and a per-address key let one client rotate through fresh buckets
+// (live, sweep 9). /56 is the common ISP delegation (express-rate-limit v8's
+// default); rateLimit also caps each /48 (a free tunnel-broker grant) at PER_48 /56s.
+function rateKey(req: express.Request): string {
+  const ip = (req.ip || req.socket.remoteAddress || "unknown").replace(/%.*$/, "");
+  if (!net.isIPv6(ip)) return ip;
+  const q = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip); // a trailing dotted quad is two groups
+  const hex = q ? `${ip.slice(0, q.index)}${((+q[1] << 8) | +q[2]).toString(16)}:${((+q[3] << 8) | +q[4]).toString(16)}` : ip;
+  const [head, tail] = hex.split("::");
+  const h = head ? head.split(":") : [], t = tail ? tail.split(":") : [];
+  const g = (tail === undefined ? h : [...h, ...Array(8 - h.length - t.length).fill("0"), ...t]).map((x) => parseInt(x, 16));
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return [g[6] >> 8, g[6] & 255, g[7] >> 8, g[7] & 255].join(".");
+  return `${[g[0], g[1], g[2], g[3] & 0xff00].map((x) => x.toString(16)).join(":")}::/56`;
 }
 
 /**
@@ -2799,17 +3438,16 @@ function rateLimit(
   const liftedForDesktop = scope === 'hosted-only' && process.env.IS_ELECTRON === 'true';
   return (req, res, next) => {
     if (liftedForDesktop) return next();
-    const ip = req.ip || req.socket.remoteAddress || "unknown";
-    const key = `${label}:${ip}`;
-    const now = Date.now();
+    const key = `${label}:${rateKey(req)}`;
+    const now = performance.now();
     pruneRateBuckets(now);
-    const bucket = rateBuckets.get(key);
-    if (!bucket || bucket.resetAt <= now) {
-      rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
-    bucket.count++;
-    if (bucket.count > max) {
+    // A request its /56 allows also counts against its /48 at PER_48 x the budget: one /48 (free from a
+    // tunnel broker) held 256 /56 buckets, and its login flood took /api/health from p50 3 ms to 636 ms
+    // (sweep 17). A /56 over its own budget does not drain its /48 siblings'.
+    const agg = to48(key);
+    const wait = overBudget(key, max, windowMs, now) || (agg !== key ? overBudget(agg, max * PER_48, windowMs, now) : 0);
+    if (wait > 0) {
+      setRetryAfter(res, wait);
       return res.status(429).json({ error: "Too many attempts. Please wait a minute and try again." });
     }
     return next();
@@ -2879,6 +3517,8 @@ function setContentLengthIfUnderCloudRunLimit(res: express.Response, byteLength:
 function saveDB(db: DB): boolean {
   if (localFileSaveBlocked()) return false;
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
+    const prev = inMemoryDb;
+    if (dbBytes >= 0 && prev && prev !== db) dbBytes += rowsDelta(prev.users, db.users) + rowsDelta(prev.games, db.games);
     inMemoryDb = db;
     scheduleGcsSave(); // #85's coalescing pump; the GCS write is async, so the caller's boolean cannot reflect it
     return true;
@@ -2889,6 +3529,7 @@ function saveDB(db: DB): boolean {
         fs.mkdirSync(dbDir, { recursive: true });
       }
       writeFileAtomicSync(DB_FILE, JSON.stringify(db, null, 2));
+      dbBytes = -1;
       // STRUCT-DESKTOP-19: commit in memory only once the bytes are on disk.
       // This assignment used to happen BEFORE the write, so a failed write on
       // desktop (a read-only ELECTRON_USER_DATA_PATH) left the process serving
@@ -2978,9 +3619,41 @@ function serializeGameWrite<T>(fn: () => Promise<T>): Promise<T> {
  * ~17 OTHER `saveDB` call sites, still untouched) is never silently undone
  * by a game write that started before it and finishes after.
  */
-async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
+/**
+ * Content growth past the hosted budget is refused; a write that does not grow
+ * the store (delete, shrinking edit) always passes, so a full store can drain.
+ * Cost is the changed rows only: a full stringify per refused write let a /48
+ * flood hold /api/health at p50 176 ms (S15-1). `dbBytes` is exact after every
+ * upload (its body is measured) and tracks row deltas between uploads.
+ */
+let dbBytes = -1; // -1: unknown, measured on the next growth check
+function storeBytes(): number {
+  if (dbBytes < 0) dbBytes = Buffer.byteLength(JSON.stringify(loadDB(), null, 2));
+  return dbBytes;
+}
+function rowsDelta<T>(before: T[], after: T[]): number {
+  if (before === after) return 0; // same array: an in-place edit, bounded per row, exact again at the next upload
+  // Exact in the pretty store: an element of a top-level array sits at indent 4 and adds ",\n".
+  const size = (x: T) => Buffer.byteLength(JSON.stringify(x, null, 2).replace(/\n/g, "\n    ")) + 6;
+  const had = new Set(before), kept = new Set(after);
+  let delta = 0;
+  for (const x of before) if (!kept.has(x)) delta -= size(x);
+  for (const x of after) if (!had.has(x)) delta += size(x);
+  if (before.length === 0 && after.length > 0) delta += 2; // "[]" opens to "[\n ... \n  ]"
+  if (before.length > 0 && after.length === 0) delta -= 2;
+  return delta;
+}
+function growsPastBudget(delta: number): boolean {
+  return !isDesktop() && delta > 0 && storeBytes() + delta > DB_MAX_BYTES;
+}
+const STORAGE_FULL = "Saved-game storage is full right now. Delete a saved game to make room, then save again.";
+
+async function saveDBAwaited(games: SavedGame[]): Promise<boolean | "full"> {
+  const delta = rowsDelta(inMemoryDb?.games ?? [], games);
+  if (growsPastBudget(delta)) return "full";
   if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
     inMemoryDb = { users: inMemoryDb?.users ?? [], games };
+    if (dbBytes >= 0) dbBytes += delta;
     scheduleGcsSave(); // #85's coalescing pump — see this function's own comment for why this branch cannot also await a per-request result
     return true;
   }
@@ -2993,6 +3666,7 @@ async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
     const payload: DB = { users: inMemoryDb?.users ?? [], games };
     writeFileAtomicSync(DB_FILE, JSON.stringify(payload, null, 2));
     inMemoryDb = { users: inMemoryDb?.users ?? [], games };
+    dbBytes = -1;
     return true;
   } catch (err) {
     console.error("Error writing db.json:", err);
@@ -3010,10 +3684,23 @@ async function saveDBAwaited(games: SavedGame[]): Promise<boolean> {
  * once handed off, exactly like every other `saveDB` call site.
  */
 async function saveDBOrFail(games: SavedGame[], res: express.Response): Promise<boolean> {
-  if (await saveDBAwaited(games)) return true;
+  const saved = await saveDBAwaited(games);
+  if (saved === "full") { res.status(507).json({ error: STORAGE_FULL }); return false; }
+  if (saved) return true;
   res.status(500).json({ error: "Could not save your changes. Please try again." });
   return false;
 }
+
+// A mail server that accepts and then goes quiet held register, forgot-password,
+// delete-request and feedback open for nodemailer's defaults (2 min to connect,
+// 10 min idle) — measured >90s, while the client gives up at 22s. The socket
+// options close the connection; the whole-send deadline is what answers the
+// request, since a slow drip resets an idle timer on every line.
+const SMTP_DEADLINE_MS = (() => {
+  const ms = Number(process.env.SMTP_DEADLINE_MS || 15_000);
+  return Number.isFinite(ms) && ms > 0 ? ms : 15_000;
+})();
+const SMTP_SOCKET_TIMEOUTS = { connectionTimeout: SMTP_DEADLINE_MS, greetingTimeout: SMTP_DEADLINE_MS, socketTimeout: SMTP_DEADLINE_MS };
 
 // Helper to get NodeMailer transporter
 function getTransporter() {
@@ -3033,6 +3720,7 @@ function getTransporter() {
           user,
           pass,
         },
+        ...SMTP_SOCKET_TIMEOUTS,
       });
     }
 
@@ -3051,6 +3739,7 @@ function getTransporter() {
       ...(process.env.SMTP_ALLOW_INSECURE_TLS === "true"
         ? { tls: { rejectUnauthorized: false } }
         : {}),
+      ...SMTP_SOCKET_TIMEOUTS,
     });
   }
   return null;
@@ -3098,13 +3787,13 @@ async function sendVerificationEmail(email: string, code: string, username: stri
   }
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: email,
       subject: `Your Nash Sim Verification Code: ${code}`,
       text: `Your Nash Sim verification code is: ${code}. It expires in 10 minutes.`,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Verification email sent successfully using custom SMTP:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
@@ -3143,13 +3832,13 @@ async function sendDeleteEmail(email: string, code: string, username: string): P
   }
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: email,
       subject: `Confirm Account Deletion Request: ${code}`,
       text: `Your account deletion security code is: ${code}. It expires in 10 minutes.`,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Account Deletion confirmation email sent successfully:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
@@ -3188,13 +3877,13 @@ async function sendRecoveryEmail(email: string, code: string): Promise<{ success
   }
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: email,
       subject: `Your Nash Sim Password Recovery Code: ${code}`,
       text: `Your Nash Sim password recovery code is: ${code}. It expires in 10 minutes.`,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Password recovery email sent successfully:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
@@ -3255,20 +3944,39 @@ async function sendFeedbackEmail(
     `Rating: ${stars}\nFrom: ${senderLabel}\n\n${message}`;
 
   try {
-    const info = await transporter.sendMail({
+    const info = await withDeadline(transporter.sendMail({
       from,
       to: FEEDBACK_INBOX,
       ...(fromEmail ? { replyTo: fromEmail } : {}),
       subject: `New Feedback${rating ? ` (${rating}★)` : ""} — Nash Equilibrium Simulator`,
       text: textContent,
       html: htmlContent,
-    });
+    }), 'SMTP sendMail()', SMTP_DEADLINE_MS, 'SMTP');
     console.log("Feedback email sent successfully:", info.messageId);
     return { success: true, via: "smtp", messageId: info.messageId };
   } catch (err: any) {
     console.error("Failed to send feedback email:", err);
     throw new Error(`SMTP Mail delivery failed: ${err.message}`);
   }
+}
+
+// The coding to send, of those on offer, for an Accept-Encoding: the higher q wins, a tie goes to br, `*` covers an
+// unlisted coding, q=0 refuses; undefined is identity. q is clamped to [0, 1] (RFC 9110 §12.4.2): `gzip;q=5` ties br
+// at 1, and `br;q=-1` refuses br rather than falling back to `*`. The ONE negotiation for every compressed answer.
+function pickCoding(acceptEncoding: string, br: boolean, gzip: boolean): "br" | "gzip" | undefined {
+  const qOf = (coding: string) => {
+    let own = -1, star = 0;
+    for (const part of acceptEncoding.toLowerCase().split(",")) {
+      const [name, ...params] = part.split(";").map((s) => s.trim());
+      const qp = params.find((p) => p.startsWith("q="));
+      const v = qp === undefined ? 1 : Number(qp.slice(2));
+      const q = Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 0;
+      if (name === coding) own = Math.max(own, q); else if (name === "*") star = Math.max(star, q);
+    }
+    return own >= 0 ? own : star;
+  };
+  const qb = br ? qOf("br") : 0, qg = gzip ? qOf("gzip") : 0;
+  return qb > 0 && qb >= qg ? "br" : qg > 0 ? "gzip" : undefined;
 }
 
 async function startServer() {
@@ -3300,6 +4008,25 @@ async function startServer() {
   sweepStaleAtomicTmpFiles(DB_FILE, Number.isFinite(sweepMaxAgeMs) && sweepMaxAgeMs > 0 ? sweepMaxAgeMs : undefined);
 
   const app = express();
+  app.disable("x-powered-by"); // advertised the framework on every response (sweep 26)
+  // Hosted: a string body (every res.json) of 1 KB or more goes out br/gzip by pickCoding. A 200-game library was
+  // 80 KB raw and Cloud Run compresses nothing (sweep 28, S28-1). send then sets Content-Length, a per-coding ETag
+  // and 304 from the coded bytes. br q5 costs ~1 ms on the library (q11 ~80 ms). BREACH needs a credential the
+  // browser attaches on its own; auth here is a Bearer header only (pinned in src/compression.cloud.test.ts).
+  if (process.env.IS_ELECTRON !== "true") {
+    const send = app.response.send;
+    app.response.send = function (this: express.Response, body?: unknown) {
+      if (typeof body === "string" && Buffer.byteLength(body) >= 1024) {
+        this.vary("Accept-Encoding");
+        const coding = pickCoding(String(this.req.headers["accept-encoding"] ?? ""), true, true);
+        if (coding) {
+          this.setHeader("Content-Encoding", coding);
+          body = coding === "br" ? zlib.brotliCompressSync(body, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } }) : zlib.gzipSync(body);
+        }
+      }
+      return send.call(this, body);
+    };
+  }
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
   // Trust the proxy in front of us (e.g. Cloud Run) so req.ip reflects the real
@@ -3361,13 +4088,34 @@ async function startServer() {
     });
   }
 
+  // Baseline security headers. A full content CSP is intentionally omitted here
+  // because the app loads Google Analytics + inline scripts and Plotly may use
+  // eval/blob workers — tightening script/style/connect needs browser testing.
+  // Second only to the Host guard: it sat after the www 301 and express.json, so
+  // those answers and every body-parser 400/413/415 went out bare (sweep 26).
+  // HSTS is hosted-only and unconditional: UAs ignore it over http (RFC 6797 §8.1).
+  const sendHsts = process.env.IS_ELECTRON !== "true";
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+    if (sendHsts) res.setHeader("Strict-Transport-Security", "max-age=31536000");
+    next();
+  });
+
   // `www` is not a canonical host (sitemap/robots/canonical all use the bare
   // apex): 301 it straight to the apex, same shape as the existing http->https
   // redirect at the edge. Case-insensitive host match; preserves path+query.
   app.use((req, res, next) => {
     const host = req.headers.host;
-    if (host && /^www\.nash-equilibrium-simulator\.com$/i.test(host)) {
-      res.redirect(301, `https://nash-equilibrium-simulator.com${req.originalUrl}`);
+    // A trailing-dot FQDN or an explicit port is still www (live, Google's edge 301s both).
+    if (host && /^www\.nash-equilibrium-simulator\.com\.?(?::\d+)?$/i.test(host)) {
+      // Only an origin-form target ("/…") is a path. Node also accepts absolute-form and "*",
+      // and appending those made `GET pany://x/` answer …simulator.company (sweep 21).
+      const target = req.originalUrl.startsWith("/") ? req.originalUrl : "/";
+      res.redirect(301, `https://nash-equilibrium-simulator.com${target}`);
       return;
     }
     next();
@@ -3383,17 +4131,9 @@ async function startServer() {
       + "was running. Quit and reopen the app, then try again." });
   });
 
-  // Baseline security headers. A full content CSP is intentionally omitted here
-  // because the app loads Google Analytics + inline scripts and Plotly may use
-  // eval/blob workers — tightening script/style/connect needs browser testing.
-  app.use((req, res, next) => {
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-    res.setHeader("X-Frame-Options", "DENY");
-    res.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
-    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
-    next();
-  });
+  // Account data (sessions, games, admin PII) is never kept in a browser's or
+  // proxy's cache: on a shared machine it outlived sign-out (sweep 11).
+  app.use(["/api/auth", "/api/games", "/api/admin"], (req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 
   // CORS for cross-origin API access (e.g. from the local Electron client to the
   // website backend). Set CORS_ALLOWED_ORIGINS (comma-separated) to restrict to
@@ -3500,8 +4240,28 @@ async function startServer() {
     next();
   });
 
+  // Every /api/auth field is a string when present. Each route did
+  // `email.trim()` / `verifyPassword(password, ...)` / `safeEqual(stored, code)`
+  // on whatever JSON arrived, so `{"email":5}` or `{"password":{}}` answered
+  // 500 "Internal server error" on login, register, verify, forgot, reset and
+  // delete-confirm (live, sweep 1). A malformed field is the client's error.
+  const authFieldsAreStrings = (b: unknown): boolean => {
+    if (b === null || typeof b !== "object" || Array.isArray(b)) return false;
+    const r = b as Record<string, unknown>;
+    return ["username", "email", "password", "code", "newPassword"].every((f) => r[f] == null || typeof r[f] === "string");
+  };
+  app.use("/api/auth", (req, res, next) => {
+    if (req.method !== "POST" || req.body === undefined || authFieldsAreStrings(req.body)) return next();
+    res.status(400).json({ error: "Invalid request." });
+  });
+
+  // Hosted: every route that reads or writes accounts/games needs a store this
+  // process has read (see `requireGcsStore`). Mounted after CORS so a 503 is
+  // still readable cross-origin; OPTIONS never reaches here.
+  app.use(["/api/admin", "/api/auth", "/api/games"], requireGcsStore);
+
   // ── Admin Stats API ────────────────────────────────────────────────────────
-  app.get("/api/admin/stats", rateLimit("admin", 10, 60_000), (req, res) => {
+  app.get("/api/admin/stats", rateLimit("admin", 10, 60_000), asyncHandler(async (req, res) => {
     const secret = req.headers["x-admin-secret"] as string;
     // Fail closed: reject when ADMIN_SECRET is unconfigured or the header is
     // missing — otherwise an unset env makes `undefined !== undefined` false and
@@ -3509,7 +4269,17 @@ async function startServer() {
     if (!process.env.ADMIN_SECRET || !secret || !safeEqual(secret, process.env.ADMIN_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
+    // Hosted, the games are counted off one listing of their objects.
+    let stored: Map<string, number> | null = null;
+    if (accountGames) {
+      try { stored = await accountGames.counts(); } catch (err) {
+        console.error("Admin stats: listing the saved-game objects failed:", err);
+        res.setHeader("Retry-After", "30");
+        return res.status(503).json({ error: "Saved-game counts are temporarily unavailable. Please try again shortly." });
+      }
+    }
     const db = loadDB();
+    const gamesOf = (u: User) => (stored ? [u.id, ...(u.mergedFrom ?? [])].reduce((n, k) => n + (stored.get(k) ?? 0), 0) : db.games.filter(g => g.userId === u.id).length);
     const now = Date.now();
     const day = 86400000;
     const signupsToday = db.users.filter(u => {
@@ -3526,17 +4296,17 @@ async function startServer() {
       totalUsers: db.users.length,
       verifiedUsers: db.users.filter(u => u.isVerified).length,
       unverifiedUsers: db.users.filter(u => !u.isVerified).length,
-      totalGames: db.games.length,
+      totalGames: stored ? [...stored.values()].reduce((a, b) => a + b, 0) : db.games.length,
       signupsToday,
       signupsThisWeek,
       users: db.users.map(u => ({
         username: u.username,
         email: u.email,
         isVerified: u.isVerified,
-        gamesCount: db.games.filter(g => g.userId === u.id).length,
+        gamesCount: gamesOf(u),
       })),
     });
-  });
+  }));
 
   // ── Authentication API ─────────────────────────────────────────────────────
 
@@ -3874,26 +4644,15 @@ async function startServer() {
     //     gets a template report with no story.
     //   * App.tsx's `source === 'llm' && validation?.ok === true` clause, and
     //     with it the client's whole untrusted-envelope rendering, is dead.
-    //   * THE REPORT CACHE NEVER SERVES. `reportCache` is written only under
-    //     `source === 'llm'`, so it is never populated, and the note below
-    //     about serving an identical request "instantly" describes behaviour
-    //     that no longer happens. Harmless in practice — the presets supply
-    //     their own scenario and cost zero calls anyway.
+    //   * The report cache that lived here was DELETED (BLUE-LOOP-CLOUD-22):
+    //     written only under `source === 'llm'`, it never served, and no test
+    //     could fail on its key. Clients still send `bypassCache`; it is ignored.
     //
     // NOT DELETED ON PURPOSE: rung 2 (model states the payoffs, solver still
     // states the equilibria) is on the roadmap and will need all of it.
     // Labelled instead, because the cost of this code is not that it runs — it
     // is that four guarantees look live to anyone reading the file.
     // ─────────────────────────────────────────────────────────────────────────
-
-    // Cache: serve a previously validated envelope for the identical
-    // (matrix, scenario) instantly. bypassCache comes from an explicit
-    // Regenerate click, which must roll fresh (and then overwrites the entry).
-    const cacheKey = reportCacheKey(payoffs, scenario);
-    if (req.body?.bypassCache !== true) {
-      const hit = reportCache.get(cacheKey);
-      if (hit) return res.json(hit);
-    }
 
     const groundTruth = computeAllNE(payoffs);
 
@@ -3913,7 +4672,11 @@ async function startServer() {
     // Model is server-controlled on purpose — a client-supplied model would let
     // anyone bill the expensive one. The eval sweep calls generateReport
     // directly, so it varies the model without this route needing to accept it.
-    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT });
+    // Flags-off only (production never reaches here): a provider that never
+    // answered held this request past the client's own give-up. Same budget
+    // and client-gone abort as the scenario draws; both calls share it.
+    const reportSignal = AbortSignal.any([clientGoneSignal(res), AbortSignal.timeout(SCENARIO_REQUEST_BUDGET_MS)]);
+    let { report, failure } = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT, signal: reportSignal });
 
     // The prompt already forbids inventing a story for a game that has one,
     // but that is an instruction, not a guarantee — models drift. Enforce it:
@@ -3971,7 +4734,7 @@ async function startServer() {
       let gates = assess(report);
       if (gates.rank < 3) {
         console.warn(`[report] declared-claims gate failed (scenarioOk=${gates.scenarioOk}, proseOk=${gates.proseOk}) — retrying once`);
-        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT });
+        const second = await generateReport(payoffs, { model: DEFAULT_MODEL, scenario, reasoning: REPORT_REASONING, systemPrompt: LOCAL_PROMPT, signal: reportSignal });
         if (second.report) {
           // Same enforcement as the first attempt: never offer a replacement
           // scenario the user didn't ask for.
@@ -4009,10 +4772,8 @@ async function startServer() {
         report: null,
         validation: null,
         groundTruth,
-        // This branch's `generateReport` call never passes `signal` (dead
-        // code below the production-flags note above), so `failure` can never
-        // actually be 'aborted' here — narrowed only to satisfy the envelope's
-        // pre-existing fallbackReason union, unchanged by BLUE-CANCEL-12.
+        // 'aborted' (budget spent or client gone) is reported as 'error': the
+        // envelope's fallbackReason union has no 'aborted'.
         fallbackReason: (failure === "aborted" ? "error" : failure) ?? "error",
       };
       return res.json(envelope);
@@ -4048,17 +4809,6 @@ async function startServer() {
           groundTruth,
           fallbackReason: "validation-failed",
         };
-
-    // Only fully-verified envelopes are worth serving twice. Insertion-order
-    // eviction keeps the map bounded; the presets are re-cached on their
-    // next request if ever evicted.
-    if (envelope.source === "llm" && envelope.validation?.ok) {
-      if (reportCache.size >= REPORT_CACHE_MAX) {
-        const oldest = reportCache.keys().next().value;
-        if (oldest !== undefined) reportCache.delete(oldest);
-      }
-      reportCache.set(cacheKey, envelope);
-    }
     return res.json(envelope);
   }));
 
@@ -4153,10 +4903,13 @@ async function startServer() {
     // Rating is optional; clamp to 1–5 if present.
     let ratingValue: number | null = null;
     if (rating !== undefined && rating !== null && rating !== 0) {
-      const r = Math.round(Number(rating));
+      // Number() throws on an object with no usable toString/valueOf (sweep 16: a 500).
+      const r = typeof rating === "number" || typeof rating === "string" ? Math.round(Number(rating)) : NaN;
       if (!Number.isNaN(r) && r >= 1 && r <= 5) ratingValue = r;
     }
 
+    const poolWait = takeMail("feedback");
+    if (poolWait > 0) return mailRefused(res, poolWait, "feedback");
     try {
       await sendFeedbackEmail(trimmedMessage, ratingValue, fromEmail);
       return res.json({
@@ -4201,7 +4954,16 @@ async function startServer() {
           const [metadata] = await withDeadline(file.getMetadata(), 'dmg getMetadata()');
           const size = metadata.size !== undefined && metadata.size !== null
             ? parseInt(String(metadata.size), 10) : null;
+          // A release (gcloud storage cp) replaces the object: a resume across it spliced v1's head onto v2's
+          // tail, and one landing between getMetadata() and the read sent v2's bytes under v1's length
+          // (sweep 24). The strong ETag is the generation and the read is pinned to it (a stale pin 404s ->
+          // 500); If-Match / If-Range compare strongly, so a W/ tag or a date never matches (RFC 9110 §13.1).
+          const etag = metadata.generation ? `"${metadata.generation}"` : undefined;
+          const ifMatch = req.headers['if-match'];
+          if (ifMatch !== undefined && !ifMatch.split(',').some((t) => t.trim() === '*' || t.trim() === etag)) return res.status(412).end();
+          const pinned = file.bucket.file(file.name, { generation: metadata.generation });
 
+          if (etag) res.setHeader('ETag', etag);
           res.setHeader('Content-Type', 'application/octet-stream');
           res.setHeader('Content-Disposition', 'attachment; filename="Nash Equilibrium Simulator.dmg"');
           if (size !== null && Number.isFinite(size)) res.setHeader('Accept-Ranges', 'bytes');
@@ -4221,12 +4983,20 @@ async function startServer() {
           }
 
           const streamAndPipe = (range?: { start: number; end: number }) => {
-            const stream = range ? file.createReadStream(range) : file.createReadStream();
+            const stream = range ? pinned.createReadStream(range) : pinned.createReadStream();
             stream.on('error', (err) => {
               console.error("Error streaming DMG from GCS:", err);
-              if (!res.headersSent) res.status(500).json({ error: "Internal Server Error" });
+              if (!res.headersSent) {
+                // The download's headers are already set: a JSON 500 must not go out as an octet-stream attachment.
+                for (const h of ['Content-Type', 'Content-Disposition', 'Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag']) res.removeHeader(h);
+                res.status(500).json({ error: "Internal Server Error" });
+              }
               else res.destroy();
             });
+            // pipe() never ends the SOURCE when the client drops: every aborted download kept its
+            // GCS read open and paused for the process's life (sweep 22: 120 of 120, still open 130 s on).
+            // Gone already (during the awaits above): the lazy read is destroyed before it requests.
+            onClientGone(res, () => stream.destroy());
             stream.pipe(res);
           };
 
@@ -4234,7 +5004,8 @@ async function startServer() {
           // otherwise means starting over. `Range: bytes=start-end`,
           // `bytes=start-` (open-ended), and `bytes=-N` (last N bytes) are
           // the three forms curl/browsers/download managers actually send.
-          const rangeHeader = size !== null ? req.headers.range : undefined;
+          const ifRange = req.get('if-range');
+          const rangeHeader = size !== null && (ifRange === undefined || ifRange.trim() === etag) ? req.headers.range : undefined;
           const m = typeof rangeHeader === 'string' ? /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim()) : null;
           if (m && (m[1] !== '' || m[2] !== '') && size !== null) {
             let start: number, end: number;
@@ -4298,7 +5069,7 @@ async function startServer() {
     if (!username || !email || !password) {
       return res.status(400).json({ error: "Username, email, and password are required." });
     }
-    const usernameTrimmed = cleanText(username, 40);
+    const usernameTrimmed = cleanUsername(username);
     if (!usernameTrimmed) {
       return res.status(400).json({ error: "Username is required." });
     }
@@ -4311,21 +5082,31 @@ async function startServer() {
       });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
-    const db = loadDB();
+    const emailTrimmed = emailKey(email);
+    // One mailbox (the input[type=email] shape): nodemailer read "a@x, b@y",
+    // "<b@y>" or a CRLF "Bcc:" as more recipients, so one sign-up mailed its
+    // code to addresses the account does not own (sweep 6).
+    if (emailTrimmed.length > 254 || !EMAIL_SHAPE.test(emailTrimmed)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
     const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
+    // Hashed BEFORE the store is read (nothing below awaits until the row is written) and only where a row takes it:
+    // a hosted re-register of a pending address stores no password. A row that left meanwhile is a 503 (no hash to store).
+    const passwordHash = isElectron || !findByEmail(loadDB().users, emailTrimmed) ? await hashPassword(password) : "";
+    const db = loadDB();
 
     // Check for duplicate username (case-insensitive)
     const usernameTaken = db.users.find(
-      u => u.username.trim().toLowerCase() === usernameTrimmed.toLowerCase()
-        && u.email.trim().toLowerCase() !== emailTrimmed
+      u => usernameKey(u.username) === usernameKey(usernameTrimmed)
+        && emailKey(u.email) !== emailTrimmed
     );
     if (usernameTaken) {
       return res.status(400).json({ error: "That username is already taken. Please choose a different one." });
     }
 
     // Check if user exists using trimmed, lowercased comparison
-    const existingUser = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+    const existingUser = findByEmail(db.users, emailTrimmed);
+    if (!existingUser && !passwordHash) throw new ServerBusy();
     if (existingUser) {
       if (existingUser.isVerified) {
         return res.status(400).json({ error: "An account with this email already exists." });
@@ -4333,7 +5114,7 @@ async function startServer() {
 
       // If we are in Electron local mode, mark them verified instantly and save
       if (isElectron) {
-        const verified = { ...existingUser, isVerified: true, username: usernameTrimmed, passwordHash: hashPassword(password) };
+        const verified = { ...existingUser, isVerified: true, username: usernameTrimmed, passwordHash };
         if (!saveDB({ users: db.users.map((u) => (u === existingUser ? verified : u)), games: db.games })) {
           return res.status(500).json({ error: "Could not create your account: nothing was saved. Please try again." });
         }
@@ -4344,14 +5125,36 @@ async function startServer() {
         });
       }
 
-      // If of the unverified user on the website, refresh code
-      const updatedCode = makeCode();
-      existingUser.username = usernameTrimmed;
-      existingUser.passwordHash = hashPassword(password);
-      existingUser.verificationCode = updatedCode;
-      existingUser.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
-      existingUser.verificationCodeAttempts = undefined; // fresh code → fresh attempt budget
-      saveDB(db);
+      // Pending on the website: re-send the code, never the credentials. Verify
+      // sets the password and name of whoever holds the code (the mailbox), so
+      // a stranger's re-register changes nothing, and a live code is re-sent,
+      // not replaced, so it cannot kill the owner's code or reset its attempts.
+      // Every resend (live, expired or locked code) waits out the cooldown:
+      // locking a code with 5 wrong tries then re-registering mailed again. A
+      // live code is already in the inbox: send the user on to enter it (a 429
+      // there left the owner stuck on the form while an attacker re-registered).
+      const live = !!existingUser.verificationCode && existingUser.verificationCodeExpires >= Date.now();
+      const wait = mailCooldownLeft("verification", emailTrimmed);
+      if (wait > 0) {
+        if (live) {
+          return res.json({ success: true, email: emailTrimmed, via: "smtp", previewUrl: null,
+            message: "A code for this email was sent less than a minute ago. Enter the 6-digit code from your inbox; if nothing arrives, register again in a minute." });
+        }
+        setRetryAfter(res, wait);
+        return res.status(429).json({ error: "A code for this email went out less than a minute ago. Please try again in a minute." });
+      }
+      const poolWait = takeMail("signup", emailTrimmed);
+      if (poolWait > 0) {
+        releaseCodeMail("verification", emailTrimmed); // nothing went out
+        return mailRefused(res, poolWait, "verification emails");
+      }
+      const updatedCode = live ? existingUser.verificationCode : makeCode();
+      if (!live) {
+        existingUser.verificationCode = updatedCode;
+        existingUser.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+        existingUser.verificationCodeAttempts = undefined; // fresh code → fresh attempt budget
+        saveDB(db);
+      }
 
       let emailResult;
       let emailErrorMsg = null;
@@ -4362,12 +5165,15 @@ async function startServer() {
       }
 
       if (emailErrorMsg) {
+        releaseCodeMail("verification", emailTrimmed); // nothing went out: do not make them wait
         return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
       }
 
       return res.json({
         success: true,
-        message: "Unverified user exists. Sent a new 6-digit verification code to your email address.",
+        message: live
+          ? "This email is waiting for verification. We sent its 6-digit code to your email address again."
+          : "Unverified user exists. Sent a new 6-digit verification code to your email address.",
         email: emailTrimmed,
         via: emailResult?.via || "smtp",
         previewUrl: emailResult?.previewUrl || null
@@ -4380,7 +5186,7 @@ async function startServer() {
         id: makeId("u"),
         username: usernameTrimmed,
         email: emailTrimmed,
-        passwordHash: hashPassword(password),
+        passwordHash,
         isVerified: true,
         verificationCode: "",
         verificationCodeExpires: 0
@@ -4395,8 +5201,22 @@ async function startServer() {
       });
     }
 
+    // Every verification mail, first or resend, takes the address's slot: a
+    // swept (e.g. locked) row must not buy a fresh mail inside the minute.
+    const wait = mailCooldownLeft("verification", emailTrimmed);
+    if (wait > 0) {
+      setRetryAfter(res, wait);
+      return res.status(429).json({ error: "A code for this email went out less than a minute ago. Please try again in a minute." });
+    }
     const verificationCode = makeCode();
-    const passwordHash = hashPassword(password); // freshly salted: identifies THIS request's row (rollback below)
+    // Pending rows now survive a failed send (no rollback), so each new sign-up
+    // sweeps pending rows whose code died an hour ago and own no games: db.json
+    // cannot grow without bound from abandoned or junk registrations (sweep 6).
+    const stale = Date.now() - PENDING_TTL_MS;
+    // Hosted, who owns games is known from the objects (null until listed: sweep nothing).
+    const owners = accountGames ? accountGames.knownOwners() : new Set(db.games.map((g) => g.userId));
+    const kept = owners === null ? db.users
+      : db.users.filter((u) => u.isVerified || owners.has(u.id) || !(u.verificationCodeExpires < stale));
     const newUser: User = {
       id: makeId("u"),
       username: usernameTrimmed,
@@ -4407,8 +5227,23 @@ async function startServer() {
       verificationCodeExpires: Date.now() + 10 * 60 * 1000
     };
 
-    db.users.push(newUser);
+    // The sweep and the new row are ONE write, budgeted and counted together: the
+    // sweep alone was invisible to both, so a sign-up that shrank a full store was
+    // 507 and the swept bytes stayed on the counter (sweep 17).
+    const users = [...kept, newUser];
+    const userDelta = rowsDelta(db.users, users);
+    if (growsPastBudget(userDelta)) {
+      releaseCodeMail("verification", emailTrimmed); // nothing went out
+      return res.status(507).json({ error: "New sign-ups are paused because account storage is full. Please try again later." });
+    }
+    const poolWait = takeMail("signup", emailTrimmed); // before the row: a refused sign-up writes nothing
+    if (poolWait > 0) {
+      releaseCodeMail("verification", emailTrimmed);
+      return mailRefused(res, poolWait, "verification emails");
+    }
+    db.users = users;
     saveDB(db);
+    if (dbBytes >= 0) dbBytes += userDelta;
 
     let emailResult;
     let emailErrorMsg = null;
@@ -4419,14 +5254,10 @@ async function startServer() {
     }
 
     if (emailErrorMsg) {
-      // Discard the unverified registration if SMTP is failing completely,
-      // so we do not block subsequent attempts when SMTP config is updated.
-      // Review #15: re-read AFTER the await; writing the pre-send `db` back undid
-      // other routes' commits. Remove the row only while it is still ours: a retry
-      // re-hashes (new salt; a 6-digit code can repeat, review #16) and owns it, and
-      // a mail that was delivered before the error may already have verified it.
-      const now = loadDB();
-      saveDB({ users: now.users.filter((u) => !(u.id === newUser.id && u.passwordHash === passwordHash && !u.isVerified)), games: now.games });
+      // The pending row stays: a retry now re-sends its code instead of being
+      // blocked, so the old rollback's reason is gone, and it deleted the row a
+      // retry had just been told to verify (sweep 6). The slot is handed back.
+      releaseCodeMail("verification", emailTrimmed);
       return res.status(500).json({ error: verificationEmailFailure(emailErrorMsg) });
     }
 
@@ -4440,15 +5271,30 @@ async function startServer() {
   }));
 
   // Verify Endpoint
-  app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), (req, res) => {
-    const { email, code } = req.body;
-    if (!email || !code) {
-      return res.status(400).json({ error: "Email and verification code are required." });
+  app.post("/api/auth/verify", rateLimit("verify", 12, 60_000), asyncHandler(async (req, res) => {
+    const { email, code, password, username } = req.body;
+    // Hosted: the code proves the mailbox, so its holder's password (and name)
+    // become the account's. Verifying whatever the LAST registrant stored let a
+    // stranger's re-register take the owner's code (pre-hijack, sweeps 4-6).
+    // Desktop auto-verifies on register; its legacy pending path is unchanged.
+    const hosted = !process.env.ELECTRON_USER_DATA_PATH;
+    if (!email || !code || (hosted && !password)) {
+      return res.status(400).json({ error: hosted ? "Email, verification code and password are required." : "Email and verification code are required." });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const emailTrimmed = emailKey(email);
+    // The password work runs first, off the event loop; every check below reads the store as it is after it,
+    // and a row whose hash changed meanwhile is a 503 (never a decision or a write on a stale row, sweep 17).
+    const before = findByIdentifier(loadDB().users, emailTrimmed);
+    const stored = hosted && before && !before.isVerified ? before.passwordHash : null;
+    const same = stored !== null && await verifyPassword(password, stored);
+    const newHash = stored !== null && !same ? await hashPassword(password) : null;
     const db = loadDB();
-    const userIndex = db.users.findIndex(u => u.email === emailTrimmed);
+    // Login's lookup: a username login's 403 opens this screen with the
+    // username as `email`, which used to dead-end in a 404 here.
+    const found = findByIdentifier(db.users, emailTrimmed);
+    if (stored !== null && (found?.id !== before?.id || found?.passwordHash !== stored)) throw new ServerBusy();
+    const userIndex = found ? db.users.indexOf(found) : -1;
 
     if (userIndex === -1) {
       return res.status(404).json({ error: "No pending registration found for this email." });
@@ -4464,6 +5310,24 @@ async function startServer() {
       return res.status(400).json({ error: "Verification code has expired. Please register again to get a new code." });
     }
 
+    // A new password (not the stored one: someone else registered this email
+    // first) meets the register policy and comes with a name, never keeping a
+    // stranger's pick. The UI always has both: register sends them, and
+    // login's 403 path sends the stored password. Checked before any attempt.
+    const name = hosted ? cleanUsername(username) : "";
+    const newPassword = hosted && !same;
+    if (newPassword && !/^(?=.*[a-z])(?=.*[A-Z]).{8,}$/.test(password)) {
+      return res.status(400).json({
+        error: "Password must be at least 8 characters long and contain at least one uppercase and one lowercase letter."
+      });
+    }
+    if (newPassword && !name) {
+      return res.status(400).json({ error: "Please choose a username for your account." });
+    }
+    if (name && db.users.some((u) => u.id !== user.id && usernameKey(u.username) === usernameKey(name))) {
+      return res.status(400).json({ error: "That username is already taken. Please choose a different one." });
+    }
+
     const verifyCheck = verifyOneTimeCode(user, "verification", code);
     if (!verifyCheck.ok) {
       saveDB(db);
@@ -4475,33 +5339,38 @@ async function startServer() {
     }
 
     // Mark verified — in memory only once it is on disk (STRUCT-DESKTOP-19's order).
-    if (!saveDB({ users: db.users.map((u) => (u === user ? { ...user, isVerified: true } : u)), games: db.games })) {
+    const owned = { ...(newPassword && newHash ? { passwordHash: newHash } : {}), ...(name ? { username: name } : {}) };
+    const verified = { ...user, ...owned, isVerified: true };
+    if (!saveDB({ users: db.users.map((u) => (u === user ? verified : u)), games: db.games })) {
       return res.status(500).json({ error: "Could not verify your account: nothing was saved. Please try again." });
     }
 
     res.json({
       success: true,
       message: "Email verified successfully! You can now log in.",
-      username: user.username
+      username: verified.username
     });
-  });
+  }));
 
   // Login Endpoint
-  app.post("/api/auth/login", rateLimit("login", 10, 60_000), (req, res) => {
+  app.post("/api/auth/login", rateLimit("login", 10, 60_000), asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: "Email/username and password are required." });
     }
 
-    const identifier = email.trim().toLowerCase();
-    const db = loadDB();
-    const candidate = db.users.find(u =>
-      u.email === identifier || u.username.toLowerCase() === identifier
-    );
+    const identifier = emailKey(email);
+    const candidate = findByIdentifier(loadDB().users, identifier);
     // Always run pbkdf2 (against a dummy hash on a miss) so a non-existent
     // account isn't revealed by a faster response — see DUMMY_PASSWORD_HASH.
-    const passwordOk = verifyPassword(password, candidate ? candidate.passwordHash : DUMMY_PASSWORD_HASH);
-    const user = candidate && passwordOk ? candidate : null;
+    const stored = candidate ? candidate.passwordHash : DUMMY_PASSWORD_HASH;
+    const passwordOk = await verifyPassword(password, stored);
+    const upgrade = candidate && passwordOk && needsPasswordRehash(stored) ? await hashPassword(password) : null;
+    // Read again after the hash: a row that changed hands, password or existence meanwhile is a 503, never a stale sign-in.
+    const db = loadDB();
+    const fresh = findByIdentifier(db.users, identifier);
+    if (fresh?.id !== candidate?.id || (fresh && fresh.passwordHash !== stored)) throw new ServerBusy();
+    const user = fresh && passwordOk ? fresh : null;
 
     if (!user) {
       return res.status(401).json({ error: "Invalid email/username or password." });
@@ -4515,8 +5384,8 @@ async function startServer() {
       });
     }
 
-    if (needsPasswordRehash(user.passwordHash)) {
-      user.passwordHash = hashPassword(password);
+    if (upgrade) {
+      user.passwordHash = upgrade;
       saveDB(db);
     }
     // Signing in never moves games by itself. Until RED-DESKTOP-11/001 this
@@ -4537,7 +5406,7 @@ async function startServer() {
       },
       localGames
     });
-  });
+  }));
 
   // Get Current Session
   app.get("/api/auth/me", rateLimit("me", 60, 60_000), (req, res) => {
@@ -4561,11 +5430,15 @@ async function startServer() {
       return res.status(400).json({ error: "Email address is required." });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const emailTrimmed = emailKey(email);
+    if (emailTrimmed.length > 254 || !EMAIL_SHAPE.test(emailTrimmed)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
     const db = loadDB();
-    const user = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+    const user = findByEmail(db.users, emailTrimmed);
 
     // Always return a success-looking response to prevent email enumeration
+    const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
     if (!user || !user.isVerified) {
       return res.json({
         success: true,
@@ -4573,13 +5446,28 @@ async function startServer() {
       });
     }
 
+    // One recovery mail per address per minute (no inbox flood). Register
+    // already tells whether an address has an account, so this adds no oracle.
+    const wait = isElectron ? 0 : mailCooldownLeft("recovery", emailTrimmed);
+    if (wait > 0) {
+      if (user.recoveryCode && (user.recoveryCodeExpires ?? 0) >= Date.now()) {
+        return res.json({ success: true, message: "A recovery code went out less than a minute ago. Enter the 6-digit code from your inbox." });
+      }
+      setRetryAfter(res, wait);
+      return res.status(429).json({ error: "A recovery code went out less than a minute ago. Please try again in a minute." });
+    }
+
+    const poolWait = takeMail("recovery", emailTrimmed);
+    if (poolWait > 0) {
+      releaseCodeMail("recovery", emailTrimmed);
+      return mailRefused(res, poolWait, "recovery emails");
+    }
     const recoveryCode = makeCode();
     const withCode = { ...user, recoveryCode, recoveryCodeExpires: Date.now() + 10 * 60 * 1000, recoveryCodeAttempts: undefined };
     if (!saveDB({ users: db.users.map((u) => (u === user ? withCode : u)), games: db.games })) {
       return res.status(500).json({ error: "Could not start the password reset: nothing was saved. Please try again." });
     }
 
-    const isElectron = !!process.env.ELECTRON_USER_DATA_PATH;
     let emailErrorMsg = null;
 
     if (!isElectron) {
@@ -4591,6 +5479,7 @@ async function startServer() {
     }
 
     if (emailErrorMsg && !isElectron) {
+      releaseCodeMail("recovery", emailTrimmed);
       return res.status(500).json({ error: "Could not send recovery email. Please try again later." });
     }
 
@@ -4604,7 +5493,7 @@ async function startServer() {
   }));
 
   // Reset Password — verify code and set new password
-  app.post("/api/auth/reset-password", rateLimit("reset", 8, 60_000), (req, res) => {
+  app.post("/api/auth/reset-password", rateLimit("reset", 8, 60_000), asyncHandler(async (req, res) => {
     const { email, code, newPassword } = req.body;
     if (!email || !code || !newPassword) {
       return res.status(400).json({ error: "Email, recovery code, and new password are required." });
@@ -4617,9 +5506,11 @@ async function startServer() {
       });
     }
 
-    const emailTrimmed = email.trim().toLowerCase();
+    const emailTrimmed = emailKey(email);
+    // Hashed BEFORE the store is read: nothing below awaits, so the code check and the write see one store.
+    const passwordHash = await hashPassword(newPassword);
     const db = loadDB();
-    const user = db.users.find(u => u.email.trim().toLowerCase() === emailTrimmed);
+    const user = findByEmail(db.users, emailTrimmed);
 
     if (!user) {
       return res.status(404).json({ error: "No account found for this email." });
@@ -4653,7 +5544,7 @@ async function startServer() {
     // Same shape as delete-confirm: a CANDIDATE, committed only once written.
     const updated: User = {
       ...user,
-      passwordHash: hashPassword(newPassword),
+      passwordHash,
       recoveryCode: undefined,
       recoveryCodeExpires: undefined,
       tokenVersion: (user.tokenVersion ?? 0) + 1, // invalidate existing sessions
@@ -4665,7 +5556,7 @@ async function startServer() {
     }
 
     res.json({ success: true, message: "Password reset successfully! You can now log in with your new password." });
-  });
+  }));
 
   // Request account deletion code
   app.post("/api/auth/delete-request", rateLimit("delete-request", 6, 60_000), asyncHandler(async (req, res) => {
@@ -4675,6 +5566,8 @@ async function startServer() {
     if (!user) {
       return res.status(401).json({ error: "Invalid session." });
     }
+    const poolWait = takeMail("delete", emailKey(user.email));
+    if (poolWait > 0) return mailRefused(res, poolWait, "confirmation emails");
 
     const deleteCode = makeCode();
     const withCode = { ...user, deleteCode, deleteCodeExpires: Date.now() + 10 * 60 * 1000, deleteCodeAttempts: undefined };
@@ -4704,7 +5597,7 @@ async function startServer() {
   }));
 
   // Verify deletion code and delete account
-  app.post("/api/auth/delete-confirm", rateLimit("delete-confirm", 8, 60_000), (req, res) => {
+  app.post("/api/auth/delete-confirm", rateLimit("delete-confirm", 8, 60_000), asyncHandler(async (req, res) => {
     const { code } = req.body;
 
     if (!code) {
@@ -4739,7 +5632,7 @@ async function startServer() {
       });
     }
 
-    const userEmail = user.email.toLowerCase().trim();
+    const userEmail = emailKey(user.email);
 
     // STRUCT-DESKTOP-19: this is the one route that promises destruction, so
     // it is the one route that must never report a write it did not make.
@@ -4752,11 +5645,36 @@ async function startServer() {
     // and every saved game back. `_gen/d19b3-deleteconfirm-false-destruction.mjs`
     // walks that end to end. The post-deletion database is now a CANDIDATE
     // that `saveDB` commits only after the bytes land, and a failure says so.
+    // Both wipes come from the same snapshot: every user record sharing this id
+    // or this email address, and the games of EVERY one of them (sweep 22, S1-2:
+    // a second row's games outlived it, orphaned, under "all ... deleted").
+    let gone = new Set(db.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id).map(u => u.id));
+    if (accountGames) {
+      // Hosted: the games are objects of their own, tombstoned FIRST (each
+      // behind any write already queued for it), while this process refuses
+      // new game writes for these accounts (`accountGames.deleting`), so none
+      // is re-created under an account about to disappear. On a failure the
+      // rows stay: deleting them with objects left would strand games nobody
+      // could delete.
+      try {
+        // Every account the deletion covers, re-read after each await (#208), with
+        // any fold or duplicate row a sync brings in meanwhile (Sweep 24).
+        gone = await tombstoneAccounts(u => emailKey(u.email) === userEmail || u.id === user.id);
+      } catch (err) {
+        // Some tombstones may have landed (a write past its deadline can still land), so the
+        // account may be part-way deleted: the retry (the code is still valid) or the account's
+        // next games request (finishAccountDeletion) completes it. Never "nothing was removed".
+        console.error("Account deletion: tombstoning the saved-game objects failed; the deletion is unfinished:", err);
+        res.setHeader("Retry-After", "30");
+        return res.status(503).json({
+          error: "We could not finish deleting your account right now. Please try again in a moment."
+        });
+      }
+    }
+    const fresh = loadDB();
     const remaining: DB = {
-      // Both wipes come from the same snapshot: the games saved by this user,
-      // and every user record sharing this id or this email address.
-      users: db.users.filter(u => u.email.toLowerCase().trim() !== userEmail && u.id !== user.id),
-      games: db.games.filter(g => g.userId !== user.id),
+      users: fresh.users.filter(u => !gone.has(u.id)),
+      games: fresh.games.filter(g => !gone.has(g.userId)),
     };
 
     if (!saveDB(remaining)) {
@@ -4769,7 +5687,7 @@ async function startServer() {
       success: true,
       message: "Your account and all saved game profiles have been successfully deleted from our records."
     });
-  });
+  }));
 
   // ── Desktop recovery hint ───────────────────────────────────────────────────
   // Unauthenticated `GET /api/games` returns 200 [] both for a brand-new
@@ -4791,16 +5709,26 @@ async function startServer() {
   // ── Custom Saved Games API ─────────────────────────────────────────────────
 
   // Get User's Custom Games
-  app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
+  app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
 
+    if (accountGames) {
+      try {
+        const parts = await accountGames.snapshot(accountKeys(user), res.locals.gcsWaitUntil ?? performance.now() + 2_000);
+        if (parts.some((p) => p.deleted)) return accountWasDeleted(res, user);
+        return res.json(parts.flatMap((p) => p.games));
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Saved games are temporarily unavailable. Please try again shortly.");
+      }
+    }
+
     const db = loadDB();
     const userGames = db.games.filter(g => g.userId === user.id);
     res.json(userGames);
-  });
+  }));
 
   // Create/Save a Custom Game
   app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
@@ -4825,6 +5753,46 @@ async function startServer() {
     const clientRequestId = typeof rawRequestId === "string" && rawRequestId.length > 0 && rawRequestId.length <= 100
       ? rawRequestId
       : undefined;
+
+    if (accountGames) {
+      if (accountGames.deleting(user.id)) return res.status(409).json({ error: "This account is being deleted." });
+      const keys = accountKeys(user);
+      try {
+        // Games of a folded duplicate count toward this account's limits.
+        const others = keys.length > 1 ? await accountGames.snapshot(keys.slice(1), res.locals.gcsWaitUntil ?? 0) : [];
+        const otherCount = others.reduce((n, p) => n + p.games.length, 0), otherBytes = others.reduce((n, p) => n + p.bytes, 0);
+        const story = () => ({
+          name: cleanName,
+          description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
+          payoffs: cleanMatrix,
+          ...cleanLabels(req.body),
+          ...cleanColorTerms(req.body, true),
+        });
+        const id = makeId("g"), createdAt = new Date().toISOString();
+        // Applied to the object as it stands when its write goes out (a 412
+        // re-applies it to the re-read object), so the clientRequestId retry
+        // check and the limit see every write that landed before it. Its own
+        // id found there is this request's write, landed: never a second row
+        // (Sweep 31: a re-apply after a lost answer appended it twice).
+        const outcome = await accountGames.mutate<RouteOutcome>(user.id, (games) => {
+          const existing = games.find((g) => g.id === id || (clientRequestId !== undefined && g.clientRequestId === clientRequestId));
+          if (existing) {
+            const updated: SavedGame = { ...existing, ...story() };
+            return { games: games.map((g) => (g === existing ? updated : g)), result: { status: 200, body: { success: true, message: "Game saved successfully!", game: updated } } };
+          }
+          if (games.length + otherCount >= MAX_GAMES_PER_USER) {
+            return { result: { status: 409, body: { error: `You have reached the ${MAX_GAMES_PER_USER} saved-game limit. Delete a saved game to save a new one.` } } };
+          }
+          const newGame: SavedGame = { id, userId: user.id, ...story(), createdAt, ...(clientRequestId ? { clientRequestId } : {}) };
+          return { games: [...games, newGame], result: { status: 200, body: { success: true, message: "Game saved successfully!", game: newGame } } };
+        }, { extraBytes: otherBytes });
+        if (outcome === ACCOUNT_FULL) return res.status(413).json({ error: ACCOUNT_GAMES_FULL });
+        if (outcome === ACCOUNT_GONE) return accountWasDeleted(res, user); // its deletion reached the object
+        return res.status(outcome.status).json(outcome.body);
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Could not save your changes. Please try again.");
+      }
+    }
 
     // The ENTIRE read-build-save sequence is serialized (see
     // serializeGameWrite's own comment): `loadDB()` happens INSIDE the
@@ -4868,6 +5836,9 @@ async function startServer() {
         }
       }
 
+      if (!isDesktop() && db.games.filter((g) => g.userId === user.id).length >= MAX_GAMES_PER_USER) {
+        return res.status(409).json({ error: `You have reached the ${MAX_GAMES_PER_USER} saved-game limit. Delete a saved game to save a new one.` });
+      }
       const newGame: SavedGame = {
         id: makeId("g"),
         userId: user.id,
@@ -4930,19 +5901,11 @@ async function startServer() {
       return res.status(400).json({ error: "Nothing to update." });
     }
 
-    // The ENTIRE read-find-build-save sequence is serialized (see
-    // serializeGameWrite's own comment) — including the not-found/ownership
-    // checks, which must read whatever the most recently queued write
-    // committed, not a snapshot from before this request waited its turn.
-    await serializeGameWrite(async () => {
-      const db = loadDB();
-      const game = db.games.find(g => g.id === req.params.id);
-      if (!game) {
-        return res.status(404).json({ error: "Game not found." });
-      }
-      if (game.userId !== user.id) {
-        return res.status(403).json({ error: "You are not authorized to edit this game." });
-      }
+    // The edit applied to a stored game: a NEW object (never the stored one
+    // mutated), or null when its highlights changed under it (409 below).
+    const HIGHLIGHTS_CHANGED = "This description's highlights changed on another device or tab. "
+      + "Reopen Edit to see the latest before saving again.";
+    const patched = (game: SavedGame): SavedGame | null => {
       // A NEW game object and a NEW games array — never mutate `game` (a
       // live reference into inMemoryDb.games) in place, or a failed write
       // would have nothing left to roll back FROM (saveDBAwaited's own
@@ -5003,14 +5966,53 @@ async function startServer() {
         const explicitAEmptiedByStoredB = !hasB && hasA && explicitA && pair.a.length === 0;
         const explicitBEmptiedByStoredA = !hasA && hasB && explicitB && pair.b.length === 0;
         if (untouchedAChanged || untouchedBChanged || explicitAEmptiedByStoredB || explicitBEmptiedByStoredA) {
-          return res.status(409).json({
-            error: "This description's highlights changed on another device or tab. "
-              + "Reopen Edit to see the latest before saving again.",
-          });
+          return null;
         }
         if (!hasA || explicitA || pair.a.length > 0 || allowClear) updatedGame.colorTermsA = pair.a;
         if (!hasB || explicitB || pair.b.length > 0 || allowClear) updatedGame.colorTermsB = pair.b;
       }
+      return updatedGame;
+    };
+
+    if (accountGames) {
+      if (accountGames.deleting(user.id)) return res.status(409).json({ error: "This account is being deleted." });
+      const keys = accountKeys(user);
+      try {
+        const parts = await accountGames.snapshot(keys, res.locals.gcsWaitUntil ?? 0);
+        // Another account's game is simply not in this account's objects: 404,
+        // which also says nothing about whether that id exists.
+        const at = parts.find((p) => p.games.some((g) => g.id === req.params.id)) ?? parts[0];
+        const otherBytes = parts.filter((p) => p !== at).reduce((n, p) => n + p.bytes, 0);
+        const outcome = await accountGames.mutate<RouteOutcome>(at.key, (games) => {
+          const game = games.find((g) => g.id === req.params.id);
+          if (!game) return { result: { status: 404, body: { error: "Game not found." } } };
+          const updatedGame = patched(game);
+          if (!updatedGame) return { result: { status: 409, body: { error: HIGHLIGHTS_CHANGED } } };
+          return { games: games.map((g) => (g === game ? updatedGame : g)), result: { status: 200, body: { success: true, message: "Game updated.", game: updatedGame } } };
+        }, { extraBytes: otherBytes });
+        if (outcome === ACCOUNT_FULL) return res.status(413).json({ error: ACCOUNT_GAMES_FULL });
+        if (outcome === ACCOUNT_GONE) return accountWasDeleted(res, user); // its deletion reached the object
+        return res.status(outcome.status).json(outcome.body);
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Could not save your changes. Please try again.");
+      }
+    }
+
+    // The ENTIRE read-find-build-save sequence is serialized (see
+    // serializeGameWrite's own comment) — including the not-found/ownership
+    // checks, which must read whatever the most recently queued write
+    // committed, not a snapshot from before this request waited its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const game = db.games.find(g => g.id === req.params.id);
+      if (!game) {
+        return res.status(404).json({ error: "Game not found." });
+      }
+      if (game.userId !== user.id) {
+        return res.status(403).json({ error: "You are not authorized to edit this game." });
+      }
+      const updatedGame = patched(game);
+      if (!updatedGame) return res.status(409).json({ error: HIGHLIGHTS_CHANGED });
       // `users` is NOT part of this candidate — see saveDBAwaited's own
       // comment for why a users snapshot here would race a concurrent,
       // unserialized account write.
@@ -5065,6 +6067,24 @@ async function startServer() {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
     const gameId = req.params.id;
+
+    if (accountGames) {
+      if (accountGames.deleting(user.id)) return res.status(409).json({ error: "This account is being deleted." });
+      try {
+        const parts = await accountGames.snapshot(accountKeys(user), res.locals.gcsWaitUntil ?? 0);
+        const at = parts.find((p) => p.games.some((g) => g.id === gameId)) ?? parts[0];
+        const outcome = await accountGames.mutate<RouteOutcome>(at.key, (games) => {
+          const rest = withoutFirstGame(games, gameId);
+          if (rest === null) return { result: { status: 404, body: { error: "Game not found." } } };
+          return { games: rest, result: { status: 200, body: { success: true, message: "Game deleted successfully." } } };
+        });
+        if (outcome === ACCOUNT_FULL) return res.status(413).json({ error: ACCOUNT_GAMES_FULL });
+        if (outcome === ACCOUNT_GONE) return accountWasDeleted(res, user); // its deletion reached the object
+        return res.status(outcome.status).json(outcome.body);
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Could not save your changes. Please try again.");
+      }
+    }
 
     // The ENTIRE read-find-save sequence is serialized (see
     // serializeGameWrite's own comment) — including the not-found/ownership
@@ -5174,7 +6194,45 @@ async function startServer() {
         }
         next();
       });
-      app.use(express.static(distPath));
+      // Hosted: hashed assets are immutable, and a JS/CSS with build-time siblings (scripts/precompress.mjs)
+      // goes out as .br/.gz. Cloud Run's front end compresses nothing: the page shipped 4.66 MB raw at
+      // max-age=0 (sweep 27). The boot listing is also the traversal check. q is honoured: the higher q wins,
+      // a tie goes to br, `*` covers an unlisted coding, q=0 refuses; otherwise identity. Desktop unchanged.
+      if (process.env.IS_ELECTRON !== "true") {
+        const assetDir = path.join(distPath, 'assets');
+        const listed = new Set(fs.existsSync(assetDir) ? fs.readdirSync(assetDir, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name) : []);
+        app.get('/assets/:file', (req, res, next) => {
+          const file = req.params.file;
+          // The exact spelling only: the router also matches another case and a trailing slash.
+          if (!listed.has(file) || req.path !== `/assets/${file}`) return next();
+          // send keeps a preset Cache-Control; every error answer below resets it to no-store.
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          const br = listed.has(`${file}.br`), gz = listed.has(`${file}.gz`);
+          if (!br && !gz) return next();
+          res.vary('Accept-Encoding');
+          const coding = pickCoding(String(req.headers['accept-encoding'] ?? ''), br, gz);
+          if (!coding) return next();
+          res.type(path.extname(file)).setHeader('Content-Encoding', coding);
+          // sendFile owns ETag/304/HEAD/Range. A 412/416 is the answer for the coding asked for (the error
+          // handler's JSON); only a sibling gone since boot (404) falls through to the raw file, its headers removed.
+          res.sendFile(`${file}.${coding === 'br' ? 'br' : 'gz'}`, { root: assetDir }, (err) => {
+            // Express's own sendFile triage: a client gone mid-send is not an error.
+            const e = err as (NodeJS.ErrnoException & { status?: number }) | undefined;
+            if (!e || e.code === 'ECONNABORTED' || e.syscall === 'write') return;
+            if (e.status !== 404 || res.headersSent) return next(e);
+            for (const h of ['Content-Encoding', 'Content-Type', 'ETag', 'Last-Modified']) res.removeHeader(h);
+            next();
+          });
+        });
+      }
+      // No directory redirect: serve-static echoes the raw target, so /\evil.example/%2e%2e/assets answered
+      // 301 Location /\evil.example/%2e%2e/assets/, which a browser reads as https://evil.example/ (sweep 22).
+      // dist/'s one directory, assets/, is a 404 either way.
+      app.use(express.static(distPath, { redirect: false }));
+      // A hashed asset not on disk is a 404, not the SPA shell as 200 text/html: a chunk that never uploaded
+      // passed the live smoke and handed the browser HTML for its script (sweep 25). no-store: no cache keeps
+      // the 404 for a chunk still uploading. /assets only; every other miss keeps the SPA fallback below.
+      app.use('/assets', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.status(404).json({ error: "Not found" }); });
       app.get('*', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
       });
@@ -5195,12 +6253,13 @@ async function startServer() {
   // here via `next(err)`; a plain synchronous handler that throws lands here
   // through Express's own built-in behavior. One logged, generic 500 instead
   // of a hung/reset connection and a crashed or silently poisoned process.
+  const logUnhandled = (err: unknown, req: express.Request) =>
+    console.error(`Unhandled error on ${req.method} ${req.path}:`, err instanceof Error ? (err.stack || err.message) : String(err));
   app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const cause = err instanceof Error ? (err.stack || err.message) : String(err);
-    console.error(`Unhandled error on ${req.method} ${req.path}:`, cause);
     if (res.headersSent) {
       // A response already started streaming; Express's own guidance is to
       // delegate to the default handler rather than try to send a second one.
+      logUnhandled(err, req);
       next(err);
       return;
     }
@@ -5216,22 +6275,28 @@ async function startServer() {
     // handler shipped without this carve-out. Only trust a 4xx (never a
     // spoofed/mistaken 5xx or something out of range) from upstream
     // middleware; anything else still collapses to a logged, generic 500.
+    // The answer is this handler's own JSON: send sets the asset's type, validators and year-long cache before
+    // its 412/416 (a JSON 412 went out as application/javascript: res.json keeps a preset type), and the /assets
+    // route sets its coding (sweep 27).
+    for (const h of ["Content-Type", "Content-Encoding", "ETag", "Last-Modified"]) res.removeHeader(h);
+    res.setHeader("Cache-Control", "no-store");
     const upstreamStatus = (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.status
       ?? (err as { status?: unknown; statusCode?: unknown } | null | undefined)?.statusCode;
+    // Not logged: the client's own error, and body-parser's message echoes its
+    // raw bytes (a newline in a bad body forged a separate log line, sweep 16).
+    if (err instanceof ServerBusy) {
+      setRetryAfter(res, 5_000);
+      res.status(503).json({ error: "The server is busy right now. Please try again in a few seconds." });
+      return;
+    }
     if (typeof upstreamStatus === "number" && upstreamStatus >= 400 && upstreamStatus < 500) {
       res.status(upstreamStatus).json({ error: "Invalid request." });
       return;
     }
+    logUnhandled(err, req);
     res.status(500).json({ error: "Internal server error." });
   });
 
-  // Legacy accounts store passwords as reversible base64 (pre-pbkdf2). They're
-  // upgraded on next successful login, but dormant rows stay plaintext-equivalent
-  // if db.json/GCS leaks. Surface the count so operators can force a reset.
-  const legacyPwCount = loadDB().users.filter(u => needsPasswordRehash(u.passwordHash)).length;
-  if (legacyPwCount > 0) {
-    console.warn(`SECURITY: ${legacyPwCount} account(s) still use legacy (reversible) password hashes. Consider forcing a password reset for these users.`);
-  }
 
   // Dynamic port assignment with automatic fallback in case of port collisions
   const startListening = (port: number) => {
@@ -5285,6 +6350,15 @@ async function startServer() {
   // failure (see their own comments) — stop here: never call `app.listen`
   // on a DB we refused to trust.
   if (!(await initDB())) return;
+  // Legacy accounts store passwords as reversible base64 (pre-pbkdf2). They're
+  // upgraded on next successful login, but dormant rows stay plaintext-equivalent
+  // if db.json/GCS leaks. Counted AFTER initDB: it used to run before the load,
+  // on an empty database, so it could never fire.
+  // '' is no password at all (the desktop local owner), not a reversible one.
+  const legacyPwCount = loadDB().users.filter(u => u.passwordHash !== '' && needsPasswordRehash(u.passwordHash)).length;
+  if (legacyPwCount > 0) {
+    console.warn(`SECURITY: ${legacyPwCount} account(s) still use legacy (reversible) password hashes. Consider forcing a password reset for these users.`);
+  }
   startListening(initialPort);
 }
 

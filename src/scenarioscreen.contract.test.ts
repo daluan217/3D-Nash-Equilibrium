@@ -33,6 +33,8 @@
 import { SCENARIO_SCREENS, screenScenario, type ScreenOptions } from './utils/scenarioScreen';
 import { allBankRows } from './utils/bankSource';
 import { colorTermKey } from './utils/colorTerms';
+import { stripUnsafeText } from './utils/textSafety';
+import { scenarioIsClaimFree } from './utils/nashValidator';
 import { SERVE_PROBES } from './utils/scenarioBank';
 import type { GamePayoffs, SuggestedScenario } from './types';
 
@@ -689,6 +691,82 @@ for (const neg of NEGATIVES) {
   check('empty-fold control: genuinely identical punctuation labels remain rejected by the base comparator',
     !vIdenticalPunctuation.ok && /row labels are not distinct/.test(vIdenticalPunctuation.reason ?? ''),
     vIdenticalPunctuation.ok ? 'SERVED' : `${vIdenticalPunctuation.screen}: ${vIdenticalPunctuation.reason}`);
+
+  // RED-CLOUD-20/006: labels whose every character folds away under BOTH
+  // comparators ("(!)" -> '' for base and colorTermKey) passed as distinct when
+  // identical. Its fix (literal equality on the trimmed label) had no CI check:
+  // reverting it served this scenario with every test green (sweep 3).
+  const allFold = { ...emptyFoldRows, row1: '(!)', row2: '(!)',
+    description: 'A dispatcher raises (!) while a receiver chooses an Open Window or Closed Window.' } as SuggestedScenario;
+  const v006d = screenScenario({ ...allFold, row2: '(?)', description: 'A dispatcher raises (!) or (?) while a receiver chooses an Open Window or Closed Window.' } as SuggestedScenario, G, opts());
+  check('006 control: "(!)" folds to an empty renderer key, and the DISTINCT pair (!)/(?) is served',
+    colorTermKey('(!)') === '' && v006d.ok, `key=${JSON.stringify(colorTermKey('(!)'))} ${v006d.ok ? '' : `${v006d.screen}: ${v006d.reason}`}`);
+  const v006 = screenScenario(allFold, G, opts());
+  check('006: identical all-fold labels "(!)" / "(!)" are refused as not distinct',
+    !v006.ok && /row labels are not distinct/.test(v006.reason ?? ''), v006.ok ? 'SERVED' : `${v006.screen}: ${v006.reason}`);
+  const v006c = screenScenario({ ...allFold, col1: '(!)', col2: '(!)' , row1: 'Open Door', row2: 'Shut Door',
+    description: 'A dispatcher picks an Open Door or Shut Door while a receiver raises (!) at the dock.' } as SuggestedScenario, G, opts());
+  check('006: the same pair in the COLUMN labels is refused too',
+    !v006c.ok && /column labels are not distinct/.test(v006c.reason ?? ''), v006c.ok ? 'SERVED' : `${v006c.screen}: ${v006c.reason}`);
+
+  // A claim word split by an invisible character slips the claim-free fold
+  // (NFKC keeps U+00AD/U+200B/U+2060) and survives stripUnsafeText, so the
+  // script screen is the only thing that refuses it. Sweep 3: widening that
+  // screen to allow \p{Cf} left every test green. Fixture = shipping order.
+  for (const [name, ch] of [['soft hyphen', '\u00AD'], ['zero-width space', '\u200B'], ['word joiner', '\u2060']] as const) {
+    const desc = stripUnsafeText(`A dispatcher finds Open Window bet${ch}ter than Closed Window while a receiver waits.`);
+    const hidden = { ...emptyFoldRows, row1: 'Open Window', row2: 'Closed Window', col1: 'Ship', col2: 'Hold', description: desc } as SuggestedScenario;
+    const vh = screenScenario(hidden, G, opts());
+    check(`invisible ${name} inside a claim word survives cleaning and is refused by the script screen`,
+      desc.includes(ch) && !vh.ok && vh.screen === 'declarations' && /outside the expected script/.test(vh.reason ?? ''),
+      `kept=${desc.includes(ch)} ${vh.ok ? 'SERVED' : `${vh.screen}: ${vh.reason}`}`);
+  }
+
+  // A payoff comparison without the listed words used to serve, false ones
+  // included: on this matrix row 2 strictly dominates, so each sentence below
+  // is FALSE for A (sweep 3, constructed; 0 real in 2,442 + 3,104 + 4,418).
+  const PD: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 };
+  const dock = { name: 'Dock Choice', row1: 'Open Window', row2: 'Closed Window', col1: 'Ship', col2: 'Hold' };
+  for (const phrase of ['earns more profit with Open Window than with Closed Window', 'makes more money from Open Window than from Closed Window',
+    'finds Open Window more profitable than Closed Window', 'says Open Window outperforms Closed Window', 'calls Open Window superior to Closed Window']) {
+    const v = screenScenario({ ...dock, description: `A dispatcher ${phrase} while a receiver chooses Ship or Hold.` } as SuggestedScenario, PD, opts());
+    check(`an unlisted payoff comparison is refused: "${phrase}"`,
+      !v.ok && v.screen === 'claim-free', v.ok ? 'SERVED' : `${v.screen}: ${v.reason}`);
+  }
+  // CLAIM-FREE BY DESIGN: a TRUE comparison is refused too, exactly as the
+  // listed "better" always was (the solver states payoffs; a story states
+  // none). Row 2 does earn more here, and both spellings get the same answer.
+  // Reach of any comparison in served text: 0 (bank, corpus, 40 live draws).
+  for (const truePhrase of ['earns more profit with Closed Window than with Open Window', 'finds Closed Window better than Open Window']) {
+    const v = screenScenario({ ...dock, description: `A dispatcher ${truePhrase} while a receiver chooses Ship or Hold.` } as SuggestedScenario, PD, opts());
+    check(`a TRUE comparison is refused as well (claim-free by design, same as "better"): "${truePhrase}"`,
+      PD.a21 > PD.a11 && PD.a22 > PD.a12 && !v.ok && v.screen === 'claim-free', v.ok ? 'SERVED' : `${v.screen}: ${v.reason}`);
+  }
+  for (const innocent of ['A dispatcher makes more trips in summer and picks Open Window or Closed Window while a receiver chooses Ship or Hold.',
+    'A dispatcher hopes to beat the rush with Open Window or Closed Window while a superior officer at the receiver chooses Ship or Hold.']) {
+    const v = screenScenario({ ...dock, description: innocent } as SuggestedScenario, PD, opts());
+    check(`control: "more"/"beat"/"superior" with no comparison between options is served: "${innocent.slice(0, 50)}…"`, v.ok, v.ok ? '' : `${v.screen}: ${v.reason}`);
+  }
+  // The SUPERLATIVE form served in every spelling but "better off" (sweep 7,
+  // constructed; 0 real): each names Open Window, dominated here, as the
+  // payoff-maximiser. Idioms stay legal: the label-bound arms need a label.
+  for (const phrase of ['Open Window pays the most for the dispatcher', 'For the dispatcher, Open Window brings the most gain',
+    'Open Window is the most profitable choice for the dispatcher', "Open Window maximizes the dispatcher's income",
+    'Nothing beats Open Window for the dispatcher', 'Open Window always wins for the dispatcher', 'Open Window is the smart move for the dispatcher',
+    "Open Window is the dispatcher's top earner", 'Open Window leaves the dispatcher ahead whatever the receiver does']) {
+    const v = screenScenario({ ...dock, description: `${phrase} while a receiver chooses Ship or Hold.` } as SuggestedScenario, PD, opts());
+    check(`a superlative payoff claim is refused: "${phrase}"`, !v.ok && v.screen === 'claim-free' && /superlative/.test(v.reason ?? ''),
+      v.ok ? 'SERVED' : `${v.screen}: ${v.reason}`);
+  }
+  for (const innocent of ['The dispatcher makes the most of a quiet morning and picks Open Window or Closed Window while a receiver chooses Ship or Hold.',
+    'Nothing beats a calm sea, but a dispatcher still picks Open Window or Closed Window while a receiver chooses Ship or Hold.',
+    'A dispatcher who always wins praise picks Open Window or Closed Window while the most northern receiver chooses Ship or Hold.']) {
+    const v = screenScenario({ ...dock, description: innocent } as SuggestedScenario, PD, opts());
+    check(`control: "the most"/"nothing beats"/"always wins" as an idiom is served: "${innocent.slice(0, 50)}…"`, v.ok, v.ok ? '' : `${v.screen}: ${v.reason}`);
+  }
+  let superlativeRows = 0;
+  for (const e of allBankRows()) if (scenarioIsClaimFree(e.s as SuggestedScenario).reason === 'a superlative payoff claim') superlativeRows++;
+  check('the superlative rule refuses no shipped bank row', superlativeRows === 0, `${superlativeRows} bank rows refused`);
 
   /**
    * WHAT THE ADDED HALF COSTS on output this project already judged good: the
