@@ -57,11 +57,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 2 account conflict (21) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 2 account conflict (21) + 2 sybil fill (s31) + 5 legacy-games migration (s32) + 2 unfinished deletions (s33) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 139;
+const EXPECTED_CHECKS = 148;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -85,56 +85,87 @@ function parseMultipart(contentType, rawBody) {
 }
 
 /**
- * A fake GCS JSON/upload API for exactly one object (`db.json`): the four
- * calls server.ts's GCS path makes — `exists()`/`getMetadata()`/
- * `download()` (all GET, `?alt=media` distinguishes download) and
- * `save()` (POST, `uploadType=multipart`, optional `ifGenerationMatch`
- * query param).
+ * A fake GCS JSON/upload API holding any number of objects: `db.json` (the
+ * accounts) and `games/<encodeURIComponent(userId)>.json` (each account's
+ * saved games). The calls server.ts makes: metadata GET and a download bound
+ * to a generation (`?alt=media&generation=`), a multipart upload (`name` and
+ * `ifGenerationMatch` as query parameters, 412 on mismatch), a conditional
+ * DELETE and a prefix LIST — each probed against the real
+ * `@google-cloud/storage` client (7.22.0) before this fake was written.
+ * Generations come from ONE increasing counter, as GCS's never repeat for a
+ * name: a re-created object never satisfies an old precondition. Hooks given
+ * no name apply to every object; controls given no name mean db.json.
  */
-// Every db.json upload any fake saw without a numeric generation precondition.
+// Every upload any fake saw without a numeric generation precondition.
 // What GCS does with `ifGenerationMatch=` (empty) is not something this suite
 // can know, so SENDING one is the defect: an unread store written blindly.
 const unconditionalUploads = [];
-function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferListen = false }) {
-  let stored = initialContent; // null = object does not exist
-  let generation = initialGeneration, custom = null; // custom metadata (lineage), set by the upload that wrote it
-  const uploadLog = []; // { atMs, ifGenerationMatch, body }
-  let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, afterStoreOnce = null, n412 = 0;
-  let readDelay = { meta: 0, media: 0 }, metaGets = 0, stale404s = 0, afterMetaOnce = null, failUploads = false;
-  const readLog = []; // media GETs: { arrivedGen, want, atMs, doneMs }
+const gamesObject = (userId) => `games/${encodeURIComponent(userId)}.json`;
+function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferListen = false, initialObjects = {} }) {
+  let gen = initialGeneration;
+  const objects = new Map(); // name -> { content, generation, custom } (custom: metadata the upload that wrote it set)
+  if (initialContent !== null && initialContent !== undefined) objects.set(OBJECT, { content: initialContent, generation: gen, custom: null });
+  for (const [name, content] of Object.entries(initialObjects)) objects.set(name, { content, generation: ++gen, custom: null });
+  const write = (name, content, custom) => { gen += 1; objects.set(name, { content, generation: gen, custom }); };
+  const uploadLog = []; // { name, atMs, ifGenerationMatch, body, landedGen?, dropped?, failed? }
+  const removeLog = []; // { name, ifGenerationMatch, status }
+  let uploadDelayMs = 0, omitGeneration = false, dropUploads = false, n412 = 0, failUploads = false, failNames = new Set();
+  let readDelay = { meta: 0, media: 0 }, metaGets = 0, stale404s = 0, lists = 0;
+  const metaGetsBy = new Map(), afterStore = [], afterMeta = []; // one-shot hooks: { name, f }
+  const takeHook = (list, name) => { const i = list.findIndex((h) => h.name === null || h.name === name); return i === -1 ? null : list.splice(i, 1)[0]; };
+  const readLog = []; // media GETs: { name, arrivedGen, want, atMs, doneMs }
   const startedAt = Date.now();
+  const base = `/b/${BUCKET}/o`;
+  const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
-    const objectPath = `/b/${BUCKET}/o/${encodeURIComponent(OBJECT)}`;
+    if (req.method === 'GET' && u.pathname === base) {
+      lists += 1;
+      const prefix = u.searchParams.get('prefix') ?? '';
+      json(res, 200, { kind: 'storage#objects', items: [...objects].filter(([n]) => n.startsWith(prefix))
+        .map(([name, o]) => ({ name, bucket: BUCKET, generation: String(o.generation), size: String(o.content.length), ...(o.custom ? { metadata: o.custom } : {}) })) });
+      return;
+    }
+    const name = u.pathname.startsWith(`${base}/`) ? decodeURIComponent(u.pathname.slice(base.length + 1)) : null;
 
-    if (req.method === 'GET' && u.pathname === objectPath) {
+    if (req.method === 'GET' && name !== null) {
       // Metadata: `meta` delay is inbound latency (read AFTER it). Download:
       // read on arrival, `media` delay is a slow transfer, so a download can
       // straddle a write. A generation no longer live on arrival is a 404.
       const media = u.searchParams.get('alt') === 'media', want = u.searchParams.get('generation');
-      const answer = (seen, seenGen, entry) => {
+      const answer = (seen, entry) => {
         if (entry) entry.doneMs = Date.now() - startedAt;
-        if (seen === null || (media && want !== null && want !== String(seenGen))) {
-          if (media && seen !== null) stale404s += 1;
-          res.writeHead(404, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: { code: 404, message: 'not found' } }));
-          return;
+        if (!seen || (media && want !== null && want !== String(seen.generation))) {
+          if (media && seen) stale404s += 1;
+          return json(res, 404, { error: { code: 404, message: 'not found' } });
         }
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(media ? seen : JSON.stringify({ name: OBJECT, bucket: BUCKET, generation: String(seenGen), size: String(seen.length), ...(custom ? { metadata: custom } : {}) }));
-        if (!media && afterMetaOnce) { const f = afterMetaOnce; afterMetaOnce = null; stored = f(stored); generation += 1; }
+        if (media) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(seen.content); return; }
+        json(res, 200, { name, bucket: BUCKET, generation: String(seen.generation), size: String(seen.content.length), ...(seen.custom ? { metadata: seen.custom } : {}) });
+        const h = takeHook(afterMeta, name);
+        if (h) write(name, h.f(seen.content), seen.custom);
       };
       if (media) {
-        const entry = { arrivedGen: generation, want, atMs: Date.now() - startedAt };
+        const seen = objects.get(name);
+        const entry = { name, arrivedGen: seen?.generation ?? null, want, atMs: Date.now() - startedAt };
         readLog.push(entry);
-        const seen = stored, seenGen = generation;
-        if (readDelay.media > 0) setTimeout(() => answer(seen, seenGen, entry), readDelay.media); else answer(seen, seenGen, entry);
+        if (readDelay.media > 0) setTimeout(() => answer(seen, entry), readDelay.media); else answer(seen, entry);
       } else {
-        metaGets += 1;
-        const now = () => answer(stored, generation, null);
+        metaGets += 1; metaGetsBy.set(name, (metaGetsBy.get(name) ?? 0) + 1);
+        const now = () => answer(objects.get(name), null);
         if (readDelay.meta > 0) setTimeout(now, readDelay.meta); else now();
       }
+      return;
+    }
+
+    if (req.method === 'DELETE' && name !== null) {
+      const ifGenerationMatch = u.searchParams.get('ifGenerationMatch');
+      const o = objects.get(name);
+      const status = !o ? 404 : ifGenerationMatch !== null && ifGenerationMatch !== String(o.generation) ? 412 : 204;
+      removeLog.push({ name, ifGenerationMatch, status });
+      if (status === 412) n412 += 1;
+      if (status === 204) { objects.delete(name); res.writeHead(204); res.end(); return; }
+      json(res, status, { error: { code: status, message: status === 404 ? 'not found' : 'Precondition Failed' } });
       return;
     }
 
@@ -144,61 +175,63 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
       req.on('end', async () => {
         const parts = parseMultipart(req.headers['content-type'], body);
         const content = parts[1] ?? ''; // part 0 = metadata JSON, part 1 = the actual data
+        const name = u.searchParams.get('name');
         const ifGenerationMatch = u.searchParams.get('ifGenerationMatch');
-        if (!/^\d+$/.test(ifGenerationMatch ?? '')) unconditionalUploads.push({ port, ifGenerationMatch });
+        if (!/^\d+$/.test(ifGenerationMatch ?? '')) unconditionalUploads.push({ port, name, ifGenerationMatch });
 
         if (uploadDelayMs > 0) await new Promise((r) => setTimeout(r, uploadDelayMs));
-        if (dropUploads) { uploadLog.push({ atMs: Date.now() - startedAt, ifGenerationMatch, body: content, dropped: true }); return; }
-
-        uploadLog.push({ atMs: Date.now() - startedAt, ifGenerationMatch, body: content });
-        if (failUploads) { uploadLog.at(-1).failed = true; res.writeHead(503, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { code: 503, message: 'Service Unavailable' } })); return; }
+        const entry = { name, atMs: Date.now() - startedAt, ifGenerationMatch, body: content };
+        uploadLog.push(entry);
+        if (dropUploads) { entry.dropped = true; return; } // accept, never store, never answer
+        if (failUploads || failNames.has(name)) { entry.failed = true; return json(res, 503, { error: { code: 503, message: 'Service Unavailable' } }); }
 
         if (ifGenerationMatch !== null) {
-          const want = ifGenerationMatch === '0' ? null : String(generation);
-          const have = stored === null ? null : String(generation);
-          const matches = ifGenerationMatch === '0' ? stored === null : ifGenerationMatch === have;
-          if (!matches) {
-            n412 += 1;
-            res.writeHead(412, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: { code: 412, message: 'Precondition Failed' } }));
-            return;
-          }
+          const o = objects.get(name);
+          const ok = ifGenerationMatch === '0' ? !o : !!o && ifGenerationMatch === String(o.generation);
+          if (!ok) { n412 += 1; return json(res, 412, { error: { code: 412, message: 'Precondition Failed' } }); }
         }
-        stored = content;
-        generation += 1;
-        custom = JSON.parse(parts[0] || '{}').metadata ?? null; // a write replaces the object's custom metadata
-        uploadLog.at(-1).landedGen = generation;
-        res.writeHead(200, { 'content-type': 'application/json' });
-        const answer = { name: OBJECT, bucket: BUCKET, generation: String(generation), size: String(stored.length) };
+        write(name, content, JSON.parse(parts[0] || '{}').metadata ?? null); // a write replaces the object's custom metadata
+        entry.landedGen = gen;
+        const answer = { name, bucket: BUCKET, generation: String(gen), size: String(content.length) };
         if (omitGeneration) { omitGeneration = false; delete answer.generation; }
-        res.end(JSON.stringify(answer));
-        if (afterStoreOnce) { const f = afterStoreOnce; afterStoreOnce = null; stored = f(stored); generation += 1; } // a peer writes right after us
+        json(res, 200, answer);
+        const h = takeHook(afterStore, name);
+        if (h) write(name, h.f(content), objects.get(name).custom); // a peer writes right after us
       });
       return;
     }
 
-    res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: { code: 404 } }));
+    json(res, 404, { error: { code: 404 } });
   });
 
+  const gamesIn = (o) => { try { return JSON.parse(o.content).games ?? []; } catch { return []; } };
   const controls = {
     close: () => new Promise((r) => server.close(() => r())),
-    getStored: () => stored,
-    setStored: (v) => { stored = v; if (v === null) custom = null; }, // null = the object was deleted, metadata with it
-    getCustom: () => custom,
-    getGeneration: () => generation,
-    uploadCount: () => uploadLog.length,
+    getStored: (name = OBJECT) => objects.get(name)?.content ?? null,
+    // Replaces the bytes in place (same generation); null deletes the object, metadata with it.
+    setStored: (v, name = OBJECT) => { if (v === null) objects.delete(name); else if (objects.has(name)) objects.get(name).content = v; else write(name, v, null); },
+    getCustom: (name = OBJECT) => objects.get(name)?.custom ?? null,
+    getGeneration: (name = OBJECT) => objects.get(name)?.generation ?? null,
+    names: () => [...objects.keys()],
+    /** One account's stored games ([] when it has no object). */
+    games: (userId) => (objects.has(gamesObject(userId)) ? gamesIn(objects.get(gamesObject(userId))) : []),
+    /** Every stored game across every account's object. */
+    allGames: () => [...objects].filter(([n]) => n.startsWith('games/')).flatMap(([, o]) => gamesIn(o)),
+    uploadCount: (name) => (name === undefined ? uploadLog.length : uploadLog.filter((x) => x.name === name).length),
     uploadLog: () => uploadLog,
+    removeLog: () => removeLog,
     setUploadDelayMs: (ms) => { uploadDelayMs = ms; },
     omitGenerationOnce: () => { omitGeneration = true; },
-    dropUploads: (v) => { dropUploads = v; }, // accept, never store, never answer
-    peerWrite: (content, meta) => { stored = content; generation += 1; if (meta) custom = meta; }, // meta: a peer's lineage
-    afterStoreOnce: (f) => { afterStoreOnce = f; },
+    dropUploads: (v) => { dropUploads = v; },
+    peerWrite: (content, meta, name = OBJECT) => write(name, content, meta ?? objects.get(name)?.custom ?? null), // meta: a peer's lineage
+    afterStoreOnce: (f, name = null) => { afterStore.push({ name, f }); },
+    afterMetaOnce: (f, name = null) => { afterMeta.push({ name, f }); }, // a peer writes right after our metadata GET is answered
     count412: () => n412,
-    failUploads: (v) => { failUploads = v; }, // every upload answers 503 (the pump backs off)
+    failUploads: (v) => { failUploads = v; }, // every upload answers 503
+    failUploadsFor: (names) => { failNames = new Set(names); }, // only these objects' uploads answer 503
     setReadDelayMs: (meta, media) => { readDelay = { meta, media }; },
-    afterMetaOnce: (f) => { afterMetaOnce = f; }, // a peer writes right after our metadata GET is answered
-    metaGets: () => metaGets, stale404s: () => stale404s, readLog: () => readLog,
+    metaGets: (name) => (name === undefined ? metaGets : metaGetsBy.get(name) ?? 0),
+    stale404s: () => stale404s, readLog: () => readLog, lists: () => lists,
     // For the "GCS was unreachable at boot, comes back later" case: the
     // server object exists (so a spawned process pointed at `port` gets
     // ECONNREFUSED, not a slow timeout) but does not accept connections
@@ -209,37 +242,39 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
   return new Promise((resolve) => { server.listen(port, () => resolve(controls)); });
 }
 
+/** A peer that accepts and never answers, per object: `hang(name)` / `delay(name, ms)` / `hangUploads(true)`. */
 function startDeadlineGcs(port, initialContent) {
-  let stored = initialContent, generation = 1, hungObject = null, delayedObject = null;
-  let readDelayMs = 0, hangUploads = false;
+  let gen = 1, hungObject = null, delayedObject = null, readDelayMs = 0, hangUploads = false;
+  const objects = new Map([[OBJECT, { content: initialContent, generation: 1 }]]);
   const reads = [], uploads = [], sockets = new Set(), timers = new Set();
-  const base = `/b/${BUCKET}/o/`;
+  const base = `/b/${BUCKET}/o`;
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
-    const name = u.pathname.startsWith(base) ? decodeURIComponent(u.pathname.slice(base.length)) : null;
+    const name = u.pathname.startsWith(`${base}/`) ? decodeURIComponent(u.pathname.slice(base.length + 1)) : null;
     const reply = () => {
-      if (req.method === 'GET' && name === OBJECT) {
-        if (u.searchParams.get('alt') === 'media') { res.writeHead(200); res.end(stored); return; }
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ name, bucket: BUCKET, generation: String(generation), size: String(stored.length) })); return;
-      }
       if (req.method === 'GET' && name === VERSION_OBJECT) {
         if (u.searchParams.get('alt') === 'media') { res.writeHead(200); res.end('{"version":"0.0.225"}'); return; }
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ name, bucket: BUCKET, size: '21' })); return;
       }
+      if (req.method === 'GET' && name !== null) {
+        const o = objects.get(name);
+        if (!o) { res.writeHead(404, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { code: 404 } })); return; }
+        if (u.searchParams.get('alt') === 'media') { res.writeHead(200); res.end(o.content); return; }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ name, bucket: BUCKET, generation: String(o.generation), size: String(o.content.length) })); return;
+      }
       if (req.method === 'POST' && u.pathname === `/upload/storage/v1/b/${BUCKET}/o`) {
         let body = '';
         req.on('data', (c) => { body += c; });
         req.on('end', () => {
-          uploads.push(parseMultipart(req.headers['content-type'], body)[1] ?? '');
-          if (!/^\d+$/.test(u.searchParams.get('ifGenerationMatch') ?? '')) unconditionalUploads.push({ port, ifGenerationMatch: u.searchParams.get('ifGenerationMatch') });
+          const target = u.searchParams.get('name');
+          uploads.push({ name: target, body: parseMultipart(req.headers['content-type'], body)[1] ?? '' });
+          if (!/^\d+$/.test(u.searchParams.get('ifGenerationMatch') ?? '')) unconditionalUploads.push({ port, name: target, ifGenerationMatch: u.searchParams.get('ifGenerationMatch') });
           if (hangUploads) return;
-          stored = uploads.at(-1); generation += 1;
+          gen += 1; objects.set(target, { content: uploads.at(-1).body, generation: gen });
           res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({
-            name: OBJECT, bucket: BUCKET, generation: String(generation), size: String(stored.length),
-          }));
+          res.end(JSON.stringify({ name: target, bucket: BUCKET, generation: String(gen), size: String(uploads.at(-1).body.length) }));
         });
         return;
       }
@@ -260,8 +295,10 @@ function startDeadlineGcs(port, initialContent) {
       for (const socket of sockets) socket.destroy();
       server.close(done);
     }),
-    reads: () => reads, uploads: () => uploads,
-    stored: () => stored,
+    reads: () => reads,
+    uploads: () => uploads.map((x) => x.body), uploadNames: () => uploads.map((x) => x.name),
+    stored: (name = OBJECT) => objects.get(name)?.content ?? null,
+    games: (userId) => { try { return JSON.parse(objects.get(gamesObject(userId))?.content ?? '{"games":[]}').games; } catch { return []; } },
     hang: (name) => { hungObject = name; },
     delay: (name, ms) => { delayedObject = name; readDelayMs = ms; },
     hangUploads: (v) => { hangUploads = v; },
@@ -406,7 +443,7 @@ try {
     const deadline = Date.now() + 8000;
     while (Date.now() < deadline) {
       let names = null;
-      try { names = JSON.parse(fakeGcs.getStored()).games.map((g) => g.name); } catch { /* not parseable yet */ }
+      names = fakeGcs.games('u_gcsrace').map((g) => g.name);
       if (names && names.length >= 4) break;
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -416,17 +453,8 @@ try {
   record('THE DEFECT: 4 rapid saves produce at most 2 NEW upload requests (coalesced), not 4',
     gameUploadCount <= 2, `${gameUploadCount} upload request(s) for the 4 games: ${JSON.stringify(fakeGcs.uploadLog().slice(uploadsBeforeGames))}`);
 
-  // Parsed defensively: on unfixed code the uploads use the RESUMABLE
-  // protocol (no `resumable:false`), which this fake does not implement, so
-  // `stored` can end up empty/unparseable there — that failure mode is
-  // itself evidence of the same underlying problem (no serialization means
-  // no control over what shape lands), not something worth crashing the
-  // whole suite over.
-  let finalNames = null;
-  try {
-    const finalStored = JSON.parse(fakeGcs.getStored());
-    finalNames = finalStored.games.map((g) => g.name).sort();
-  } catch { /* see comment above */ }
+  // The account's own object (games/<id>.json) holds its games; db.json holds none.
+  const finalNames = fakeGcs.games('u_gcsrace').map((g) => g.name).sort();
   record('the final persisted content has ALL 4 games, not just the first',
     JSON.stringify(finalNames) === JSON.stringify(['Game-1', 'Game-2', 'Game-3', 'Game-4']),
     JSON.stringify(finalNames));
@@ -435,15 +463,15 @@ try {
   await fakeGcs.close(); fakeGcs = null;
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 2. MULTI-INSTANCE: two REAL server.cjs processes, same fake bucket, each
-  // saves a DIFFERENT game. On unfixed code (no precondition) whichever
-  // instance's upload lands last wins OUTRIGHT — the other's game vanishes.
-  // The fake server is told to delay instance X's upload so instance Y's
-  // lands first, forcing X into exactly the generation-conflict path.
+  // 2. MULTI-INSTANCE: two REAL server.cjs processes, same fake bucket, both
+  // saving to the SAME account's object. On unfixed code (no precondition)
+  // whichever instance's upload lands last wins OUTRIGHT — the other's game
+  // vanishes. X's upload is held so Y's lands first, forcing X into exactly
+  // the generation-conflict path: its upload 412s, it re-reads the object and
+  // re-applies its save to it. (Two DIFFERENT accounts no longer share an
+  // object, so they cannot conflict at all; the same account on two
+  // instances — two tabs across a rollover — is the race that remains.)
   // ───────────────────────────────────────────────────────────────────────────
-  // Both instances boot from the SAME seeded object, so BOTH users must be
-  // present in it from the start — each instance's own initDB() reads the
-  // whole thing regardless of which user that instance will act as.
   const seededDb2 = {
     users: [
       seededUser('u_x', 'userx', 'userx@example.test', 'Sup3rSecret!23'),
@@ -477,7 +505,7 @@ try {
     return (await r.json())?.token;
   }
   const tokenX = await loginAs(portX, 'userx@example.test');
-  const tokenY = await loginAs(portY, 'usery@example.test');
+  const tokenY = await loginAs(portY, 'userx@example.test'); // the same account, on the other instance
   record('fixture precondition: both instances have a usable token',
     typeof tokenX === 'string' && typeof tokenY === 'string', `X:${typeof tokenX} Y:${typeof tokenY}`);
 
@@ -485,51 +513,45 @@ try {
   // controlling the game-save race — otherwise their own upload timing
   // adds noise to a race this test needs to control deterministically.
   await new Promise((r) => setTimeout(r, 800));
+  // Both instances read the (empty) object first, so each holds a generation to condition on.
+  await fetch(`http://127.0.0.1:${portX}/api/games`, { headers: { authorization: `Bearer ${tokenX}` } });
+  await fetch(`http://127.0.0.1:${portY}/api/games`, { headers: { authorization: `Bearer ${tokenY}` } });
 
   // X's game-save upload is held (deterministically forcing it to be the
   // LOSING side of the generation race), then Y's lands cleanly while X's
   // is still in flight, THEN X's held request finally completes and hits
   // its precondition mismatch — the exact interleaving, not a timing hope.
-  fakeGcs.setUploadDelayMs(800);
-  const resX = await fetch(`http://127.0.0.1:${portX}/api/games`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenX}` },
-    body: JSON.stringify({ name: 'Game-X', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }),
+  const post = (port, token, name) => fetch(`http://127.0.0.1:${port}/api/games`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name, payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }),
   });
-  record('X\'s save is accepted (the HTTP response never waits on the GCS upload)', resX.status === 200, `status ${resX.status}`);
+  const n412B = fakeGcs.count412();
+  fakeGcs.setUploadDelayMs(800);
+  const resXP = post(portX, tokenX, 'Game-X');
   // X's own GCS upload request needs a moment to actually reach the fake
   // server and start its 800ms hold before Y's (undelayed) request fires —
   // otherwise Y's could race ahead of X's arriving at all, which would
   // test nothing about the conflict path this section exists to exercise.
   await new Promise((r) => setTimeout(r, 250));
-  // A second X save lands WHILE X's first upload is held. The 412 merge used
-  // the snapshot that upload started with and wrote it over the current
-  // state, so this game vanished from memory and from GCS.
-  const resX2 = await fetch(`http://127.0.0.1:${portX}/api/games`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenX}` },
-    body: JSON.stringify({ name: 'Game-X2', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }),
-  });
+  // A second X save lands WHILE X's first upload is held: it waits its turn
+  // behind that upload and must survive the conflict the first one meets.
+  const resX2P = post(portX, tokenX, 'Game-X2');
+  await new Promise((r) => setTimeout(r, 50));
   fakeGcs.setUploadDelayMs(0);
-  const resY = await fetch(`http://127.0.0.1:${portY}/api/games`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenY}` },
-    body: JSON.stringify({ name: 'Game-Y', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }),
-  });
+  const resY = await post(portY, tokenY, 'Game-Y');
   record('Y\'s save is accepted', resY.status === 200, `status ${resY.status}`);
+  const [resX, resX2] = await Promise.all([resXP, resX2P]);
+  record('X\'s save is accepted once it lands, after its upload lost the race (412) and was re-applied',
+    resX.status === 200 && fakeGcs.count412() > n412B, `status ${resX.status}, 412s ${fakeGcs.count412() - n412B}`);
 
-  // Give X's delayed upload (and its conflict-retry, if any) time to land.
-  await new Promise((r) => setTimeout(r, 2500));
-
-  let finalMultiNames = null;
-  try {
-    const finalMulti = JSON.parse(fakeGcs.getStored());
-    finalMultiNames = finalMulti.games.map((g) => g.name).sort();
-  } catch { /* unfixed code may use the resumable protocol this fake doesn't implement */ }
-  record('THE DEFECT: BOTH instances\' games survive after the conflict (union merge), not just the last writer',
-    ['Game-X', 'Game-Y'].every((n) => finalMultiNames?.includes(n)), JSON.stringify(finalMultiNames));
+  const finalMultiNames = fakeGcs.games('u_x').map((g) => g.name).sort();
+  record('THE DEFECT: BOTH instances\' games survive after the conflict, not just the last writer',
+    ['Game-X', 'Game-Y'].every((n) => finalMultiNames.includes(n)), JSON.stringify(finalMultiNames));
   const listX = await fetch(`http://127.0.0.1:${portX}/api/games`, { headers: { authorization: `Bearer ${tokenX}` } })
     .then((r) => r.json()).catch(() => null);
-  record('a save committed DURING the conflicted upload survives the 412 merge, on GCS and in memory',
+  record('a save committed DURING the conflicted upload survives the 412 re-read, on GCS and in the list',
     resX2.status === 200 && JSON.stringify(finalMultiNames) === JSON.stringify(['Game-X', 'Game-X2', 'Game-Y'])
-      && Array.isArray(listX) && listX.some((g) => g.name === 'Game-X2'),
+      && Array.isArray(listX) && ['Game-X', 'Game-X2', 'Game-Y'].every((n) => listX.some((g) => g.name === n)),
     `X2=${resX2.status} stored=${JSON.stringify(finalMultiNames)} listX=${JSON.stringify(Array.isArray(listX) ? listX.map((g) => g.name) : listX)}`);
 
   await stop(childX);
@@ -598,14 +620,17 @@ try {
 
   await new Promise((r) => setTimeout(r, 1500)); // let the async GCS re-sync + both uploads land
 
-  let finalZNames = null, finalZUsernames = null;
+  let finalZUsernames = null, finalZRootGames = null;
   try {
     const finalZ = JSON.parse(fakeGcsDeferred.getStored());
-    finalZNames = finalZ.games.map((g) => g.name).sort();
+    finalZRootGames = finalZ.games.length;
     finalZUsernames = finalZ.users.map((u) => u.username).sort();
-  } catch { /* see the try/catch note in section 1 */ }
+  } catch { /* reported below */ }
+  // The game sat in db.json's legacy array: the first read after GCS came back
+  // moved it into its account's object, and the write cleared the array.
+  const finalZNames = fakeGcsDeferred.games('u_z').map((g) => g.name).sort();
   record('THE DEFECT: the pre-existing game (that this process never read) SURVIVES the save, not silently erased',
-    JSON.stringify(finalZNames) === JSON.stringify(['Preexisting-Game']), JSON.stringify(finalZNames));
+    JSON.stringify(finalZNames) === JSON.stringify(['Preexisting-Game']) && finalZRootGames === 0, `${JSON.stringify(finalZNames)}, db.json games ${finalZRootGames}`);
   record('the failed registration\'s pending row is kept and merged beside the GCS-only account (the write is not broken by the merge)',
     JSON.stringify(finalZUsernames) === JSON.stringify(['freshz', 'userz']), JSON.stringify(finalZUsernames));
   const loginBack = await fetch(`http://127.0.0.1:${portZ}/api/auth/login`, {
@@ -690,22 +715,25 @@ try {
   });
   const beforeHungUpload = slowFake.uploads().length;
   slowFake.hangUploads(true);
+  // A saved game is answered only once its upload lands: a silent peer makes
+  // save N an honest 503 at the deadline, never a 200 for bytes GCS never took.
+  const hungAt = Date.now();
   const saveN = await postGame('Hung-save-N');
-  const hungUploadReached = await waitUntil(() => slowFake.uploads().length > beforeHungUpload);
-  record('fixture: save N reaches the silent upload peer after returning 200', saveN.status === 200 && hungUploadReached,
-    `status ${saveN.status}, uploads ${slowFake.uploads().length}`);
+  const hungMs = Date.now() - hungAt;
+  const hungUploadReached = slowFake.uploadNames().slice(beforeHungUpload).includes('games/u_deadline.json');
+  record('THE DEFECT: save N, whose upload the peer swallowed, is a 503 at the 1.5s deadline (never acknowledged), not a hang',
+    saveN.status === 503 && saveN.headers.get('retry-after') === '30' && hungUploadReached && hungMs >= 1400 && hungMs < 4000,
+    `status ${saveN.status} after ${hungMs}ms, uploads ${JSON.stringify(slowFake.uploadNames())}`);
   await new Promise((r) => setTimeout(r, 3200));
   slowFake.hangUploads(false);
   const saveN1 = await postGame('Recovered-save-N-plus-1');
   const recovered = await waitUntil(() => {
-    try {
-      const names = JSON.parse(slowFake.stored()).games.map((g) => g.name).sort();
-      return JSON.stringify(names) === JSON.stringify(['Hung-save-N', 'Recovered-save-N-plus-1']);
-    } catch { return false; }
+    const names = slowFake.games('u_deadline').map((g) => g.name).sort();
+    return JSON.stringify(names) === JSON.stringify(['Recovered-save-N-plus-1']);
   }, 6000);
-  record('THE DEFECT: deadline releases the pump so save N+1 persists the latest shared state',
-    saveN1.status === 200 && recovered && /GCS deadline exceeded after 1500ms: db\.json save\(\) never answered/.test(slowBoot.log()),
-    `status ${saveN1.status}, ${slowFake.stored().slice(-300)}`);
+  record('THE DEFECT: the deadline frees the account\'s write queue, so save N+1 persists (and the unacknowledged save N is not claimed)',
+    saveN1.status === 200 && recovered && /GCS deadline exceeded after 1500ms: games\/u_deadline\.json save\(\) never answered/.test(slowBoot.log()),
+    `status ${saveN1.status}, ${String(slowFake.stored('games/u_deadline.json')).slice(-300)}`);
   await stop(slowBoot.child); await slowFake.close();
 
   // 5. The RE-SYNC read, hung. Section 3 covers re-sync after ECONNREFUSED;
@@ -802,17 +830,18 @@ try {
   }
   for (const [label, doc, keeps] of [
     ['legacy {games} with no "users" key', { games: [{ id: 'g_old', userId: 'u_gone', name: 'Old-Game', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01' }] },
-      (db) => db.games.some((g) => g.id === 'g_old')],
+      // Kept = moved, byte-identical, into its account's object, and gone from db.json.
+      (db, f) => f.games('u_gone').some((g) => g.id === 'g_old' && g.name === 'Old-Game') && db.games.length === 0],
     ['a user whose passwordHash is \'\' (the local-owner shape)', { users: [{ ...seededUser('u_blank', 'blank', 'blank@example.test', 'x'), passwordHash: '' }], games: [] },
       (db) => db.users.some((u) => u.id === 'u_blank')],
   ]) {
     const fake = await trackFake(startFakeGcsDb({ port: shapeGcsPort, initialContent: JSON.stringify(doc) }));
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-shape-ok-'))), shapeAppPort, shapeGcsPort)), shapeAppPort);
     const reg = await register(shapeAppPort, 'control@example.test');
-    const landed = await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    const landed = await waitUntil(() => fake.uploadCount(OBJECT) >= 1, 5000);
     let stored = null; try { stored = JSON.parse(fake.getStored()); } catch { /* reported below */ }
     record(`CONTROL (${label}): boots unblocked, and the first save KEEPS the existing record`,
-      reg?.status === 500 && landed && !!stored && keeps(stored) && !/GCS store BLOCKED/.test(boot.log()),
+      reg?.status === 500 && landed && !!stored && keeps(stored, fake) && !/GCS store BLOCKED/.test(boot.log()),
       `register ${reg?.status} (500 = no SMTP), uploads ${fake.uploadCount()}, stored ${String(fake.getStored()).slice(0, 160)}`);
     await stop(boot.child); await fake.close();
   }
@@ -820,8 +849,10 @@ try {
   // A PEER writes a malformed object mid-life; our next save takes the 412
   // merge. On main that path merged `users:"x"` character by character and
   // uploaded the result. It must refuse and block exactly like the boot read.
+  // The save is a db.json write (a second legacy-hash login's rehash): a game
+  // save writes only its account's object, never db.json.
   {
-    const good = JSON.stringify({ users: [seededUser('u_mid', 'mid', 'mid@example.test', 'Sup3rSecret!23')], games: [] });
+    const good = JSON.stringify({ users: [seededUser('u_mid', 'mid', 'mid@example.test', 'Sup3rSecret!23'), seededUser('u_mid2', 'mid2', 'mid2@example.test', 'Sup3rSecret!23')], games: [] });
     const fake = await trackFake(startFakeGcsDb({ port: shapeGcsPort, initialContent: good }));
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-mid-'))), shapeAppPort, shapeGcsPort)), shapeAppPort);
     const tok = (await (await fetch(`http://127.0.0.1:${shapeAppPort}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'mid@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
@@ -829,8 +860,8 @@ try {
     const bad = JSON.stringify({ users: 'x', games: [] });
     fake.peerWrite(bad);
     const n = fake.uploadCount();
-    const save = await fetch(`http://127.0.0.1:${shapeAppPort}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
-      body: JSON.stringify({ name: 'After-Peer-Garbage', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+    const save = await fetch(`http://127.0.0.1:${shapeAppPort}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'mid2@example.test', password: 'Sup3rSecret!23' }) });
     await waitUntil(() => /GCS store BLOCKED/.test(boot.log()), 5000);
     await new Promise((r) => setTimeout(r, 1500));
     const after = await fetch(`http://127.0.0.1:${shapeAppPort}/api/games`, { headers: { authorization: `Bearer ${tok}` } });
@@ -853,16 +884,19 @@ try {
   // ───────────────────────────────────────────────────────────────────────────
   // 7. TWO INSTANCES, THREE-WAY MERGE (hit c). Y deletes account U (and U's
   // game) and rehashes V's password; X loaded U and V before and never
-  // touched either. X then saves an unrelated game and takes the 412 merge.
-  // The 2-way merge put U and U's game back and reverted V's hash. CONTROL:
-  // X's OWN new game survives the same merge.
+  // touched either. X then saves an unrelated game and writes db.json (T's
+  // first login rehashes T's legacy hash), taking the 412 merge. The 2-way
+  // merge put U and U's game back and reverted V's hash. CONTROL: X's OWN new
+  // game survives. U's game sat in db.json's legacy array: both instances
+  // moved it into U's object at boot, and U's deletion leaves a tombstone.
   // ───────────────────────────────────────────────────────────────────────────
   {
     const mGcs = gcsPortA + 16, mX = port1 + 4, mY = port1 + 6;
     const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
     const fake = await trackFake(startFakeGcsDb({ port: mGcs, initialContent: JSON.stringify({
       users: [{ ...seededUser('u_U', 'userU', 'u@example.test', 'Sup3rSecret!23'), deleteCode: '123456', deleteCodeExpires: Date.now() + 600000 },
-        seededUser('u_V', 'userV', 'v@example.test', 'Sup3rSecret!23'), seededUser('u_W', 'userW', 'w@example.test', 'Sup3rSecret!23')],
+        seededUser('u_V', 'userV', 'v@example.test', 'Sup3rSecret!23'), seededUser('u_W', 'userW', 'w@example.test', 'Sup3rSecret!23'),
+        seededUser('u_T', 'userT', 't7@example.test', 'Sup3rSecret!23')],
       games: [{ id: 'g_U', userId: 'u_U', name: 'U-Game', description: '', payoffs: pay, createdAt: '2026-01-01' }],
     }) }));
     const X = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-3wx-'))), mX, mGcs)), mX);
@@ -882,26 +916,29 @@ try {
     const before = onGcs();
     const postX = await fetch(`http://127.0.0.1:${mX}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tokenW}` },
       body: JSON.stringify({ name: 'W-Game', payoffs: pay }) });
-    await waitUntil(() => onGcs().games.some((g) => g.name === 'W-Game'), 8000);
+    await loginOn(mX, 't7@example.test'); // X writes db.json from its copy (merged on read or on a 412)
+    await waitUntil(() => onGcs().users.find((u) => u.id === 'u_T')?.passwordHash.startsWith('pbkdf2$'), 8000);
     const fin = onGcs();
     record('THE DEFECT: an account deleted on one instance stays deleted after a stale instance saves (user AND games)',
       del.status === 200 && !before.users.some((u) => u.id === 'u_U')
-        && !fin.users.some((u) => u.id === 'u_U') && !fin.games.some((g) => g.id === 'g_U'),
-      `delete ${del.status}; final users ${JSON.stringify(fin.users.map((u) => u.id))} games ${JSON.stringify(fin.games.map((g) => g.name))}`);
+        && !fin.users.some((u) => u.id === 'u_U') && fake.games('u_U').length === 0 && JSON.parse(fake.getStored('games/u_U.json') ?? '{}').deleted === true,
+      `delete ${del.status}; final users ${JSON.stringify(fin.users.map((u) => u.id))} U's object ${fake.getStored('games/u_U.json')}`);
     const vBefore = before.users.find((u) => u.id === 'u_V')?.passwordHash;
     record('THE DEFECT: a stale instance\'s UNTOUCHED copy does not revert another instance\'s change (V\'s rehash)',
       !!vBefore?.startsWith('pbkdf2$') && fin.users.find((u) => u.id === 'u_V')?.passwordHash === vBefore,
       `V before ${vBefore?.slice(0, 7)}, after ${fin.users.find((u) => u.id === 'u_V')?.passwordHash?.slice(0, 7)}`);
-    record('CONTROL: X\'s own new game survives the same 412 merge', postX.status === 200 && fin.games.some((g) => g.name === 'W-Game'),
-      JSON.stringify(fin.games.map((g) => g.name)));
+    record('CONTROL: X\'s own new game survives the same 412 merge', postX.status === 200 && fake.games('u_W').some((g) => g.name === 'W-Game'),
+      JSON.stringify(fake.allGames().map((g) => g.name)));
     await stop(X.child); await stop(Y.child); await fake.close();
   }
 
   // 7b. DELETION WINS OVER A CONCURRENT EDIT ON THE STALE INSTANCE. Y deletes
-  // accounts U and U2; X, not knowing, CHANGES U2 (a forgot-password code)
-  // and saves a new game for U, both inside one 412 merge. Neither account
-  // may come back, and no game may be left owned by a deleted account.
-  // CONTROL: the fixture's deletions reached GCS before X's merge.
+  // accounts U and U2; X, not knowing, CHANGES U2 (a forgot-password code,
+  // a db.json write that takes the 412 merge) and tries to save a new game
+  // for U from its stale copy. Neither account may come back, and no game may
+  // be left owned by a deleted account: U's object is a tombstone, so X's save
+  // meets it and is refused (401) instead of re-creating an object nobody
+  // could reach. CONTROL: the fixture's deletions reached GCS before X acted.
   {
     const dGcs = gcsPortA + 28, dX = port1 + 24, dY = port1 + 26;
     const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
@@ -937,11 +974,14 @@ try {
     fake.setUploadDelayMs(0);
     await new Promise((r) => setTimeout(r, 2500)); await settle();
     const fin = onGcs();
-    record('fixture: both deletions reached GCS before the stale instance merged, and X accepted its writes',
-      deletedFirst && orphan.status === 200, `users on GCS before: ${deletedFirst ? 0 : 'some'}, orphan POST ${orphan.status}, X window used ${xStaleMs}ms of 2000`);
+    record('fixture: both deletions reached GCS before the stale instance acted, inside X\'s freshness window',
+      deletedFirst && xStaleMs < 2000, `users on GCS before: ${deletedFirst ? 0 : 'some'}, X window used ${xStaleMs}ms of 2000`);
     record('THE DEFECT: an account deleted elsewhere stays deleted even though THIS instance changed it (deletion wins)',
       !fin.users.some((u) => u.id === 'u_D2') && !fin.users.some((u) => u.id === 'u_D1'), JSON.stringify(fin.users.map((u) => u.id)));
-    record('THE DEFECT: no game is left owned by a deleted account', !fin.games.some((g) => g.userId === 'u_D1'), JSON.stringify(fin.games));
+    record('THE DEFECT: no game is left owned by a deleted account: the stale save met U\'s tombstone (401) and wrote nothing',
+      orphan.status === 401 && fake.games('u_D1').length === 0 && JSON.parse(fake.getStored('games/u_D1.json') ?? '{}').deleted === true
+        && !fake.allGames().some((g) => g.name === 'Orphan-Game'),
+      `orphan POST ${orphan.status}; U's object ${fake.getStored('games/u_D1.json')}`);
     await stop(X.child); await stop(Y.child); await fake.close();
   }
 
@@ -989,30 +1029,44 @@ try {
       const t = (await (await call(p, '/api/auth/login', { email, password })).json()).token;
       return { r: r.status, v: v.status, t };
     };
-    // Uploads are held so every step below happens on both instances before
-    // either write lands: the rollover race, not "register an email GCS has".
-    // Sequential, not Promise.all: the fake SMTP's last code must be this call's.
+    // db.json uploads are held so every sign-up below happens on both
+    // instances before either write lands: the rollover race, not "register
+    // an email GCS has". Sequential, not Promise.all: the fake SMTP's last code
+    // must be this call's. Each game is answered once its own object's upload
+    // lands (held too); the hold is lifted once both have arrived.
     fake.setUploadDelayMs(6000);
     const a = await signUp(eX, 'alice', 'same@example.test', 'Sup3rSecretX');
     const b = await signUp(eY, 'bob', 'SAME@example.test', 'Sup3rSecretY');
     const c = await signUp(eX, 'carol', 'carol@example.test', 'Sup3rSecretC');
     const d = await signUp(eY, 'Carol', 'dave@example.test', 'Sup3rSecretD');
-    const ga = await call(eX, '/api/games', { name: 'Alice-Game', payoffs: pay }, a.t);
-    const gb = await call(eY, '/api/games', { name: 'Bob-Game', payoffs: pay }, b.t);
-    const beforeLanding = fake.uploadCount();
+    const beforeLanding = fake.uploadLog().filter((u) => u.landedGen).length;
+    const games = Promise.all([call(eX, '/api/games', { name: 'Alice-Game', payoffs: pay }, a.t), call(eY, '/api/games', { name: 'Bob-Game', payoffs: pay }, b.t)]);
+    await new Promise((r) => setTimeout(r, 300)); // both game uploads are held; nothing after them is
     fake.setUploadDelayMs(0);
-    await waitUntil(() => onGcs().games.length >= 2, 15000); await settle(); await new Promise((r) => setTimeout(r, 1500)); await settle();
-    const seenIds = new Set(fake.uploadLog().flatMap((u) => { try { return JSON.parse(u.body).users.map((x) => x.id); } catch { return []; } }));
+    const [ga, gb] = await games;
+    await waitUntil(() => fake.allGames().length >= 2, 15000); await settle(); await new Promise((r) => setTimeout(r, 1500)); await settle();
+    const seenIds = new Set(fake.uploadLog().filter((u) => u.name === OBJECT).flatMap((u) => { try { return JSON.parse(u.body).users.map((x) => x.id); } catch { return []; } }));
     const fin = onGcs();
     const same = fin.users.filter((u) => u.email.toLowerCase() === 'same@example.test');
     const carols = fin.users.filter((u) => u.username.toLowerCase().startsWith('carol'));
-    record('fixture: all four sign-ups and both games were accepted before any upload landed, and 4 accounts reached GCS',
+    record('fixture: all four sign-ups were accepted before any upload landed, both games were saved, and 4 accounts reached GCS',
       [a, b, c, d].every((x) => x.r === 200 && x.v === 200 && typeof x.t === 'string') && ga.status === 200 && gb.status === 200
         && beforeLanding === 0 && seenIds.size === 4,
       JSON.stringify([a, b, c, d].map((x) => [x.r, x.v, typeof x.t])) + ` games ${ga.status}/${gb.status}, landed early ${beforeLanding}, ids seen ${seenIds.size}`);
+    // The kept account lists both instances' games: its own object and the
+    // folded duplicate's (recorded in `mergedFrom`), on both instances.
+    const keptKeys = same.length === 1 ? [same[0].id, ...(same[0].mergedFrom ?? [])] : [];
+    const keptStored = keptKeys.flatMap((k) => fake.games(k)).map((g) => g.name);
+    await new Promise((r) => setTimeout(r, 2100)); // both instances re-read the merged accounts
+    const keptLists = [];
+    for (const p of [eX, eY]) {
+      const pw = same[0]?.username === 'bob' ? 'Sup3rSecretY' : 'Sup3rSecretX';
+      const t = (await (await call(p, '/api/auth/login', { email: 'same@example.test', password: pw })).json().catch(() => ({}))).token;
+      keptLists.push(await (await fetch(`http://127.0.0.1:${p}/api/games`, { headers: { authorization: `Bearer ${t}` } })).json().catch(() => null));
+    }
     record('THE DEFECT: one email ends as ONE account, holding BOTH instances\' games',
-      same.length === 1 && ['Alice-Game', 'Bob-Game'].every((n) => fin.games.some((g) => g.name === n && g.userId === same[0]?.id)),
-      `accounts ${same.length}; games ${JSON.stringify(fin.games.map((g) => [g.name, g.userId === same[0]?.id]))}`);
+      same.length === 1 && ['Alice-Game', 'Bob-Game'].every((n) => keptStored.includes(n) && keptLists.every((l) => Array.isArray(l) && l.some((g) => g.name === n))),
+      `accounts ${same.length}; stored under ${JSON.stringify(keptKeys)}: ${JSON.stringify(keptStored)}; lists ${JSON.stringify(keptLists.map((l) => (Array.isArray(l) ? l.map((g) => g.name) : l)))}`);
     record('THE DEFECT: one username shared by two people ends as two accounts with distinct names',
       carols.length === 2 && new Set(carols.map((u) => u.username.toLowerCase())).size === 2, JSON.stringify(carols.map((u) => u.username)));
     // As the renamed user sees it, on BOTH instances (each re-reads GCS within
@@ -1081,19 +1135,22 @@ try {
     // Settled = the fold has landed (u_A gone) and A-Late is on GCS. A fixed
     // wait read the TRANSIENT state (X's write, A still there) and passed with
     // no fold at all — so the fixture below also requires the fold to happen.
-    const settled = await waitUntil(() => { const db = onGcs2(); return !db.users.some((u) => u.id === 'u_A') && db.games.some((g) => g.name === 'A-Late'); }, 30000);
+    const settled = await waitUntil(() => { const db = onGcs2(); return !db.users.some((u) => u.id === 'u_A') && fake2.games('u_A').some((g) => g.name === 'A-Late'); }, 30000);
     fake2.setUploadDelayMs(0);
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 2100)); // both instances re-read the fold
     const fin2 = onGcs2();
     const owners = fin2.users.filter((u) => u.email.toLowerCase() === 'fold@example.test');
-    const aLate = fin2.games.find((g) => g.name === 'A-Late');
-    const savedForA = fake2.uploadLog().some((u) => { try { return JSON.parse(u.body).games.some((g) => g.name === 'A-Late' && g.userId === 'u_A'); } catch { return false; } });
+    const savedForA = fake2.uploadLog().some((u) => u.name === 'games/u_A.json' && (() => { try { return JSON.parse(u.body).games.some((g) => g.name === 'A-Late' && g.userId === 'u_A'); } catch { return false; } })());
+    // The surviving account (B) owns A-Late: it lists it, through the fold it records.
+    const tB = (await (await call(fY, '/api/auth/login', { email: 'fold@example.test', password: 'Sup3rSecretB' })).json().catch(() => ({}))).token;
+    const bList = await (await fetch(`http://127.0.0.1:${fY}/api/games`, { headers: { authorization: `Bearer ${tB}` } })).json().catch(() => null);
+    const aLate = Array.isArray(bList) ? bList.find((g) => g.name === 'A-Late') : undefined;
     record('fixture: B verified on Y; A verified and saved A-Late on X under u_A; the fold of u_A landed',
       vB.status === 200 && vA.status === 200 && typeof tA === 'string' && late.status === 200 && savedForA && settled,
       `verify B ${vB.status}, verify A ${vA.status}, game ${late.status}, sent under u_A ${savedForA}, settled ${settled}, margin ${foldMargin}ms; users ${JSON.stringify(fin2.users.map((u) => u.id))}`);
     record('THE DEFECT: a game saved under the folded account is owned by the surviving one',
-      owners.length === 1 && owners[0].id !== 'u_A' && aLate?.userId === owners[0].id,
-      `accounts ${owners.length}; A-Late owner ${aLate?.userId} vs ${owners[0]?.id}`);
+      owners.length === 1 && owners[0].id !== 'u_A' && (owners[0].mergedFrom ?? []).includes('u_A') && !!aLate,
+      `accounts ${owners.length}; survivor ${owners[0]?.id} folded ${JSON.stringify(owners[0]?.mergedFrom)}; B lists ${JSON.stringify(Array.isArray(bList) ? bList.map((g) => g.name) : bList)}`);
     await stop(X2.child); await stop(Y2.child); await fake2.close(); smtp2.close();
   }
 
@@ -1101,23 +1158,32 @@ try {
   // 8. ACKNOWLEDGED SAVES SURVIVE AN OUTAGE AND A SHUTDOWN (hit d). Before:
   // after an upload failed nothing retried until the NEXT save (measured:
   // the game never reached GCS), and SIGTERM exited in ~7ms, dropping a save
-  // queued behind an in-flight upload. CONTROL for the drain: the first,
-  // already-in-flight save lands either way, so only the queued one can fail.
+  // queued behind an in-flight upload. db.json writes are still acknowledged
+  // first and retried by the pump; a saved game is acknowledged only once its
+  // object's upload lands, so during an outage it is an honest 503 that the
+  // client retries. CONTROL for the drain: the first, already-in-flight save
+  // lands either way, so only the queued one can fail.
   // ───────────────────────────────────────────────────────────────────────────
   {
     const oGcs = gcsPortA + 18, oApp = port1 + 8;
-    const fake = await trackFake(startDeadlineGcs(oGcs, JSON.stringify({ users: [seededUser('u_o', 'outage', 'o@example.test', 'Sup3rSecret!23')], games: [] })));
+    const fake = await trackFake(startDeadlineGcs(oGcs, JSON.stringify({ users: [seededUser('u_o', 'outage', 'o@example.test', 'Sup3rSecret!23'), seededUser('u_o2', 'outage2', 'o2@example.test', 'Sup3rSecret!23')], games: [] })));
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-outage-'))), oApp, oGcs, { GCS_DEADLINE_MS: '600' })), oApp);
     const tok = (await (await fetch(`http://127.0.0.1:${oApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'o@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     await waitUntil(() => fake.uploads().length >= 1, 5000);
     fake.hangUploads(true);
-    const save = await fetch(`http://127.0.0.1:${oApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
-      body: JSON.stringify({ name: 'Acked-During-Outage', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
+    // A db.json write (o2's first login rehashes its legacy hash) is acknowledged and retried.
+    const acked = await fetch(`http://127.0.0.1:${oApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'o2@example.test', password: 'Sup3rSecret!23' }) });
+    const game = () => fetch(`http://127.0.0.1:${oApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+      body: JSON.stringify({ name: 'Saved-Around-Outage', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, clientRequestId: 'outage-retry-1' }) });
+    const during = await game();
     await waitUntil(() => (boot.log().match(/GCS write failed; the pending save stays queued/g) || []).length >= 2, 8000);
-    fake.hangUploads(false); // GCS recovers; NO further save is made
-    const persisted = await waitUntil(() => { try { return JSON.parse(fake.stored()).games.some((g) => g.name === 'Acked-During-Outage'); } catch { return false; } }, 10000);
-    record('THE DEFECT: a save acknowledged during an outage reaches GCS once it recovers, with no later save to carry it',
-      save.status === 200 && persisted, `status ${save.status}; stored ${fake.stored().slice(-200)}`);
+    fake.hangUploads(false); // GCS recovers; NO further db.json write is made
+    const persisted = await waitUntil(() => { try { return JSON.parse(fake.stored()).users.find((u) => u.id === 'u_o2')?.passwordHash.startsWith('pbkdf2$'); } catch { return false; } }, 10000);
+    const retried = await game(); // the client's retry of the refused save, same clientRequestId
+    const kept = fake.games('u_o').filter((g) => g.name === 'Saved-Around-Outage');
+    record('THE DEFECT: a db.json write acknowledged during an outage reaches GCS once it recovers, with no later save to carry it; a game save during it is an honest 503 and its retry lands once',
+      acked.status === 200 && persisted && during.status === 503 && retried.status === 200 && kept.length === 1,
+      `ack ${acked.status} persisted ${persisted}; game during ${during.status}, retry ${retried.status}, stored ${kept.length}`);
     await stop(boot.child); await fake.close();
   }
   {
@@ -1129,13 +1195,15 @@ try {
     fake.setUploadDelayMs(1500);
     const g = (name) => fetch(`http://127.0.0.1:${tApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
       body: JSON.stringify({ name, payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
-    const first = await g('In-Flight'); await new Promise((r) => setTimeout(r, 100));
-    const second = await g('Queued-Behind');
+    // Both requests are still waiting on their uploads when SIGTERM arrives.
+    const firstP = g('In-Flight'); await new Promise((r) => setTimeout(r, 100));
+    const secondP = g('Queued-Behind'); await new Promise((r) => setTimeout(r, 100));
     const exited = new Promise((r) => boot.child.once('exit', (code, sig) => r({ code, sig })));
     boot.child.kill('SIGTERM');
     const how = await exited;
+    const [first, second] = await Promise.all([firstP, secondP].map((p) => p.catch((err) => ({ status: err?.cause?.code ?? String(err) }))));
     let names = [];
-    await waitUntil(() => { try { names = JSON.parse(fake.getStored()).games.map((x) => x.name).sort(); } catch { /* reported */ } return names.length >= 2; }, 3000);
+    await waitUntil(() => { names = fake.games('u_t').map((x) => x.name).sort(); return names.length >= 2; }, 3000);
     record('CONTROL: the in-flight save lands either way', names.includes('In-Flight'), JSON.stringify(names));
     record('THE DEFECT: SIGTERM drains the queued save to GCS before exiting (code 0)',
       first.status === 200 && second.status === 200 && names.includes('Queued-Behind') && how.code === 0,
@@ -1147,7 +1215,11 @@ try {
   // 9. AN ABANDONED WRITE THAT LANDS. An upload past the deadline is given up
   // on but may still land; a game created in it and deleted afterwards came
   // back, because the merge base did not know the game had ever reached GCS
-  // (measured on main too). CONTROL: the game is on GCS before the delete.
+  // (measured on main too). A saved game's request now waits for its upload,
+  // so the abandoned one is a 503, and the client's retry (same
+  // clientRequestId) must find the row that landed — not trust the copy the
+  // abandoned write left in memory and add a second one. CONTROL: the game is
+  // on GCS before the retry.
   // ───────────────────────────────────────────────────────────────────────────
   {
     const aGcs = gcsPortA + 22, aApp = port1 + 16;
@@ -1155,59 +1227,55 @@ try {
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-aband-'))), aApp, aGcs, { GCS_DEADLINE_MS: '800' })), aApp);
     const tok = (await (await fetch(`http://127.0.0.1:${aApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'ab@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
-    // Stored at 1.2s, after the 800ms deadline (the process never learns it
-    // landed) but inside the save's 2s freshness window, so the delete below
-    // is served without a re-read: only the unacked record says it landed.
+    const save = () => fetch(`http://127.0.0.1:${aApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+      body: JSON.stringify({ name: 'Created-Then-Deleted', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, clientRequestId: 'abandoned-1' }) });
+    // Stored at 1.2s, after the 800ms deadline: the process never learns it landed.
     fake.setUploadDelayMs(1200);
-    const made = await (await fetch(`http://127.0.0.1:${aApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
-      body: JSON.stringify({ name: 'Created-Then-Deleted', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) })).json();
-    const landed = await waitUntil(() => { try { return JSON.parse(fake.getStored()).games.length === 1; } catch { return false; } }, 5000);
+    const abandoned = await save();
+    const landed = await waitUntil(() => fake.games('u_ab').length === 1, 5000);
     fake.setUploadDelayMs(0);
-    const metaBeforeDelete = fake.metaGets();
+    const retry = await save();
+    const made = await retry.json().catch(() => ({}));
     const del = await fetch(`http://127.0.0.1:${aApp}/api/games/${made.game?.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${tok}` } });
-    const deleteReRead = fake.metaGets() !== metaBeforeDelete;
-    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise((r) => setTimeout(r, 2200));
     const list = await (await fetch(`http://127.0.0.1:${aApp}/api/games`, { headers: { authorization: `Bearer ${tok}` } })).json();
-    let storedGames = null; try { storedGames = JSON.parse(fake.getStored()).games.length; } catch { /* reported */ }
-    record('fixture: the abandoned upload DID land on GCS before the delete, and the delete was served without a re-read',
-      landed && !deleteReRead, `landed ${landed} reRead ${deleteReRead} ${fake.getStored().slice(0, 160)}`);
-    record('THE DEFECT: a game deleted after its abandoned upload landed stays deleted, on GCS and in the list',
-      del.status === 200 && storedGames === 0 && Array.isArray(list) && list.length === 0,
-      `delete ${del.status}, stored games ${storedGames}, list ${JSON.stringify(list)}`);
+    const storedGames = fake.games('u_ab').length;
+    record('fixture: the abandoned upload was answered 503 at the deadline and DID land on GCS before the retry',
+      abandoned.status === 503 && landed, `abandoned ${abandoned.status} landed ${landed} ${String(fake.getStored('games/u_ab.json')).slice(0, 160)}`);
+    record('THE DEFECT: the retry finds the row the abandoned upload landed (no second row), and once deleted it stays deleted, on GCS and in the list',
+      retry.status === 200 && made.game?.clientRequestId === 'abandoned-1' && del.status === 200 && storedGames === 0 && Array.isArray(list) && list.length === 0,
+      `retry ${retry.status}, delete ${del.status}, stored games ${storedGames}, list ${JSON.stringify(list)}`);
     await stop(boot.child); await fake.close();
   }
   // 9b. THE OTHER HALF: an abandoned upload that did NOT land is no proof the
-  // game is gone. A peer writes meanwhile, so the retry takes the 412 merge;
-  // counting the unacked game as "known remotely" there would drop an
-  // acknowledged save. CONTROL: the peer's game survives the same merge.
+  // game is there. A peer writes the object meanwhile; the retry must build on
+  // the peer's write (412, re-read) and land its own row beside it.
+  // CONTROL: the peer's game survives the same retry.
   {
     const bGcs = gcsPortA + 26, bApp = port1 + 22;
     const fake = await trackFake(startFakeGcsDb({ port: bGcs, initialContent: JSON.stringify({ users: [seededUser('u_nl', 'unland', 'nl@example.test', 'Sup3rSecret!23')], games: [] }) }));
     const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-unland-'))), bApp, bGcs, { GCS_DEADLINE_MS: '800' })), bApp);
     const tok = (await (await fetch(`http://127.0.0.1:${bApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'nl@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    const save = () => fetch(`http://127.0.0.1:${bApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
+      body: JSON.stringify({ name: 'Never-Landed', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, clientRequestId: 'unlanded-1' }) });
     fake.dropUploads(true);
-    const save = await fetch(`http://127.0.0.1:${bApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
-      body: JSON.stringify({ name: 'Never-Landed', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
-    const peer = JSON.parse(fake.getStored());
-    peer.games.push({ id: 'g_peer2', userId: 'u_nl', name: 'Peer-Game-2', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01' });
-    fake.peerWrite(JSON.stringify(peer));
-    await waitUntil(() => /GCS write failed; the pending save stays queued/.test(boot.log()), 5000);
+    const first = await save();
+    fake.peerWrite(JSON.stringify({ userId: 'u_nl', games: [{ id: 'g_peer2', userId: 'u_nl', name: 'Peer-Game-2', description: '', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01' }] }), null, 'games/u_nl.json');
     fake.dropUploads(false);
-    let names = [];
-    await waitUntil(() => { try { names = JSON.parse(fake.getStored()).games.map((g) => g.name).sort(); } catch { /* reported */ } return names.length >= 2; }, 8000);
-    record('CONTROL: the peer\'s game survives the merge that follows an unlanded upload', names.includes('Peer-Game-2'), JSON.stringify(names));
-    record('THE DEFECT: an acknowledged save whose upload never landed survives the next 412 merge',
-      save.status === 200 && names.includes('Never-Landed'), `save ${save.status}; stored ${JSON.stringify(names)}`);
+    const retry = await save();
+    const names = fake.games('u_nl').map((g) => g.name).sort();
+    record('CONTROL: the peer\'s game survives the retry that follows an unlanded upload', names.includes('Peer-Game-2'), JSON.stringify(names));
+    record('THE DEFECT: a save whose upload never landed is a 503, and its retry lands beside the peer\'s write',
+      first.status === 503 && retry.status === 200 && JSON.stringify(names) === JSON.stringify(['Never-Landed', 'Peer-Game-2']), `first ${first.status}, retry ${retry.status}; stored ${JSON.stringify(names)}`);
     await stop(boot.child); await fake.close();
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // 10. THE PUMP NEVER WRITES WITHOUT A GENERATION. Routes re-read an unread
-  // store at the gate, so the pump's own guard is reached by a save QUEUED
-  // behind an upload whose answer carried no generation, with a peer writing
-  // right after that upload. The queued save must re-read before writing.
-  // CONTROL: the peer's write happened (checked below via the fake's hook).
+  // 10. NO WRITE WITHOUT A GENERATION. An upload whose answer carried no
+  // generation landed, but its generation is unknown, so the next write must
+  // re-read before writing (a peer wrote right after it). CONTROL: the peer's
+  // write happened (checked below via the fake's hook).
   // ───────────────────────────────────────────────────────────────────────────
   {
     const nGcs = gcsPortA + 24, nApp = port1 + 18;
@@ -1217,28 +1285,25 @@ try {
     const tok = (await (await fetch(`http://127.0.0.1:${nApp}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'n@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
     let peerRan = false;
-    fake.setUploadDelayMs(800);
     fake.omitGenerationOnce();
     fake.afterStoreOnce((content) => {
       peerRan = true;
       const db = JSON.parse(content);
       db.games.push({ id: 'g_peer', userId: 'u_n', name: 'Peer-Game', description: '', payoffs: pay, createdAt: '2026-01-01' });
       return JSON.stringify(db);
-    });
+    }, 'games/u_n.json');
     const post = (name) => fetch(`http://127.0.0.1:${nApp}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
       body: JSON.stringify({ name, payoffs: pay }) });
-    const first = await post('First'); await new Promise((r) => setTimeout(r, 200));
-    const queued = await post('Queued');
-    fake.setUploadDelayMs(0);
-    let names = [];
-    await waitUntil(() => { try { names = JSON.parse(fake.getStored()).games.map((g) => g.name).sort(); } catch { /* reported */ } return names.includes('Queued'); }, 8000);
-    record('fixture: a peer wrote right after the generation-less upload answered', peerRan, fake.getStored().slice(0, 200));
-    record('THE DEFECT: with no known generation the queued save re-reads first, so the peer\'s game survives it',
-      first.status === 200 && queued.status === 200 && JSON.stringify(names) === JSON.stringify(['First', 'Peer-Game', 'Queued']),
-      `stored ${JSON.stringify(names)}; preconditions ${JSON.stringify(fake.uploadLog().slice(-3).map((u) => u.ifGenerationMatch))}`);
+    const first = await post('First');
+    const next = await post('Next');
+    const names = fake.games('u_n').map((g) => g.name).sort();
+    const gameUploads = fake.uploadLog().filter((u) => u.name === 'games/u_n.json');
+    record('fixture: a peer wrote right after the generation-less upload answered', peerRan, String(fake.getStored('games/u_n.json')).slice(0, 200));
+    record('THE DEFECT: with no known generation the next save re-reads first, so the peer\'s game survives it',
+      first.status === 200 && next.status === 200 && JSON.stringify(names) === JSON.stringify(['First', 'Next', 'Peer-Game']) && fake.count412() === 0,
+      `stored ${JSON.stringify(names)}; preconditions ${JSON.stringify(gameUploads.map((u) => u.ifGenerationMatch))}, 412s ${fake.count412()}`);
     await stop(boot.child); await fake.close();
   }
-
   // 11. A MAIL SERVER THAT ACCEPTS AND GOES QUIET (at DATA). Every mail route
   // waited on nodemailer's defaults (10 min idle): measured >90s for
   // register, forgot-password and feedback, while the client gives up at 22s.
@@ -1359,12 +1424,15 @@ try {
     const loginOn = async (p) => (await (await fetch(`http://127.0.0.1:${p}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'r@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     const tX = await loginOn(rX); await waitUntil(() => fake.uploadCount() >= 1, 5000);
     const tY = await loginOn(rY); await waitUntil(() => fake.uploadCount() >= 2, 5000);
+    // Y reads the account's (empty) object first, so it holds a copy that goes stale.
+    const listY0 = await (await fetch(`http://127.0.0.1:${rY}/api/games`, { headers: { authorization: `Bearer ${tY}` } })).json().catch(() => null);
     const saved = await fetch(`http://127.0.0.1:${rX}/api/games`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tX}` },
       body: JSON.stringify({ name: 'Saved-On-X', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
-    const onGcs = await waitUntil(() => { try { return JSON.parse(fake.getStored()).games.some((g) => g.name === 'Saved-On-X'); } catch { return false; } }, 5000);
+    const onGcs = await waitUntil(() => fake.games('u_r').some((g) => g.name === 'Saved-On-X'), 5000);
     await new Promise((r) => setTimeout(r, 2100)); // one freshness window
     const listY = await (await fetch(`http://127.0.0.1:${rY}/api/games`, { headers: { authorization: `Bearer ${tY}` } })).json().catch(() => null);
-    record('fixture: the game saved on X reached GCS before Y lists', saved.status === 200 && onGcs, fake.getStored().slice(0, 160));
+    record('fixture: Y held the empty list, and the game saved on X reached GCS before Y lists again', saved.status === 200 && onGcs && Array.isArray(listY0) && listY0.length === 0,
+      String(fake.getStored('games/u_r.json')).slice(0, 160));
     record('THE DEFECT: the other instance lists it within one freshness window, with no write of its own',
       Array.isArray(listY) && listY.some((g) => g.name === 'Saved-On-X'), JSON.stringify(listY));
     await stop(X.child); await stop(Y.child); await fake.close();
@@ -1410,11 +1478,12 @@ try {
     await stop(boot.child); await fake.close();
   }
 
-  // 14. A 412 STORM. Three instances on one bucket, each user saving 8 games
-  // concurrently and deleting every third, uploads slowed so they collide.
-  // Every acknowledged save must end on GCS exactly once and every
-  // acknowledged delete stay gone. FIXTURE: real 412s happened, so the
-  // re-read + 3-way merge path ran, not three serial writers.
+  // 14. A 412 STORM. Three instances on one bucket, ONE account signed in on
+  // each, every instance saving 8 games concurrently into that account's one
+  // object and deleting every third, uploads slowed so they collide. Every
+  // acknowledged save must end on GCS exactly once and every acknowledged
+  // delete stay gone. FIXTURE: real 412s happened, so the re-read + re-apply
+  // path ran, not three serial writers.
   {
     const sGcs = gcsPortA + 44, ports = [port1 + 48, port1 + 50, port1 + 52];
     const us = [0, 1, 2].map((i) => seededUser(`u_s${i}`, `storm${i}`, `s${i}@example.test`, 'Sup3rSecret!23'));
@@ -1423,8 +1492,8 @@ try {
     for (const p of ports) kids.push((await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-storm-'))), p, sGcs)), p)).child);
     const tok = [];
     for (const [i, p] of ports.entries()) {
-      tok.push((await (await fetch(`http://127.0.0.1:${p}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: `s${i}@example.test`, password: 'Sup3rSecret!23' }) })).json()).token);
-      await waitUntil(() => fake.uploadCount() >= i + 1, 5000);
+      tok.push((await (await fetch(`http://127.0.0.1:${p}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 's0@example.test', password: 'Sup3rSecret!23' }) })).json()).token);
+      if (i === 0) await waitUntil(() => fake.uploadCount() >= 1, 5000); // the rehash lands before the others read
     }
     fake.setUploadDelayMs(150);
     const acked = [], deleted = [];
@@ -1443,7 +1512,7 @@ try {
       }
     }));
     fake.setUploadDelayMs(0);
-    const names = () => { try { return JSON.parse(fake.getStored()).games.map((g) => g.name); } catch { return []; } };
+    const names = () => fake.games('u_s0').map((g) => g.name);
     const settled = () => { const n = new Set(names()); return acked.every((a) => deleted.includes(a) || n.has(a)) && deleted.every((d) => !n.has(d)); };
     await waitUntil(settled, 20000);
     const final = names(), set = new Set(final);
@@ -1489,7 +1558,9 @@ try {
   // finishes in the background; a write that commits and LANDS while its
   // download is in flight used to be undone by that older copy: a deleted
   // game came back, a new one vanished, a deleted account could sign in
-  // (sweep 2, director angle). FIXTURE: the log proves the straddle.
+  // (sweep 2, director angle). Games straddle their account's object (re-read
+  // by GET /api/games), the account deletion straddles db.json (re-read by the
+  // gate). FIXTURE: the log proves the straddle.
   {
     const kGcs = gcsPortA + 50, kApp = port1 + 58;
     const seed = { ...seededUser('u_k', 'straddle', 'k@example.test', 'Sup3rSecret!23'), deleteCode: '123456', deleteCodeExpires: Date.now() + 600000 };
@@ -1501,21 +1572,26 @@ try {
     const auth = { authorization: `Bearer ${tok}` }, json = { 'content-type': 'application/json', ...auth };
     await waitUntil(() => fake.uploadCount() >= 1, 5000); // login's rehash landed
     await new Promise((r) => setTimeout(r, 2200)); // freshness window over
-    // A first save lands while the re-check's metadata GET is in flight, so
-    // the generation moved and the re-check downloads; the write under test
-    // then lands while that (slow) download is still in flight.
-    const straddle = async (write, tag) => {
+    // A first write of ours lands while the re-check's metadata GET of the same
+    // object is in flight, so the generation moved and the re-check downloads;
+    // the write under test then lands while that (slow) download is still in flight.
+    const GAMES = 'games/u_k.json';
+    const pre = (tag, object) => (object === GAMES
+      ? fetch(url('/api/games'), { method: 'POST', headers: json, body: JSON.stringify({ name: `Pre-${tag}`, payoffs: keepGame.payoffs }) })
+      : fetch(url('/api/auth/register'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: `pre-${tag}`, email: `pre-${tag}@example.test`, password: 'Sup3rSecret!23' }) }));
+    const straddle = async (write, tag, object = GAMES) => {
       fake.setReadDelayMs(600, 1800);
-      const m0 = fake.metaGets(), r0 = fake.readLog().length;
+      const m0 = fake.metaGets(object), r0 = fake.readLog().filter((x) => x.name === object).length;
       const trigger = fetch(url('/api/games'), { headers: auth });
-      await waitUntil(() => fake.metaGets() > m0, 3000);
+      await waitUntil(() => fake.metaGets(object) > m0, 3000);
+      const landedOn = (from) => fake.uploadLog().slice(from).some((x) => x.landedGen && x.name === object);
       const u0 = fake.uploadCount();
-      await fetch(url('/api/games'), { method: 'POST', headers: json, body: JSON.stringify({ name: `Pre-${tag}`, payoffs: keepGame.payoffs }) });
-      await waitUntil(() => fake.uploadLog().slice(u0).some((x) => x.landedGen), 3000);
-      const downloading = await waitUntil(() => fake.readLog().length > r0, 3000);
-      const read = fake.readLog().at(-1), before = fake.uploadCount();
+      await pre(tag, object);
+      await waitUntil(() => landedOn(u0), 3000);
+      const downloading = await waitUntil(() => fake.readLog().filter((x) => x.name === object).length > r0, 3000);
+      const read = fake.readLog().filter((x) => x.name === object).at(-1), before = fake.uploadCount();
       const w = await write();
-      await waitUntil(() => fake.uploadLog().slice(before).some((x) => x.landedGen), 3000);
+      await waitUntil(() => landedOn(before), 3000);
       const landedWhileReading = downloading && read.doneMs === undefined;
       await trigger; await waitUntil(() => read.doneMs !== undefined, 4000);
       fake.setReadDelayMs(0, 0);
@@ -1528,13 +1604,13 @@ try {
     const add = await straddle(() => fetch(url('/api/games'), { method: 'POST', headers: json, body: JSON.stringify({ name: 'Added', payoffs: keepGame.payoffs }) }), 'add');
     const afterAdd = await (await fetch(url('/api/games'), { headers: auth })).json();
     await new Promise((r) => setTimeout(r, 2200));
-    const acct = await straddle(() => fetch(url('/api/auth/delete-confirm'), { method: 'POST', headers: json, body: JSON.stringify({ code: '123456' }) }), 'acct');
+    const acct = await straddle(() => fetch(url('/api/auth/delete-confirm'), { method: 'POST', headers: json, body: JSON.stringify({ code: '123456' }) }), 'acct', OBJECT);
     const relogin = await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'k@example.test', password: 'Sup3rSecret!23' }) });
     record('fixture: each acked write (delete, save, account delete) LANDED while the re-check download was in flight',
       [del, add, acct].every((x) => x.status === 200 && x.landedWhileReading), JSON.stringify([del, add, acct]));
     record('THE DEFECT: no acked write is undone by the older copy that re-check was reading',
       !afterDel.some((g) => g.name === 'Victim') && afterAdd.some((g) => g.name === 'Added') && relogin.status === 401
-        && JSON.parse(fake.getStored()).users.length === 0,
+        && !JSON.parse(fake.getStored()).users.some((u) => u.id === 'u_k') && JSON.parse(fake.getStored(GAMES)).deleted === true,
       `afterDel ${JSON.stringify(afterDel.map((g) => g.name))} afterAdd ${JSON.stringify(afterAdd.map((g) => g.name))} relogin ${relogin.status}`);
     await stop(boot.child); await fake.close();
   }
@@ -1549,28 +1625,38 @@ try {
     const url = (p) => `http://127.0.0.1:${jApp}${p}`;
     const tok = (await (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'j@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    await fetch(url('/api/games'), { headers: { authorization: `Bearer ${tok}` } }); // hold the account's object
     await new Promise((r) => setTimeout(r, 2200));
-    const db = JSON.parse(fake.getStored());
-    db.games.push({ id: 'g_peer1', userId: 'u_j', name: 'Peer-1', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' });
-    fake.peerWrite(JSON.stringify(db)); // the generation moved: the re-check will download
-    // A peer writes again the moment our metadata GET is answered, so the
-    // download that follows names a generation that is already gone.
-    fake.afterMetaOnce(() => { db.games.push({ ...db.games[0], id: 'g_peer2', name: 'Peer-2' }); return JSON.stringify(db); });
+    // Both objects the listing re-checks move under it: db.json (a peer's
+    // sign-up) and the account's games. The generation moved, so each re-check
+    // downloads; a peer writes again the moment our metadata GET is answered,
+    // so each download names a generation that is already gone.
+    const root = JSON.parse(fake.getStored());
+    root.users.push(seededUser('u_j2', 'gen2', 'j2@example.test', 'Sup3rSecret!23'));
+    fake.peerWrite(JSON.stringify(root));
+    fake.afterMetaOnce(() => { root.users.push(seededUser('u_j3', 'gen3', 'j3@example.test', 'Sup3rSecret!23')); return JSON.stringify(root); }, OBJECT);
+    const pg = (id, name) => ({ id, userId: 'u_j', name, payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' });
+    fake.peerWrite(JSON.stringify({ userId: 'u_j', games: [pg('g_peer1', 'Peer-1')] }), null, 'games/u_j.json');
+    fake.afterMetaOnce(() => JSON.stringify({ userId: 'u_j', games: [pg('g_peer1', 'Peer-1'), pg('g_peer2', 'Peer-2')] }), 'games/u_j.json');
     const listing = fetch(url('/api/games'), { headers: { authorization: `Bearer ${tok}` } });
     const first = await listing; fake.setReadDelayMs(0, 0);
     await new Promise((r) => setTimeout(r, 2200));
     const after = await (await fetch(url('/api/games'), { headers: { authorization: `Bearer ${tok}` } })).json();
-    record('fixture: GCS answered a stale-generation download 404 at least once', fake.stale404s() >= 1, `stale404s ${fake.stale404s()}`);
-    record('THE DEFECT: the re-check follows the new generation: both peer games listed, the route never 5xx',
-      first.status === 200 && after.some((g) => g.name === 'Peer-1') && after.some((g) => g.name === 'Peer-2'),
-      `first ${first.status} after ${JSON.stringify(after.map?.((g) => g.name))}`);
+    const peerLogin = (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'j3@example.test', password: 'Sup3rSecret!23' }) })).status;
+    const stale = new Set(fake.readLog().filter((x) => x.want !== null && x.arrivedGen !== null && String(x.arrivedGen) !== x.want).map((x) => x.name));
+    record('fixture: GCS answered a stale-generation download 404 for db.json AND for the account\'s object', fake.stale404s() >= 2 && stale.has(OBJECT) && stale.has('games/u_j.json'),
+      `stale404s ${fake.stale404s()} on ${JSON.stringify([...stale])}`);
+    record('THE DEFECT: each re-check follows the new generation: both peer games listed, the peer\'s second sign-up signs in, the route never 5xx',
+      first.status === 200 && after.some((g) => g.name === 'Peer-1') && after.some((g) => g.name === 'Peer-2') && peerLogin === 200,
+      `first ${first.status} after ${JSON.stringify(after.map?.((g) => g.name))} peer login ${peerLogin}`);
     await stop(boot.child); await fake.close();
   }
 
   // 18. THE RE-CHECK'S COST AND LATENCY BOUND. Under 12 concurrent clients for
-  // 6s: at most one metadata GET per 2s window and no download while the
-  // generation is unchanged. With metadata taking 5s, a DB route waits about
-  // 2s, never stacked, and a second wave inside that call waits no longer.
+  // 6s: at most one metadata GET per 2s window PER OBJECT (db.json and the
+  // account's games) and no download while the generation is unchanged. With
+  // metadata taking 5s, a DB route waits about 2s IN TOTAL (both re-checks
+  // share one budget), never stacked, and a second wave waits no longer.
   {
     const cGcs = gcsPortA + 42, cApp = port1 + 46; // section 13's ports, released
     const fake = await trackFake(startFakeGcsDb({ port: cGcs, initialContent: JSON.stringify({ users: [seededUser('u_c', 'cost', 'c@example.test', 'Sup3rSecret!23')], games: [] }) }));
@@ -1581,11 +1667,13 @@ try {
     await new Promise((r) => setTimeout(r, 2200));
     let ipn = 0; // one address per request: the route's own rate limit is not what this measures
     const get = () => fetch(url('/api/games'), { headers: { authorization: `Bearer ${tok}`, 'x-forwarded-for': `10.7.${(ipn >> 8) & 255}.${ipn++ & 255}` } });
-    const m0 = fake.metaGets(), d0 = fake.readLog().length; let n = 0, ok = 0; const end = Date.now() + 6000;
+    await get(); // the account's object is held from here on
+    const GAMES = 'games/u_c.json';
+    const m0 = fake.metaGets(OBJECT), g0 = fake.metaGets(GAMES), d0 = fake.readLog().length; let n = 0, ok = 0; const end = Date.now() + 6000;
     await Promise.all(Array.from({ length: 12 }, async () => { while (Date.now() < end) { const r = await get(); ok += r.status === 200; n += 1; } }));
-    const metas = fake.metaGets() - m0, downloads = fake.readLog().length - d0;
-    record('THE DEFECT: 12 clients for 6s cost at most 4 metadata GETs and no download (generation unchanged)',
-      n > 100 && ok === n && metas <= 4 && downloads === 0, `requests ${n} ok ${ok} metadataGETs ${metas} downloads ${downloads}`);
+    const metas = fake.metaGets(OBJECT) - m0, gameMetas = fake.metaGets(GAMES) - g0, downloads = fake.readLog().length - d0;
+    record('THE DEFECT: 12 clients for 6s cost at most 4 metadata GETs per object and no download (generation unchanged)',
+      n > 100 && ok === n && metas <= 4 && gameMetas <= 4 && downloads === 0, `requests ${n} ok ${ok} metadataGETs db.json ${metas} games ${gameMetas} downloads ${downloads}`);
     await new Promise((r) => setTimeout(r, 2100));
     fake.setReadDelayMs(5000, 0);
     const timed = async () => { const t = Date.now(); const r = await get(); return [r.status, Date.now() - t]; };
@@ -1601,9 +1689,10 @@ try {
   // 19. THE PEER WRITE A DROPPED OR PENDING READ CARRIED IS NOT LOST.
   // (i) Y writes while X's re-check downloads and X writes meanwhile: X's
   // upload is still conditioned on the old generation, so it must 412 and
-  // merge. (ii) X's own ack overtakes its re-check and Y writes on top; s16
-  // drops that read, so Y's game must arrive by X's next upload (412 merge)
-  // and by the next re-check. Director, sweep 3.
+  // re-apply on the re-read object. (ii) X's own ack overtakes its re-check
+  // and Y writes on top; s16 drops that read, so Y's game must arrive by X's
+  // next upload (412, re-read) and by the next re-check. Director, sweep 3.
+  // Both race on the account's games object.
   {
     const pGcs = gcsPortA + 52, pApp = port1 + 44; // s12's released app port
     const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
@@ -1614,23 +1703,27 @@ try {
     const auth = { authorization: `Bearer ${tok}` };
     const save = (name) => fetch(url('/api/games'), { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: JSON.stringify({ name, payoffs: pay }) });
     const list = async () => (await (await fetch(url('/api/games'), { headers: auth })).json()).map((g) => g.name);
+    const G = 'games/u_p.json';
     const withGame = (stored, name) => { const db = JSON.parse(stored); db.games.push({ id: `g_${name}`, userId: 'u_p', name, payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }); return JSON.stringify(db); };
-    const onGcs = () => { try { return JSON.parse(fake.getStored()).games.map((g) => g.name); } catch { return []; } };
+    const onGcs = () => fake.games('u_p').map((g) => g.name);
     const has = (names) => () => names.every((n) => onGcs().includes(n));
+    const reads = () => fake.readLog().filter((x) => x.name === G);
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
+    fake.peerWrite(JSON.stringify({ userId: 'u_p', games: [] }), null, G);
+    await list(); // X holds the account's object
     await new Promise((r) => setTimeout(r, 2200));
 
     // (i)
-    fake.peerWrite(withGame(fake.getStored(), 'Y-Early')); // the generation moved: X's re-check downloads
+    fake.peerWrite(withGame(fake.getStored(G), 'Y-Early'), null, G); // the generation moved: X's re-check downloads
     fake.setReadDelayMs(0, 1800);
-    const r0 = fake.readLog().length, n0 = fake.count412();
+    const r0 = reads().length, n0 = fake.count412();
     const trig1 = fetch(url('/api/games'), { headers: auth });
-    await waitUntil(() => fake.readLog().length > r0, 3000);
-    const read1 = fake.readLog().at(-1);
-    fake.peerWrite(withGame(fake.getStored(), 'Y-Mid'));
+    await waitUntil(() => reads().length > r0, 3000);
+    const read1 = reads().at(-1);
+    fake.peerWrite(withGame(fake.getStored(G), 'Y-Mid'), null, G);
+    const mid1 = read1.doneMs === undefined; // X saves while that download is in flight
     const s1 = await save('X-During');
     const refused1 = await waitUntil(() => fake.count412() > n0, 3000);
-    const mid1 = read1.doneMs === undefined;
     await trig1; fake.setReadDelayMs(0, 0);
     await waitUntil(has(['Y-Early', 'Y-Mid', 'X-During']), 8000);
     await new Promise((r) => setTimeout(r, 2200));
@@ -1638,16 +1731,16 @@ try {
 
     // (ii)
     await new Promise((r) => setTimeout(r, 2200));
-    const u0 = fake.uploadCount(), n1 = fake.count412(), r1 = fake.readLog().length, m1 = fake.metaGets();
+    const u0 = fake.uploadCount(), n1 = fake.count412(), r1 = reads().length, m1 = fake.metaGets(G);
     fake.setReadDelayMs(600, 1800);
-    fake.afterStoreOnce((stored) => withGame(stored, 'Y-Late')); // Y writes right on top of X's ack
+    fake.afterStoreOnce((stored) => withGame(stored, 'Y-Late'), G); // Y writes right on top of X's ack
     const trig2 = fetch(url('/api/games'), { headers: auth });
-    await waitUntil(() => fake.metaGets() > m1, 3000);
+    await waitUntil(() => fake.metaGets(G) > m1, 3000);
     const s2 = await save('X-Acked');
     await waitUntil(() => fake.uploadLog().slice(u0).some((x) => x.landedGen), 3000);
     const ackGen = fake.uploadLog().slice(u0).find((x) => x.landedGen).landedGen;
-    await waitUntil(() => fake.readLog().length > r1, 3000);
-    const read2 = fake.readLog().at(-1);
+    await waitUntil(() => reads().length > r1, 3000);
+    const read2 = reads().at(-1);
     await trig2; await waitUntil(() => read2.doneMs !== undefined, 4000);
     fake.setReadDelayMs(0, 0);
     const s3 = await save('X-After'); // inside the window that read opened: no re-check first
@@ -1668,35 +1761,49 @@ try {
 
   // 20. READS STAY FRESH WHILE THE PUMP IS IN BACKOFF. The gate skipped its
   // re-check whenever an upload was in flight, and in backoff the pump stays
-  // in flight for the whole outage: a peer's game stayed invisible on X until
-  // X's own write landed (sweep 4; main too). CONTROL: after recovery both
-  // writes are on GCS, so the pump still merges rather than overwrites.
+  // in flight for the whole outage: a peer's write stayed invisible on X until
+  // X's own write landed (sweep 4; main too). Here the pump holds an acked
+  // db.json write (a legacy-hash login's rehash) through the outage, and a
+  // game saved meanwhile is an honest 503. CONTROL: after recovery the acked
+  // write, the peer's writes and the retried game are all on GCS, so the pump
+  // still merges rather than overwrites.
   {
     const bGcs = gcsPortA + 40, bApp = port1 + 42; // s12's released ports
-    const fake = await trackFake(startFakeGcsDb({ port: bGcs, initialContent: JSON.stringify({ users: [seededUser('u_bk', 'backoff', 'bk@example.test', 'Sup3rSecret!23')], games: [] }) }));
-    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-backoff-'))), bApp, bGcs)), bApp);
+    const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+    const fake = await trackFake(startFakeGcsDb({ port: bGcs, initialContent: JSON.stringify({ users: [seededUser('u_bk', 'backoff', 'bk@example.test', 'Sup3rSecret!23'), seededUser('u_bk2', 'backoff2', 'bk2@example.test', 'Sup3rSecret!23')], games: [] }) }));
+    const boot = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-backoff-'))), bApp, bGcs, { GCS_DEADLINE_MS: '3000' })), bApp);
     const url = (p) => `http://127.0.0.1:${bApp}${p}`;
-    const tok = (await (await fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'bk@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
+    const login = (email) => fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) });
+    const tok = (await (await login('bk@example.test')).json()).token;
     const auth = { authorization: `Bearer ${tok}` };
     await waitUntil(() => fake.uploadCount() >= 1, 5000);
     await new Promise((r) => setTimeout(r, 2200));
     fake.failUploads(true);
-    const save = await fetch(url('/api/games'), { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: JSON.stringify({ name: 'X-Pending', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 } }) });
-    // Busy = the SDK retrying the 503s or the pump's own backoff; either way
-    // gcsUploadInFlight stays true and X-Pending has not landed.
-    const failing = await waitUntil(() => fake.uploadLog().some((u) => u.failed), 5000);
+    const acked = await login('bk2@example.test'); // a db.json write the pump now holds through the outage
+    const failing = await waitUntil(() => fake.uploadLog().some((u) => u.failed && u.name === OBJECT), 5000);
+    const game = () => fetch(url('/api/games'), { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: JSON.stringify({ name: 'X-Pending', payoffs: pay, clientRequestId: 'backoff-1' }) });
+    const during = await game();
     const db = JSON.parse(fake.getStored());
-    db.games.push({ id: 'g_peer_bk', userId: 'u_bk', name: 'Peer-During-Outage', payoffs: { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 }, createdAt: '2026-01-01T00:00:00Z' });
+    db.users.push(seededUser('u_bk3', 'backoff3', 'bk3@example.test', 'Sup3rSecret!23'));
     fake.peerWrite(JSON.stringify(db));
+    fake.peerWrite(JSON.stringify({ userId: 'u_bk', games: [{ id: 'g_peer_bk', userId: 'u_bk', name: 'Peer-During-Outage', payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }] }), null, 'games/u_bk.json');
     await new Promise((r) => setTimeout(r, 2200));
-    const during = await (await fetch(url('/api/games'), { headers: auth })).json();
-    const stillFailing = fake.uploadLog().at(-1)?.failed === true && !JSON.parse(fake.getStored()).games.some((g) => g.name === 'X-Pending');
+    const listed = await (await fetch(url('/api/games'), { headers: auth })).json();
+    const peerSignIn = (await login('bk3@example.test')).status;
+    const stillFailing = fake.uploadLog().filter((u) => u.name === OBJECT).at(-1)?.failed === true
+      && !JSON.parse(fake.getStored()).users.find((u) => u.id === 'u_bk2')?.passwordHash.startsWith('pbkdf2$');
     fake.failUploads(false);
-    const both = await waitUntil(() => { const n = JSON.parse(fake.getStored()).games.map((g) => g.name); return n.includes('X-Pending') && n.includes('Peer-During-Outage'); }, 70000);
-    record('fixture: X\'s save was acked, its uploads were failing and it had not landed when the peer wrote and X listed',
-      save.status === 200 && failing && stillFailing, `save ${save.status} failing ${failing} stillPending ${stillFailing}`);
-    record('THE DEFECT: X lists the peer\'s game within one freshness window during the outage; after recovery both are on GCS',
-      during.some((g) => g.name === 'Peer-During-Outage') && both, `during ${JSON.stringify(during.map((g) => g.name))} both ${both}`);
+    const retried = await game();
+    const both = await waitUntil(() => {
+      const n = fake.games('u_bk').map((g) => g.name), users = JSON.parse(fake.getStored()).users;
+      return n.includes('X-Pending') && n.includes('Peer-During-Outage') && users.some((u) => u.id === 'u_bk3')
+        && !!users.find((u) => u.id === 'u_bk2')?.passwordHash.startsWith('pbkdf2$');
+    }, 70000);
+    record('fixture: the db.json write was acked and its uploads were failing (not landed) when the peer wrote and X listed; the game saved meanwhile was an honest 503',
+      acked.status === 200 && failing && stillFailing && during.status === 503, `ack ${acked.status} failing ${failing} stillPending ${stillFailing} game ${during.status}`);
+    record('THE DEFECT: during the outage X lists the peer\'s game and signs in the peer\'s new account within one freshness window; after recovery all of it is on GCS',
+      listed.some?.((g) => g.name === 'Peer-During-Outage') && peerSignIn === 200 && retried.status === 200 && both,
+      `listed ${JSON.stringify(listed.map?.((g) => g.name))} peer sign-in ${peerSignIn} retry ${retried.status} both ${both}`);
     await stop(boot.child); await fake.close();
   }
 
@@ -2037,8 +2144,12 @@ try {
         la.status === 200 && lb.status === 200 && /^\d{6}$/.test(rc ?? '') && reset.status === 200, JSON.stringify({ la: la.status, lb: lb.status, rc: !!rc, reset: reset.status }));
       record('a password reset ends every earlier session (old token 401 on /me and /games); the new password signs in; the other account stays signed in',
         JSON.stringify(old) === '[401,401]' && JSON.stringify(after) === '[200,200,200]', JSON.stringify({ old, after }));
-      record('hosted games are owner-only: another account\'s PATCH and DELETE are 403 and its list omits the game; the owner keeps it, unrenamed',
-        bPatch.status === 403 && bDelete.status === 403 && Array.isArray(bList.body) && !bList.body.some((g) => g.id === 'g_ha')
+      // Hosted, an account's games are its own object: another account's PATCH and
+      // DELETE look only in theirs, so the game is "not found" (404), which also
+      // says nothing about whether that id exists.
+      record('hosted games are owner-only: another account\'s PATCH and DELETE are 404 and its list omits the game; the owner keeps it, unrenamed',
+        bPatch.status === 404 && bDelete.status === 404 && Array.isArray(bList.body) && !bList.body.some((g) => g.id === 'g_ha')
+          && fake.games('h_a').some((g) => g.id === 'g_ha' && g.name === 'A-own')
           && Array.isArray(aList.body) && aList.body.some((g) => g.id === 'g_ha' && g.name === 'A-own'),
         JSON.stringify({ patch: bPatch.status, del: bDelete.status, bSees: bList.body?.length, aHas: aList.body?.map?.((g) => g.name) }));
       const keys = (o) => Object.keys(o ?? {}).sort().join();
@@ -2049,111 +2160,109 @@ try {
       record('adopt-local does not exist hosted: 404 signed in and signed out', JSON.stringify(adopt) === '[404,404]', JSON.stringify(adopt));
     }
 
-    // s25 — hosted growth bounds (S14-1: a game flood OOM-crashed a 128 MB heap at
-    // ~23 MB of db.json). (a) An account at the cap gets 409 with the reason; a
-    // clientRequestId retry of an existing row still saves. (b) The store boots
-    // ALREADY over budget (1000 bytes under the measured seed): a new game, a growing
-    // edit and a sign-up are 507; a shrinking edit, a delete, login and a verify still
-    // work while it stays over budget, and they reach GCS.
+    // s25 — hosted growth bounds (S14-1: a game flood OOM-crashed a 128 MB heap at ~23 MB of db.json).
+    // The bound is now PER ACCOUNT — one object each, capped in bytes, read on demand into a bounded
+    // cache — and db.json (accounts only) keeps its own budget. (a) An account at 200 games gets 409
+    // with the reason; a clientRequestId retry of an existing row still saves. (b) An account whose
+    // object boots OVER its cap (migrated whole from db.json — the cap never refuses existing data): a
+    // new game and a growing edit are 413 naming the cap; a shrinking edit and a delete still work
+    // while it stays over, and reach GCS; ANOTHER account saves meanwhile. (c) db.json boots over ITS
+    // budget: a sign-up is 507 and mails nothing; login and verify still work.
     {
       const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const CAP = 64 * 1024;
       const capRows = Array.from({ length: 200 }, (_, i) => ({ id: `g_cap_${i}`, userId: 'u_cap', name: `Cap ${i}`, description: 'd', payoffs: pay,
         ...(i === 0 ? { clientRequestId: 'req_retry_0' } : {}), createdAt: '2026-01-01T00:00:00Z' }));
-      const seed = { users: [seededUser('u_cap', 'capper', 'cap@example.test', 'Sup3rSecret!23'), seededUser('u_b', 'budget', 'b@example.test', 'Sup3rSecret!23'),
-        { ...seededUser('u_pv', 'pendv', 'pv@example.test', 'Sup3rSecret!23'), isVerified: false, verificationCode: '424242', verificationCodeExpires: Date.now() + 600000 }],
-        games: [...capRows, { id: 'g_b1', userId: 'u_b', name: 'B-one', description: 'x'.repeat(400), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }] };
-      const seedBytes = Buffer.byteLength(JSON.stringify(seed, null, 2));
-      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify(seed) }));
-      // Over budget from boot; the shrink (~395 B) and the delete (~250 B) leave it over, so an
-      // absolute "size > budget" check (not "grows past it") refuses them and fails this section.
-      const budget = seedBytes - 1000;
-      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-budget-'))), aX, aGcs, { ...mail, DB_MAX_BYTES: String(budget) })), aX);
+      const bRows = Array.from({ length: 150 }, (_, i) => ({ id: `g_b${i}`, userId: 'u_b', name: `B-${i}`, description: 'x'.repeat(400), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }));
+      const users = [seededUser('u_cap', 'capper', 'cap@example.test', 'Sup3rSecret!23'), seededUser('u_b', 'budget', 'b@example.test', 'Sup3rSecret!23'),
+        seededUser('u_other', 'other', 'other@example.test', 'Sup3rSecret!23'),
+        { ...seededUser('u_pv', 'pendv', 'pv@example.test', 'Sup3rSecret!23'), isVerified: false, verificationCode: '424242', verificationCodeExpires: Date.now() + 600000 }];
+      const rootBytes = Buffer.byteLength(JSON.stringify({ users, games: [] }, null, 2));
+      const budget = rootBytes - 200; // db.json (accounts only, once the games move out) boots over its budget
+      const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: JSON.stringify({ users, games: [...capRows, ...bRows] }) }));
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-budget-'))), aX, aGcs, { ...mail, DB_MAX_BYTES: String(budget), ACCOUNT_GAMES_MAX_BYTES: String(CAP) })), aX);
       const req = async (method, route, token, body) => {
         const r = await fetch(`http://127.0.0.1:${aX}${route}`, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
         return { status: r.status, error: (await r.json().catch(() => ({}))).error ?? '' };
       };
       const tokOf = async (email) => (await (await fetch(`http://127.0.0.1:${aX}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) })).json()).token;
-      const tCap = await tokOf('cap@example.test'), tB = await tokOf('b@example.test');
+      const tCap = await tokOf('cap@example.test'), tB = await tokOf('b@example.test'), tOther = await tokOf('other@example.test');
+      const bBoot = Buffer.byteLength(fake.getStored('games/u_b.json') ?? '');
       const capNew = await req('POST', '/api/games', tCap, { name: 'One too many', payoffs: pay });
       const capRetry = await req('POST', '/api/games', tCap, { name: 'Cap 0', description: 'd', payoffs: pay, clientRequestId: 'req_retry_0' }); // same size: not growth
-      const fullNew = await req('POST', '/api/games', tB, { name: 'B-two', description: 'y'.repeat(400), payoffs: pay });
+      const fullNew = await req('POST', '/api/games', tB, { name: 'B-new', description: 'y'.repeat(400), payoffs: pay });
       const grow = await req('PATCH', '/api/games/g_b1', tB, { description: 'z'.repeat(800) });
+      const otherSave = await req('POST', '/api/games', tOther, { name: 'Other-account', description: 'y'.repeat(400), payoffs: pay });
       const m0 = mailed.length;
       const signUp = await req('POST', '/api/auth/register', null, { username: 'late', email: 'late@example.test', password: 'Sup3rSecret!23' });
       const signUpMails = mailed.length - m0;
       const shrink = await req('PATCH', '/api/games/g_b1', tB, { description: 'short' });
-      const del = await req('DELETE', '/api/games/g_cap_5', tCap);
+      const del = await req('DELETE', '/api/games/g_b5', tB);
       const login = (await req('POST', '/api/auth/login', null, { email: 'b@example.test', password: 'Sup3rSecret!23' })).status;
       const verify = await req('POST', '/api/auth/verify', null, { email: 'pv@example.test', code: '424242', password: 'Sup3rSecret!23' });
-      const onGcs = await waitUntil(() => { try { const d = JSON.parse(fake.getStored()); return !d.games.some((g) => g.id === 'g_cap_5') && d.games.find((g) => g.id === 'g_b1')?.description === 'short'; } catch { return false; } }, 5000);
-      const endBytes = Buffer.byteLength(JSON.stringify(JSON.parse(fake.getStored()), null, 2));
+      const onGcs = await waitUntil(() => { const b = fake.games('u_b'); return !b.some((g) => g.id === 'g_b5') && b.find((g) => g.id === 'g_b1')?.description === 'short'; }, 5000);
+      const bEnd = Buffer.byteLength(fake.getStored('games/u_b.json') ?? '');
       await stop(S.child); await fake.close();
-      record('fixture: the store booted and ended over budget (the shrink and delete ran while it was full); the cap account held exactly 200 games',
-        seedBytes > budget && endBytes > budget && endBytes < seedBytes && capRows.length === 200, JSON.stringify({ seedBytes, budget, endBytes }));
-      record('THE DEFECT (per-account cap): the 201st game is 409 with the limit named; a clientRequestId retry of an existing row still saves',
+      record('fixture: B\'s object booted (migrated whole) and ended over the 64 KB cap; the cap account held exactly 200 games; db.json booted over its budget',
+        bBoot > CAP && bEnd > CAP && bEnd < bBoot && fake.games('u_cap').length === 200 && rootBytes > budget && JSON.parse(fake.getStored()).games.length === 0,
+        JSON.stringify({ bBoot, bEnd, CAP, rootBytes, budget, capGames: fake.games('u_cap').length }));
+      record('THE DEFECT (per-account count cap): the 201st game is 409 with the limit named; a clientRequestId retry of an existing row still saves',
         capNew.status === 409 && /200 saved-game limit/.test(capNew.error) && /Delete a saved game/.test(capNew.error) && capRetry.status === 200,
         JSON.stringify({ capNew, capRetry: capRetry.status }));
-      record('THE DEFECT (storage budget): past the budget a new game and a growing edit are 507 with the reason, and a sign-up is 507 and mails nothing',
-        fullNew.status === 507 && /storage is full/.test(fullNew.error) && /Delete a saved game/.test(fullNew.error)
-          && grow.status === 507 && /storage is full/.test(grow.error) && signUp.status === 507 && /sign-ups are paused/.test(signUp.error) && signUpMails === 0,
-        JSON.stringify({ fullNew, grow, signUp, signUpMails }));
-      record('over budget a shrinking edit, a delete, login and a verify still work, and the acked changes reach GCS',
+      record('THE DEFECT (per-account byte cap): past its cap a new game and a growing edit are 413 naming the cap; ANOTHER account still saves; a sign-up past db.json\'s budget is 507 and mails nothing',
+        fullNew.status === 413 && fullNew.error === 'Saved games for this account exceeded the 64 KB limit. Delete a saved game to make room, then save again.'
+          && grow.status === 413 && grow.error === fullNew.error && otherSave.status === 200 && fake.games('u_other').some((g) => g.name === 'Other-account')
+          && signUp.status === 507 && /sign-ups are paused/.test(signUp.error) && signUpMails === 0,
+        JSON.stringify({ fullNew, grow, otherSave: otherSave.status, signUp, signUpMails }));
+      record('over the cap a shrinking edit, a delete, login and a verify still work, and the acked changes reach GCS',
         shrink.status === 200 && del.status === 200 && login === 200 && verify.status === 200 && onGcs,
         JSON.stringify({ shrink: shrink.status, del: del.status, login, verify: verify.status, onGcs }));
     }
 
-    // s25b — the budget is counted per changed row (S15-1: a full stringify per refused write
-    // held /api/health at p50 176 ms under a /48 flood). A 41-write script (1 add, 3 shrinks,
-    // 3 deletes, 5 grows, 29 adds: the store only grows after the drain, so its peak is its end)
-    // runs three times on one seed. Pass 1 lands it and reads the true size T from GCS. Passes 2
-    // and 3 hold every upload so only the row counter decides: at budget T all 41 pass; at T-1
-    // exactly the last add is 507. Ballast (150 games of u_b) keeps a counter that over-credits
-    // removals up to 10x above 0, where it would read as "unknown" and be re-measured exactly.
+    // s25b — the cap is measured EXACTLY (S15-1: a full stringify per refused write held /api/health at
+    // p50 176 ms under a /48 flood; a write now measures only the rows it changes). A 41-write script
+    // (1 add, 3 shrinks, 3 deletes, 5 grows, 29 adds: the object only grows after the drain, so its peak
+    // is its end) runs three times on one seed, each from the same migrated object. Pass 1 lands it and
+    // reads the true size T from GCS. At a cap of T all 41 pass; at T-1 exactly the last add is 413.
     {
       const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
       const seedGames = Array.from({ length: 11 }, (_, i) => ({ id: `g_d${i}`, userId: 'u_d', name: `seed ${i}`, description: 'm'.repeat(300), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }));
-      const ballast = Array.from({ length: 150 }, (_, i) => ({ id: `g_b${i}`, userId: 'u_b', name: `ballast ${i}`, description: 'b'.repeat(300), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }));
-      const seed = JSON.stringify({ users: [seededUser('u_d', 'drift', 'd@example.test', 'Sup3rSecret!23')], games: [...seedGames, ...ballast] });
-      const rowBytes = (g) => Buffer.byteLength(JSON.stringify(g, null, 2).replace(/\n/g, '\n    ')) + 6;
-      const seedBytes = Buffer.byteLength(JSON.stringify(JSON.parse(seed), null, 2));
-      const replacedBytes = seedGames.reduce((n, g) => n + rowBytes(g), 0); // every seed row of u_d is edited or deleted
+      const seed = JSON.stringify({ users: [seededUser('u_d', 'drift', 'd@example.test', 'Sup3rSecret!23')], games: seedGames });
+      const G = 'games/u_d.json';
       const fake = await trackFake(startFakeGcsDb({ port: aGcs, initialContent: seed }));
-      const boot = async (budget) => waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-drift-'))), aX, aGcs, { ...mail, TRUST_PROXY: '1', DB_MAX_BYTES: String(budget), GCS_DEADLINE_MS: '60000' })), aX);
+      const boot = async (cap) => waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-drift-'))), aX, aGcs, { ...mail, TRUST_PROXY: '1', ACCOUNT_GAMES_MAX_BYTES: String(cap) })), aX);
       let hop = 0; // a fresh /56 per request: 41 writes must not meet the 20/min write limit
       const req = async (method, route, token, body) => {
         const r = await fetch(`http://127.0.0.1:${aX}${route}`, { method, headers: { 'content-type': 'application/json', 'x-forwarded-for': `2001:db8:${(hop++).toString(16)}00::1`, ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
         return r.status;
       };
-      const run = async (budget, hold) => {
-        fake.setStored(seed); fake.dropUploads(false);
-        const S = await boot(budget);
+      const run = async (cap) => {
+        fake.setStored(seed); fake.setStored(null, G); // every pass migrates the same seed into a fresh object
+        const S = await boot(cap);
         const tok = (await (await fetch(`http://127.0.0.1:${aX}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': `2001:db9:${(hop++).toString(16)}00::1` }, body: JSON.stringify({ email: 'd@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
-        const u0 = fake.uploadLog().length, gen0 = fake.getGeneration();
-        if (hold) fake.dropUploads(true);
+        const start = fake.getStored(G);
         const st = [await req('POST', '/api/games', tok, { name: 'first', description: '界'.repeat(40), payoffs: pay })];
         for (let i = 0; i < 3; i++) st.push(await req('PATCH', `/api/games/g_d${i}`, tok, { description: 's' }));
         for (let i = 3; i < 6; i++) st.push(await req('DELETE', `/api/games/g_d${i}`, tok));
         for (let i = 6; i < 11; i++) st.push(await req('PATCH', `/api/games/g_d${i}`, tok, { description: 'grown '.repeat(60 + i) }));
         for (let i = 0; i < 29; i++) st.push(await req('POST', '/api/games', tok, { name: `d${i}`, description: '界x'.repeat(i * 7), payoffs: pay, colorTermsA: i % 3 ? [`t${i}`] : [] }));
-        // Isolation: no upload serialized after the first write (a send re-measures) and no landed write (a merge resets).
-        const sentAfterFirst = fake.uploadLog().slice(u0).filter((u) => { try { return JSON.parse(u.body).games.some((g) => g.name === 'first'); } catch { return true; } }).length;
-        return { S, st, sentAfterFirst, genMoved: fake.getGeneration() !== gen0 };
+        await stop(S.child);
+        return { st, start };
       };
-      const p1 = await run(10_000_000, false);
-      const landed = await waitUntil(() => { try { return JSON.parse(fake.getStored()).games.length === 150 + 11 - 3 + 30; } catch { return false; } }, 8000);
-      const T = Buffer.byteLength(JSON.stringify(JSON.parse(fake.getStored()), null, 2));
-      await stop(p1.S.child);
-      const p2 = await run(T, true); await stop(p2.S.child);
-      const p3 = await run(T - 1, true); await stop(p3.S.child);
-      fake.dropUploads(false); await fake.close();
+      const p1 = await run(10_000_000);
+      const T = Buffer.byteLength(fake.getStored(G) ?? '');
+      const landedGames = fake.games('u_d').length;
+      const p2 = await run(T);
+      const p3 = await run(T - 1);
+      await fake.close();
       const ok = (st) => st.every((x) => x === 200);
-      record('fixture: pass 1 ran all 41 writes and landed 188 games on GCS, giving the true size T',
-        ok(p1.st) && p1.st.length === 41 && landed && T > 20000, JSON.stringify({ n: p1.st.length, bad: p1.st.filter((x) => x !== 200), landed, T }));
-      record('fixture: passes 2 and 3 are counter-only: nothing sent after the first write, no generation moved, and the seed outweighs 10x every row the script replaces',
-        [p2, p3].every((p) => p.sentAfterFirst === 0 && !p.genMoved) && seedBytes > 10 * replacedBytes,
-        JSON.stringify({ sent: [p2.sentAfterFirst, p3.sentAfterFirst], genMoved: [p2.genMoved, p3.genMoved], seedBytes, replacedBytes }));
-      record('THE DEFECT (budget drift): with uploads held, budget T passes all 41 writes and T-1 refuses exactly the last add (507)',
-        ok(p2.st) && ok(p3.st.slice(0, 40)) && p3.st[40] === 507,
+      record('fixture: pass 1 ran all 41 writes and landed 38 games on GCS, giving the true size T',
+        ok(p1.st) && p1.st.length === 41 && landedGames === 11 - 3 + 30 && T > 20000, JSON.stringify({ n: p1.st.length, bad: p1.st.filter((x) => x !== 200), landedGames, T }));
+      record('fixture: every pass started from the same migrated object (db.json\'s legacy rows, moved byte-identical each time)',
+        typeof p1.start === 'string' && p1.start === p2.start && p2.start === p3.start && JSON.parse(p1.start).games.length === 11,
+        JSON.stringify({ starts: [p1.start, p2.start, p3.start].map((x) => (x ?? '').length) }));
+      record('THE DEFECT (cap drift): a cap of T passes all 41 writes and T-1 refuses exactly the last add (413)',
+        ok(p2.st) && ok(p3.st.slice(0, 40)) && p3.st[40] === 413,
         JSON.stringify({ atT: p2.st.filter((x) => x !== 200), atTminus1: p3.st.map((x, i) => (x !== 200 ? `${i}:${x}` : '')).filter(Boolean) }));
     }
 
@@ -2206,10 +2315,11 @@ try {
         JSON.stringify({ r431: r431.status, r413: r413.status, body: r413Body, hStatus: rHealth.status, hLat }));
     }
 
-    // s27 — sign-up stale sweep under budget, 412 storm refusals, and SIGTERM drain (sweep 17 angles 4, 4b & 5).
-    // (a) Stale-row sweep: an over-budget measured store admits a sign-up that sweeps dead pending rows;
-    // status is 200, 1 mail is sent, stale rows are purged from GCS, counter stays consistent (HIT S17-1).
-    // (b) 412 storm during refusals and (c) SIGTERM mid-upload: see their own comments below.
+    // s27 — sign-up stale sweep under budget, a rollover's legacy-row storm, and SIGTERM drain (sweep 17 angles 4, 4b & 5).
+    // (a) Stale-row sweep: an over-budget measured db.json admits a sign-up that sweeps dead pending rows;
+    // status is 200, 1 mail is sent, stale rows are purged from GCS, counter stays consistent (HIT S17-1). A
+    // game save is outside that budget (the account's own object), so it is a 200 while db.json is full.
+    // (b) and (c): see their own comments below.
     {
       const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
       const oldExp = Date.now() - 3 * 24 * 3600e3;
@@ -2228,7 +2338,7 @@ try {
         { ...mail, DB_MAX_BYTES: String(budget) })), s27App);
       const tok = (await (await fetch(`http://127.0.0.1:${s27App}/api/auth/login`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'v@example.test', password: 'Sup3rSecret!23' }) })).json()).token;
-      // Prior write measures the store: over budget -> 507
+      // A game save while db.json is over its budget: the account's own object, not db.json.
       const g0 = await fetch(`http://127.0.0.1:${s27App}/api/games`, {
         method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${tok}` },
         body: JSON.stringify({ name: 'measure', payoffs: pay }) });
@@ -2247,30 +2357,29 @@ try {
       const endBytes = Buffer.byteLength(JSON.stringify(JSON.parse(fake.getStored()), null, 2));
       await stop(S.child);
 
-      record('THE DEFECT (sign-up stale sweep budget): a sign-up that shrinks a full store by sweeping stale rows passes 200, sends mail, and purges stale rows on GCS',
-        g0.status === 507 && reg.status === 200 && regMails === 1 && onGcs && endBytes < budget,
+      record('THE DEFECT (sign-up stale sweep budget): a sign-up that shrinks a full db.json by sweeping stale rows passes 200, sends mail, and purges stale rows on GCS; a game save is outside that budget',
+        g0.status === 200 && fake.games('u_v').some((g) => g.name === 'measure') && reg.status === 200 && regMails === 1 && onGcs && endBytes < budget,
         JSON.stringify({ g0: g0.status, reg: reg.status, regMails, onGcs, endBytes, budget }));
 
       const big = (id, userId) => ({ id, userId, name: id, description: 'x'.repeat(400), payoffs: pay, createdAt: '2026-01-01T00:00:00Z' });
-      const sized = (d) => Buffer.byteLength(JSON.stringify(d, null, 2));
       let hop = 0; // a fresh /56 per request: no write or sign-up limit is in play
       const xff = () => `2001:db8:${(0x2700 + hop++).toString(16)}::1`;
       const call = async (method, route, token, body) => (await fetch(`http://127.0.0.1:${s27App}${route}`, { method,
         headers: { 'content-type': 'application/json', 'x-forwarded-for': xff(), ...(token ? { authorization: `Bearer ${token}` } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}) })).status;
-      const bootOver = async (seedDb, tag) => waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), `nash-gcs-s27${tag}-`))), s27App, s27Gcs,
-        { ...mail, TRUST_PROXY: '1', DB_MAX_BYTES: String(sized(seedDb) - 1000) })), s27App);
       const loginAs = async (email) => (await (await fetch(`http://127.0.0.1:${s27App}/api/auth/login`, { method: 'POST',
         headers: { 'content-type': 'application/json', 'x-forwarded-for': xff() }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) })).json()).token;
 
-      // (b) 412 storm during refusals (angle 4b). Over budget, a peer appends a row every 60 ms while each
-      // upload is held 150 ms, so attempts meet stale preconditions: 412, merge, retry, back off. Writes mix
-      // 507 refusals with admitted deletes. After the storm GCS must agree with every answer and keep every
-      // peer row. Cannot pass by coincidence: the deletes leave GCS only via an upload that landed after
-      // 412s, and peer rows survive only a merge.
-      const seedB = { users: [seededUser('u_x', 'x', 'x@example.test', 'Sup3rSecret!23')], games: Array.from({ length: 8 }, (_, i) => big(`g_x${i}`, 'u_x')) };
+      // (b) A ROLLOVER'S LEGACY-ROW STORM (angle 4b, re-cut for per-account objects). A previous revision
+      // still serving writes its games into db.json's legacy array: a peer appends a row every 60 ms while
+      // every upload is held 150 ms, so X's db.json writes (sign-ups) meet stale preconditions (412, re-read,
+      // migrate, retry) while X answers game adds, grows and deletes on its own object. After the storm GCS
+      // must agree with every answer, hold every peer row exactly once in its account's object, and hold no
+      // legacy row in db.json. Cannot pass by coincidence: peer rows reach their object only by migration.
+      const seedB = { users: [seededUser('u_x', 'x', 'x@example.test', 'Sup3rSecret!23'), seededUser('u_peer', 'peer', 'peer@example.test', 'Sup3rSecret!23')],
+        games: Array.from({ length: 8 }, (_, i) => big(`g_x${i}`, 'u_x')) };
       fake.setStored(JSON.stringify(seedB));
-      const SB = await bootOver(seedB, 'b');
+      const SB = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s27b-'))), s27App, s27Gcs, { ...mail, TRUST_PROXY: '1' })), s27App);
       const tokB = await loginAs('x@example.test');
       const n412b = fake.count412();
       fake.setUploadDelayMs(150);
@@ -2282,7 +2391,7 @@ try {
       try {
         for (let i = 0; i < 6; i++) {
           answers.push(['add', `n${i}`, await call('POST', '/api/games', tokB, { name: `n${i}`, payoffs: pay })]);
-          if (i < 4) answers.push(['grow', `g_x${4 + i}`, await call('PATCH', `/api/games/g_x${4 + i}`, tokB, { description: 'y'.repeat(900) })]);
+          if (i < 4) answers.push(['grow', `g_x${4 + i}`, await call('PATCH', `/api/games/g_x${4 + i}`, tokB, { description: 'y'.repeat(800) })]);
           if (i < 4) answers.push(['del', `g_x${i}`, await call('DELETE', `/api/games/g_x${i}`, tokB)]);
           answers.push(['reg', `r${i}`, await call('POST', '/api/auth/register', null, { username: `r${i}`, email: `r${i}@example.test`, password: 'Sup3rSecret!23' })]);
           await new Promise((r) => setTimeout(r, 250));
@@ -2291,53 +2400,67 @@ try {
       const storm412 = fake.count412() - n412b;
       fake.setUploadDelayMs(0);
       const disagree = (d) => answers.filter(([k, id, st]) => {
-        const g = d.games.find((x) => x.id === id || x.name === id), u = d.users.find((x) => x.username === id);
-        if (k === 'add') return !(st === 507 ? !g : st === 200 && g);
-        if (k === 'grow') return !(st === 507 ? g?.description === 'x'.repeat(400) : st === 200 && g?.description === 'y'.repeat(900));
+        const games = fake.games('u_x'), g = games.find((x) => x.id === id || x.name === id), u = d.users.find((x) => x.username === id);
+        if (k === 'add') return !(st === 200 && g);
+        if (k === 'grow') return !(st === 200 && g?.description === 'y'.repeat(800));
         if (k === 'del') return !(st === 200 && !g);
-        return !(st === 507 ? !u : st === 200 && u);
+        return !(st === 200 && u);
       }).map(([k, id, st]) => `${k}:${id}:${st}`);
-      const peersOn = (d) => d.games.filter((x) => x.userId === 'u_peer').length;
-      const settled = await waitUntil(() => { try { const d = JSON.parse(fake.getStored()); return disagree(d).length === 0 && peersOn(d) === peers; } catch { return false; } }, 20_000);
+      const peerRows = () => fake.games('u_peer');
+      const isSettled = () => { const d = JSON.parse(fake.getStored()); return disagree(d).length === 0 && d.games.length === 0 && peerRows().length === peers && new Set(peerRows().map((x) => x.id)).size === peers; };
+      let settled = false;
+      for (const until = Date.now() + 20_000; !settled && Date.now() < until;) {
+        await call('GET', '/api/games', tokB); // a DB route re-checks db.json, migrating what the peer left there
+        settled = await waitUntil(isSettled, 1000);
+      }
       const endB = JSON.parse(fake.getStored());
       await stop(SB.child);
-      record('fixture: the storm 412ed the uploads it met, the store refused growth (507) and admitted all 4 deletes',
-        storm412 >= 3 && answers.filter((a) => a[2] === 507).length >= 6 && answers.filter((a) => a[0] === 'del' && a[2] === 200).length === 4,
+      record('fixture: the storm 412ed X\'s db.json writes, and X answered every write 200 (games are outside db.json)',
+        storm412 >= 3 && answers.every((a) => a[2] === 200) && answers.length === 20,
         JSON.stringify({ storm412, answers: answers.map((a) => `${a[0]}:${a[2]}`).join(' ') }));
-      record('THE DEFECT (412 storm during refusals): after the storm GCS agrees with every answer (507 absent, 200 landed) and keeps every peer row',
-        settled, JSON.stringify({ peers, peersOnGcs: peersOn(endB), disagree: disagree(endB) }));
+      record('THE DEFECT (legacy-row storm): after the storm GCS agrees with every answer, every peer row is in its account\'s object exactly once, and db.json holds none',
+        settled, JSON.stringify({ peers, peerRows: peerRows().length, legacyLeft: endB.games.length, disagree: disagree(endB) }));
 
-      // (c) SIGTERM mid-upload with 507s answered meanwhile (angle 5). The first upload (the login rehash)
-      // is held 2 s; inside it a delete is acked and three growth writes are refused, then SIGTERM. The
-      // drain must land the delete, exit 0 inside the grace period and carry no refused row. Cannot pass by
-      // coincidence: no upload had landed at SIGTERM, so g_y0 leaves GCS only through the drain.
+      // (c) SIGTERM mid-upload with refusals answered meanwhile (angle 5). The first db.json upload (the login
+      // rehash) and every object upload are held 2 s; inside that, a game delete is in flight, a new game and a
+      // growing edit are refused (413: the account is over its cap) and a sign-up is refused (507: db.json is
+      // over its budget), then SIGTERM. The drain must land the rehash AND the delete, answer the delete 200,
+      // exit 0 inside the grace period, and carry no refused row. Cannot pass by coincidence: nothing had
+      // landed at SIGTERM, so both leave only through the drain.
       const seedC = { users: [seededUser('u_y', 'y', 'y@example.test', 'Sup3rSecret!23')], games: Array.from({ length: 6 }, (_, i) => big(`g_y${i}`, 'u_y')) };
-      fake.setStored(JSON.stringify(seedC));
-      const SC = await bootOver(seedC, 'c');
+      fake.setStored(JSON.stringify(seedC)); fake.setStored(null, 'games/u_y.json');
+      const rootC = Buffer.byteLength(JSON.stringify({ users: seedC.users, games: [] }, null, 2));
+      const SC = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s27c-'))), s27App, s27Gcs,
+        { ...mail, TRUST_PROXY: '1', DB_MAX_BYTES: String(rootC - 50), ACCOUNT_GAMES_MAX_BYTES: '2048' })), s27App);
       const landed = () => fake.uploadLog().filter((u) => u.landedGen).length;
+      await waitUntil(() => JSON.parse(fake.getStored()).games.length === 0, 5000); // the boot migration's db.json write has landed
       const l0 = landed();
       fake.setUploadDelayMs(2000);
       const tokC = await loginAs('y@example.test');
-      const del = await call('DELETE', '/api/games/g_y0', tokC);
-      const add = await call('POST', '/api/games', tokC, { name: 'refused', payoffs: pay });
-      const grow = await call('PATCH', '/api/games/g_y1', tokC, { description: 'z'.repeat(900) });
+      // Game writes are answered once their object's upload lands: in flight, queued in order behind it.
+      const delP = call('DELETE', '/api/games/g_y0', tokC);
+      await new Promise((r) => setTimeout(r, 100));
+      const addP = call('POST', '/api/games', tokC, { name: 'refused', payoffs: pay });
+      const growP = call('PATCH', '/api/games/g_y1', tokC, { description: 'z'.repeat(800) });
       const regC = await call('POST', '/api/auth/register', null, { username: 'late', email: 'late@example.test', password: 'Sup3rSecret!23' });
+      await new Promise((r) => setTimeout(r, 100));
       const landedAtTerm = landed() - l0;
       const exited = new Promise((r) => SC.child.once('exit', (c, sig) => r(c ?? sig)));
       const t0 = Date.now();
       SC.child.kill('SIGTERM');
       const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r('hung'), 12_000))]);
       const exitMs = Date.now() - t0;
+      const [del, add, grow] = await Promise.all([delP, addP, growP].map((p) => p.catch((err) => String(err?.cause?.code ?? err))));
       fake.setUploadDelayMs(0);
-      const endC = JSON.parse(fake.getStored());
+      const endC = JSON.parse(fake.getStored()), gamesC = fake.games('u_y');
       await fake.close();
-      record('fixture: at SIGTERM no upload had landed, the delete was acked and three growth writes were refused',
-        landedAtTerm === 0 && del === 200 && add === 507 && grow === 507 && regC === 507, JSON.stringify({ landedAtTerm, del, add, grow, reg: regC }));
-      record('THE DEFECT (SIGTERM mid-upload with 507s): the drain lands the acked delete, exits 0 inside the grace period, and carries no refused row',
-        code === 0 && exitMs < 9000 && !endC.games.some((g) => g.id === 'g_y0') && !endC.games.some((g) => g.name === 'refused')
-          && endC.games.find((g) => g.id === 'g_y1')?.description === 'x'.repeat(400) && !endC.users.some((u) => u.username === 'late')
+      record('fixture: at SIGTERM nothing had landed, three game writes were in flight, and a sign-up was refused (507: db.json over its budget)',
+        landedAtTerm === 0 && regC === 507, JSON.stringify({ landedAtTerm, reg: regC }));
+      record('THE DEFECT (SIGTERM mid-upload with refusals): the drain lands the rehash and the delete (200), answers the over-cap add and grow 413, exits 0 inside the grace period, and carries no refused row',
+        code === 0 && exitMs < 9000 && del === 200 && add === 413 && grow === 413 && !gamesC.some((g) => g.id === 'g_y0') && !gamesC.some((g) => g.name === 'refused')
+          && gamesC.find((g) => g.id === 'g_y1')?.description === 'x'.repeat(400) && !endC.users.some((u) => u.username === 'late')
           && !!endC.users.find((u) => u.id === 'u_y')?.passwordHash.startsWith('pbkdf2$'),
-        JSON.stringify({ code, exitMs, games: endC.games.map((g) => g.id), users: endC.users.map((u) => u.username) }));
+        JSON.stringify({ code, exitMs, del, add, grow, games: gamesC.map((g) => g.id), users: endC.users.map((u) => u.username) }));
     }
 
     // s28 — db.json deleted mid-run (sweep 18 angle 5, S18-1). A fresh instance's sign-up re-created it
@@ -2355,6 +2478,7 @@ try {
       const loginOn = async (p, email) => (await (await call(p, '/api/auth/login', { email, password: 'Sup3rSecret!23' })).json()).token;
       const ids = (rows) => rows.map((x) => x.id).sort().join(',');
       const onGcs = (f) => (f.getStored() ? JSON.parse(f.getStored()) : { users: [], games: [] });
+      const objs = (f) => f.allGames().map((x) => x.id).sort().join(','); // the games live in their accounts' objects, which the db.json delete never touched
       const bootX = async (f, tag) => {
         const X = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), `nash-gcs-s28${tag}-`))), xApp, s28Gcs, mail)), xApp);
         const u0 = f.uploadCount(), tok = await loginOn(xApp, 'a@example.test'); // the rehash write lands first
@@ -2371,8 +2495,8 @@ try {
       const aEnd = onGcs(fa), aLineage = fa.getCustom()?.lineage;
       await stop(a.X.child); await fa.close();
       record('THE DEFECT (db.json deleted, a): a read alone re-creates the object with every row, under a new lineage',
-        aGet.status === 200 && aBack && ids(aEnd.users) === 'u_a,u_b' && ids(aEnd.games) === 'g_a,g_b' && /^[0-9a-f-]{36}$/.test(aLineage ?? ''),
-        JSON.stringify({ get: aGet.status, aBack, users: ids(aEnd.users), games: ids(aEnd.games), aLineage }));
+        aGet.status === 200 && aBack && ids(aEnd.users) === 'u_a,u_b' && aEnd.games.length === 0 && objs(fa) === 'g_a,g_b' && /^[0-9a-f-]{36}$/.test(aLineage ?? ''),
+        JSON.stringify({ get: aGet.status, aBack, users: ids(aEnd.users), games: objs(fa), aLineage }));
       // (b) deleted; fresh instance Y boots on "no object" and a sign-up there (taking u_b's free-there
       // username) creates it; then X re-checks. The established account keeps its name; Y's is renamed.
       const fb = await trackFake(startFakeGcsDb({ port: s28Gcs, initialContent: seed }));
@@ -2387,29 +2511,29 @@ try {
         JSON.stringify({ reg: reg.status, users: mid.users.map((u) => u.username), games: mid.games.length, yLineage }));
       const bGet = await req(xApp, 'GET', '/api/games', b.tok);
       const bGames = bGet.status === 200 ? (await bGet.json()).map((x) => x.id) : [];
-      const bBack = await waitUntil(() => ids(onGcs(fb).users).split(',').length === 3 && ids(onGcs(fb).games) === 'g_a,g_b', 4000);
+      const bBack = await waitUntil(() => ids(onGcs(fb).users).split(',').length === 3 && objs(fb) === 'g_a,g_b', 4000);
       const bEnd = onGcs(fb);
       record('THE DEFECT (db.json deleted, b): X keeps serving its rows and writes them back without a route write; its accounts keep their names, Y\'s sign-up stands renamed',
         bGet.status === 200 && bGames.join(',') === 'g_a' && bBack && fb.getCustom()?.lineage === yLineage
           && bEnd.users.find((u) => u.id === 'u_a')?.username === 'a' && bEnd.users.find((u) => u.id === 'u_b')?.username === 'b'
           && /^b-.{6}$/.test(bEnd.users.find((u) => u.email === 'new@example.test')?.username ?? ''),
-        JSON.stringify({ get: bGet.status, bGames, users: bEnd.users.map((u) => u.username), games: ids(bEnd.games), lineage: fb.getCustom()?.lineage === yLineage }));
+        JSON.stringify({ get: bGet.status, bGames, users: bEnd.users.map((u) => u.username), games: objs(fb), lineage: fb.getCustom()?.lineage === yLineage }));
       // (c) the histories have converged: a delete on Y is a real deletion X must honor, not a row to restore.
       await new Promise((r) => setTimeout(r, 2200)); // past Y's window: its login re-reads the merged store
       const yTok = await loginOn(yApp, 'a@example.test');
       const del = await req(yApp, 'DELETE', '/api/games/g_a', yTok);
-      await waitUntil(() => !onGcs(fb).games.some((x) => x.id === 'g_a'), 3000);
+      await waitUntil(() => !fb.allGames().some((x) => x.id === 'g_a'), 3000);
       await new Promise((r) => setTimeout(r, 2200));
       const cGet = await req(xApp, 'GET', '/api/games', b.tok);
       const cGames = cGet.status === 200 ? (await cGet.json()).map((x) => x.id) : [];
       const add = await req(xApp, 'POST', '/api/games', b.tok, { name: 'A-after', payoffs: pay });
-      await waitUntil(() => onGcs(fb).games.some((x) => x.name === 'A-after'), 3000);
+      await waitUntil(() => fb.allGames().some((x) => x.name === 'A-after'), 3000);
       const cEnd = onGcs(fb);
       await stop(b.X.child); await stop(Y.child); await fb.close();
       record('THE DEFECT (same lineage, c): a delete on Y after the histories converged stays deleted on X and on GCS',
-        del.status === 200 && cGet.status === 200 && cGames.length === 0 && add.status === 200 && !cEnd.games.some((x) => x.id === 'g_a')
-          && cEnd.games.some((x) => x.id === 'g_b') && cEnd.users.length === 3,
-        JSON.stringify({ del: del.status, get: cGet.status, cGames, add: add.status, games: cEnd.games.map((x) => x.name), users: cEnd.users.length }));
+        del.status === 200 && cGet.status === 200 && cGames.length === 0 && add.status === 200 && !fb.allGames().some((x) => x.id === 'g_a')
+          && fb.allGames().some((x) => x.id === 'g_b') && cEnd.users.length === 3 && cEnd.games.length === 0,
+        JSON.stringify({ del: del.status, get: cGet.status, cGames, add: add.status, games: fb.allGames().map((x) => x.name), users: cEnd.users.length }));
     }
 
     // s29 — one username, one person (sweep 19 angle 4, S19-1). Uniqueness compared trim+lowercase, so
@@ -2589,6 +2713,165 @@ try {
         && (v >= 400 || / \/api\/auth\/delete-request$|^other protoKey \/api\/auth\/forgot-password$/.test(k)))).map(([k, v]) => `${k}=${v}`);
       record('GUARD (no 5xx): every hostile body is a 4xx (2xx only where the body is ignored or well-formed), none is logged as an unhandled error, and the process survives a 128 MB heap',
         answered.length === 0 && Object.keys(got).length === 216 && !unhandled && alive, JSON.stringify({ bad: answered.slice(0, 12), unhandled, alive, n: Object.keys(got).length }));
+    }
+    // s31 — SYBIL FILL (cloud loop 22, TASK-13; unit: src/sybilfill.cloud.test.ts). Four accounts fill
+    // their per-account cap with the widest games the API accepts. Before, every account's games shared
+    // db.json's one budget, and a handful of accounts turned EVERY user's save into a 507. Now each full
+    // account is refused (413, the cap named) and nobody else is: another account saves and lists, db.json
+    // (accounts only) holds no game and a sign-up still passes. Cannot pass by coincidence: the sybils'
+    // stored bytes exceed the db.json budget this server runs with, so a shared budget would refuse.
+    {
+      const s31Gcs = gcsPortA + 58, s31App = port1 + 60;
+      const CAP = 64 * 1024, BUDGET = 128 * 1024;
+      const sybils = [1, 2, 3, 4].map((i) => seededUser(`u_syb${i}`, `sybil${i}`, `syb${i}@example.test`, 'Sup3rSecret!23'));
+      const fake = await trackFake(startFakeGcsDb({ port: s31Gcs, initialContent: JSON.stringify({ users: [...sybils, seededUser('u_vic', 'victim', 'vic@example.test', 'Sup3rSecret!23')], games: [] }) }));
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s31-'))), s31App, s31Gcs,
+        { ...mail, TRUST_PROXY: '1', ACCOUNT_GAMES_MAX_BYTES: String(CAP), DB_MAX_BYTES: String(BUDGET) })), s31App);
+      let hop = 0; // a fresh /48 per request: no rate limit is in play
+      const call = async (method, route, token, body) => {
+        const r = await fetch(`http://127.0.0.1:${s31App}${route}`, { method, headers: { 'content-type': 'application/json', 'x-forwarded-for': `2001:db8:${(0x3100 + hop++).toString(16)}::1`, ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        return { status: r.status, body: await r.json().catch(() => ({})) };
+      };
+      const tokOf = async (email) => (await call('POST', '/api/auth/login', null, { email, password: 'Sup3rSecret!23' })).body.token;
+      const widest = (k) => ({ name: `${k}${'界'.repeat(78)}`, description: '界'.repeat(800), payoffs: { a11: 1e21, a12: -1e21, a21: 0.1234567890123, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 },
+        row1Label: '界'.repeat(40), row2Label: '乙'.repeat(40), col1Label: '丙'.repeat(40), col2Label: '丁'.repeat(40),
+        colorTermsA: Array.from({ length: 12 }, (_, i) => `${String.fromCharCode(65 + i)}${'甲'.repeat(59)}`), colorTermsB: Array.from({ length: 12 }, (_, i) => `${String.fromCharCode(65 + i)}${'乙'.repeat(59)}`),
+        clientRequestId: `c-${k}-${'x'.repeat(80)}` });
+      const refusals = [];
+      await Promise.all(sybils.map(async (u) => {
+        const t = await tokOf(u.email);
+        for (let k = 0; k < 60; k++) { const r = await call('POST', '/api/games', t, widest(`${u.id}-${k}`)); if (r.status !== 200) { refusals.push({ id: u.id, saved: k, ...r }); return; } }
+        refusals.push({ id: u.id, saved: 60, status: 'never refused' });
+      }));
+      const sizes = sybils.map((u) => Buffer.byteLength(fake.getStored(`games/${u.id}.json`) ?? ''));
+      const rowBytes = Buffer.byteLength(JSON.stringify(fake.games('u_syb1')[0] ?? {}));
+      const tVic = await tokOf('vic@example.test');
+      const vic = [];
+      for (let k = 0; k < 3; k++) vic.push((await call('POST', '/api/games', tVic, widest(`vic-${k}`))).status);
+      const vicList = (await call('GET', '/api/games', tVic)).body;
+      const m0 = mailed.length;
+      const signUp = await call('POST', '/api/auth/register', null, { username: 'after-flood', email: 'after-flood@example.test', password: 'Sup3rSecret!23' });
+      const root = JSON.parse(fake.getStored());
+      await stop(S.child); await fake.close();
+      record('fixture: each sybil was refused only once its object was within one widest row of the cap, and together they store more than db.json\'s whole budget',
+        refusals.length === 4 && sizes.every((s) => s <= CAP && s > CAP - rowBytes - 1) && sizes.reduce((a, b) => a + b, 0) > BUDGET,
+        JSON.stringify({ sizes, CAP, BUDGET, widestRowBytes: rowBytes, at200Games: rowBytes * 200, refusedAfter: refusals.map((r) => r.saved) }));
+      record('THE DEFECT (sybil fill): every full account is 413 naming its cap; another account still saves and lists; db.json holds no game and a sign-up passes',
+        refusals.every((r) => r.status === 413 && r.body.error === 'Saved games for this account exceeded the 64 KB limit. Delete a saved game to make room, then save again.')
+          && JSON.stringify(vic) === '[200,200,200]' && Array.isArray(vicList) && vicList.length === 3
+          && root.games.length === 0 && signUp.status === 200 && mailed.length - m0 === 1,
+        JSON.stringify({ refusals: refusals.map((r) => `${r.id}:${r.status}`), vic, vicListed: vicList?.length, rootGames: root.games.length, signUp: signUp.status }));
+    }
+
+    // s32 — MIGRATION of db.json's legacy games, against the real server (unit: src/gcsmigration.cloud.test.ts).
+    // db.json holds games for three accounts (one already over the cap) plus an unowned row, and an earlier
+    // run was interrupted: one account's object already holds part of its rows, one of them edited since.
+    // (a) GCS refuses one account's object writes at boot: the migration fails, the DB routes answer 503
+    //     (the store stays unread) and db.json is untouched — no legacy row is cleared before it is safe.
+    // (b) GCS recovers: the next request migrates; every legacy row is in its owner's object, byte-identical
+    //     (the object's edited copy stands), db.json holds none, and each account lists exactly its games.
+    // (c) RESUME: a restart against the un-cleared db.json (a crash before the clearing write) writes no
+    //     game object and clears it again; a previous revision still writing a legacy row into db.json
+    //     mid-run (a rollover) has it moved into its account's object on the next re-check.
+    {
+      const s32Gcs = gcsPortA + 60, s32App = port1 + 62;
+      const pay = { a11: 1e21, a12: 0, a21: 0.1, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const row = (id, userId, extra = {}) => ({ id, ...(userId === undefined ? {} : { userId }), name: `n-${id}`, description: '界 "q" \\ é 😀', payoffs: pay, createdAt: '2026-01-01T00:00:00Z', ...extra });
+      const users = ['u_m1', 'u_m2', 'u_m3'].map((id) => seededUser(id, id, `${id}@example.test`, 'Sup3rSecret!23'));
+      const legacy = [row('g_m1a', 'u_m1'), row('g_m1b', 'u_m1'), row('g_m1c', 'u_m1', { colorTermsA: ['界界'] }),
+        row('g_m2a', 'u_m2'), row('g_m2b', 'u_m2'),
+        ...Array.from({ length: 40 }, (_, i) => row(`g_m3_${i}`, 'u_m3', { description: 'x'.repeat(400) })),
+        row('g_orphan', undefined)];
+      const original = JSON.stringify({ users, games: legacy });
+      const edited = row('g_m1b', 'u_m1', { name: 'edited after the earlier run' });
+      const fake = await trackFake(startFakeGcsDb({ port: s32Gcs, initialContent: original,
+        initialObjects: { 'games/u_m1.json': JSON.stringify({ userId: 'u_m1', games: [row('g_m1a', 'u_m1'), edited] }) } }));
+      const env = { ...mail, GCS_DEADLINE_MS: '1500', ACCOUNT_GAMES_MAX_BYTES: String(16 * 1024) };
+      fake.failUploadsFor(['games/u_m2.json']);
+      let S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s32-'))), s32App, s32Gcs, env)), s32App);
+      const login = (email) => fetch(`http://127.0.0.1:${s32App}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) });
+      const refused = await login('u_m1@example.test');
+      const untouched = fake.getStored() === original && fake.uploadCount(OBJECT) === 0;
+      fake.failUploadsFor([]);
+      const back = await login('u_m1@example.test');
+      const cleared = await waitUntil(() => JSON.parse(fake.getStored()).games.length === 0, 8000);
+      const stored = new Map(fake.allGames().map((g) => [g.id, JSON.stringify(g)]));
+      stored.set('g_orphan', (() => { try { return JSON.stringify(JSON.parse(fake.getStored('games/.json')).games.find((g) => g.id === 'g_orphan')); } catch { return undefined; } })());
+      const mismatched = legacy.filter((g) => stored.get(g.id) !== JSON.stringify(g.id === 'g_m1b' ? edited : g)).map((g) => g.id);
+      const lists = {};
+      for (const id of ['u_m1', 'u_m2', 'u_m3']) {
+        const t = (await (await login(`${id}@example.test`)).json()).token;
+        lists[id] = (await (await fetch(`http://127.0.0.1:${s32App}/api/games`, { headers: { authorization: `Bearer ${t}` } })).json()).map((g) => g.id).sort();
+      }
+      await stop(S.child);
+      // (c) the clearing write "never happened": db.json carries every legacy row again, as if the process died before it.
+      fake.setStored(original);
+      const gameUploads = () => fake.uploadLog().filter((u) => u.name.startsWith('games/')).length;
+      const g0 = gameUploads();
+      S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s32b-'))), s32App, s32Gcs, env)), s32App);
+      const reCleared = await waitUntil(() => JSON.parse(fake.getStored()).games.length === 0, 8000);
+      const rewritten = gameUploads() - g0;
+      const t2 = (await (await login('u_m2@example.test')).json()).token;
+      await new Promise((r) => setTimeout(r, 2200));
+      const peerRoot = JSON.parse(fake.getStored());
+      peerRoot.games.push(row('g_m2_rollover', 'u_m2'));
+      fake.peerWrite(JSON.stringify(peerRoot));
+      const after = (await (await fetch(`http://127.0.0.1:${s32App}/api/games`, { headers: { authorization: `Bearer ${t2}` } })).json()).map((g) => g.id);
+      const movedOut = await waitUntil(() => JSON.parse(fake.getStored()).games.length === 0 && fake.games('u_m2').some((g) => g.id === 'g_m2_rollover'), 8000);
+      await stop(S.child); await fake.close();
+      record('THE DEFECT (migration fails safe): with one account\'s object writes refused at boot, a DB route is 503 + Retry-After and db.json keeps every legacy row, byte for byte',
+        refused.status === 503 && refused.headers.get('retry-after') === '30' && untouched, JSON.stringify({ refused: refused.status, untouched }));
+      record('THE DEFECT (lossless): once GCS recovers every legacy row is in its owner\'s object byte-identical (the edited copy stands, the unowned row kept, the over-cap account whole) and db.json holds none',
+        back.status === 200 && cleared && mismatched.length === 0 && fake.games('u_m3').length === 40 && Buffer.byteLength(fake.getStored('games/u_m3.json') ?? '') > 16 * 1024,
+        JSON.stringify({ back: back.status, cleared, mismatched, m3: fake.games('u_m3').length }));
+      record('each account lists exactly its own migrated games',
+        JSON.stringify(lists.u_m1) === '["g_m1a","g_m1b","g_m1c"]' && JSON.stringify(lists.u_m2) === '["g_m2a","g_m2b"]' && lists.u_m3.length === 40,
+        JSON.stringify({ m1: lists.u_m1, m2: lists.u_m2, m3: lists.u_m3?.length }));
+      record('THE DEFECT (resume): a restart against the un-cleared db.json writes no game object and clears it again',
+        reCleared && rewritten === 0, JSON.stringify({ reCleared, rewritten }));
+      record('THE DEFECT (rollover): a legacy row a previous revision writes mid-run moves into its account\'s object on the next re-check and leaves db.json',
+        movedOut && after.includes('g_m2_rollover'), JSON.stringify({ movedOut, after }));
+    }
+    // s33 — DELETIONS THAT DID NOT FINISH HERE (Sweep 18, finding 2 and finding 1's rollover half).
+    // (a) A live account whose object is already a tombstone: its deletion was confirmed (delete-confirm
+    //     tombstones before it removes the rows) but never finished — a tombstone write that answered past
+    //     its deadline yet landed, or a db.json write lost to a scale-in. Its next games request finishes
+    //     it: 401 "This account has been deleted.", the row leaves db.json, the password no longer signs in.
+    // (b) A previous revision deletes an account during a rollover: it removes the row from db.json but
+    //     knows nothing of objects. This instance's next re-check sees the account gone and tombstones its
+    //     object, so its games do not outlive it.
+    {
+      const s33Gcs = gcsPortA + 62, s33App = port1 + 64;
+      const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const users = [seededUser('u_half', 'half', 'half@example.test', 'Sup3rSecret!23'), seededUser('u_prev', 'prev', 'prev@example.test', 'Sup3rSecret!23'),
+        seededUser('u_stay', 'stay', 'stay@example.test', 'Sup3rSecret!23')];
+      const fake = await trackFake(startFakeGcsDb({ port: s33Gcs, initialContent: JSON.stringify({ users, games: [] }), initialObjects: {
+        'games/u_half.json': JSON.stringify({ userId: 'u_half', games: [], deleted: true }),
+        'games/u_prev.json': JSON.stringify({ userId: 'u_prev', games: [{ id: 'g_prev', userId: 'u_prev', name: 'Prev', payoffs: pay, createdAt: '2026-01-01T00:00:00Z' }] }),
+      } }));
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s33-'))), s33App, s33Gcs, mail)), s33App);
+      const url = (p) => `http://127.0.0.1:${s33App}${p}`;
+      const login = (email) => fetch(url('/api/auth/login'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password: 'Sup3rSecret!23' }) });
+      const tHalf = (await (await login('half@example.test')).json()).token;
+      const listHalf = await fetch(url('/api/games'), { headers: { authorization: `Bearer ${tHalf}` } });
+      const listHalfBody = await listHalf.json().catch(() => ({}));
+      const halfGone = await waitUntil(() => !JSON.parse(fake.getStored()).users.some((u) => u.id === 'u_half'), 5000);
+      const halfAgain = (await login('half@example.test')).status;
+      // (b) the previous revision's delete: u_prev leaves db.json; nothing touches its object.
+      const tStay = (await (await login('stay@example.test')).json()).token;
+      await waitUntil(() => JSON.parse(fake.getStored()).users.find((u) => u.id === 'u_stay')?.passwordHash.startsWith('pbkdf2$'), 5000); // our writes have landed
+      await new Promise((r) => setTimeout(r, 2200));
+      const root = JSON.parse(fake.getStored());
+      fake.peerWrite(JSON.stringify({ ...root, users: root.users.filter((u) => u.id !== 'u_prev') }));
+      const stayList = (await fetch(url('/api/games'), { headers: { authorization: `Bearer ${tStay}` } })).status; // a DB route: the re-check runs
+      const prevTomb = await waitUntil(() => { try { return JSON.parse(fake.getStored('games/u_prev.json')).deleted === true; } catch { return false; } }, 5000);
+      await stop(S.child); await fake.close();
+      record('THE DEFECT (an unfinished deletion): a live account whose object is a tombstone has its deletion finished by its next games request (401, row gone, sign-in refused)',
+        listHalf.status === 401 && listHalfBody.error === 'This account has been deleted.' && halfGone && halfAgain === 401,
+        JSON.stringify({ list: listHalf.status, error: listHalfBody.error, halfGone, signIn: halfAgain }));
+      record('THE DEFECT (deleted on a previous revision): an account removed from db.json elsewhere has its games object tombstoned here; other accounts are untouched',
+        stayList === 200 && prevTomb && fake.games('u_prev').length === 0 && JSON.parse(fake.getStored()).users.some((u) => u.id === 'u_stay'),
+        JSON.stringify({ stayList, prevTomb, prevObject: fake.getStored('games/u_prev.json') }));
     }
   }
 
