@@ -2043,6 +2043,16 @@ const ACCOUNT_GAMES_FULL = `Saved games for this account exceeded the ${formatCa
 type RouteOutcome = { status: number; body: unknown };
 /** The objects an account's games live in: its own, then any duplicate account folded into it (dedupeAccounts). */
 const accountKeys = (u: User): string[] => [u.id, ...(u.mergedFrom ?? []).filter((k) => k !== u.id)];
+/**
+ * The account's games without the FIRST copy of `gameId`, or null when there is none. One DELETE is
+ * one copy, as on the file-backed route: the migration keeps legacy rows that share an id but differ
+ * as separate rows (accountGameStore's `id#k:` identities), and must not lose the others to one
+ * request (Sweep 32).
+ */
+function withoutFirstGame(games: readonly SavedGame[], gameId: string): SavedGame[] | null {
+  const i = games.findIndex((g) => g.id === gameId);
+  return i === -1 ? null : games.filter((_, k) => k !== i);
+}
 function accountGamesUnavailable(res: express.Response, err: unknown, error: string): express.Response {
   console.error(`Saved-game store: ${err instanceof Error ? err.message : String(err)}`);
   res.setHeader("Retry-After", "30");
@@ -6041,8 +6051,9 @@ async function startServer() {
         const parts = await accountGames.snapshot(accountKeys(user), res.locals.gcsWaitUntil ?? 0);
         const at = parts.find((p) => p.games.some((g) => g.id === gameId)) ?? parts[0];
         const outcome = await accountGames.mutate<RouteOutcome>(at.key, (games) => {
-          if (!games.some((g) => g.id === gameId)) return { result: { status: 404, body: { error: "Game not found." } } };
-          return { games: games.filter((g) => g.id !== gameId), result: { status: 200, body: { success: true, message: "Game deleted successfully." } } };
+          const rest = withoutFirstGame(games, gameId);
+          if (rest === null) return { result: { status: 404, body: { error: "Game not found." } } };
+          return { games: rest, result: { status: 200, body: { success: true, message: "Game deleted successfully." } } };
         });
         if (outcome === ACCOUNT_FULL) return res.status(413).json({ error: ACCOUNT_GAMES_FULL });
         if (outcome === ACCOUNT_GONE) return accountWasDeleted(res, user); // its deletion reached the object

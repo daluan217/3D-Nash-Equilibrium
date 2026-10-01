@@ -477,4 +477,25 @@ for (const [label, transform, why] of [
     `an id-less row is reported by fingerprint, not by its contents: ${JSON.stringify(r.conflicts)}`); n++;
 }
 
+{
+  // Sweep 32: the migration keeps copies that share an id but differ as separate rows; one hosted
+  // DELETE removes one copy, as the file-backed route does — run from server.ts's own source.
+  const i = source.indexOf('function withoutFirstGame(');
+  const js = ts.transpileModule(source.slice(source.lastIndexOf('\n', i) + 1, source.indexOf('\n}\n', i) + 2), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const withoutFirstGame = new Function(`${js}; return withoutFirstGame;`)() as (games: Game[], id: string) => Game[] | null;
+  const b = memoryBucket();
+  const s = create({ bucket: b, capBytes: CAP });
+  await s.migrate([{ id: 'g_X', userId: 'u_dup', name: 'copy-A' }, { id: 'g_X', userId: 'u_dup', name: 'copy-B' }]);
+  const names = () => storedGames(b, s.objectName('u_dup'))!.map((x) => x.name);
+  assert.deepStrictEqual(names(), ['copy-A', 'copy-B'], 'both differing copies of one id are migrated'); n++;
+  const del = (games: Game[]) => { const rest = withoutFirstGame(games, 'g_X'); return rest === null ? { result: 404 } : { games: rest, result: 200 }; };
+  const first = await s.mutate('u_dup', del);
+  assert(first === 200 && isDeepStrictEqual(names(), ['copy-B']), `THE DEFECT (Sweep 32): one DELETE removes one copy, not every copy of the id: ${first} ${JSON.stringify(names())}`); n++;
+  const [second, third] = [await s.mutate('u_dup', del), await s.mutate('u_dup', del)];
+  assert(second === 200 && third === 404 && names().length === 0, 'the next DELETE removes the other copy; then the id is not found'); n++;
+  const route = source.slice(source.indexOf('app.delete("/api/games/:id"'), source.indexOf('await serializeGameWrite(', source.indexOf('app.delete("/api/games/:id"')));
+  assert(/const rest = withoutFirstGame\(games, gameId\);\s*if \(rest === null\) return \{ result: \{ status: 404,[^\n]*\n\s*return \{ games: rest,/.test(route) && !/g\.id !== gameId/.test(route),
+    'the hosted DELETE route removes through withoutFirstGame'); n++;
+}
+
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);
