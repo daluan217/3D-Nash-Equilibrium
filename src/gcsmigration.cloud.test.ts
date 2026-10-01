@@ -11,7 +11,9 @@
  */
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import ts from 'typescript';
+import { clampGraphemeSafe } from './utils/textSafety';
 import { loadAccountGameStore, memoryBucket, storedGames, type Game, type MemoryBucket } from './testing/accountGames.ts';
 
 const { create, GONE, source } = await loadAccountGameStore();
@@ -300,21 +302,28 @@ for (const [label, transform, why] of [
   assert(r.added === 1 && storedGames(b, name)!.map((x) => x.id).join() === 'g_rb,peer1,peer2', `the migration succeeds with every game: ${JSON.stringify(r)}`); n++;
 }
 
-// 14. Deletions owed to accounts removed elsewhere are retried until they land (Sweep 19, finding 4).
+// 14. Deletions owed to accounts removed elsewhere are retried until they land (Sweep 19, finding 4),
+// on their own: no later call may come — a lone instance's db.json changes only by its own writes (Sweep 28).
 {
+  const tombstoned = (b: ReturnType<typeof memoryBucket>, s: ReturnType<typeof create>, k: string) => JSON.parse(b.objects.get(s.objectName(k))?.body ?? '{}').deleted === true;
   const b = memoryBucket();
-  const s = create({ bucket: b, capBytes: CAP });
+  const s = create({ bucket: b, capBytes: CAP, log: () => {} });
   let fail = true;
   b.beforeWrite = () => { if (fail) throw new Error('GCS unavailable'); };
   s.tombstoneEventually(['u_gone']);
   await s.idle();
   const tombAfterFailure = b.objects.has(s.objectName('u_gone'));
   fail = false;
-  await new Promise((r) => setTimeout(r, 0));
-  s.tombstoneEventually([]); // the next sync: no new account, the owed one is paid
+  await new Promise((r) => setTimeout(r, 800)); // no further call: the owed tombstone is retried after a backoff
   await s.idle();
-  assert(!tombAfterFailure && JSON.parse(b.objects.get(s.objectName('u_gone'))?.body ?? '{}').deleted === true,
-    'a tombstone that failed is owed and paid by the next call'); n++;
+  assert(!tombAfterFailure && tombstoned(b, s, 'u_gone'), 'a tombstone that failed is owed and paid with no later call'); n++;
+  // A key owed while a payment is out is paid when that payment settles, with no later call.
+  const b2 = memoryBucket();
+  const s2 = create({ bucket: b2, capBytes: CAP });
+  s2.tombstoneEventually(['u_a']);
+  s2.tombstoneEventually(['u_b']); // during u_a's payment
+  for (let i = 0; i < 20 && !tombstoned(b2, s2, 'u_b'); i++) { await s2.idle(); await new Promise((r) => setTimeout(r, 5)); }
+  assert(tombstoned(b2, s2, 'u_a') && tombstoned(b2, s2, 'u_b'), 'THE DEFECT (Sweep 28): a key owed during a payment is paid too'); n++;
 }
 
 // 15. The store makes no network call of its own: the module imports nothing (every GCS call is in
@@ -368,6 +377,37 @@ for (const [label, transform, why] of [
   const gone = await m.tombstoneAccounts((u) => u.email === 'k');
   assert.deepStrictEqual(removed, [['u_k'], ['u_d', 'u_k2']], 'THE DEFECT (Sweep 24): what a sync brought in during the await is tombstoned too, each key once'); n++;
   assert.deepStrictEqual([...gone], ['u_k', 'u_k2'], 'and the rows it answers are those of its last read'); n++;
+}
+
+// 17. db.json's unacked overlay (Sweep 28: the gcs-db-saves port moved sections 9/9b to game objects,
+// leaving it untested). An upload abandoned at its deadline may land anyway: an account row it created
+// and this side deleted since stays deleted when GCS hands it back; one that did NOT land survives a
+// peer's write. Run from server.ts's own source.
+{
+  const fn = (name: string) => { const i = source.search(new RegExp(`\\n(?:async )?function ${name}\\(|\\nconst ${name} = `)) + 1; return source.slice(i, source.indexOf(name.startsWith('overlay') ? '\n});\n' : '\n}\n', i) + (name.startsWith('overlay') ? 4 : 2)); };
+  const line = (start: string) => { const i = source.indexOf(start); return source.slice(i, source.indexOf('\n', i)); };
+  const codeFields = source.slice(source.indexOf('const CODE_FIELDS = '), source.indexOf('} as const;', source.indexOf('const CODE_FIELDS = ')) + 11);
+  const src = [line('const MAX_CODE_ATTEMPTS = '), codeFields, line('const emailKey = '), line('const nfkcBare = '), line('const usernameKey = '),
+    fn('keepFolds'), fn('pickAccount'), fn('dedupeAccounts'), fn('unionMergeDb'), fn('overlayDb')].join('\n');
+  const js = ts.transpileModule(src, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  type Row = { id: string; email: string; username: string; isVerified?: boolean; passwordHash?: string };
+  type D = { users: Row[]; games: unknown[] };
+  const { unionMergeDb, overlayDb } = new Function('isDeepStrictEqual', 'clampGraphemeSafe', `${js}; return { unionMergeDb, overlayDb };`)(isDeepStrictEqual, clampGraphemeSafe) as {
+    unionMergeDb: (r: D, l: D, b: D | null, u: D | null, descends?: boolean) => D; overlayDb: (a: D, b: D) => D };
+  const acct = (id: string): Row => ({ id, email: `${id}@x.test`, username: id, isVerified: true, passwordHash: 'h' });
+  const A = acct('u_a'), B = acct('u_b'), C = acct('u_c');
+  const ids = (d: D) => d.users.map((u) => u.id).sort();
+  const db = (...users: Row[]): D => ({ users, games: [] });
+  // 9 (db.json): the abandoned upload created B and LANDED; B was deleted here since.
+  const unacked = overlayDb(db(), db(A, B));
+  assert.deepStrictEqual(ids(unionMergeDb(db(A, B), db(A), db(A), unacked)), ['u_a'], 'THE DEFECT: an account deleted after its abandoned upload landed stays deleted'); n++;
+  assert.deepStrictEqual(ids(unionMergeDb(db(A, B), db(A), db(A), null)), ['u_a', 'u_b'], 'CONTROL: without the unacked record the merge takes it for a peer\'s new account (the overlay is what decides)'); n++;
+  // 9b (db.json): the abandoned upload did NOT land; a peer wrote C meanwhile; B (acked) survives.
+  assert.deepStrictEqual(ids(unionMergeDb(db(A, C), db(A, B), db(A), unacked)), ['u_a', 'u_b', 'u_c'], 'an acked account whose upload never landed survives the peer\'s write, and so does the peer\'s account'); n++;
+  assert.deepStrictEqual(ids(overlayDb(unacked, db(C))), ['u_a', 'u_b', 'u_c'], 'a second abandoned upload adds to the record, it does not replace it'); n++;
+  assert(/if \(err\?\.code !== 412\) gcsUnackedDb = overlayDb\(gcsUnackedDb \?\? \{ users: \[\], games: \[\] \}, sent\);/.test(source)
+    && /applyMergedDb\(unionMergeDb\(remoteDb, loadDB\(\), gcsBaselineDb, gcsUnackedDb, descends\)\);/.test(source),
+    'the pump records an abandoned upload and syncFromGcs merges with it'); n++;
 }
 
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);

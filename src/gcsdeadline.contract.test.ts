@@ -461,28 +461,44 @@ check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
 {
   const start = source.indexOf('async function drainGcsSaves(');
   const end = source.indexOf('\n}\n', start) + 2;
-  let returnedAt = -1, landedAt = -1, gameLandedAt = -1, gameReturnedAt = -1;
+  let returnedAt = -1, landedAt = -1, gameLandedAt = -1, gameReturnedAt = -1, rowsLandedAt = -1, rowsReturnedAt = -1;
   if (start > 0 && end > start) {
     const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
     const t0 = Date.now();
     let reads = 0;
     const hostile = { now: () => t0 + (reads++ ? 3_600_000 : 0) };
     // `accountGames`: the hosted per-account game store; null = no saved-game write in flight.
-    const drainWith = (accountGames: unknown, landed: () => void) => new Function('Date', 'performance', 'setTimeout', 'state', 'accountGames', `
-      let gcsStoreBlocked = null, gcsUploadInFlight = true, gcsSaveRequested = false, wakeGcsPump = null;
-      const gcsPumpDone = new Promise((r) => setTimeout(() => { gcsUploadInFlight = false; state.landed(); r(); }, 300));
-      function scheduleGcsSave() {}
-      ${js}; return drainGcsSaves;`)(hostile, performance, setTimeout, { landed }, accountGames);
+    // `state.inFlight`: a db.json upload is out when the drain starts; `state.request` lets a route ask for one.
+    const drainWith = (accountGames: unknown, landed: () => void, inFlight = true, state: { request?: () => void } = {}) => new Function('Date', 'performance', 'setTimeout', 'state', 'accountGames', `
+      let gcsStoreBlocked = null, gcsUploadInFlight = false, gcsSaveRequested = false, wakeGcsPump = null, gcsPumpDone = Promise.resolve();
+      const upload = () => { gcsUploadInFlight = true; gcsSaveRequested = false; return new Promise((r) => setTimeout(() => { gcsUploadInFlight = false; state.landed(); r(); }, 300)); };
+      function scheduleGcsSave() { if (!gcsUploadInFlight) gcsPumpDone = upload(); else gcsSaveRequested = true; }
+      state.request = () => { gcsSaveRequested = true; };
+      if (state.inFlight) gcsPumpDone = upload();
+      ${js}; return drainGcsSaves;`)(hostile, performance, setTimeout, Object.assign(state, { landed, inFlight }), accountGames);
+    // A fake store whose one write lands after `ms` (then `after` runs, as the route the write unblocks would).
+    const gamesFor = (ms: number, after: () => void) => {
+      let busy = true;
+      const done = new Promise((r) => setTimeout(() => { busy = false; after(); r(undefined); }, ms));
+      return { busy: () => busy, idle: () => done };
+    };
     await drainWith(null, () => { landedAt = performance.now(); })(8_000);
     returnedAt = performance.now();
     // A saved-game write still in flight (answered only once it lands) outlasts the db.json pump.
-    await drainWith({ idle: () => new Promise((r) => setTimeout(() => { gameLandedAt = performance.now(); r(undefined); }, 900)) }, () => {})(8_000);
+    await drainWith(gamesFor(900, () => { gameLandedAt = performance.now(); }), () => {})(8_000);
     gameReturnedAt = performance.now();
+    // Sweep 28: the pump idle, a tombstone out; once it lands its route removes the rows (a db.json
+    // write). The drain must not exit with that write unlanded (its 200 already said "deleted").
+    const st: { request?: () => void } = {};
+    await drainWith(gamesFor(500, () => st.request!()), () => { rowsLandedAt = performance.now(); }, false, st)(8_000);
+    rowsReturnedAt = performance.now();
   }
   check('SIGTERM drain waits for the in-flight upload through a wall-clock jump', landedAt > 0 && returnedAt >= landedAt,
     `landed ${landedAt.toFixed(0)}, returned ${returnedAt.toFixed(0)}`);
   check('SIGTERM drain also waits for an in-flight saved-game write, not only the db.json pump', gameLandedAt > 0 && gameReturnedAt >= gameLandedAt,
     `game write landed ${gameLandedAt.toFixed(0)}, returned ${gameReturnedAt.toFixed(0)}`);
+  check('SIGTERM drain lands the db.json write a route makes once its saved-game write lands (Sweep 28)', rowsLandedAt > 0 && rowsReturnedAt >= rowsLandedAt,
+    `rows landed ${rowsLandedAt.toFixed(0)}, returned ${rowsReturnedAt.toFixed(0)}`);
   const body = (name: string) => { const i = source.indexOf(`function ${name}(`); return i < 0 ? '' : source.slice(i, source.indexOf('\n}\n', i)); };
   const onWall = ['rateLimit', 'pruneRateBuckets', 'mailCooldownLeft', 'requireGcsStore', 'syncFromGcs', 'drainGcsSaves']
     .filter((f) => !body(f) || /Date\.now\(/.test(body(f)));

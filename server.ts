@@ -2698,15 +2698,23 @@ function scheduleGcsSave(): void {
  */
 async function drainGcsSaves(ms: number): Promise<void> {
   const until = performance.now() + ms;
+  const budget = () => new Promise((r) => setTimeout(r, Math.max(0, until - performance.now())));
+  const dbPending = () => !gcsStoreBlocked && (gcsUploadInFlight || gcsSaveRequested);
   // A saved-game write in flight is answered only once it lands: let it land
   // (its request then gets its 200) rather than cut the connection mid-upload.
-  const games = accountGames ? accountGames.idle().catch(() => {}) : Promise.resolve();
-  while (!gcsStoreBlocked && (gcsUploadInFlight || gcsSaveRequested) && performance.now() < until) {
-    wakeGcsPump?.();
-    if (!gcsUploadInFlight) scheduleGcsSave();
-    await Promise.race([gcsPumpDone, new Promise((r) => setTimeout(r, Math.max(0, until - performance.now())))]);
+  // The route it unblocks may then write db.json (delete-confirm removing the
+  // rows after its tombstones): drain that too, until both are idle (Sweep 28).
+  while (performance.now() < until) {
+    if (dbPending()) {
+      wakeGcsPump?.();
+      if (!gcsUploadInFlight) scheduleGcsSave();
+      await Promise.race([gcsPumpDone, budget()]);
+      continue;
+    }
+    if (!accountGames?.busy()) break;
+    await Promise.race([accountGames.idle().catch(() => {}), budget()]);
+    await new Promise((r) => setImmediate(r)); // the unblocked route runs up to its db.json write
   }
-  await Promise.race([games, new Promise((r) => setTimeout(r, Math.max(0, until - performance.now())))]);
   // The writes' own requests answer right after them: give those bytes a moment to leave.
   if (accountGames) await new Promise((r) => setTimeout(r, Math.min(100, Math.max(0, until - performance.now()))));
 }

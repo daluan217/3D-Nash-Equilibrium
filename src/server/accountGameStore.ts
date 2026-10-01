@@ -382,6 +382,8 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   async function idle(): Promise<void> {
     while (queues.size > 0) await Promise.all([...queues.values()].map((q) => q.run));
   }
+  /** Whether a write is in flight or queued right now. */
+  const busy = () => queues.size > 0;
 
   // Keys whose account deletion is in progress here: the routes refuse new
   // game writes for them meanwhile, so none is queued behind the tombstone.
@@ -401,17 +403,28 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   }
 
   // Accounts deleted elsewhere whose objects are still to be tombstoned: owed
-  // until the tombstones land, retried by every later call.
+  // until the tombstones land. Paid by the call that owes them and re-armed on
+  // its own until paid — keys owed while a payment was out, and a failed one
+  // (backing off) — never left waiting for a later call that may not come: a
+  // lone instance's db.json changes only by its own writes (Sweep 28).
   const owedTombstones = new Set<string>();
-  let paying: Promise<void> | null = null;
+  let paying: Promise<void> | null = null, failures = 0, rearm: ReturnType<typeof setTimeout> | null = null;
   function tombstoneEventually(keys: readonly string[]): void {
     for (const k of keys) owedTombstones.add(k);
-    if (paying || owedTombstones.size === 0) return;
+    payOwed();
+  }
+  function payOwed(): void {
+    if (paying || rearm || owedTombstones.size === 0) return;
     const owed = [...owedTombstones];
     paying = removeAll(owed).then(
-      () => { for (const k of owed) owedTombstones.delete(k); },
-      (err) => log(`Tombstoning the objects of ${owed.length} account(s) deleted elsewhere failed; retried on the next call: ${err instanceof Error ? err.message : String(err)}`),
-    ).finally(() => { paying = null; });
+      () => { for (const k of owed) owedTombstones.delete(k); failures = 0; },
+      (err) => { failures++; log(`Tombstoning the objects of ${owed.length} account(s) deleted elsewhere failed; retrying: ${err instanceof Error ? err.message : String(err)}`); },
+    ).finally(() => {
+      paying = null;
+      if (owedTombstones.size === 0) return;
+      rearm = setTimeout(() => { rearm = null; payOwed(); }, failures === 0 ? 0 : Math.min(60_000, 500 * 2 ** (failures - 1)));
+      (rearm as { unref?: () => void }).unref?.();
+    });
   }
 
   /** key -> stored game count, from one listing (custom metadata stamped on every write). */
@@ -594,5 +607,5 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
     return { accounts: groups.size, rows: legacy.length, added, conflicts, kept };
   }
 
-  return { snapshot, mutate, removeAll, deleting, tombstoneEventually, counts, knownOwners, migrate, idle, objectName, sizeOf };
+  return { snapshot, mutate, removeAll, deleting, tombstoneEventually, counts, knownOwners, migrate, idle, busy, objectName, sizeOf };
 }
