@@ -568,6 +568,21 @@ for (const [label, transform, why] of [
   const w3 = b2.ops.write; // the fresh identity took no recorded one: every copy is still known by content
   await s2.migrate([c1, c2, c2edited]); await s2.migrate([c2, c1]);
   assert(b2.ops.write === w3 && storedGames(b2, s2.objectName('u_cp'))!.length === 2, `and re-runs over every copy write nothing (no copy added twice, copy 1 not back): ${b2.ops.write - w3} writes`); n++;
+  // Sweep 35: the copy recorded is B (a previous revision's merge had collapsed [A, B] to [B]); db.json
+  // then holds [A, B] again (a restore, or a second instance's older read). Neither copy is lost.
+  const b3 = memoryBucket();
+  const s3 = create({ bucket: b3, capBytes: CAP });
+  await s3.migrate([c2]);
+  const both = await s3.migrate([c1, c2]);
+  assert(isDeepStrictEqual(storedGames(b3, s3.objectName('u_cp'))!.map((x) => x.name), ['second copy', 'first copy']) && both.conflicts.length === 0,
+    `THE DEFECT (Sweep 35): [B] then [A, B]: B is never written over, A is kept as one more copy: ${JSON.stringify(storedGames(b3, s3.objectName('u_cp'))!.map((x) => x.name))}`); n++;
+  // One changed row of an id with SEVERAL recorded copies is not taken for an edit of the first.
+  const b4 = memoryBucket();
+  const s4 = create({ bucket: b4, capBytes: CAP });
+  await s4.migrate([c1, c2]);
+  await s4.migrate([c2edited]);
+  assert(isDeepStrictEqual(storedGames(b4, s4.objectName('u_cp'))!.map((x) => x.name), ['first copy', 'second copy', 'second copy, edited on the previous revision']),
+    `a lone changed row of an id with several copies is one more copy, none overwritten: ${JSON.stringify(storedGames(b4, s4.objectName('u_cp'))!.map((x) => x.name))}`); n++;
   // CONTROL: an id with ONE recorded copy still takes the previous revision's edit in place.
   const d1 = g('g_D', 'u_cp', { name: 'single' }), d1edited = g('g_D', 'u_cp', { name: 'single, edited' });
   await s.migrate([d1]); await s.migrate([d1edited]);

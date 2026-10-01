@@ -534,11 +534,12 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
    * Rows sharing an id: byte-identical copies are one row; copies that differ
    * are kept as distinct rows (`id:X`, `id#2:X`, ...), exactly as db.json held
    * them, so no copy is lost. Those identities are positional, so they shift
-   * when db.json loses a copy (a previous revision's merge keys games by id):
-   * a row whose content is recorded under ANY identity of its id was migrated,
-   * and an edit is applied only to an id with one recorded copy. A changed row
-   * of an id with several is kept as one more copy, never written over one
-   * (Sweep 34: a re-run overwrote copy 1 with copy 2).
+   * when db.json loses or regains a copy (a previous revision's merge keys
+   * games by id). Once an id is recorded, its rows are matched by content: one
+   * recorded under ANY identity of the id was migrated; an edit lands in place
+   * only when the id has one recorded copy and db.json one copy; any other
+   * changed row is kept as one more copy, never written over one — a duplicate
+   * at worst, never a loss (Sweeps 34 and 35).
    *
    * Every row this run wrote is then read BACK from GCS — the very generation
    * this run wrote, never the cache — and compared byte for byte (its JSON);
@@ -613,39 +614,52 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
             clash.clear(); wrote.clear(); used.clear(); ours = undefined;
             const at = new Map(identities(games).map((id, i) => [id, i] as const));
             const next = [...games], record: Record<string, string> = { ...object.migrated };
-            // Each id's recorded copies, fingerprint -> the identity it is recorded under.
+            // Each recorded id's copies, fingerprint -> the identity it is recorded under. An id
+            // recorded when this op starts is matched by content from then on: its identities are
+            // positional and shift when db.json loses a copy (a previous revision's merge keys games
+            // by id), so a position names no particular copy any more (Sweeps 34 and 35).
             const copies = new Map<string, Map<string, string>>();
-            const note = (id: string, print: string) => {
+            for (const [id, print] of Object.entries(record)) {
               const x = rawId(id);
               if (x !== null) copies.set(x, (copies.get(x) ?? new Map()).set(print, id));
-            };
-            for (const [id, print] of Object.entries(record)) note(id, print);
+            }
+            const inRows = new Map<string, number>(); // distinct copies of each id among these rows
+            for (const id of new Set(rowIds)) { const x = rawId(id); if (x !== null) inRows.set(x, (inRows.get(x) ?? 0) + 1); }
             let changed = false;
             rows.forEach((g, i) => {
-              const id = rowIds[i], print = prints[i], was = record[id], j = at.get(id);
-              if (was === print) return; // migrated before with this content: what the account did since stands
-              const x = rawId(id), known = x === null ? undefined : copies.get(x);
-              const under = known?.get(print);
-              if (under !== undefined) { used.set(i, under); return; } // migrated before, as another copy of its id
-              if (was !== undefined && x !== null && known !== undefined && known.size > 1) {
-                // Changed, or moved to another copy's place: which copy it was cannot be told. Kept
-                // as one more copy under a fresh identity, never written over one (Sweep 34).
+              const id = rowIds[i], print = prints[i], x = rawId(id), known = x === null ? undefined : copies.get(x);
+              if (x !== null && known !== undefined) {
+                const under = known.get(print);
+                if (under !== undefined) { used.set(i, under); return; } // migrated before: what the account did since stands
+                const only = known.size === 1 && inRows.get(x) === 1 ? known.get(record[`id:${x}`] ?? "") : undefined;
+                if (only === `id:${x}`) {
+                  // One copy, recorded, and one in db.json that changed since: edited on a previous
+                  // revision. It lands if the account has not touched the copy here; else this side stands.
+                  const j = at.get(only);
+                  if (j !== undefined && fingerprint(JSON.stringify(next[j])) === record[only]) {
+                    next[j] = g; wrote.add(i);
+                    known.clear(); known.set(print, only); record[only] = print; changed = true;
+                  } else clash.add(id);
+                  return;
+                }
+                // Any other change cannot be told apart from another copy: kept as one more copy,
+                // never written over one (a duplicate at worst, never a loss).
                 let k = 2;
                 while (record[`id#${k}:${x}`] !== undefined || at.has(`id#${k}:${x}`)) k++;
                 const fresh = `id#${k}:${x}`;
-                at.set(fresh, next.length); next.push(g); wrote.add(i); used.set(i, fresh);
-                record[fresh] = print; note(fresh, print); changed = true;
+                next.push(g); wrote.add(i);
+                used.set(i, fresh); known.set(print, fresh); record[fresh] = print; changed = true;
                 return;
               }
-              if (was !== undefined) {
-                // The db.json copy changed since it was migrated: edited on a previous revision.
-                if (j !== undefined && fingerprint(JSON.stringify(next[j])) === was) { next[j] = g; wrote.add(i); } else clash.add(id);
-              } else if (j === undefined) {
+              // Never migrated: positions here and in the object come from the same db.json order.
+              const was = record[id], j = at.get(id);
+              if (was === print) return; // migrated before with this content (an id-less row): what the account did since stands
+              if (j === undefined) {
                 at.set(id, next.length); next.push(g); wrote.add(i);
               } else if (JSON.stringify(next[j]) !== JSON.stringify(g)) {
                 clash.add(id);
               }
-              record[id] = print; note(id, print); changed = true;
+              record[id] = print; changed = true;
             });
             return changed
               ? { games: next, migrated: record, result: wrote.size, overCapOk: true, committed: (generation) => { ours = generation; } }
