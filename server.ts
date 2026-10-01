@@ -2050,10 +2050,8 @@ function accountGamesUnavailable(res: express.Response, err: unknown, error: str
  */
 async function finishAccountDeletion(user: User): Promise<void> {
   const key = emailKey(user.email);
-  const doomed = loadDB().users.filter((u) => u.id === user.id || emailKey(u.email) === key);
-  await accountGames!.removeAll(doomed.flatMap(accountKeys));
-  const ids = new Set(doomed.map((u) => u.id));
-  const db = loadDB(); // after the await: other routes committed meanwhile (#208)
+  const ids = await tombstoneAccounts((u) => u.id === user.id || emailKey(u.email) === key);
+  const db = loadDB(); // after the awaits: other routes committed meanwhile (#208)
   saveDB({ users: db.users.filter((u) => !ids.has(u.id)), games: db.games });
   console.warn(`Finished an interrupted account deletion (its saved-game objects were already tombstoned): ${[...ids].join(", ")}`);
 }
@@ -2064,6 +2062,35 @@ async function accountWasDeleted(res: express.Response, user: User): Promise<exp
     return accountGamesUnavailable(res, err, "Saved games are temporarily unavailable. Please try again shortly.");
   }
   return res.status(401).json({ error: "This account has been deleted." });
+}
+
+/**
+ * The objects of the accounts a merge removed: each one's own and its folded
+ * duplicates' (Sweep 24), bar any key a surviving account still reaches. An
+ * account that survived is never removed, whatever its record lost (Sweep 25:
+ * a merge that dropped its `mergedFrom` must not destroy its aliases' games).
+ */
+function removedAccountKeys(before: readonly { id: string; keys: readonly string[] }[], after: readonly User[]): string[] {
+  const left = new Set(after.flatMap((u) => [u.id, ...(u.mergedFrom ?? [])]));
+  return before.filter((b) => !left.has(b.id)).flatMap((b) => b.keys).filter((k) => !left.has(k));
+}
+
+/**
+ * Tombstones the objects of every account `matches` picks, own and folded,
+ * reading the accounts again after each await: a sync during it can bring in
+ * a fold or a duplicate row the first read lacked, and no game may outlive
+ * the account under an alias (Sweep 24). Resolves to the ids it covered as of
+ * its last read, with no await after it.
+ */
+async function tombstoneAccounts(matches: (u: User) => boolean): Promise<Set<string>> {
+  const covered = new Set<string>();
+  for (;;) {
+    const users = loadDB().users.filter(matches);
+    const keys = users.flatMap(accountKeys).filter((k) => !covered.has(k));
+    if (keys.length === 0) return new Set(users.map((u) => u.id));
+    for (const k of keys) covered.add(k);
+    await accountGames!.removeAll(keys);
+  }
 }
 
 /** Hosted only (GCS, not desktop): the desktop and the no-bucket server keep every game in db.json, unchanged. */
@@ -2203,9 +2230,8 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   // Hosted, db.json holds accounts only: its games now live in their objects
   // (bar the rows of an account whose object is blocked, kept as they were).
   const remoteDb: DB = accountGames ? { users: remote.db.users, games: legacyKept } : remote.db;
-  // Verified accounts this process held, with the duplicates folded into them
-  // (their objects go with them), to see which the merge removes (Sweep 24).
-  const heldBefore = accountGames ? loadDB().users.filter((u) => u.isVerified).flatMap(accountKeys) : [];
+  // Verified accounts this process held, with the objects they reach, to see which the merge removes.
+  const heldBefore = accountGames ? loadDB().users.filter((u) => u.isVerified).map((u) => ({ id: u.id, keys: accountKeys(u) })) : [];
   const baseline = jsonClone(remoteDb) as DB; // routes mutate records in place; the baseline must not follow
   const descends = gcsBaselineDb === null || remote.lineage === gcsLineage;
   // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
@@ -2216,9 +2242,8 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
     // (a folded duplicate is kept as an alias, not removed). A previous
     // revision deleting it during a rollover never tombstoned its objects:
     // do it here, so its games do not outlive it.
-    const left = new Set(loadDB().users.flatMap((u) => [u.id, ...(u.mergedFrom ?? [])]));
     // Owed until they land: a failure is retried by the next sync, not forgotten.
-    accountGames.tombstoneEventually(heldBefore.filter((id) => !left.has(id)));
+    accountGames.tombstoneEventually(removedAccountKeys(heldBefore, loadDB().users));
   }
   gcsBaselineDb = baseline;
   gcsGeneration = remote.generation;
@@ -2365,6 +2390,21 @@ function loadDB(): DB {
  * instance); then verified; then local. A code used up on either side stays
  * so; failed attempts on one code add up to the lockout.
  */
+/**
+ * Folds never unfold. A record that comes back without the `mergedFrom` this
+ * side knew (a previous revision's merge copies the winning record whole)
+ * keeps those aliases: hosted, the folded account's games are reached only
+ * through them (Sweep 25).
+ */
+function keepFolds(users: User[], known: readonly User[]): User[] {
+  const folds = new Map<string, Set<string>>();
+  for (const u of known) for (const k of u.mergedFrom ?? []) folds.set(u.id, (folds.get(u.id) ?? new Set()).add(k));
+  return users.map((u) => {
+    const all = new Set([...(u.mergedFrom ?? []), ...(folds.get(u.id) ?? [])]);
+    return all.size === (u.mergedFrom?.length ?? 0) ? u : { ...u, mergedFrom: [...all] };
+  });
+}
+
 function pickAccount(mine: User, theirs: User, was: User): User {
   const tv = (u: User) => u.tokenVersion ?? 0;
   const rank = (u: User) => [tv(u), u.isVerified ? 1 : 0]; // a reset, then verified
@@ -2427,7 +2467,7 @@ function unionMergeDb(remote: DB, local: DB, baseline: DB | null, unacked: DB | 
     }
     return [...out.values()];
   };
-  const users = merge(remote.users, local.users, baseline?.users ?? [], unacked?.users ?? [], pickAccount);
+  const users = keepFolds(merge(remote.users, local.users, baseline?.users ?? [], unacked?.users ?? [], pickAccount), [...local.users, ...(baseline?.users ?? [])]);
   const kept = new Set(users.map((u) => u.id));
   // A folded duplicate is not a deleted account: its games follow the alias.
   const alias = new Map(users.flatMap((u) => (u.mergedFrom ?? []).map((from) => [from, u.id] as const)));
@@ -5559,20 +5599,10 @@ async function startServer() {
       // is re-created under an account about to disappear. On a failure the
       // rows stay: deleting them with objects left would strand games nobody
       // could delete.
-      const doomed = db.users.filter(u => gone.has(u.id));
       try {
-        // A sync during the await can bring in a fold (or a duplicate row) this
-        // snapshot lacked: tombstone those objects too before any row goes, so
-        // no game outlives the account under an alias (Sweep 24).
-        const covered = new Set<string>();
-        for (let keys = doomed.flatMap(accountKeys); keys.length > 0;) {
-          for (const k of keys) covered.add(k);
-          await accountGames.removeAll(keys);
-          const now = loadDB(); // after the await: other routes committed meanwhile (#208)
-          const users = now.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id);
-          gone = new Set(users.map(u => u.id));
-          keys = users.flatMap(accountKeys).filter(k => !covered.has(k));
-        }
+        // Every account the deletion covers, re-read after each await (#208), with
+        // any fold or duplicate row a sync brings in meanwhile (Sweep 24).
+        gone = await tombstoneAccounts(u => emailKey(u.email) === userEmail || u.id === user.id);
       } catch (err) {
         // Some tombstones may have landed (a write past its deadline can still land), so the
         // account may be part-way deleted: the retry (the code is still valid) or the account's

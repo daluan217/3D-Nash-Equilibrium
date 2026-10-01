@@ -225,17 +225,21 @@ for (const [label, transform, why] of [
     && /applyMergedDb\(unionMergeDb\(remoteDb,/.test(body) && /if \(!descends \|\| migrated\) scheduleGcsSave\(\);/.test(body),
     'hosted, the merged state carries only blocked accounts\' legacy rows and a migration schedules the write that clears the rest'); n++;
   // An account the merge removes (deleted on a previous revision during a rollover) has its objects tombstoned.
-  assert(/accountGames\.tombstoneEventually\(heldBefore\.filter\(\(id\) => !left\.has\(id\)\)\);/.test(body),
+  // An account the merge removes (deleted on a previous revision during a rollover) has its objects
+  // tombstoned, folded duplicates' included (section 16 runs the selection itself).
+  assert(/const heldBefore = accountGames \? loadDB\(\)\.users\.filter\(\(u\) => u\.isVerified\)\.map\(\(u\) => \(\{ id: u\.id, keys: accountKeys\(u\) \}\)\) : \[\];/.test(body)
+    && body.indexOf('const heldBefore') < body.indexOf('applyMergedDb(')
+    && /accountGames\.tombstoneEventually\(removedAccountKeys\(heldBefore, loadDB\(\)\.users\)\);/.test(body)
+    && body.indexOf('removedAccountKeys(heldBefore') > body.indexOf('applyMergedDb('),
     'an account the merge removes has its objects tombstoned'); n++;
-  // ... including the objects of the duplicates folded into it (Sweep 24): they are its games too.
-  assert(/const heldBefore = accountGames \? loadDB\(\)\.users\.filter\(\(u\) => u\.isVerified\)\.flatMap\(accountKeys\) : \[\];/.test(body),
-    'the accounts held before a merge include their folded duplicates\' objects'); n++;
-  // Delete-confirm: a fold or duplicate row a sync brings in while the tombstones are written is
-  // tombstoned too before any row goes (Sweep 24), so no game outlives the account under an alias.
-  const dc = source.slice(source.indexOf('const doomed = db.users.filter(u => gone.has(u.id));'), source.indexOf('const fresh = loadDB();', source.indexOf('const doomed = db.users.filter(u => gone.has(u.id));')));
-  assert(/for \(let keys = doomed\.flatMap\(accountKeys\); keys\.length > 0;\) \{/.test(dc) && /await accountGames\.removeAll\(keys\);/.test(dc)
-    && /keys = users\.flatMap\(accountKeys\)\.filter\(k => !covered\.has\(k\)\);/.test(dc),
-    'delete-confirm tombstones every alias a sync brought in during its await, before the rows go'); n++;
+  // Both deletions go through the one re-reading loop (section 16 runs it), and the rows go only after it.
+  const dc = source.slice(source.indexOf('if (accountGames) {', source.indexOf('let gone = new Set(db.users.filter(')), source.indexOf('const fresh = loadDB();', source.indexOf('let gone = new Set(db.users.filter(')));
+  const fin = source.slice(source.indexOf('async function finishAccountDeletion('), source.indexOf('\n}\n', source.indexOf('async function finishAccountDeletion(')));
+  assert(/gone = await tombstoneAccounts\(u => emailKey\(u\.email\) === userEmail \|\| u\.id === user\.id\);/.test(dc) && !/removeAll/.test(dc)
+    && /const ids = await tombstoneAccounts\(\(u\) => u\.id === user\.id \|\| emailKey\(u\.email\) === key\);/.test(fin) && !/removeAll/.test(fin),
+    'delete-confirm and an unfinished deletion tombstone through tombstoneAccounts before the rows go'); n++;
+  assert(/const users = keepFolds\(merge\(remote\.users, local\.users,[^\n]*\[\.\.\.local\.users, \.\.\.\(baseline\?\.users \?\? \[\]\)\]\);/.test(source),
+    'unionMergeDb keeps the folds this side knew'); n++;
 }
 
 // 12. A ROW MISSING FROM A LATER LEGACY ARRAY IS NEVER TAKEN FOR A DELETION (Sweep 20). Rows vanish from
@@ -330,6 +334,36 @@ for (const [label, transform, why] of [
   const mine = { ...base, recoveryCode: '123456', recoveryCodeExpires: 1 }; // this instance changed u_k meanwhile
   const out = pickAccount(mine, theirs, base);
   assert.deepStrictEqual(out.mergedFrom, ['u_folded'], 'the fold survives a merge where the other record wins'); n++;
+}
+
+// 16. Which objects a merge's removals tombstone, folds kept through a merge, and the deletion loop —
+// run from server.ts's own source (Sweeps 24 and 25).
+{
+  const fn = (name: string) => { const i = source.indexOf(`function ${name}(`); return source.slice(source.lastIndexOf('\n', i) + 1, source.indexOf('\n}\n', i) + 2); };
+  const js = ts.transpileModule(`const accountKeys = ${source.slice(source.indexOf('const accountKeys = ') + 20, source.indexOf('\n', source.indexOf('const accountKeys = ')))}\n${fn('removedAccountKeys')}\n${fn('keepFolds')}\n${fn('tombstoneAccounts')}`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  type U = { id: string; email?: string; mergedFrom?: string[] };
+  let db: { users: U[] } = { users: [] };
+  const removed: string[][] = [];
+  let onRemove = (_keys: string[]) => {};
+  const accountGames = { removeAll: async (keys: string[]) => { removed.push([...keys]); onRemove(keys); } };
+  const m = new Function('loadDB', 'accountGames', `${js}; return { removedAccountKeys, keepFolds, tombstoneAccounts, accountKeys };`)(() => db, accountGames) as {
+    removedAccountKeys: (b: { id: string; keys: string[] }[], a: U[]) => string[]; keepFolds: (u: U[], k: U[]) => U[];
+    tombstoneAccounts: (match: (u: U) => boolean) => Promise<Set<string>>; accountKeys: (u: U) => string[] };
+  const K = { id: 'u_k', mergedFrom: ['u_d'] };
+  const held = [{ id: K.id, keys: m.accountKeys(K) }];
+  assert.deepStrictEqual(m.removedAccountKeys(held, []), ['u_k', 'u_d'], 'a removed account: its own object and its folded duplicate\'s'); n++;
+  assert.deepStrictEqual(m.removedAccountKeys(held, [{ id: 'u_k' }]), [], 'THE DEFECT (Sweep 25): the account survived without its mergedFrom: nothing is tombstoned'); n++;
+  assert.deepStrictEqual(m.removedAccountKeys(held, [{ id: 'u_z', mergedFrom: ['u_k', 'u_d'] }]), [], 'folded into another account (it reaches both): nothing is tombstoned'); n++;
+  assert.deepStrictEqual(m.removedAccountKeys(held, [{ id: 'u_z', mergedFrom: ['u_d'] }]), ['u_k'], 'removed, but its duplicate lives on elsewhere: only its own object'); n++;
+  const kept = m.keepFolds([{ id: 'u_k' }, { id: 'u_x' }], [K, { id: 'u_gone', mergedFrom: ['u_g'] }]);
+  assert.deepStrictEqual(kept, [{ id: 'u_k', mergedFrom: ['u_d'] }, { id: 'u_x' }], 'a record that came back without its mergedFrom keeps the folds this side knew; a removed account is not revived'); n++;
+  // The loop: a sync during the first await brings in a fold and a duplicate row; both are covered.
+  db = { users: [{ id: 'u_k', email: 'k' }, { id: 'u_other', email: 'o', mergedFrom: ['u_o2'] }] };
+  onRemove = () => { if (removed.length === 1) db = { users: [{ id: 'u_k', email: 'k', mergedFrom: ['u_d'] }, { id: 'u_k2', email: 'k' }, db.users[1]] }; };
+  const gone = await m.tombstoneAccounts((u) => u.email === 'k');
+  assert.deepStrictEqual(removed, [['u_k'], ['u_d', 'u_k2']], 'THE DEFECT (Sweep 24): what a sync brought in during the await is tombstoned too, each key once'); n++;
+  assert.deepStrictEqual([...gone], ['u_k', 'u_k2'], 'and the rows it answers are those of its last read'); n++;
 }
 
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);
