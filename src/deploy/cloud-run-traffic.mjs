@@ -3,9 +3,8 @@
  * Human diagnostics go to stderr so a shell command substitution receives
  * only revision names.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const LATEST = 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST';
 const REVISION = 'TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION';
@@ -88,6 +87,7 @@ function main() {
   process.stdout.write(`${result.serving.join('\n')}\n`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+// import.meta.url is the entry's realpath: an argv[1]-only compare skipped main() by a symlinked path, exit 0.
+if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main();
 }

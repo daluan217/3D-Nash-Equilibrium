@@ -33,6 +33,7 @@ import path from 'node:path';
 import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
 import { chromium } from 'playwright';
 import { dismissTourForSetup } from './tour.mjs';
+import { isAnalyticsNoise } from './console-noise.mjs';
 
 const PORT = process.env.E2E_PORT || '3098';
 const BASE = process.env.E2E_BASE || `http://localhost:${PORT}`;
@@ -83,8 +84,8 @@ const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'] });
 const page = await browser.newPage();
 page.setDefaultTimeout(120000);
 const consoleErrors = [];
-page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
-page.on('pageerror', (e) => consoleErrors.push(String(e)));
+page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push({ text: m.text(), url: m.location()?.url ?? '' }); });
+page.on('pageerror', (e) => consoleErrors.push({ text: String(e) }));
 
 // Serve the production-shaped envelope for every report call.
 let reportCalls = 0;
@@ -194,8 +195,8 @@ try {
 } catch (e) { record('Generate prefills from a template envelope', false, String(e).slice(0, 110)); }
 
 await browser.close();
-const relevant = consoleErrors.filter((t) => !/googletagmanager|google-analytics|gtag|net::|ERR_/i.test(t));
-record('no console/page errors across the AI surface', relevant.length === 0, relevant.slice(0, 2).join(' | '));
+const relevant = consoleErrors.filter((e) => !isAnalyticsNoise(e) && !/net::|ERR_/i.test(e.text));
+record('no console/page errors across the AI surface', relevant.length === 0, relevant.slice(0, 2).map((e) => `${e.text} ${e.url ?? ''}`).join(' | '));
 await killServer();
 try { rmSync(userData, { recursive: true, force: true }); } catch { /* best effort */ }
 const fails = results.filter((r) => !r.pass);

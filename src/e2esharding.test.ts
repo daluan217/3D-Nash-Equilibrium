@@ -5,13 +5,22 @@
  * `e2e` status context required by branch protection.
  */
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import ts from 'typescript';
 import {
   DEFAULT_REPORT_FETCH_TIMEOUT_MS,
   resolveReportFetchTimeoutMs,
 } from './utils/fetchTimeout';
-import { selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS } from './e2e/selection.js';
+import { parseSections, selectSmokeSections, assignShards, measuredMs, validateTimings, SHARD_COUNT, SHARD_TIMINGS, SECTION_BUDGET_MS, EXTRA_STEP_SECTIONS } from './e2e/selection.js';
 import { shardsNeedingWebkit, WEBKIT_SECTION_IDS } from './e2e/webkit-shards.mjs';
+import { SPLIT_PARTS, WIDEST_PAYOFFS } from './e2e/split-parts.mjs';
+import { isAnalyticsNoise } from './e2e/console-noise.mjs';
+import { SCROLL_CASES, WALK_CASES, scrollTags, walkTags, packTour, tourShards, TOUR_TIMINGS } from './e2e/tour-cases.mjs';
+import { shardCases, logCases, checkLog } from './e2e/shard-cases.mjs';
+import { measure, refresh } from '../scripts/shard-timings-from-run.mjs';
 
 const smoke = readFileSync('src/e2e/smoke.mjs', 'utf8');
 const workflow = readFileSync('.github/workflows/test.yml', 'utf8');
@@ -28,9 +37,7 @@ function workflowJob(name: string): string {
   return workflow.slice(start, end);
 }
 
-const definitions: { id: string; name: string; shard?: number }[] = [...smoke.matchAll(
-  /section\('([^']+)',\s*'([^']+)',\s*async\s*\(\)\s*=>/g,
-)].map((match) => ({ id: match[1], name: match[2] }));
+const definitions: { id: string; name: string; shard?: number }[] = parseSections(smoke);
 assert(!/section\('[^']+',\s*'[^']*',\s*\d+,\s*async/.test(smoke),
   'sections no longer name a shard by hand — selection.js packs them from shard-timings.json');
 
@@ -44,6 +51,10 @@ const sectionCalls = (smoke.match(/^\s*section\('/gm) || []).length;
 assert.strictEqual(definitions.length, sectionCalls,
   `${sectionCalls} section() calls but only ${definitions.length} parsed — a section is written in a shape `
   + 'the enumerator cannot see (it must be `section(\'id\', \'name\', async () => ...)`), so it would never run in CI');
+// That parity covers every reader only if there is one parser: the timings refresh once had its own, looser one (sweep 1).
+const censusCopies = execFileSync('git', ['grep', '-lF', String.raw`section\(` + String.raw`'([^']+)',\s*'`, '--', '*.js', '*.mjs', '*.cjs', '*.ts', '*.tsx', ':(exclude)_gen'], { encoding: 'utf8' })
+  .split('\n').filter(Boolean);
+assert.deepStrictEqual(censusCopies, ['src/e2e/selection.js'], 'one census of smoke.mjs sections, parseSections: every reader imports it');
 
 const expectedIds = [
   '1', '2', '3', '4', '5', '6', '6b', '7', '8', '9', '10', '11', '12',
@@ -51,14 +62,16 @@ const expectedIds = [
   '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
   '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '50',
   '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
-  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96', '100', '102', '101', '103', '104', '97',
+  '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96',
+  '100a', '100b', '100c', '100d', '102a', '102b', '102c', '102d', '102e', '102f',
+  '101a', '101b', '101c', '101d', '101e', '101f', '101g', '103a', '103b', '103c', '105', '108', '104', '97',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 35, 'the smoke suite is split into 35 CI shards (test.yml matrix must match) '
+assert.strictEqual(SHARD_COUNT, 38, 'the smoke suite is split into 38 CI shards (test.yml matrix must match) '
   + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
   + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
   + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
@@ -74,7 +87,417 @@ assert.strictEqual(SHARD_COUNT, 35, 'the smoke suite is split into 35 CI shards 
   + 'multi-section shards back over the line, worst shard 8 = \u00a742+\u00a794 at 201s, including the '
   + 'long-standing \u00a77+\u00a742 = 200,097ms pair that sits 97ms over on its own; 33 clears every one '
   + '(simulated over the merged table before landing). Re-measuring \u00a793/\u00a794/\u00a7100/\u00a7101 on the final tree (\u00a7100 110839 -> 165141) put shard 9 = \u00a77+\u00a742 back on the line at 200,097ms; 34 clears it. '
-  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; the table carries 125,000/180,000. Adding three LANDSCAPE conditions to \u00a7101 (the orientation that hid the tour footer) took it to a MEASURED 259,112ms -- over the same per-section budget -- so the trio split out as \u00a7103 behind one shared walker; re-measured alone, \u00a7101 is 104,486ms and \u00a7103 65,779-79,621ms (tabled at 120,000/200,000). 35 is the MINIMUM that clears the 200 s multi-section line: 34 puts four multi-section shards over it (9 = \u00a770+\u00a784 at 205 s, 10 at 203 s, 33 at 205 s, 34 at 204 s). 36 also clears it and leaves no shard empty -- it is simply not needed, and test.yml pins the matrix to whatever this constant says.');
+  + '2026-09-16: \u00a7100 grew to 224,951ms against the 225,000ms section budget once the payoff checks landed, so they split out as \u00a7102; the table carries 125,000/180,000. Adding three LANDSCAPE conditions to \u00a7101 (the orientation that hid the tour footer) took it to a MEASURED 259,112ms -- over the same per-section budget -- so the trio split out as \u00a7103 behind one shared walker; re-measured alone, \u00a7101 is 104,486ms and \u00a7103 65,779-79,621ms (tabled at 120,000/200,000). 35 is the MINIMUM that clears the 200 s multi-section line: 34 puts four multi-section shards over it (9 = \u00a770+\u00a784 at 205 s, 10 at 203 s, 33 at 205 s, 34 at 204 s). 36 also clears it and leaves no shard empty -- it is simply not needed, and test.yml pins the matrix to whatever this constant says. '
+  + 'TASK-18 2026-09-23: three CI runs summed 9,296/8,994/9,317 s of sections against the 7,875 s that '
+  + '35 x 225 s allows, so the table could not be honest at 35; the per-job ceiling rose to 420 s and '
+  + '\u00a7100-\u00a7103 split along their viewport lists. 35 stays: every run already peaked at 40 concurrent jobs. '
+  + 'TASK-18 sweeps 11-13 (CI 36774742769, 36778548533, 36781207202): with the browser packages cached, a slow runner disk '
+  + 'still measured 145 s of overhead (smoke 19: dpkg unpacked the local WebKit set in 58.8 s), so the budget is 275 s and '
+  + 'the line 247.5 s. 35 packs 261 s and 37 leaves 0.7 s under the line; 38 packs every shard at 222-235 s.');
+
+// ── §100-§103 split (TASK-18): the parts cover the pre-split loops exactly ──
+// The lists below are the pre-split sections' own literals, verbatim. Each family's parts must
+// PARTITION its list: every entry in exactly one part, none added. A part must also be registered
+// and run its OWN slice (section('101a', …) calling walkTourAt('101b') would drop 101a silently).
+type Row = readonly number[];
+const PRE_SPLIT: Record<string, Record<string, Row[]>> = {
+  '100': {
+    combos: [[280, 3], [280, 2], [320, 3], [360, 2], [390, 3], [390, 2], [390, 1.5], [390, 1.45], [390, 1.63]],
+    drawerHeights: [[281], [400], [700]],
+  },
+  '101': { sizes: [[280, 844, 3], [280, 844, 2], [320, 844, 3], [390, 844, 2], [280, 640, 2], [390, 960, 3], [390, 844, 1]] },
+  '102': { viewports: [[280, 1], [320, 1], [390, 1], [430, 1], [768, 1], [768, 1.5], [1024, 1], [1280, 1], [1440, 1], [280, 3], [320, 2], [390, 3]] },
+  '103': { sizes: [[844, 390, 1], [667, 375, 1], [740, 360, 1]] },
+};
+const RUNNERS: Record<string, string> = { '100': 'reflowAt', '101': 'walkTourAt', '102': 'payoffLegibilityAt', '103': 'walkTourAt' };
+function splitProblems(parts: Record<string, Record<string, (number | Row)[]>>, registered: Map<string, string>): string[] {
+  const problems: string[] = [];
+  for (const [family, lists] of Object.entries(PRE_SPLIT)) {
+    const ids = Object.keys(parts).filter((id) => id.startsWith(family) && /^[a-z]$/.test(id.slice(family.length)));
+    if (!ids.length) problems.push(`§${family} has no split parts`);
+    for (const [key, original] of Object.entries(lists)) {
+      const owner = new Map<string, string[]>();
+      for (const id of ids) {
+        for (const e of parts[id][key] ?? []) {
+          const k = JSON.stringify(Array.isArray(e) ? e : [e]);
+          owner.set(k, [...(owner.get(k) ?? []), id]);
+        }
+      }
+      for (const e of original) {
+        const k = JSON.stringify(e); const who = owner.get(k) ?? [];
+        if (!who.length) problems.push(`§${family} ${key} entry ${k} is in no part`);
+        else if (who.length > 1) problems.push(`§${family} ${key} entry ${k} is in ${who.length} parts (${who.join(', ')})`);
+      }
+      for (const [k, who] of owner) {
+        if (!original.some((e) => JSON.stringify(e) === k)) problems.push(`§${family} ${key} entry ${k} (${who.join(', ')}) was not in the pre-split list`);
+      }
+    }
+    for (const id of ids) {
+      const body = registered.get(id);
+      if (body === undefined) problems.push(`split part ${id} is not registered as a section`);
+      else if (!body.includes(`${RUNNERS[family]}('${id}')`)) problems.push(`section ${id} does not run its own slice (${RUNNERS[family]}('${id}'))`);
+    }
+  }
+  return problems;
+}
+// Section id -> the text up to the next section() call: enough to see which slice it runs.
+// The last section ends where the runner starts (`await executeSections();`), not at end of file.
+const sectionBodies = new Map([...smoke.slice(0, smoke.indexOf('\nawait executeSections();')).matchAll(/section\('([^']+)',[\s\S]*?(?=\n\s*section\('|$)/g)].map((m) => [m[1], m[0]]));
+const realSplit = splitProblems(SPLIT_PARTS, sectionBodies);
+assert.deepStrictEqual(realSplit, [], 'the §100-§103 split parts must partition the pre-split loop lists exactly');
+assert.deepStrictEqual(WIDEST_PAYOFFS, ['-99.999', '-100', '100', '99.999', '-0.001', '-12.345', '-99.9999', '-100.0000'],
+  'every §102 legibility part writes the pre-split value list, unchanged');
+// Each runner must iterate the slice it was handed, not a list of its own.
+for (const [pattern, why] of [
+  [/const \{ combos: COMBOS, drawerHeights = \[\] \} = SPLIT_PARTS\[sid\];/, 'reflowAt reads its part'],
+  [/for \(const \[w, z\] of COMBOS\)/, 'reflowAt sweeps its combos'],
+  [/for \(const dh of drawerHeights\)/, 'reflowAt walks its drawer heights'],
+  [/const LEGIBILITY_VIEWPORTS = SPLIT_PARTS\[sid\]\.viewports;/, 'payoffLegibilityAt reads its part'],
+  [/for \(const \[vw, zoom\] of LEGIBILITY_VIEWPORTS\)/, 'payoffLegibilityAt sweeps its viewports'],
+  [/for \(const val of WIDEST_PAYOFFS\)/, 'payoffLegibilityAt writes every value'],
+  [/const walkTourAt = \(sid, SIZES = SPLIT_PARTS\[sid\]\.sizes\) =>/, 'walkTourAt reads its part'],
+  [/for \(const \[w, h, z\] of SIZES\)/, 'walkTourAt walks its sizes'],
+] as const) assert.match(smoke, pattern, `smoke.mjs: ${why}`);
+// Known positives, one per way the partition can break. Each must fail BY NAME.
+{
+  const clone = () => JSON.parse(JSON.stringify(SPLIT_PARTS));
+  const dropped = clone(); dropped['102b'].viewports = dropped['102b'].viewports.filter(([w, z]: number[]) => !(w === 768 && z === 1.5));
+  assert.deepStrictEqual(splitProblems(dropped, sectionBodies), ['§102 viewports entry [768,1.5] is in no part'], 'a viewport dropped from one part');
+  const dup = clone(); dup['102b'].viewports.push([280, 1]);
+  assert.deepStrictEqual(splitProblems(dup, sectionBodies), ['§102 viewports entry [280,1] is in 2 parts (102a, 102b)'], 'a viewport in two parts');
+  const extra = clone(); extra['101g'].sizes.push([400, 800, 1]);
+  assert.deepStrictEqual(splitProblems(extra, sectionBodies), ['§101 sizes entry [400,800,1] (101g) was not in the pre-split list'], 'a size that replaces nothing');
+  const noDrawer = clone(); delete noDrawer['100c'].drawerHeights;
+  assert.deepStrictEqual(splitProblems(noDrawer, sectionBodies), ['§100 drawerHeights entry [281] is in no part', '§100 drawerHeights entry [400] is in no part', '§100 drawerHeights entry [700] is in no part'], 'the drawer phase dropped');
+  const unregistered = new Map(sectionBodies); unregistered.delete('101e');
+  assert.deepStrictEqual(splitProblems(SPLIT_PARTS, unregistered), ['split part 101e is not registered as a section'], 'a part dropped from the registry');
+  const wrongSlice = new Map(sectionBodies); wrongSlice.set('103b', (wrongSlice.get('103b') ?? '').replace("walkTourAt('103b')", "walkTourAt('103a')"));
+  assert.deepStrictEqual(splitProblems(SPLIT_PARTS, wrongSlice), ["section 103b does not run its own slice (walkTourAt('103b'))"], 'a part running a sibling\'s slice');
+}
+// TASK-18 H1: the shared primary page is parked once no §1-§16 section is left. Left open, its
+// idle 3D spin cost later sections 4-5x on CI (101a 129 s after §6 vs 101b 35 s alone), and both
+// section loops (first pass and retry) must park before each run.
+const executeBody = smoke.slice(smoke.indexOf('async function executeSections()'), smoke.indexOf('\nconst $ = {'));
+assert.match(smoke, /async function parkSharedPageWhenDone\(remaining\) \{\n  if \(remaining\.some\(\(definition\) => primaryPageSection\(definition\.id\)\)\) return;\n  if \(page\.url\(\) !== 'about:blank'\) await page\.goto\('about:blank'\)/,
+  'parkSharedPageWhenDone parks the shared page exactly when no primary section remains');
+assert.strictEqual((executeBody.match(/await parkSharedPageWhenDone\((selected|failed)\.slice\(index\)\);\n\s+(?:if \(primaryPageSection\(definition\.id\)\) await gotoHome\(\)\.catch\(\(\) => \{\}\);\n\s+)?const passed = await runSection\(definition, [12]\);/g) || []).length, 2,
+  'both section loops park the shared page (from the current index on) right before runSection');
+// What H1 could regress: a section after §16 that silently relied on the shared page being
+// loaded would now find about:blank. None may touch it (comments and string literals stripped;
+// a local `page`/helper of the same name is its own page).
+function sharedPageUsers(bodies: Map<string, string>): string[] {
+  const out: string[] = [];
+  for (const [id, body] of bodies) {
+    if (Number.parseInt(id, 10) <= 16) continue;
+    const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+      .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, "''");
+    const local = new Set([...code.matchAll(/\b(?:const|let|function)\s+(page|startLine|dismissTour|setSpeed|gotoHome)\b/g)].map((m) => m[1]));
+    for (const m of code.matchAll(/(?<![\w.$])(page(?=\s*[.,)])|\$(?=\.[a-z])|startLine(?=\()|dismissTour(?=\()|setSpeed(?=\()|gotoHome(?=\())/g)) {
+      if (!local.has(m[1])) { out.push(`section ${id} uses the shared primary page (${m[1]})`); break; }
+    }
+  }
+  return out;
+}
+assert.deepStrictEqual(sharedPageUsers(sectionBodies), [], 'no section after §16 may use the shared page that the runner parks');
+{
+  const planted = new Map(sectionBodies).set('104', (sectionBodies.get('104') ?? '') + "\n    await page.goto(BASE);");
+  assert.deepStrictEqual(sharedPageUsers(planted), ['section 104 uses the shared primary page (page)'], 'a later section using the shared page is caught by name');
+}
+// TASK-18 H2: §103c's resting-footer check reads the card only after it settled; a fixed 1.2 s
+// sleep read "no Next/Explore control at all" on two CI runs (35671699905, 35689614157).
+const footer103 = sectionBodies.get('103c') ?? '';
+assert(!/waitForTimeout\(/.test(footer103), '§103c waits on a condition, never a fixed sleep, before reading the card');
+assert.match(footer103, /\(body\.scrollHeight > body\.clientHeight \+ 1\) === \(body\.getAttribute\('role'\) === 'region'\)/,
+  '§103c waits until the tour body\'s region role agrees with its measured overflow');
+assert.match(footer103, /if \(stable >= 10\) resolve\(true\)/, '§103c waits for the card rect to hold 10 frames');
+// TASK-18 H3: §39's post-reload row wait is bounded for a loaded runner (a healthy CI run listed
+// the row at 10.8 s against the old 8 s bound; 11x CPU throttle measures 12.6 s).
+assert.match(sectionBodies.get('39') ?? '', /await flapPage\.reload\(\{ waitUntil: 'networkidle' \}\);[\s\S]{0,420}?getByRole\('button', \{ name: editedName, exact: true \}\)\.first\(\)\n\s+\.waitFor\(\{ state: 'visible', timeout: 30000 \}\)/,
+  '§39 waits up to 30 s for the reloaded row before counting it');
+// TASK-18 H4 (App.tsx): the play loop's timer may not commit a step over a queued pause, and a
+// dropped step advances nothing. §105 is the browser proof; this pins the mechanism.
+{
+  const runner = app.slice(app.indexOf('// Recursive play runner trigger'), app.indexOf('}, [simState.running, simState.stepCount, speed]);'));
+  assert(runner.length > 0, 'the play runner effect is found');
+  assert.match(runner, /setSimState\(\(cur\) => \(cur\.running && cur\.stepCount === prev\.stepCount \? next : cur\)\);/,
+    'the timer commits its step only if the run is still running on the step it was built from');
+  assert(!/setSimState\(next\)|simStateRef\.current = next|scrubPosRef\.current = |setLogEntries\(/.test(runner),
+    'the timer advances no ref, position or log line before a commit carries its step');
+  assert.match(app, /if \(!step \|\| simState\.pathSegmentsA !== step\.next\.pathSegmentsA\) return;\n\s+pendingStepRef\.current = null;\n\s+simStateRef\.current = simState;\n\s+scrubPosRef\.current = step\.pos;\n\s+if \(step\.logs\.length > 0\) setLogEntries/,
+    'a timer step\'s ref, position and log advance only in the layout effect, once its step is committed');
+}
+// TASK-18 H5: §42/§44 read their hint after the render settles, not within a fixed 3 s (32x
+// CPU throttle missed it every time; §93 had the same class, 70f5cec).
+for (const id of ['42', '44']) {
+  const body = sectionBodies.get(id) ?? '';
+  assert(!/timeout: 3000 \}\)\.then\(\(\) => true\)/.test(body), `§${id} does not bound its hint on a fixed 3 s wait`);
+  assert.match(body, /requestAnimationFrame\(\(\) => requestAnimationFrame\(r\)\)/, `§${id} reads its hint two frames after the last keystroke`);
+}
+// TASK-18 sweep 3 (§76 retry, CI 35979484351): a coordinate read after a surface opens waits for
+// its entrance animation, or the point lands on the backdrop of a drawer still sliding in.
+assert.match(smoke, /async function surfacesSettled\(p\) \{\n  await p\.waitForFunction\(\(\) => document\.getAnimations\(\)\.every/, 'surfacesSettled waits on the page\'s own animations');
+for (const [id, read] of [['76', 'const nb = await next.boundingBox();'], ['74', 'const fb = await field.boundingBox();']]) {
+  const body = sectionBodies.get(id) ?? '';
+  const at = body.indexOf(read);
+  assert(at > 0 && body.lastIndexOf('await surfacesSettled(p);', at) > body.lastIndexOf('.click();', at),
+    `§${id} waits for the opened surface to settle before reading coordinates in it`);
+}
+// TASK-18 H8: failure evidence shows the failing section's own page (the shared one is parked at
+// about:blank after §16, so every later section's evidence was blank), taken at the first failure.
+{
+  const cap = smoke.slice(smoke.indexOf('async function captureFailureEvidence()'), smoke.indexOf('function primaryPageSection('));
+  assert.match(cap, /const live = \[\.\.\.sectionPages\]\.reverse\(\)\.find\(\(pg\) => !pg\.isClosed\(\)\)\n\s+\?\? \(!activeSection \|\| primaryPageSection\(activeSection\.id\) \? page : null\);/,
+    'failure evidence shoots the failing section\'s own live page, the shared page only for §1-§16 or the suite');
+  assert(!/await page\.(screenshot|content)\(/.test(cap), 'failure evidence never shoots the parked shared page unconditionally');
+  assert.match(smoke, /function record\(name, pass, detail\) \{\n.*\n\s+if \(!pass && activeSection && !failureEvidence\) failureEvidence = captureFailureEvidence\(\);/,
+    'evidence is taken at the first failing record, before the section closes its pages');
+  assert.match(smoke, /function trackPage\(p\) \{\n\s+if \(activeSection\) sectionPages\.push\(p\);/, 'every page a section opens is a candidate for its evidence');
+}
+// TASK-18 sweep 5: a tour Next click is "can it be pressed", bounded for a loaded runner. At
+// 11x CPU (about CI) one click measured 9.5-15.7 s, and 10 s bounds failed §101a and §105.
+{
+  const walker = smoke.slice(smoke.indexOf('const walkTourAt = '), smoke.indexOf("section('101a',"));
+  assert.match(walker, /const advanced = await next\.click\(\{ timeout: 60000 \}\)/, 'the §101/§103 walker gives a Next click 60 s');
+  const s105 = sectionBodies.get('105') ?? '';
+  assert.match(s105, /getByRole\('button', \{ name: \/\^next\/i \}\)\.first\(\)\.click\(\{ timeout: 60000 \}\)/, '§105 gives a tour Next click 60 s');
+  assert.match(s105, /\}, before, \{ timeout: 20000 \}\)\.then\(\(\) => true\)\.catch\(\(\) => false\);\n\s+if \(!moved\) break;/,
+    '§105 stops walking at the first Next that does not advance (one bound, not 25)');
+  assert.match(s105, /const paused = reached13 && await pt\.waitForFunction/, '§105 skips the step-13 wait when step 13 was never reached');
+  assert.match(s105, /const resumed = reached15 && await pt\.waitForFunction/, '§105 skips the step-15 wait when step 15 was never reached');
+  assert.match(walker, /if \(!advanced\) \{ unreachable\.push\(`step \$\{steps\}: Next could not be clicked`\); break; \}/, 'the walker stops at a Next that cannot be pressed');
+  assert.match(walker, /if \(!moved\) \{ unreachable\.push\(`step \$\{steps\}: Next was pressed but the tour did not advance from \$\{before\}`\); break; \}/,
+    'the walker names a Next that is pressed but does not advance');
+  assert.match(sectionBodies.get('100d') ?? '', /await l\.click\(\{ timeout: 60000 \}\)\.then\(\(\) => true\)/, '§100d gives each "can it be pressed" click 60 s');
+  assert.match(s105, /const decision = await awaitTourDecision\(pt\);/, '§105 waits for the app\'s tour decision, not a fixed 20 s');
+}
+// TASK-18 sweep 6: §100's width settle is bounded in frames (a 20 s bound failed at 11x, where
+// 30 frames took 12.7-22.4 s; the next combo's viewport row then read 390 as a knock-on).
+{
+  const m100 = smoke.slice(smoke.indexOf('const measure = async (p, cdp, w, z) => {'), smoke.indexOf('const p97 = await newTrackedPage('));
+  assert(m100.length > 0 && !/timeout: 20000 \}\)\.then\(\(\) => true\)/.test(m100), '§100 measure has no 20 s bound on its settle');
+  assert.match(m100, /if \(stable >= 30\) resolve\(true\); else if \(frames >= 600\) resolve\(false\);/, '§100 settle: 30 stable frames, unsettled only after 600 frames');
+}
+// TASK-18 sweep 8 (H14/H15): the tour opens 700 ms after mount, so no load may reach the tour
+// before the app's decision (data-tour-auto). Fixed waits lost at CI load: §22 2/2 on CI, and §69,
+// §83, §85, §85b, §87, §88, §90, §38, §46 at 11x. Every goto/reload's first tour token must be a
+// decision-aware call; a deliberate exception names itself with `tour-decision: exempt`.
+{
+  assert.match(smoke, /const awaitTourDecision = \(p\) => p\.waitForFunction\(\(\) => document\.documentElement\.dataset\.tourAuto \|\| false, null,\n\s+\{ timeout: 180000 \}\)/,
+    'awaitTourDecision waits on the app\'s own decision, bounded at 180 s');
+  const lines = smoke.slice(0, smoke.indexOf('\nawait executeSections();')).split('\n');
+  const baseToken = /Guided tour|guided tour|TOUR_SEL|tourSel|[Cc]lose tour|Take the tour|tourAuto|z-\\\\\[60\\\\\]|dismissTour|closeTour|gotoHome\(|awaitTourDecision|registerAndLogin\(/;
+  // A helper whose own body reads the tour is a tour read at its call site (§83's first call after
+  // its load is runScenario). Body = its definition line through the first line back at its indent.
+  const helpers = lines.flatMap((l, i) => {
+    const m = /^(\s*)(?:async function (\w+)\(|const (\w+) = (?:async )?\([^)]*\) =>)/.exec(l);
+    if (!m) return [];
+    let end = i;
+    if (!/;\s*$/.test(l)) while (end + 1 < lines.length && !(lines[end + 1].startsWith(m[1] + '}') || lines[end + 1].startsWith(m[1] + ')'))) end++;
+    return [{ name: m[2] ?? m[3], body: lines.slice(i, end + 2).join('\n') }];
+  });
+  let readers = new Set<string>();
+  for (let grew = true; grew;) {
+    const known = [...readers];
+    const next = new Set(helpers.filter(({ body }) => baseToken.test(body) || known.some((n) => body.includes(`${n}(`))).map(({ name }) => name));
+    grew = next.size > readers.size; readers = next;
+  }
+  assert.ok(['runScenario', 'walkTourAt', 'tourStepOf', 'readTour'].every((n) => readers.has(n)), `tour-reading helpers are derived (${[...readers].join(', ')})`);
+  const tourToken = new RegExp(`${baseToken.source}|\\b(?:${[...readers].join('|')})\\(`);
+  const decisionAware = /awaitTourDecision\(|dismissTourForSetup\(|closeTour\(|dismissTour\(|gotoHome\(\)|registerAndLogin\(|tourAuto|tour-decision: exempt/;
+  // Loads of the app only: about:blank carries no tour.
+  const loads = lines.flatMap((l, i) => (/\.(goto|reload)\(/.test(l) && !/about:blank|^\s*(\/\/|\*)/.test(l) ? [i] : []));
+  const racing = loads.flatMap((li, j) => {
+    for (let i = li + 1; i < (loads[j + 1] ?? lines.length); i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i]) && !/tour-decision: exempt/.test(lines[i])) continue;
+      if (tourToken.test(lines[i]) || /tour-decision: exempt/.test(lines[i])) return decisionAware.test(lines[i]) ? [] : [`line ${i + 1}: ${lines[i].trim().slice(0, 90)}`];
+    }
+    return [];
+  });
+  assert.ok(loads.length > 60, `the load census found the suite's page loads (${loads.length})`);
+  assert.deepEqual(racing, [], 'every load reaches the app\'s tour decision before it reads the tour');
+  assert.equal((smoke.match(/tour-decision: exempt/g) ?? []).length, 2, 'two exemptions, both §108 reading before the decision under a paused clock');
+}
+// TASK-18 H18: 14 ctx.newPage() pages skipped trackPage, so their page errors never reached the
+// suite's console check and failure evidence came back empty (§78: "<unavailable>", no png).
+{
+  const untracked = smoke.split('\n').map((l, i) => [l, i + 1]).filter(([l]) => /\.newPage\(/.test(l as string)
+    && !/^\s*(\/\/|\*)/.test(l as string) && !/trackPage\(await \w+\.newPage\(|browser\.newPage\(opts\)/.test(l as string));
+  assert.deepEqual(untracked.map(([l, n]) => `${n}: ${(l as string).trim()}`), [], 'every page smoke.mjs creates goes through trackPage');
+}
+// TASK-18 H18 (director condition 5): a status budget names the request that causes it. The
+// legacy bare-number entries are frozen; any new entry must carry a url pattern and a reason.
+{
+  const table = smoke.slice(smoke.indexOf('const EXPECTED_STATUS_NOISE = {'), smoke.indexOf('const remainingStatusNoise'));
+  // An entry is `'id': [` up to the `],` that closes it; a trailing // comment may follow on one line.
+  const entries = [...table.matchAll(/^  '([0-9a-z]+)': \[([\s\S]*?)\],?(?:\s*\/\/[^\n]*)?$/gm)].map((m) => ({ id: m[1], body: m[2] }));
+  const bare = entries.filter(({ body }) => /^\s*\d/.test(body)).map(({ id }) => id).sort();
+  assert.deepEqual(bare, ['31', '33', '38', '60', '66b', '76', '91c', '95', '96', '97'], 'no new bare-number status budget');
+  for (const id of ['50', '70', '78']) {
+    const body = entries.find((e) => e.id === id)?.body ?? '';
+    const n = (body.match(/\{ status: \d+, url: \/.+?\/, why: '[^']+' \}/g) ?? []).length;
+    assert.ok(n > 0 && n === (body.match(/status:/g) ?? []).length, `§${id}'s budget names the request behind every status`);
+  }
+  assert.match(smoke, /url: m\.location\(\)\?\.url \?\? '',/, 'console errors keep the failing request URL');
+}
+assert.match(workflowJob('e2e_ai_surface'), /run: node src\/e2e\/throttle\.test\.mjs/,
+  'CI runs the CPU-throttle reach guard in a job that has chromium');
+// Shard budget (TASK-18, CI 36533916769): tour-timings.json holds CI seconds per case tag, in run order. Its tags
+// must equal the script's own, both ways; packed by the runners' own packTour over the job's matrix, the slowest shard
+// plus the measured _setup_s (it was a hand-set 120 s; CI measured 133, sweep 3 F6) must fit 75% of the job's timeout.
+const budgeted = new Set<string>();
+const loads = (shards: string[][], rows: [string, number, string?][]) => shards.map((p) => p.reduce((a, t) => a + rows.find(([r]) => r === t)![1], 0));
+// Sweep 5: round-robin packed walk shard 2 at 759 s (mean 646) and it ended the e2e gate. Moving the slowest shard's
+// smallest case onto the lightest shard must not lower the max (slowest-first packing guarantees it).
+function oneMove(shards: string[][], rows: [string, number, string?][]) {
+  const packed = loads(shards, rows), hi = packed.indexOf(Math.max(...packed)), lo = Math.min(...packed);
+  const small = Math.min(...loads(shards[hi].map((t) => [t]), rows));
+  return lo + small < packed[hi] ? `moving shard ${hi + 1}'s ${small} s case onto the ${lo} s shard lowers its ${packed[hi]} s` : '';
+}
+type Pack = (tags: string[], rows: [string, number, string?][], n: number) => string[][];
+function shardBudget(name: string, job: string, tags: string[], rows: [string, number, string?][] = TOUR_TIMINGS[name], setup: number = TOUR_TIMINGS._setup_s, pack: Pack = packTour) {
+  const timed = rows.map(([t]) => t); budgeted.add(name);
+  const missing = tags.filter((t) => !timed.includes(t)), stale = timed.filter((t) => !tags.includes(t));
+  assert.deepStrictEqual([missing, stale], [[], []], `tour-timings.json ${name}: cases with no timing ${JSON.stringify(missing)}, timings for no case ${JSON.stringify(stale)}`);
+  assert.deepStrictEqual(timed, tags, `tour-timings.json ${name} lists each case once, in run order`);
+  const n = (job.match(/shard: \[([\d, ]+)\]/)?.[1] ?? '').split(',').length, mins = Number(job.match(/timeout-minutes: (\d+)/)?.[1]);
+  const shards = pack(tags, rows, n), packed = loads(shards, rows);
+  assert.strictEqual(oneMove(shards, rows), '', `${name} packs so no one move lowers its slowest shard`);
+  assert.ok(Number.isInteger(setup) && Math.max(...packed) + setup <= 0.75 * mins * 60,
+    `the slowest ${name} shard packs ${Math.max(...packed)} s of measured cases (+${setup} s setup) over 75% of its ${mins} min timeout: add shards`);
+  const local = rows.filter((r) => r.length > 2).map(([t]) => t); // a 3rd field marks a local placeholder, not a CI maximum
+  assert.deepStrictEqual(local, [], `tour-timings.json ${name}: placeholder timings awaiting CI maxima ${JSON.stringify(local)}`);
+}
+// The rule itself, on synthetic rows: today's data packs well inside it, so a relaxed rule would pass (audit B6).
+const budget = (job: string, secs: number[]) => () => shardBudget('synthetic', job, secs.map((_, j) => `[${j}]`), secs.map((s, j) => [`[${j}]`, s]));
+assert.throws(budget('shard: [1]\ntimeout-minutes: 20', [1071]), /packs 1071 s/, 'CI 36533916769: a 1071 s shard on a 20 min timeout fails the budget');
+const line = 900 - TOUR_TIMINGS._setup_s; // 75% of 20 min, less the measured setup
+// Slowest-first: line - 1 alone on one shard, the other two summed on the other (the budget sums a shard's cases).
+assert.doesNotThrow(budget('shard: [1, 2]\ntimeout-minutes: 20', [line - 380, 380, line - 1]), `the boundary: ${line} s + the measured setup = 75% of 20 min fits`);
+assert.throws(budget('shard: [1, 2]\ntimeout-minutes: 20', [line - 379, 380, line - 1]), new RegExp(`packs ${line + 1} s of measured cases \\(\\+${TOUR_TIMINGS._setup_s} s setup\\)`),
+  `the boundary: ${line + 1} s + the measured setup does not`);
+// The known positive: CI's round-robin walk packing (on runs 36616155651..36662358380's table: shard 2's 32 s case onto
+// the 533 s shard lowers its 759 s). Shard 2 is pinned; its seconds follow the table, which a refresh raises.
+const roundRobin: Pack = (tags, _, n) => Array.from({ length: n }, (_, s) => tags.filter((_, j) => j % n === s));
+assert.throws(() => shardBudget('synthetic', workflowJob('e2e_tour_walk'), walkTags(), TOUR_TIMINGS['tour-walk'], TOUR_TIMINGS._setup_s, roundRobin),
+  /moving shard 2's \d+ s case onto the \d+ s shard lowers its \d+ s/, 'the round-robin walk packing that ended the e2e gate fails the budget by name');
+assert.throws(() => packTour(['[a]', '[b]'], [['[a]', 5]], 2), /^Error: tour-timings\.json has no CI time for \[b\]: refresh it/,
+  'a case with no CI time stops the runner by name: packed at NaN it would run on no shard');
+assert.deepStrictEqual(packTour(['[a]', '[b]', '[c]', '[d]'], [['[a]', 1], ['[b]', 3], ['[c]', 3], ['[d]', 2]], 2), [['[b]', '[d]'], ['[a]', '[c]']],
+  'slowest first onto the lightest shard (first on a tie), equal cases in run order ([b] before [c]), each shard in run order');
+assert.throws(() => shardBudget('synthetic', 'shard: [1]\ntimeout-minutes: 20', ['[0]'], [['[0]', 5, 'local-c4']]), /placeholder timings awaiting CI maxima \["\[0\]"\]/,
+  'a local placeholder timing fails the budget until a CI maximum replaces it');
+// TASK-18 H19: the tour-scroll idempotence check needs WebKit installed in the job that runs it, fails the step on a
+// non-zero exit (pipefail through tee), and proves its own packed cases ran per shard: 2 shards share the 42 engine x
+// case runs (H20 portrait + sheets, H21 sub-pixel, re-targets at every layout, reopens).
+{
+  const job = workflowJob('e2e_tour_scroll');
+  const scroll = readFileSync(new URL('./e2e/tour-scroll.test.mjs', import.meta.url), 'utf8');
+  const install = job.indexOf('npx playwright install --with-deps chromium webkit');
+  const step = job.indexOf('node src/e2e/tour-scroll.test.mjs');
+  assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour-scroll check');
+  assert.match(job, /shard: \[1, 2\]\n/, 'the tour scroll runs on 2 shards');
+  assert.match(job, /fail-fast: false/, 'one failed tour-scroll shard must not cancel its sibling');
+  assert.match(job, /TOUR_SCROLL_SHARD: \$\{\{ matrix\.shard \}\}\/2\n/, 'each tour-scroll shard passes its selector');
+  assert.match(job, /set -o pipefail\s*\n\s*node src\/e2e\/tour-scroll\.test\.mjs \| tee/, 'a failing tour-scroll run fails the CI step');
+  // want is the shard's count from the packer shard-cases.mjs shares with the runner: a number, never ANSI-coloured (FORCE_COLOR).
+  assert.match(job, /want=\$\(node --input-type=module -e "import \{ shardCases \} from '\.\/src\/e2e\/shard-cases\.mjs'; process\.stdout\.write\(String\(shardCases\('scroll', process\.env\)\.length\)\)"\)\n/, 'each tour-scroll shard counts its own packed share');
+  assert.match(job, /-eq "\$want"\n/, 'CI requires each tour-scroll shard to have run all of its cases');
+  assert.match(job, /grep -q "\^✓ tour scroll: shard \$\{\{ matrix\.shard \}\}\/2, \$want cases:"/, 'each tour-scroll shard proves it was that shard');
+  assert.match(scroll, /const ours = new Set\(tourShards\('scroll', SHARDS\)\[SHARD - 1\]\);[^\n]*\n[\s\S]{0,400}?if \(!ours\.has\(`\[\$\{engineName\} \$\{label\}\]`\) \|\| !ONLY\.test\([^\n]*\)\) continue; ran\+\+;/,
+    'the scroll runs exactly its packed shard, by the tag its case line prints');
+  assert.match(scroll, /TOUR_SCROLL_ONLY \|\| '\.'/, 'the local-only filter defaults to every case');
+  assert.match(scroll, /import \{ SCROLL_CASES as cases, SCROLL_VIEWPORTS, tourShards \} from '\.\/tour-cases\.mjs'/, 'the scroll runs the shared case list');
+  assert.match(scroll, /for \(const \[engineName, engine\] of \[\['chromium', chromium\], \['webkit', webkit\]\]\)/, 'both engines: 2 x 21 = 42 = 2 x 21');
+  const shifts = SCROLL_CASES.map(([, , shift]) => String(shift));
+  assert.deepStrictEqual(['false', 'true', 'half', 'up', 'down', 'reopen'].map((k) => shifts.filter((x) => x === k).length), [7, 6, 2, 2, 2, 2],
+    '21 cases: 7 plain layouts, 6 re-targets (3 layouts x 2 frame rates), 2 x 3 sub-pixel, 2 reopens');
+  assert.doesNotMatch(workflowJob('e2e_ai_surface'), /tour-scroll/, 'the tour scroll runs in its own job only');
+  shardBudget('tour-scroll', job, scrollTags());
+}
+// Sweep 6 (CI 36728768985): tour-scroll's shard set `mine` sat in the TDZ of the case body's own `const mine`, and the
+// job threw before its first case. node --check and the pins above only parse. checkJs's scope errors (used before its
+// declaration, unknown name) read 0 on every script here, and fire on the verbatim defect.
+{
+  const SCOPE = [2304, 2448, 2449, 2552];
+  const scopeErrors = (files: string[]) => {
+    const p = ts.createProgram(files, { allowJs: true, checkJs: true, noEmit: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler, lib: ['lib.es2022.d.ts', 'lib.dom.d.ts', 'lib.dom.iterable.d.ts'], skipLibCheck: true });
+    return Object.fromEntries(files.map((f) => [f, p.getSemanticDiagnostics(p.getSourceFile(f)).filter((d) => SCOPE.includes(d.code))
+      .map((d) => `${f}:${d.file!.getLineAndCharacterOfPosition(d.start!).line + 1} TS${d.code} ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`)]));
+  }; // one entry per file: a scan of no files is not a clean scan
+  const scripts = [...readdirSync('src/e2e').filter((f) => /\.m?js$/.test(f)).map((f) => `src/e2e/${f}`), 'scripts/shard-timings-from-run.mjs', 'src/deploy/cloud-run-traffic.mjs'];
+  assert.ok(['tour-scroll.test.mjs', 'tour-walk.test.mjs', 'shard-cases.mjs', 'smoke.mjs'].every((f) => scripts.includes(`src/e2e/${f}`)), 'the scan covers the runners');
+  assert.deepStrictEqual(scopeErrors(scripts), Object.fromEntries(scripts.map((f) => [f, []])), 'no e2e or timing script reads a name before its declaration or a name that does not exist');
+  const dir = mkdtempSync(join(tmpdir(), 'tdz-')), bad = join(dir, 'tour-scroll.mjs');
+  writeFileSync(bad, ["const mine = new Set(tourShards('scroll', SHARDS)[SHARD - 1]);", 'for (const [label] of cases) {',
+    '  if (!mine.has(`[${engineName} ${label}]`)) continue;', '  const mine = s.targets.slice(n0);', '}',
+    "const tourShards = () => [], SHARDS = 1, SHARD = 1, cases = [], engineName = '', s = { targets: [] }, n0 = 0;", ''].join('\n'));
+  assert.match(scopeErrors([bad])[bad].join('\n'), /tour-scroll\.mjs:3 TS2448 Block-scoped variable 'mine' used before its declaration/,
+    'the verbatim CI 36728768985 shadowing fails by name');
+  rmSync(dir, { recursive: true });
+}
+// TASK-18 H22: the 19-step tour walk. 9 shards share the 66 engine x case runs, packed slowest-first (sweep 5), each
+// fails on a non-zero exit and must print exactly its own count of case lines and its own shard's success line.
+{
+  const job = workflowJob('e2e_tour_walk');
+  const walk = readFileSync(new URL('./e2e/tour-walk.test.mjs', import.meta.url), 'utf8');
+  const install = job.indexOf('npx playwright install --with-deps chromium webkit');
+  const step = job.indexOf('node src/e2e/tour-walk.test.mjs');
+  assert.ok(install >= 0 && step > install, 'CI installs WebKit before it runs the tour walk');
+  assert.match(job, /shard: \[1, 2, 3, 4, 5, 6, 7, 8, 9\]\n/, 'the tour walk runs on 9 shards; the budget below packs them (CI 36533916769 ran 1071 s of 1200)');
+  assert.match(job, /fail-fast: false/, 'one failed tour-walk shard must not cancel its siblings');
+  assert.match(job, /TOUR_WALK_SHARD: \$\{\{ matrix\.shard \}\}\/9\n/, 'each shard passes its selector');
+  assert.match(job, /set -o pipefail\s*\n\s*node src\/e2e\/tour-walk\.test\.mjs \| tee/, 'a failing tour walk fails the CI step');
+  assert.match(job, /want=\$\(node --input-type=module -e "import \{ shardCases \} from '\.\/src\/e2e\/shard-cases\.mjs'; process\.stdout\.write\(String\(shardCases\('walk', process\.env\)\.length\)\)"\)\n/, 'each tour-walk shard counts its own packed share');
+  assert.match(job, /-eq "\$want"\n/, 'CI requires each shard to have run all of its cases');
+  // The count cannot see WHICH cases ran: a shard re-running a sibling's cases prints the same count (sweep 13).
+  assert.match(walk, /const mine = new Set\(tourShards\('walk', SHARDS\)\[SHARD - 1\]\);\n\s*const jobs = ENGINES\.flatMap\(\(en\) => CASES\.map\(\(c\) => \[en, \.\.\.c\]\)\)\.filter\(\(\[en, \.\.\.c\]\) => mine\.has\(walkTag\(en, c\)\)\);/,
+    'the walk runs exactly its packed shard, by the tag its case line prints');
+  assert.match(job, /grep -q "\^✓ tour walk: shard \$\{\{ matrix\.shard \}\}\/9, \$want cases:"/, 'each shard proves it was that shard');
+  const kinds = WALK_CASES.map(([k, [w], , a, b]) => `${k}${k === 'walk' ? ` ${a} ${b}` : ''} ${w}`);
+  const cancelKinds = ['page cancels', 'page cancels same task', 'page cancels next frame Enter'];
+  assert.deepStrictEqual([...new Set(kinds)].length, 33, '33 distinct cases: 9 walks, 3 flights, 12 interrupt/long/slow/held, 9 page cancels');
+  for (const k of ['walk away key', 'walk away click', 'walk in view click', 'flight', 'interrupt', 'long frame', 'slow', 'held start', ...cancelKinds])
+    assert.strictEqual(kinds.filter((x) => x.replace(/ \d+$/, '') === k).length, 3, `${k} at the three layout families`);
+  assert.match(walk, /import \{ WALK_CASES as CASES, walkTag, tourShards \} from '\.\/tour-cases\.mjs'/, 'the walk runs the shared case list');
+  assert.match(walk, /TOUR_WALK_ENGINES \|\| 'chromium,webkit'/, 'both engines by default: 2 x 33 = 66 runs');
+  // CI 36524167108: a PageDown sent after polling for a moved frame came after arrival on WebKit (one-frame flight).
+  const rec = walk.match(/const rec = [\s\S]*?return r; \};/)?.[0] ?? '';
+  assert.match(rec, /go = \(\) => \{ const v = call\(\);[\s\S]*const r = go\(\);[\s\S]*if \(window\.__interrupt\) \{[\s\S]*dispatchEvent\(new KeyboardEvent\('keydown'[\s\S]*se\.scrollTop = /,
+    'the interrupt is a keydown plus a scroll in the tour call\'s own task, never after polling frames');
+  assert.doesNotMatch(walk, /keyboard\.press\('Page(Down|Up)'\)/, 'no interrupt races the flight from outside the page');
+  // D3 (an adopted flight keeps the old step) and D4 (no once-per-step cap) survived every other case: the PAGE cuts
+  // tour flights with a scrollTop write, never an input event, or the no-input branch they guard is never reached.
+  const cut = walk.match(/const cut = [\s\S]*?\]\); \};/)?.[0] ?? '';
+  assert.match(cut, /se\.scrollTop = /, 'the page cancel is a scrollTop write');
+  assert.doesNotMatch(cut, /Event\(|dispatchEvent|keyboard|mouse|wheel/, 'the page cancel fires no input event');
+  assert.match(walk, /nc\[0\]\[3\] === c0\[3\][\s\S]*st\.inputs === c1\[3\]/, 'page cancels proves no input but its own Next fired');
+  assert.match(walk, /c1\?\.\[4\] === n0 \+ 2/, 'page cancels proves the adoption: no call of its own before the cut (D3)');
+  assert.match(walk, /waitForTimeout\(3000\)[\s\S]*all\.length === 2/, 'cut-every holds 2 calls for 3x the unmoved stop (D4)');
+  // CI 36552468990: settled() returned in the held start's stillness, before the re-place. Settle after the signal, and
+  // bound stop -> re-place in frames with the stop rebuilt from literals: importing the rule lets a mutant move both sides.
+  assert.match(walk, /await replaced\(page, n0 \+ 3\);\s*st = await settled\(page\);/, 'page cancels settles only after the re-place call (CI 36552468990)');
+  assert.match(walk, /await replaced\(page, n1 \+ 2\);[^\n]*\n\s*st = await settled\(page\); await page\.waitForTimeout\(3000\);/, 'cut-every waits for its re-place, then settles and holds 3 s');
+  const wt = readFileSync(new URL('./components/Walkthrough.tsx', import.meta.url), 'utf8');
+  const rule = [...(wt.match(/moved \? stillFrames >= (\d+) && stillMs >= (\d+)/)?.slice(1) ?? []), wt.match(/if \(Math\.abs\(cy - y\) >= (\d+)\) \{ y = cy;/)?.[1]];
+  assert.deepStrictEqual(walk.match(/const STILL = \[(\d+), (\d+), (\d+)\];/)?.slice(1), rule, "page cancels rebuilds the product's stop from its literals: frames, ms (tourFlightStopped), px (the watcher)");
+  assert.doesNotMatch(walk, /tourFlightStopped\(|from '[^']*Walkthrough/, "the fixture never imports the product's stop rule");
+  assert.match(walk, /const REPLACE_FRAMES = \d+;/, 'the stop -> re-place bound is a calibrated frame count');
+  // Next mid-flight, per kind: held 4 frames, in the cut's own task (before React commits), Enter a frame later. The
+  // advance is read per frame AFTER the keydown: a read in its own task only ever sees the old step.
+  assert.deepStrictEqual(Object.keys(JSON.parse(walk.match(/const NEXT = (\{[^\n]*\});/)?.[1].replace(/'/g, '"') ?? '{}')), cancelKinds, 'every page cancels kind has a Next mode');
+  assert.match(walk, /const NEXT = \{ 'page cancels': \['ArrowRight', \[4, 208\]\], 'page cancels same task': \['ArrowRight', 0\], 'page cancels next frame Enter': \['Enter', \[1, 0\]\] \};/,
+    'Next is held 4 frames, shares the cut\'s task, or is Enter one frame later');
+  assert.match(walk, /if \(act === 'next'\) \{ window\.__hold = window\.__nextHold; watchNext\(label\(\)\);\s*document\.dispatchEvent\(new KeyboardEvent\('keydown', \{ key: window\.__nextKey/,
+    'the advance watch starts from the label before the keydown');
+  assert.match(walk, /const watchNext = \(l0, k = 1\) => requestAnimationFrame\(/, 'the advance is read in the frames after the keydown');
+  assert.match(walk, /label never changed in 10 frames[\s\S]*changed to the wrong step/, 'no advance and a wrong advance fail by their own names');
+  // CI 36533916769: 8 cases a shard ran 1071 s of the 1200 s timeout.
+  shardBudget('tour-walk', job, walkTags());
+}
+assert.deepStrictEqual([...budgeted].sort(), [...Object.keys(TOUR_TIMINGS).filter((k) => !k.startsWith('_')), 'synthetic'].sort(),
+  'every timed tour job is checked by the one shardBudget rule the synthetic rows pin');
+console.log(`✓ §100-§103 split: ${Object.keys(SPLIT_PARTS).length} list-driven parts partition the pre-split lists exactly`);
 
 // ── Packing by measured duration ─────────────────────────────────────────────
 // Every section needs a MEASURED entry: an unmeasured one is packed at _default
@@ -87,23 +510,82 @@ for (const { id } of definitions) {
 for (const id of Object.keys(SHARD_TIMINGS).filter((k) => !k.startsWith('_'))) {
   assert(definitions.some((d) => d.id === id), `shard-timings.json names section ${id}, which no longer exists — remove it`);
 }
+assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'the checked-in timings table must be complete and in budget');
+// Sweep 3 F6: the fixed costs are measured, from gh's job JSON and log. Verbatim CI jobs (run 36662358380 smoke 8/35 =
+// job 109719866209, 26/35 = 109719866210; run 36661100607 walk 9/9 = 109716042553). By hand: shard 8 walled 403 s,
+// ran 279.658 s of sections, so 124 s overhead (the hand-set table said 75); shard 26 spent 5 s before its first step
+// and 3 s after its last check; walk 9/9 walled 485 s over 352 s of cases, so 133 s setup (the rule said 120).
+{
+  const st = (name: string, a: string, b: string, conclusion = 'success') => ({ name, conclusion, startedAt: `2026-09-30T${a}Z`, completedAt: `2026-09-30T${b}Z` });
+  const steps = (t: string[]) => [st('Set up job', t[0], t[1]), st('Run actions/checkout@v5', t[1], t[2]), st('Run actions/setup-node@v5', t[2], t[3]), st('Install dependencies', t[3], t[4]),
+    st('Download the short-timeout e2e bundle', t[4], t[5]), st('Determine whether this shard runs a WebKit-guarded section', t[5], t[5]), st('Install headless browsers for this shard', t[5], t[6]),
+    st('Boot the production server and run the smoke suite', t[6], t[7]), st('Exercise section 47 after natural simulation completion', t[7], t[7], 'skipped'),
+    st('Upload shard evidence', t[7], t[8], 'skipped'), st('Complete job', t[8], t[8])];
+  const gh = (job: string, lines: string[]) => lines.map((l) => `${job}\tUNKNOWN STEP\t2026-09-30T${l}`).join('\n');
+  const smoke8 = { name: 'e2e smoke (8/35)', conclusion: 'success', startedAt: '2026-09-30T03:00:30Z', completedAt: '2026-09-30T03:07:13Z',
+    steps: steps(['03:00:31', '03:00:32', '03:00:34', '03:00:47', '03:01:00', '03:01:02', '03:02:10', '03:07:10', '03:07:11']),
+    log: gh('e2e smoke (8/35)', ['03:02:50.6945708Z SECTION-PASS 16 zoom pauses simulation (20014ms)', '03:03:53.9079226Z SECTION-PASS 30 regenerate timeout wording (62672ms)',
+      '03:07:10.8799692Z SECTION-PASS 75 ModalSurface: Tab trap holds from a tabIndex=-1 landmark inside the drawer, in both directions, with 0 and 3 saved games (196972ms)']) };
+  const smoke26 = { name: 'e2e smoke (26/35)', conclusion: 'success', startedAt: '2026-09-30T03:03:26Z', completedAt: '2026-09-30T03:07:40Z',
+    steps: steps(['03:03:27', '03:03:31', '03:03:33', '03:03:36', '03:03:47', '03:03:49', '03:04:19', '03:07:37', '03:07:38']),
+    log: gh('e2e smoke (26/35)', ['03:04:42.1036399Z SECTION-PASS 18 reduced-motion idle spin (21114ms)', '03:06:10.5390478Z SECTION-PASS 88 tour card never sits inside its own spotlight (912x1368 dsf2) (88436ms)',
+      '03:07:15.9748961Z SECTION-PASS 100c no width and zoom a user can reach makes the page scroll sideways (390px at 145-163%, drawer) (65436ms)',
+      '03:07:37.5948730Z SECTION-PASS 101a the guided tour can be walked to the end at every width and zoom a user can reach (280px at 300%) (21620ms)']) };
+  const walk9 = { name: 'e2e tour walk (9/9)', conclusion: 'success', startedAt: '2026-09-30T02:43:46Z', completedAt: '2026-09-30T02:51:51Z',
+    log: gh('e2e tour walk (9/9)', ['02:47:32.5647833Z   · [chromium 390x844 in view click] 97 s, load 1.1 at start', '02:48:03.8278057Z   · [chromium 1024x1366 long frame] 31 s, load 2.6 at start',
+      '02:48:36.0954441Z   · [chromium 390x844 page cancels] 32 s, load 2.9 at start', '02:50:25.6191171Z   · [webkit 390x844 away key] 109 s, load 3.7 at start',
+      '02:50:52.1342723Z   · [webkit 390x844 flight] 27 s, load 1.8 at start', '02:51:21.2263642Z   · [webkit 390x844 interrupt] 29 s, load 1.5 at start',
+      '02:51:48.3966382Z   · [webkit 390x844 page cancels same task] 27 s, load 2.2 at start']) };
+  const m = measure([smoke8, smoke26, walk9]);
+  assert.deepStrictEqual([m.overheadMs, m.outsideMs, m.setupS, m.problems], [124000, 8000, 133, []], 'measure() reads 124 s overhead, 8 s outside the steps and 133 s tour setup off the verbatim CI jobs');
+  assert.deepStrictEqual([Object.keys(m.sections).length, Object.keys(m.tour.walk).length], [7, 7], 'measure() reads every section and tour case line in the fixture');
+  // The checked-in tables cover every measurement a real CI job made: the shipped 75 s / 120 s did not.
+  assert.ok(SHARD_TIMINGS._overhead_ms >= m.overheadMs && SHARD_TIMINGS._outside_ms >= m.outsideMs && TOUR_TIMINGS._setup_s >= m.setupS,
+    `the tables' fixed costs (${SHARD_TIMINGS._overhead_ms} ms overhead, ${SHARD_TIMINGS._outside_ms} ms outside, ${TOUR_TIMINGS._setup_s} s tour setup) cover the CI jobs' measured ones`);
+  assert.deepStrictEqual(Object.entries(m.sections).filter(([id, ms]) => !(SHARD_TIMINGS[id] >= ms)), [], 'every CI section time in the fixture is within its table entry');
+  assert.deepStrictEqual(Object.entries(m.tour.walk).filter(([t, s]) => !(Object.fromEntries(TOUR_TIMINGS['tour-walk'])[t] >= s)), [], 'every CI tour case time in the fixture is within its table row');
+  // A failed or unreadable job is not a measurement: refused by name, never folded in as 0 or Infinity.
+  for (const [why, job] of [['a failed job', { ...smoke8, conclusion: 'failure' }], ['a job with no steps', { ...smoke26, steps: [] }],
+    ['a job whose checked steps were all skipped', { ...smoke26, steps: smoke26.steps.map((s) => ({ ...s, conclusion: /^Boot/.test(s.name) ? 'skipped' : s.conclusion })) }],
+    ['a cancelled tour job', { ...walk9, conclusion: 'cancelled' }]] as const)
+    assert.strictEqual(measure([job]).problems.length, 1, `measure() refuses ${why}`);
+  // refresh() writes what measure() read, never the table's old fixed costs (F1's class: the refresh never re-measured).
+  const out = refresh([smoke8, smoke26, walk9], { ...SHARD_TIMINGS, _overhead_ms: 75000, _outside_ms: 0 }, smoke, ['36662358380']);
+  assert.deepStrictEqual([JSON.parse(out.shard)._overhead_ms, JSON.parse(out.shard)._outside_ms, out.tour.match(/\n"_setup_s": (\d+),\n/)?.[1]], [124000, 8000, '133'],
+    'refresh() writes the measured fixed costs over the old ones'); // (a partial run's tour text is not JSON; the CLI refuses it unwritten)
+  assert.ok(out.problems.some((p: string) => /^run 36662358380 did not report section 1 /.test(p)), 'refresh() refuses a run that did not report every section');
+}
+assert.match(workflowJob('e2e_smoke'), /steps:\n\s+#[^\n]*\n\s+- name: Start the job clock\n\s+run: echo "E2E_JOB_T0=\$\(date \+%s\)" >> "\$GITHUB_ENV"\n/,
+  'e2e_smoke\'s FIRST step starts the clock shard-cases.mjs reads the wall from');
 const { totals } = assignShards(definitions);
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   assert(definitions.some((definition) => definition.shard === shard), `shard ${shard} must own at least one section`);
   assert(totals[shard - 1] <= SECTION_BUDGET_MS,
     `shard ${shard} packs ${Math.round(totals[shard - 1] / 1000)} s of measured sections, over the ${SECTION_BUDGET_MS / 1000} s budget `
-    + `(300 s job ceiling minus ~75 s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
+    + `(${SHARD_TIMINGS._ceiling_ms / 1000} s job ceiling minus the measured ${SHARD_TIMINGS._overhead_ms / 1000} s overhead) — split the longest section or raise SHARD_COUNT (and test.yml's matrix)`);
 }
 // Headroom: CI ran ~5% slower than the table the first 20-shard matrix was packed from (285 s on a
-// 207 s-packed shard). Keep every MULTI-section packed shard ≤ 200 s so that slack cannot reach the
-// 225 s budget. A shard holding exactly ONE section is exempted from the 200 s line (bounded instead
-// by the per-section SECTION_BUDGET_MS assert above): the 200 s line exists to catch a PILEUP —
+// 207 s-packed shard). Keep every MULTI-section packed shard ≤ 0.9 x the section budget (TASK-18;
+// it was 200 s of 225 s) so that slack cannot reach the budget. A shard holding exactly ONE section is exempted from the headroom line (bounded instead
+// by the per-section SECTION_BUDGET_MS assert above): the headroom line exists to catch a PILEUP —
 // several sections landing on one shard close enough to the ceiling that CI's ~5% slop could tip it
 // over — and no amount of splitting into more shards makes one already-isolated section smaller
 // (OPUS-REVIEW-WEBKIT N1: §70 alone now measures 207,990 ms after WebKit started actually running
-// there). Silently raising the 200 s line instead would have hidden the other 7 shards this same
+// there). Silently raising the headroom line instead would have hidden the other 7 shards this same
 // repack pushed over it for ordinary multi-section reasons — those are exactly what this must still
 // catch.
+// TASK-18 sweep 4: the extra §47 step test.yml runs on shard 24 is packed, not ignored.
+assert.deepStrictEqual(EXTRA_STEP_SECTIONS, { 24: '47' }, 'the packer knows test.yml\'s one extra-step section');
+assert.match(workflow, /- name: Exercise section 47 after natural simulation completion\n\s+if: matrix\.shard == 24\n[\s\S]{0,160}?run: \|\n[\s\S]{0,40}?node src\/e2e\/smoke\.mjs[^\n]*\n(?:[^\n]*\n){3}\s+env:\n\s+E2E_SECTION: '47'/,
+  'test.yml\'s extra step is still §47 on shard 24, as EXTRA_STEP_SECTIONS says');
+{
+  const on24 = definitions.filter((d) => d.shard === 24).reduce((sum, d) => sum + measuredMs(d.id), 0);
+  assert.strictEqual(totals[23], on24 + measuredMs('47'), 'shard 24 packs its sections plus the extra §47 step it runs');
+}
+// The ceiling is the brief's decision (TASK-18: 420 s); the budget under it follows the measured overhead. Sweep 4: with
+// only the budget pinned before F6, dropping that pin let a 440 s ceiling pass every check.
+assert.strictEqual(SHARD_TIMINGS._ceiling_ms, 420000, 'the smoke job ceiling is 420 s (TASK-18); raising it is a decision, not a refresh');
+const HEADROOM_MS = 0.9 * SECTION_BUDGET_MS;
 const shardMembers = new Map<number, string[]>();
 for (const { id, shard } of definitions) {
   if (shard === undefined) continue;
@@ -111,18 +593,22 @@ for (const { id, shard } of definitions) {
   list.push(id);
   shardMembers.set(shard, list);
 }
-for (let shard = 1; shard <= SHARD_COUNT; shard++) {
-  const members = shardMembers.get(shard) ?? [];
-  const total = totals[shard - 1];
-  if (members.length <= 1) continue; // a single section is bounded by SECTION_BUDGET_MS above, not this line
-  assert(total <= 200000,
-    `shard ${shard} packs ${members.length} sections (${members.join(', ')}) totalling ${Math.round(total / 1000)} s `
-    + `— over the 200 s headroom line for a MULTI-section shard; raise SHARD_COUNT`);
-}
+const overLine = (defs: { id: string, shard?: number }[], tot: number[]) => tot.flatMap((total, i) => {
+  const members = defs.filter((d) => d.shard === i + 1).map((d) => d.id); // one section: bounded by SECTION_BUDGET_MS above
+  return members.length > 1 && !(total <= HEADROOM_MS) ? [`shard ${i + 1} packs ${members.length} sections (${members.join(', ')}) totalling `
+    + `${Math.round(total / 1000)} s — over the ${HEADROOM_MS / 1000} s headroom line for a MULTI-section shard; raise SHARD_COUNT`] : [];
+});
+assert.deepStrictEqual(overLine(definitions, totals), [], 'every multi-section shard packs under the headroom line');
+// Sweep 5: a 1.0x line passed every check. Why 0.9: out of sample, a multi-section shard ran 1.068x its table sum on CI
+// (36695839492 shard 14: 6b+20+67, 252.3 s vs 236.1 s), so a shard packed at the line must still fit the budget at that ratio.
+assert.ok(HEADROOM_MS * 1.068 <= SECTION_BUDGET_MS, `a shard at the ${HEADROOM_MS / 1000} s line, run 1.068x slower as CI did, fits the ${SECTION_BUDGET_MS / 1000} s budget`);
+assert.deepStrictEqual(overLine([{ id: 'a', shard: 1 }, { id: 'b', shard: 1 }, { id: 'c', shard: 2 }, { id: 'd', shard: 2 }, { id: 'e', shard: 3 }],
+  [0.9 * SECTION_BUDGET_MS, 0.9 * SECTION_BUDGET_MS + 1, SECTION_BUDGET_MS]).map((p) => p.split(' totalling')[0]), ['shard 2 packs 2 sections (c, d)'],
+'the headroom line: two sections at 0.9x the budget pass, 1 ms more fails by name, one section alone is exempt');
 // A single-section shard is still bounded — just by SECTION_BUDGET_MS (the per-section assert
-// above), not the tighter 200 s multi-section line. Restated here as an explicit, separately-named
+// above), not the tighter multi-section headroom line. Restated here as an explicit, separately-named
 // check so a shard that quietly grows a SECOND section (no longer "single") is not silently exempted
-// from the 200 s line by an earlier, now-stale membership snapshot.
+// from the headroom line by an earlier, now-stale membership snapshot.
 for (let shard = 1; shard <= SHARD_COUNT; shard++) {
   const members = shardMembers.get(shard) ?? [];
   if (members.length !== 1) continue;
@@ -138,30 +624,171 @@ const again = assignShards(definitions.map(({ id, name }) => ({ id, name })));
 assert.deepStrictEqual(again.definitions.map((d) => d.shard), definitions.map((d) => d.shard), 'shard assignment must be deterministic');
 // Known positives: the budget guard fires on an over-long section and on an over-packed table.
 {
-  const fake = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 300000, a: 260000, b: 1000 };
+  const fake = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 420000, a: 360000, b: 1000 };
   const packed = assignShards([{ id: 'a' }, { id: 'b' }], fake, 2);
-  assert(Math.max(...packed.totals) > SECTION_BUDGET_MS, 'a 260 s section must exceed the 225 s budget (known positive)');
-  const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`s${i}`, 120000]));
+  assert(Math.max(...packed.totals) > SECTION_BUDGET_MS, 'a 360 s section must exceed the per-job section budget (known positive)');
+  const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`s${i}`, 180000]));
   const over = assignShards(Object.keys(many).map((id) => ({ id })), { ...fake, ...many }, 20);
-  assert(Math.max(...over.totals) > SECTION_BUDGET_MS, 'forty 120 s sections cannot fit 20 shards under budget (known positive)');
+  assert(Math.max(...over.totals) > SECTION_BUDGET_MS, 'forty 180 s sections cannot fit 20 shards under budget (known positive)');
   assert(assignShards([{ id: 'zz' }], fake, 1).totals[0] === 90000, 'an unmeasured section packs at _default');
   // validateTimings (shared with scripts/shard-timings-from-run.mjs) rejects the two bad-table shapes
   // CodeRabbit named on #157: a pre-split run's table (66 at 275 s, no 66b) and an incomplete one.
-  const meta = { _default: 90000, _overhead_ms: 75000, _ceiling_ms: 300000 };
+  const meta = { _default: 90000, _overhead_ms: 75000, _outside_ms: 8000, _ceiling_ms: 300000 };
   assert.deepStrictEqual(validateTimings(['66', '66b'], { ...meta, '66': 275000 }),
     ['section 66 measures 275 s, over the 225 s per-job section budget — split it', 'section 66b has no measured entry'],
     'a pre-split run\'s table (66 at 275 s, no 66b) must report both problems');
   assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000, '2': 1000 }), ['timings name section 2, which is not registered']);
   assert.deepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000 }), [], 'a complete, in-budget table is accepted');
+  // Sweep 3: with _overhead_ms missing the budget was NaN, `v > NaN` is false, and a 999,999,999 ms section passed.
+  const noMeta = validateTimings(['1'], { _default: 90000, _ceiling_ms: 420000, '1': 999999999 });
+  assert.deepStrictEqual(noMeta.filter((p) => /^_(overhead|outside)_ms must be a whole, non-negative number of ms; got undefined$|^section 1 measures 1000000 s, over/.test(p)).length, 3,
+    `a table missing _overhead_ms and _outside_ms is refused for both, and its 999,999,999 ms section too: ${JSON.stringify(noMeta)}`);
+  for (const [why, bad] of [['a fractional overhead', { _overhead_ms: 124000.5 }], ['a negative outside', { _outside_ms: -1 }],
+    ['a string ceiling', { _ceiling_ms: '420000' }], ['an overhead that fills the ceiling', { _overhead_ms: 300000 }]] as const)
+    assert.notDeepStrictEqual(validateTimings(['1'], { ...meta, '1': 1000, ...bad }), [], `validateTimings refuses ${why}`);
 }
-assert.deepStrictEqual(validateTimings(definitions.map(({ id }) => id)), [], 'the checked-in timings table must be complete and in budget');
+// A refresh can never again write a section the budget cannot hold (TASK-18: §101 ran 1086 s on CI
+// against a 120 s entry because the refresh refused and nobody re-measured). Known positive on the
+// REAL budget: one fake 350 s entry for a registered section is refused by name.
+assert.deepStrictEqual(validateTimings(['101a'], { ...SHARD_TIMINGS, '101a': 350000 }).filter((p) => /101a/.test(p)),
+  [`section 101a measures 350 s, over the ${SECTION_BUDGET_MS / 1000} s per-job section budget — split it`],
+  'a refreshed table carrying a 350 s section must be refused, naming the section');
 
 assert.deepStrictEqual(selectSmokeSections(definitions, {}).selected, definitions,
   'an unset E2E_SHARD/E2E_SECTION must continue to select the complete local suite');
 // A shard selector returns exactly the packed assignment's members.
-const shard1Now = selectSmokeSections(definitions, { E2E_SHARD: `1/${SHARD_COUNT}` }).selected.map(({ id }) => id);
-assert.deepStrictEqual(shard1Now, definitions.filter((d) => d.shard === 1).map(({ id }) => id),
-  'E2E_SHARD must select exactly the sections the packing assigned to that shard');
+// Every shard, not only shard 1: a selector that re-runs a sibling's sections passes a shard-1 check (sweep 13).
+const bySelector = Array.from({ length: SHARD_COUNT }, (_, s) => selectSmokeSections(definitions, { E2E_SHARD: `${s + 1}/${SHARD_COUNT}` }).selected.map(({ id }) => id));
+bySelector.forEach((ids, s) => assert.deepStrictEqual(ids, definitions.filter((d) => d.shard === s + 1).map(({ id }) => id),
+  `E2E_SHARD ${s + 1}/${SHARD_COUNT} must select exactly the sections the packing assigned to that shard`));
+assert.deepStrictEqual(bySelector.flat().sort(), definitions.map(({ id }) => id).sort(), 'the shards together run every section exactly once');
+// Sweep 14: nothing saw WHICH cases a runner then ran (smoke.mjs running selected.slice(1) passed). Each CI step diffs
+// its log against shard-cases.mjs. Its smoke list reuses selectSmokeSections, the runner's own selector: an oracle only
+// because the check above pins that selector to the packing for every shard, and so does the line below.
+{
+  const walkShard = (s: number) => shardCases('walk', { TOUR_WALK_SHARD: `${s}/9` }), scrollShard = (s: number) => shardCases('scroll', { TOUR_SCROLL_SHARD: `${s}/2` });
+  bySelector.forEach((_, s) => assert.deepStrictEqual(shardCases('smoke', { E2E_SHARD: `${s + 1}/${SHARD_COUNT}` }, smoke),
+    definitions.filter((d) => d.shard === s + 1).map(({ id }) => id), `shard-cases.mjs gives smoke shard ${s + 1} its packed sections`));
+  for (const [job, n, of, all] of [['walk', 9, walkShard, walkTags()], ['scroll', 2, scrollShard, scrollTags()]] as const) {
+    const parts = Array.from({ length: n }, (_, s) => of(s + 1));
+    // The runners' own packTour shard (pinned above: each keeps the engine-major tags of `tourShards(job, SHARDS)[SHARD - 1]`),
+    // in run order: a rotated or reordered oracle would fail every CI job instead of here.
+    const packed = packTour(all, TOUR_TIMINGS[`tour-${job}`], n);
+    parts.forEach((p, s) => assert.deepStrictEqual(p, all.filter((t) => packed[s].includes(t)), `shard-cases.mjs gives ${job} shard ${s + 1}/${n} the runner's own cases, in order`));
+    assert.ok(parts.every((p) => p.length > 0), `every ${job} shard has cases: an empty list would pass an empty (crashed) log`);
+    assert.deepStrictEqual(parts.flat().sort(), [...all].sort(), `the ${job} shards together run every engine x case exactly once`);
+  }
+  assert.ok(bySelector.every((ids) => ids.length > 0), 'every smoke shard has sections: an empty list would pass an empty (crashed) log');
+  assert.deepStrictEqual(shardCases('smoke', { E2E_SECTION: '47' }, smoke), ['47'], 'the natural-stop step runs §47 alone');
+  // CI 35979484351 shard 30, verbatim: §76 failed, was retried and passed. First attempts count, in order.
+  const retried = ['Running 4/111 smoke sections for shard 30/35.', ...['24 [shard 30/35] long-label 320px reflow', '25 [shard 30/35] suggested-name clamp',
+    '47 [shard 30/35] a legend toggle survives the next simulation redraw', '76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003)'].map((s) => `════ SECTION ${s} ════`),
+  '════ RETRYING ONLY FAILED SECTIONS: 76 Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) ════',
+  '════ SECTION 76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) (retry) ════',
+  'pass-after-section-retry: 76 Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003)'].join('\n');
+  assert.deepStrictEqual(logCases('smoke', retried), ['24', '25', '47', '76'], 'a retried section counts once, from its first attempt');
+  assert.deepStrictEqual(logCases('smoke', retried.replace('════ SECTION 76 [shard 30/35] Walkthrough: the tour card is not clickable while a ModalSurface is open (RED-APP-15/003) ════\n', '')),
+    ['24', '25', '47'], 'a section that only ran as a retry did not run in the first pass');
+  // A job that started this second: the wall check (pinned below) has nothing to say about these budget cases.
+  const T0 = String(Math.floor(Date.now() / 1000)), e1 = { E2E_SHARD: `1/${SHARD_COUNT}`, E2E_JOB_T0: T0 };
+  const s1 = shardCases('smoke', { E2E_SHARD: `1/${SHARD_COUNT}` }, smoke), log = (ids: string[], ms = 1000, shard = 1) =>
+    ids.map((id) => `\n════ SECTION ${id} [shard ${shard}/${SHARD_COUNT}] x ════\nSECTION-PASS ${id} x (RED-APP-15/003) (${ms}ms)`).join('\n');
+  // The budget holds at run time, first attempts only: CI 36646092049 shard 32 ran 304 s of 345 on a stale table (sweep 1).
+  const at = (ids: string[], total: number, q = Math.floor(total / ids.length)) => ids.map((id, j) => log([id], j ? q : total - q * (ids.length - 1))).join('\n'), s24 = shardCases('smoke', { E2E_SHARD: `24/${SHARD_COUNT}` }, smoke);
+  const e24 = { E2E_SHARD: `24/${SHARD_COUNT}`, E2E_JOB_T0: T0 }, main24 = (ms: number) => at(s24, ms).replaceAll('shard 1/', 'shard 24/'), step47 = (ms: number) => log(['47'], ms).replaceAll('shard 1/', 'shard 24/');
+  const over = new RegExp(`over the ${SECTION_BUDGET_MS / 1000} s budget`), s = (ms: number) => String(ms / 1000).replace('.', '\\.');
+  assert.strictEqual(checkLog('smoke', at(s1, SECTION_BUDGET_MS), e1), '', 'a shard at its section budget passes');
+  assert.match(checkLog('smoke', at(s1, SECTION_BUDGET_MS + 1), e1), new RegExp(`first attempts ran ${s(SECTION_BUDGET_MS + 1)} s of sections, ${over.source}`), 'a shard over its section budget fails by name');
+  // Shard 24's §47 step is charged its own log's time: at its 92 s table entry, a 120 s §47 once went unseen (sweep 2).
+  assert.strictEqual(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120000)]), '', 'shard 24 with its §47 step at the budget passes');
+  assert.match(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120001)]), new RegExp(`ran ${s(SECTION_BUDGET_MS + 1)} s of sections with the extra steps, ${over.source}`), 'shard 24\'s §47 step is charged its measured time');
+  assert.match(checkLog('smoke', main24(SECTION_BUDGET_MS - 120000), e24, [step47(120000).replace('(120000ms)', '(2 min)')]), /the time is unreadable/, 'a §47 step time the budget cannot read fails');
+  assert.strictEqual(checkLog('smoke', `${log(s1)}\n════ RETRYING ONLY FAILED SECTIONS: ${s1[0]} x ════\n${log([s1[0]], SECTION_BUDGET_MS)}`, e1), '', 'a retry\'s time is not a first attempt\'s');
+  assert.match(checkLog('smoke', log(s1).replace(/\(1000ms\)$/, '(1 s)'), e1), /the time is unreadable/, 'a result line the budget cannot read fails, never sums to 0 s');
+  assert.doesNotMatch(checkLog('smoke', at(s1, SECTION_BUDGET_MS * 2), { E2E_SECTION: s1.join(',') }), over, 'a local E2E_SECTION run has no shard budget to break');
+  // The job's wall (sweep 3 F6): from test.yml's clock, retries aside, plus the measured time outside the steps, fits the ceiling.
+  const { _ceiling_ms: C, _outside_ms: O } = SHARD_TIMINGS, T = 1800000000, ceil = new RegExp(`first attempts ran ${C / 1000 + 1} s \\(${O / 1000} s of it outside the steps\\), over the ${C / 1000} s ceiling`);
+  const wall = (text: string, ms: number, t0?: string, shard = 1, extra: string[] = []) => checkLog('smoke', text, { E2E_SHARD: `${shard}/${SHARD_COUNT}`, ...(t0 === undefined ? {} : { E2E_JOB_T0: t0 }) }, extra, T * 1000 + ms);
+  assert.strictEqual(wall(log(s1), C - O, String(T)), '', 'a job at its ceiling, counting the time outside its steps, passes');
+  assert.match(wall(log(s1), C - O + 1, String(T)), ceil, 'a job 1 ms over its ceiling fails by name');
+  const retried24 = `${main24(1000)}\n════ RETRYING ONLY FAILED SECTIONS: ${s24[0]} x ════\n${log([s24[0]], 30000, 24)}`, retried47 = `${step47(1000)}\n════ RETRYING ONLY FAILED SECTIONS: 47 x ════\n${step47(30000)}`;
+  assert.deepStrictEqual([C - O + 60000, C - O + 60001].map((ms) => wall(retried24, ms, String(T), 24, [retried47])), ['', wall(at(s1, 2000), C - O + 1, String(T))],
+    'retries in the main and §47 logs are not charged to the wall; 1 ms more is');
+  for (const t0 of [undefined, '', ' 1800000000', '1.8e9', String(T + 1)])
+    assert.match(wall(log(s1), 0, t0), /^smoke: E2E_JOB_T0 .* is not this job's start in epoch seconds, so its wall is unreadable$/, `an E2E_JOB_T0 of ${JSON.stringify(t0)} fails, never passes as NaN`);
+  // Sweep 6: a trip says where its time went. Verbatim CI 36734588115 smoke 14/35 (job 109953208691): 621 s, 234.103 s of
+  // sections, a 342 s browser install (apt 34.9 MB at 109 kB/s). Blamed on the mirror only past the whole overhead; never a pass.
+  const s14 = shardCases('smoke', { E2E_SHARD: `14/${SHARD_COUNT}` }, smoke), job14 = at(s14, 234103).replaceAll('shard 1/', 'shard 14/');
+  const trip = (install: string | undefined, ms = 613000) => checkLog('smoke', job14, { E2E_SHARD: `14/${SHARD_COUNT}`, E2E_JOB_T0: String(T), ...(install === undefined ? {} : { E2E_INSTALL_S: install }) }, [], T * 1000 + ms);
+  // Sweep 7 F8: CI 36747948728 smoke 2/35 tripped on the mirror twice (1224 s, then 533 s installs); "trips again = grown"
+  // would have raised _overhead_ms over a mirror. apt rates decide (index ~10 MB/s; the CDN stayed <= 5 s), never the repeat.
+  const mirror = new RegExp(String.raw`The browser install alone outran the whole measured overhead \(${SHARD_TIMINGS._overhead_ms / 1000} s\), so the trip is the install, not the packing\. If this job's log shows an apt "Fetched \.\.\. \(N kB\/s\)" line under 1 MB\/s \(a slow runner mirror\) or Playwright downloads slower than a green run's, it is the network: re-run once it recovers \(it can outlast re-runs\)\. If neither, the install itself grew: re-measure _overhead_ms$`);
+  assert.doesNotMatch(trip('533', 773000), /again|repeat/i, 'a repeat trip is never read as a grown install: the mirror outlasted re-runs');
+  assert.match(trip('342'), new RegExp(String.raw`^smoke: the job's first attempts ran 621 s \(8 s of it outside the steps\), over the 420 s ceiling: 234\.103 s of sections \(budget ${SECTION_BUDGET_MS / 1000} s\), 342 s installing browsers, 37 s of everything else\. `), 'the verbatim CI trip names its section, install and remaining seconds');
+  assert.match(trip('342'), mirror, 'a 342 s install is named as the slow mirror');
+  const O1 = SHARD_TIMINGS._overhead_ms / 1000;
+  assert.deepStrictEqual([String(O1), String(O1 + 1), undefined, '', '3e2', '-400'].map((i) => mirror.test(trip(i))), [false, true, false, false, false, false],
+    'only an install past the whole measured overhead is blamed on the mirror; one at it, or unread, says re-measure');
+  assert.match(trip(undefined), /no readable install time \(E2E_INSTALL_S undefined\), 379 s of everything else, installs included\. Re-measure _overhead_ms/, 'an unread install time is said, never read as 0 s');
+  assert.deepStrictEqual([trip('9999', C - O), trip('0', C - O + 1) !== '', trip('9999', C - O + 1) !== ''], ['', true, true], 'the install time only explains a trip: it never passes or fails a job');
+  const w1 = walkShard(1), sc1 = scrollShard(1), tour = (tags: string[]) => tags.map((t) => `  · ${t} 9 s, load 1.0 at start`).join('\n');
+  assert.strictEqual(checkLog('smoke', log(s1), e1), '', 'shard 1\'s own sections pass');
+  assert.strictEqual(checkLog('walk', tour(w1), { TOUR_WALK_SHARD: '1/9' }), '', 'walk shard 1\'s own cases pass');
+  for (const [why, job, text, env] of [['one section dropped', 'smoke', log(s1.slice(1)), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['an empty (crashed) log', 'smoke', '', { E2E_SHARD: `1/${SHARD_COUNT}` }],
+    ['a sibling shard\'s sections', 'smoke', log(bySelector[1]), { E2E_SHARD: `1/${SHARD_COUNT}` }], ['the last case replaced by the first', 'walk', tour([...w1.slice(0, -1), w1[0]]), { TOUR_WALK_SHARD: '1/9' }],
+    ['webkit skipped', 'walk', tour(w1.filter((t) => !t.startsWith('[webkit'))), { TOUR_WALK_SHARD: '1/9' }],
+    ['two cases swapped', 'walk', tour([w1[1], w1[0], ...w1.slice(2)]), { TOUR_WALK_SHARD: '1/9' }], ['an empty (crashed) log', 'scroll', '', { TOUR_SCROLL_SHARD: '2/2' }],
+    ['one case run twice', 'walk', tour([...w1, w1[0]]), { TOUR_WALK_SHARD: '1/9' }], ['one case run twice', 'scroll', tour([...sc1, sc1[0]]), { TOUR_SCROLL_SHARD: '1/2' }],
+    ['a section run twice before the RETRYING line', 'smoke', `${log([...s1, s1[0]])}\n${retried.split('\n')[5]}`, { E2E_SHARD: `1/${SHARD_COUNT}` }]] as const)
+    assert.match(checkLog(job, text, env), /the log ran \d+ case\(s\), the packing gives \d+/, `shard-cases.mjs fails a ${job} log with ${why}`);
+  // The CLI is what CI runs: its exit status, not checkLog's string, fails the step. Run it by a symlinked path too:
+  // Node's import.meta.url is the realpath, so an argv[1]-only guard skipped the check and exited 0 (sweep 15).
+  const dir = mkdtempSync(join(tmpdir(), 'shard-cases-')), link = (f: string) => (symlinkSync(join(process.cwd(), 'src/e2e', f), join(dir, f)), join(dir, f));
+  const run = (script: string, args: string[], env = {}, input = '') => spawnSync(process.execPath, [script, ...args], { env: { ...process.env, ...env }, input, encoding: 'utf8' });
+  const cli = (script: string, text: string) => (writeFileSync(join(dir, 'walk.log'), text), run(script, ['walk', join(dir, 'walk.log')], { TOUR_WALK_SHARD: '1/9' }).status);
+  for (const script of ['src/e2e/shard-cases.mjs', link('shard-cases.mjs')])
+    assert.deepStrictEqual([cli(script, tour(w1)), cli(script, tour(w1.slice(1)))], [0, 1], `the shard-cases.mjs CLI (${script}) exits 0 on its own cases and 1 on a missing one`);
+  const cli24 = (ms47: number) => (writeFileSync(join(dir, '24.log'), main24(SECTION_BUDGET_MS - 120000)), writeFileSync(join(dir, '47.log'), step47(ms47)),
+    run('src/e2e/shard-cases.mjs', ['smoke', join(dir, '24.log'), join(dir, '47.log')], { E2E_SHARD: `24/${SHARD_COUNT}`, E2E_JOB_T0: String(Math.floor(Date.now() / 1000)) }).status);
+  assert.deepStrictEqual([cli24(120000), cli24(120001)], [0, 1], 'the shard-cases.mjs CLI reads the extra step logs it is given');
+  symlinkSync(join(process.cwd(), 'scripts/shard-timings-from-run.mjs'), join(dir, 'refresh.mjs'));
+  for (const script of ['scripts/shard-timings-from-run.mjs', join(dir, 'refresh.mjs')])
+    assert.match(((r) => `${r.status} ${r.stderr}`)(run(script, [])), /^2 usage: shard-timings-from-run\.mjs/, `the refresh CLI (${script}) runs and exits 2 with no run ids`);
+  for (const script of ['src/e2e/webkit-shards.mjs', link('webkit-shards.mjs')])
+    assert.strictEqual(run(script, []).stdout, `${shardsNeedingWebkit().join('\n')}\n`, `the webkit-shards.mjs CLI (${script}) prints the shards that need WebKit`);
+  // Importing either module from stdin (argv[1] '-', no such file) must not throw: only a run as the entry is a CLI.
+  for (const f of ['shard-cases.mjs', 'webkit-shards.mjs'])
+    assert.strictEqual(spawnSync(process.execPath, ['--input-type=module', '-'], { input: `await import(${JSON.stringify(join(process.cwd(), 'src/e2e', f))});`, encoding: 'utf8' }).status, 0,
+      `importing ${f} with argv[1] = '-' runs no CLI and does not throw`);
+  // Same family in the deploy audit (cloud-env-audit.yml pipes service JSON in): real and symlinked paths agree.
+  const service = JSON.stringify({ latestReadyRevision: 'projects/p/locations/l/services/s/revisions/r',
+    traffic: [{ type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST', percent: 100 }], trafficStatuses: [{ type: 'TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST', percent: 100 }] });
+  symlinkSync(join(process.cwd(), 'src/deploy/cloud-run-traffic.mjs'), join(dir, 'traffic.mjs'));
+  for (const script of ['src/deploy/cloud-run-traffic.mjs', join(dir, 'traffic.mjs')])
+    assert.deepStrictEqual([run(script, [], {}, service), run(script, [], {}, '{}')].map((r) => [r.status, r.stdout]),
+      [[0, 'projects/p/locations/l/services/s/revisions/r\n'], [1, '']], `the cloud-run-traffic.mjs CLI (${script}) prints the serving revision, and exits 1 on malformed metadata`);
+  // The family, repo-wide: a file that compares import.meta with argv[1] (the entry guard) must use this exact guard.
+  // Any other form (argv[1]-only, path.resolve, import.meta.filename, argv.at(1), destructuring) fails here by name.
+  const GUARD = 'if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {';
+  const code = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '*.mjs', '*.js', '*.cjs', '*.ts', '*.mts', '*.cts', '*.tsx'], { encoding: 'utf8' })
+    .split('\n').filter((f) => f && f !== 'src/e2esharding.test.ts' && existsSync(f));
+  const argv1 = /argv(\[1\]|\.at\(1\))|\]\s*=\s*process\.argv\b(?!\.slice\([2-9]\))/; // argv[1], argv.at(1), [, entry] = process.argv
+  const entries = code.filter((f) => { const t = readFileSync(f, 'utf8'); return /import\.meta/.test(t) && argv1.test(t); });
+  assert.deepStrictEqual(entries.sort(), ['scripts/shard-timings-from-run.mjs', 'src/deploy/cloud-run-traffic.mjs', 'src/e2e/shard-cases.mjs', 'src/e2e/webkit-shards.mjs'], 'the scan finds the four known CLI entry guards');
+  for (const f of entries) {
+    const lines = readFileSync(f, 'utf8').split('\n').filter((l) => argv1.test(l) && !/^\s*\/\//.test(l));
+    assert.deepStrictEqual(lines.map((l) => l.trim()), [GUARD], `${f}'s entry guard resolves argv[1] with realpathSync (a symlinked path would skip the CLI and exit 0)`);
+  }
+  rmSync(dir, { recursive: true });
+  // Each step checks its own log; the smoke step's check turns a green exit red, never red green.
+  assert.match(workflowJob('e2e_smoke'), /status=\$\{PIPESTATUS\[0\]\}\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-\$\{\{ matrix\.shard \}\}\.log" \|\| \[ "\$status" -ne 0 \] \|\| status=1\n\s+set -e\n/,
+    'the smoke step checks its log before it takes the exit code');
+  assert.match(workflowJob('e2e_smoke'), new RegExp(String.raw`run: \|\n\s+set -o pipefail\n\s+node src\/e2e\/smoke\.mjs 2>&1 \| tee "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+#[^\n]*\n\s+env -u E2E_SECTION E2E_SHARD=24\/${SHARD_COUNT} node src\/e2e\/shard-cases\.mjs smoke "\$RUNNER_TEMP\/e2e-smoke-24\.log" "\$RUNNER_TEMP\/e2e-smoke-47\.log"\n\s+env:\n\s+E2E_SECTION: '47'`),
+    'the §47 step checks its own log, then shard 24\'s budget with both logs');
+  for (const job of ['walk', 'scroll'])
+    assert.match(workflowJob(`e2e_tour_${job}`), new RegExp(`set -o pipefail\\n\\s+node src/e2e/tour-${job}\\.test\\.mjs \\| tee "\\$RUNNER_TEMP/tour-${job}\\.log"\\n\\s+node src/e2e/shard-cases\\.mjs ${job} "\\$RUNNER_TEMP/tour-${job}\\.log"\\n`),
+      `the tour ${job} step checks its log right after the run`);
+}
 assert.deepStrictEqual(selectSmokeSections(definitions, { E2E_SECTION: '27,28' }).selected.map(({ id }) => id), ['27', '28'],
   'a local section selector must run exactly the requested H1 regressions');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '999' }), /unknown E2E_SECTION ID/,
@@ -172,7 +799,7 @@ assert.throws(() => selectSmokeSections(definitions, { E2E_SECTION: '\t' }), /E2
   'a whitespace-only section list must not silently become an unset selector');
 assert.throws(() => selectSmokeSections(definitions, { E2E_SHARD: `1/${SHARD_COUNT}`, E2E_SECTION: '27' }), /Set E2E_SHARD or E2E_SECTION, not both/,
   'local section selection and CI shard selection must remain mutually exclusive');
-assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const definition of failed\)[\s\S]*runSection\(definition, 2\)/,
+assert.match(smoke, /failed\.push\(definition\)[\s\S]*for \(const \[index, definition\] of failed\.entries\(\)\)[\s\S]*runSection\(definition, 2\)/,
   'the runner must collect failed sections and retry only that subset once');
 assert.match(smoke, /pass-after-section-retry:/,
   'a recovered section retry must be visible in CI output');
@@ -209,8 +836,10 @@ assert.doesNotMatch(workflow, /elif\s+node\s+src\/e2e\/smoke\.mjs/,
   'CI must never restore the old whole-suite second attempt');
 assert.match(workflow, /^\s{2}e2e:\s*\n\s*name:\s*e2e\s*$/m,
   'the exact branch-protection context `e2e` must remain present');
-assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface\]/,
-  'the required e2e context must aggregate both smoke and AI-surface jobs');
+assert.match(workflow, /needs:\s*\[e2e_smoke, e2e_ai_surface, e2e_tour_scroll, e2e_tour_walk\]/,
+  'the required e2e context must aggregate the smoke, AI-surface, tour-scroll and tour-walk jobs');
+assert.match(workflowJob('e2e'), /\[ "\$TOUR_SCROLL_RESULT" != success \]/, 'the e2e context fails when the tour scroll does');
+assert.match(workflowJob('e2e'), /\[ "\$TOUR_WALK_RESULT" != success \]/, 'the e2e context fails when the tour walk does');
 assert.match(workflow, new RegExp(`e2e_smoke_failure_shard-\\$\\{\\{ matrix\\.shard \\}\\}-of-${SHARD_COUNT}_section-\\*-attempt-\\*\\.png`),
   'failure evidence must retain every section attempt and remain unique per matrix child');
 
@@ -277,6 +906,8 @@ assert.match(e2eSmokeJob, /if printf '%s\\n' "\$webkit_shards" \| grep -qx "\$SH
   'the shard-needs-WebKit branch must echo "browsers=chromium webkit" and the else branch "browsers=chromium" — not both branches emitting the same thing');
 assert.match(e2eSmokeJob, /playwright install --with-deps \$\{\{ steps\.webkit_need\.outputs\.browsers \}\}/,
   'the e2e_smoke job must install exactly the browser set webkit_need computed');
+assert.match(e2eSmokeJob, /\n\s+t=\$\(date \+%s\)\n\s+npx playwright install --with-deps \$\{\{ steps\.webkit_need\.outputs\.browsers \}\}\n\s+echo "E2E_INSTALL_S=\$\(\( \$\(date \+%s\) - t \)\)" >> "\$GITHUB_ENV"\n[\s\S]*- name: Boot the production server and run the smoke suite/,
+  'the browser install is timed around exactly its own command, into E2E_INSTALL_S, before the Boot step\'s wall check reads it');
 assert.doesNotMatch(e2eSmokeJob, /playwright install --with-deps chromium\s*$/m,
   'the e2e_smoke job must not fall back to an unconditional chromium-only install (that would silently skip WebKit again)');
 
@@ -298,14 +929,16 @@ assert.match(e2eBuildStep, /VITE_E2E_FETCH_TIMEOUT_MS:\s*'5000'/,
   'only the dedicated e2e artifact should receive the short client timeout');
 assert.match(buildJob, /name:\s*dist\s*$[\s\S]*Build short-timeout e2e bundle[\s\S]*name:\s*dist-e2e\s*$/m,
   'the production artifact must be uploaded before the test-only rebuild overwrites dist');
-assert.strictEqual((workflow.match(/name:\s*dist-e2e\s*$/gm) ?? []).length, 3,
-  'dist-e2e must have one upload and exactly two browser-e2e downloads');
+assert.strictEqual((workflow.match(/name:\s*dist-e2e\s*$/gm) ?? []).length, 5,
+  'dist-e2e must have one upload and exactly four browser-e2e downloads');
 for (const job of [
   workflowJob('e2e_smoke'),
   workflowJob('e2e_ai_surface'),
+  workflowJob('e2e_tour_scroll'),
+  workflowJob('e2e_tour_walk'),
 ]) {
   assert.match(job, /name:\s*dist-e2e\s*$/m,
-    'both browser E2E jobs must consume the short-timeout artifact');
+    'every browser E2E job must consume the short-timeout artifact');
 }
 for (const job of [
   workflowJob('integration'),
@@ -316,6 +949,103 @@ for (const job of [
   assert.doesNotMatch(job, /name:\s*dist-e2e\s*$/m,
     'the test-only timeout artifact must not leak into integration or mobile');
 }
+
+// TASK-18 sweeps 6, 7, 9, 10: a 64-252 kB/s runner apt mirror put `playwright install --with-deps` at 225-784 s, over the
+// 420 s smoke wall and the tour timeouts, on shards whose sections fit (CI 36759762921 attempt 1, 36769717770). Sweep 14
+// (CI 36784197311): the Playwright CDN then served chromium at 0.8 MB/s, 215 s on smoke 22. The browser_deps job fills
+// one cache of every browser job's system packages and one per browser build before their clocks start
+// (.github/actions/browser-deps); every ubuntu job that installs with deps needs it and restores first what it installs,
+// and only browser_deps saves.
+const browserDepsAction = readFileSync('.github/actions/browser-deps/action.yml', 'utf8');
+function browserDepsProblems(wf: string, action: string): string[] {
+  const jobs = new Map(wf.slice(wf.indexOf('\njobs:\n')).split(/^  (?=[a-z0-9_-]+:\s*$)/m).slice(1)
+    .map((body) => [body.slice(0, body.indexOf(':')), body] as [string, string]));
+  const problems: string[] = [], restore = '- name: Restore the browser system packages and builds', uses = 'uses: ./.github/actions/browser-deps';
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  // A cache step's path, verbatim (one line or a `|` block), so a save and its restore must name the same files.
+  const pathOf = (step: string) => step.match(/\n( +)path: \|\n((?:\1 +\S[^\n]*\n)+)/)?.[2].replace(/^ +/gm, '') ?? step.match(/\n\s+path: (\S[^\n]*)\n/)?.[1];
+  const actionStep = (id: string) => action.split(/^    - /m).find((st) => st.startsWith(`id: ${id}\n`)) ?? '';
+  const archive = action.match(/Dir::Cache::Archives "([^"]+)\/";/)?.[1], path = pathOf(actionStep('restore'));
+  if (!archive || path !== `${archive}/*.deb`) problems.push(`the action restores ${path}, not the .debs of the archive apt writes (${archive}); apt's lock and partial/ are unreadable to the save`);
+  // Sweep 11 (CI 36774742769): 27 of 48 jobs upgraded glib/xvfb/libxml2 the filling runner already had at newest.
+  if (!/'APT::Get::Upgrade "false";'/.test(action)) problems.push('apt must not upgrade what the image ships (APT::Get::Upgrade "false"): those upgrades are never cached');
+  // Sweep 12 (CI 36778548533): unpacking local .debs took 58.8 s on WebKit shard 19, overhead 145 s over _overhead_ms.
+  if (!/\n\s+echo force-unsafe-io \| sudo tee \/etc\/dpkg\/dpkg\.cfg\.d\/99pw-unsafe-io > \/dev\/null\n/.test(action))
+    problems.push('dpkg must skip its per-file fsync (force-unsafe-io): a slow runner disk otherwise puts the unpack on the job clock');
+  if (!/jq -r '\.packages\["node_modules\/playwright-core"\]\.version \/\/ empty' package-lock\.json/.test(action) || !/key=pw-apt-\$ImageOS-playwright-\$v-\$ImageVersion"/.test(action))
+    problems.push('the cache key must follow the runner image and the locked playwright-core version');
+  // The builds: chromium (with its headless shell and ffmpeg) always, WebKit only for a job that names it.
+  const builds = { chromium: '~/.cache/ms-playwright/chromium*\n~/.cache/ms-playwright/ffmpeg-*\n', webkit: '~/.cache/ms-playwright/webkit-*' } as const;
+  for (const [engine, want] of Object.entries(builds)) {
+    const step = actionStep(engine);
+    if (!/uses: actions\/cache\/restore@v4\n/.test(step) || pathOf(step) !== want) problems.push(`the action must restore the ${engine} build (${JSON.stringify(want)}), got ${JSON.stringify(pathOf(step))}`);
+    if (!step.includes(`key: \${{ steps.key.outputs.${engine} }}`) || !new RegExp(`echo "${engine}=pw-build-\\$ImageOS-${engine}-playwright-\\$v" >> "\\$GITHUB_OUTPUT"`).test(action))
+      problems.push(`the ${engine} build's cache key must follow the locked playwright-core version`);
+    if (!step.includes('lookup-only: ${{ inputs.lookup-only }}')) problems.push(`the ${engine} build restore must honour lookup-only (browser_deps only fills)`);
+  }
+  if (!/^if: contains\(inputs\.browsers, 'webkit'\)\n/m.test(actionStep('webkit').split('\n').slice(1).join('\n').replace(/^\s+/gm, '')))
+    problems.push('the WebKit build must restore only for a job that installs webkit');
+  const fill = jobs.get('browser_deps') ?? '';
+  if (!new RegExp(`- id: deps\\n\\s+${esc(uses)}\\n\\s+with:\\n\\s+browsers: chromium webkit\\n\\s+lookup-only: 'true'\\n`).test(fill))
+    problems.push('the browser_deps job must look up every cache through the action (id: deps, chromium webkit, lookup-only) first');
+  const fills = [['cache-hit', 'key', 'npx playwright install-deps chromium webkit', path ?? ''], ['chromium-hit', 'chromium-key', 'npx playwright install chromium', builds.chromium],
+    ['webkit-hit', 'webkit-key', 'npx playwright install webkit', builds.webkit]] as const;
+  const steps = fill.split(/^      - /m).slice(3);
+  for (const [hit, key, run, saved] of fills) {
+    const gate = `if: steps.deps.outputs.${hit} != 'true'`;
+    if (!steps.some((st) => st.includes(gate) && st.includes(`run: ${run}\n`))) problems.push(`the browser_deps job must run \`${run}\` exactly when ${hit} misses (union of every browser job's engines)`);
+    if (!steps.some((st) => st.includes(gate) && /uses: actions\/cache\/save@v4\n/.test(st) && pathOf(st) === saved && st.includes(`key: \${{ steps.deps.outputs.${key} }}`)))
+      problems.push(`the browser_deps job must save the path the action restores under ${key}, when ${hit} misses`);
+  }
+  if (steps.length < 8 || steps.some((st) => !/if: steps\.deps\.outputs\.[a-z-]+ != 'true'/.test(st))) problems.push('every browser_deps step after the lookup must be skipped on a cache hit');
+  for (const [name, body] of jobs) {
+    if (name !== 'browser_deps' && /actions\/cache(\/save)?@/.test(body)) problems.push(`${name} saves a cache: only browser_deps may (parallel saves of one key race)`);
+    const install = body.indexOf('playwright install --with-deps');
+    if (install < 0 || !/runs-on: ubuntu-latest/.test(body)) continue;
+    if (!/needs: \[[^\]]*\bbrowser_deps\b[^\]]*\]/.test(body)) problems.push(`${name} installs with deps but does not need browser_deps`);
+    const at = body.indexOf(restore), engines = body.match(/playwright install --with-deps ([^\n]+)/)?.[1];
+    if (at < 0 || !body.slice(at).startsWith(`${restore} (a slow apt mirror or Playwright CDN stays off this job's clock)\n        ${uses}\n        with:\n          browsers: ${engines}\n`) || at > install)
+      problems.push(`${name} installs with deps before restoring the browser system packages and the builds it installs`);
+    if (engines === '${{ steps.webkit_need.outputs.browsers }}' && !(body.indexOf('id: webkit_need') >= 0 && body.indexOf('id: webkit_need') < at))
+      problems.push(`${name} restores before webkit_need names its engines`);
+    for (const [, e] of body.matchAll(/playwright install --with-deps ([^\n]+)/g))
+      if (!/^(chromium|chromium webkit|\$\{\{ steps\.webkit_need\.outputs\.browsers \}\})$/.test(e)) problems.push(`${name} installs ${e}, which browser_deps does not fetch`);
+  }
+  for (const [, engines] of wf.matchAll(/echo "browsers=([^"]+)" >> "\$GITHUB_OUTPUT"/g))
+    if (!['chromium', 'chromium webkit'].includes(engines)) problems.push(`a shard installs ${engines}, which browser_deps does not fetch`);
+  return problems;
+}
+assert.deepStrictEqual(browserDepsProblems(workflow, browserDepsAction), [], 'every browser job takes its system packages and builds from the browser_deps caches');
+assert.deepStrictEqual([...workflow.matchAll(/^  ([a-z0-9_]+):\n(?:(?!^  \S)[\s\S])*?playwright install --with-deps/gm)].map((m) => m[1]),
+  ['integration', 'e2e_smoke', 'e2e_ai_surface', 'e2e_tour_scroll', 'e2e_tour_walk', 'mobile'], 'the ubuntu jobs that install with deps (the guard\'s known positives)');
+// Each rule fails by name on a one-line mutant of the real files.
+const depsMutant = (from: string | RegExp, to: string, text = workflow) => { const out = text.replace(from, to); assert.notStrictEqual(out, text, `mutant ${from} applies`); return out; };
+const walkBody = workflowJob('e2e_tour_walk'), smokeBody = workflowJob('e2e_smoke');
+const smokeRestore = smokeBody.match(/      - name: Restore the browser system packages and builds[^\n]*\n(?:[^\n]+\n){3}\n/)?.[0] ?? '';
+for (const [wf, action, want] of [
+  [depsMutant(walkBody, walkBody.replace(/      - name: Restore the browser system packages and builds[^\n]*\n(?:[^\n]+\n){3}\n/, '')), browserDepsAction, 'e2e_tour_walk installs with deps before restoring'],
+  [depsMutant(walkBody, walkBody.replace(/(Restore the browser system packages and builds[^\n]*\n[^\n]*\n[^\n]*\n\s+browsers: )chromium webkit/, '$1chromium')), browserDepsAction, 'e2e_tour_walk installs with deps before restoring'],
+  [depsMutant(smokeBody, smokeBody.replace(smokeRestore, '').replace('      - name: Download the short-timeout e2e bundle\n', `${smokeRestore}      - name: Download the short-timeout e2e bundle\n`)), browserDepsAction, 'e2e_smoke restores before webkit_need'],
+  [depsMutant(/(  mobile:\n[\s\S]*?)needs: \[build, browser_deps\]/, '$1needs: build'), browserDepsAction, 'mobile installs with deps but does not need browser_deps'],
+  [depsMutant('run: npx playwright install-deps chromium webkit\n', 'run: npx playwright install-deps chromium\n'), browserDepsAction, 'union of every browser job\'s engines'],
+  [depsMutant('run: npx playwright install webkit\n', 'run: npx playwright install chromium\n'), browserDepsAction, '`npx playwright install webkit` exactly when webkit-hit misses'],
+  [depsMutant(/(uses: actions\/cache\/save@v4\n\s+with:\n\s+path: )\/var\/cache\/pw-apt\/\*\.deb/, '$1/var/cache/pw-apt'), browserDepsAction, 'must save the path the action restores under key'],
+  [depsMutant('            ~/.cache/ms-playwright/ffmpeg-*\n          key: ${{ steps.deps.outputs.chromium-key }}', '          key: ${{ steps.deps.outputs.chromium-key }}'), browserDepsAction, 'must save the path the action restores under chromium-key'],
+  [depsMutant('key: ${{ steps.deps.outputs.webkit-key }}', 'key: ${{ steps.deps.outputs.chromium-key }}'), browserDepsAction, 'must save the path the action restores under webkit-key'],
+  [depsMutant("          lookup-only: 'true'\n", ''), browserDepsAction, 'lookup-only) first'],
+  [workflow, depsMutant('path: /var/cache/pw-apt/*.deb', 'path: /var/cache/pw-apt', browserDepsAction), 'not the .debs of the archive apt writes'],
+  [workflow, depsMutant('-$ImageVersion"', '"', browserDepsAction), 'the cache key must follow the runner image'],
+  [workflow, depsMutant(` 'APT::Get::Upgrade "false";'`, '', browserDepsAction), 'apt must not upgrade what the image ships'],
+  [workflow, depsMutant(/\n\s+echo force-unsafe-io[^\n]*/, '', browserDepsAction), 'dpkg must skip its per-file fsync'],
+  [workflow, depsMutant('          ~/.cache/ms-playwright/ffmpeg-*\n        key: ${{ steps.key.outputs.chromium }}', '        key: ${{ steps.key.outputs.chromium }}', browserDepsAction), 'the action must restore the chromium build'],
+  [workflow, depsMutant("      if: contains(inputs.browsers, 'webkit')\n", '', browserDepsAction), 'restore only for a job that installs webkit'],
+  [workflow, depsMutant('webkit=pw-build-$ImageOS-webkit-playwright-$v', 'webkit=pw-build-$ImageOS-webkit', browserDepsAction), 'the webkit build\'s cache key must follow'],
+  [workflow, depsMutant(/(id: webkit\n[\s\S]*?)\n\s+lookup-only: \$\{\{ inputs\.lookup-only \}\}/, '$1', browserDepsAction), 'the webkit build restore must honour lookup-only'],
+  [depsMutant("        if: steps.deps.outputs.cache-hit != 'true'\n        run: npx playwright install-deps", '        run: npx playwright install-deps'), browserDepsAction, 'skipped on a cache hit'],
+  [depsMutant('echo "browsers=chromium webkit"', 'echo "browsers=chromium firefox"'), browserDepsAction, 'a shard installs chromium firefox'],
+  [depsMutant('      - name: Install headless browsers for this shard\n', '      - uses: actions/cache@v4\n        with:\n          path: x\n          key: x\n\n      - name: Install headless browsers for this shard\n'), browserDepsAction, 'e2e_smoke saves a cache'],
+] as [string, string, string][])
+  assert.ok(browserDepsProblems(wf, action).some((p) => p.includes(want)), `the browser deps guard names "${want}" (got ${JSON.stringify(browserDepsProblems(wf, action))})`);
 assert.match(liveWorkflow, /LIVE_WAIT_MINUTES:\s*'5'/,
   'deploy verification must stop waiting for an asset after five minutes');
 const timeoutInitializer = app.match(
@@ -417,3 +1147,33 @@ assert(doubleActivationFailures(daMissing).some((f) => f.includes('section 29'))
 assert.strictEqual(doubleActivationFailures(daReal).length, 0, 'no false positives on the real suite');
 
 console.log(`✓ double-activation contract: ${Object.keys(DOUBLE_ACTIVATION_SECTIONS).length} same-tick guards, ${daReal.size} sections scanned`);
+
+// Sweep 12 §75/§83: WebKit's offline text names no host, so the text-only analytics filter let a host network
+// blip fail a green run. Analytics noise is decided by the failing resource's URL; own-origin failures still count.
+{
+  const offline = 'Failed to load resource: The Internet connection appears to be offline.'; // verbatim, sweep12/75.log
+  const noise = [[offline, 'https://www.googletagmanager.com/gtag/js?id=G-9LRR4211HX'],
+    ['Failed to load resource: WebKit encountered an internal error', 'https://www.googletagmanager.com/gtag/js?id=X'],
+    ['Failed to load resource: net::ERR_INTERNET_DISCONNECTED', 'https://www.google.com/g/collect?v=2&tid=G-9LRR4211HX'],
+    ['Failed to load resource: net::ERR_INTERNET_DISCONNECTED', 'https://region1.analytics.google.com/g/collect?v=2']];
+  const real = [[offline, 'http://localhost:3001/api/games'], [offline, 'http://localhost:3001/assets/index-abc.js'],
+    [offline, 'https://googletagmanager.com.evil.test/gtag/js'], [offline, 'http://localhost:3001/?r=https://www.googletagmanager.com/'],
+    ['PAGEERROR: boom', '']];
+  for (const [text, url] of noise) assert.ok(isAnalyticsNoise({ text, url }), `analytics noise is filtered: ${url}`);
+  for (const [text, url] of real) assert.ok(!isAnalyticsNoise({ text, url }), `an app failure still counts: ${url || text}`);
+  // Per listener, not per file (a file-wide match let §39 drop its URL): every web-UA page keeps the URL and its
+  // list is filtered by it. Electron-UA pages (dp) never load gtag (index.html skips it), so they stay text-only.
+  const want = { 'smoke.mjs': ['p', 'flapPage', 'dp', 'dp', 'dp'], 'mobile.mjs': ['page'], 'ai-surface.mjs': ['page'] };
+  for (const [file, receivers] of Object.entries(want)) {
+    const src = file === 'smoke.mjs' ? smoke : readFileSync(`src/e2e/${file}`, 'utf8');
+    const seen = [...src.matchAll(/(\w+)\.on\('console', \(m\) => \{([\s\S]*?)\}\);/g)];
+    assert.deepStrictEqual(seen.map((m) => m[1]), receivers, `${file}: the console listeners are the known pages`);
+    for (const [, who, body] of seen.filter((m) => m[1] !== 'dp')) {
+      const list = body.match(/(\w+)\.push\(/)?.[1];
+      assert.match(body, /url: m\.location\(\)\?\.url \?\? ''/, `${file} ${who}: the console listener keeps the failing resource's URL`);
+      assert.match(src, new RegExp(`\\b${list}\\b[\\s\\S]{0,200}?\\.filter\\(\\((\\w+)\\) => !isAnalyticsNoise\\(\\1\\)`),
+        `${file} ${who}: ${list} is filtered by URL (isAnalyticsNoise)`);
+    }
+  }
+  console.log(`✓ console noise: ${noise.length} analytics failures filtered by URL, ${real.length} app failures still counted`);
+}
