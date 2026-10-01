@@ -144,9 +144,11 @@ const save = (store: ReturnType<typeof create>, userId: string, extraBytes = 0) 
 // Sweep 22: a re-check that was out when a save of ours was acked must not be served once that
 // save's copy is gone again (a later 412, eviction): it may predate the acked save.
 const heldStat = (bucket: ReturnType<typeof memoryBucket>) => {
-  const h = { hold: false, release: () => {} };
+  const h = { hold: false, holdRead: false, release: () => {} };
   const gate = new Promise<void>((r) => (h.release = r));
-  const wrapped = { ...bucket, stat: async (name: string) => { const held = h.hold; const r = await bucket.stat(name); if (held) await gate; return r; } };
+  const wrapped = { ...bucket,
+    stat: async (name: string) => { const held = h.hold; const r = await bucket.stat(name); if (held) await gate; return r; },
+    read: async (name: string, gen: string) => { const held = h.holdRead; const r = await bucket.read(name, gen); if (held) await gate; return r; } };
   return { h, wrapped };
 };
 {
@@ -186,6 +188,44 @@ const heldStat = (bucket: ReturnType<typeof memoryBucket>) => {
   const get = S.snapshot(['u_e'], t + 1_000);
   setTimeout(() => h.release(), 50);
   assert((await get)[0].games.some((q) => q.id === x.id), 'after eviction, the GET lists the acked game'); n++;
+}
+
+for (const peerFirst of [false, true]) {
+  // Sweep 23: verification counts from when the stat was SENT. A refusal on A re-checks; joining A's
+  // re-check sent before B's acked write would hand back the copy from before it, so A asks afresh.
+  // peerFirst: a peer wrote before A's re-check, so it downloads rather than matching A's generation.
+  const bucket = memoryBucket();
+  const { h, wrapped } = heldStat(bucket);
+  let t = 0;
+  const A = create({ bucket: wrapped, capBytes: 30_000, now: () => t });
+  const B = create({ bucket, capBytes: 30_000, now: () => t });
+  while ((await save(A, 'u_j')) === 'saved');
+  t += 60_000;
+  if (peerFirst) bucket.peerWrite(A.objectName('u_j'), bucket.objects.get(A.objectName('u_j'))!.body);
+  h[peerFirst ? 'holdRead' : 'hold'] = true;
+  await A.snapshot(['u_j'], t); // a GET on A: its re-check is sent now, its answer (stat, or download) slow
+  await B.snapshot(['u_j'], t);
+  const onB = bigGame('u_j');
+  await B.mutate('u_j', (g) => ({ games: [...g.slice(2), onB], result: 'swapped' }));
+  h.hold = h.holdRead = false;
+  t += 1_000;
+  const find = A.mutate('u_j', (g) => ({ result: g.some((q) => q.id === onB.id) ? 'found' : 'not found' }));
+  const post = save(A, 'u_j');
+  setTimeout(() => h.release(), 50);
+  assert.deepStrictEqual([await find, await post], ['found', 'saved'], `A finds the game B acked and saves into the room B made (peer wrote first: ${peerFirst})`); n++;
+}
+{
+  // Instances racing for one object: a download whose generation a peer replaced meanwhile is
+  // followed, with the same budget as a 412 (a 3-way storm failed ~3% of saves at 2 tries).
+  const bucket = memoryBucket();
+  const s = create({ bucket, capBytes: 1e6 });
+  await save(s, 'u_v');
+  const name = s.objectName('u_v');
+  let races = 5;
+  const racing = { ...bucket, read: async (n2: string, gen: string) => { if (races-- > 0) bucket.peerWrite(n2, bucket.objects.get(n2)!.body); return bucket.read(n2, gen); } };
+  const s2 = create({ bucket: racing, capBytes: 1e6 });
+  assert.strictEqual(await save(s2, 'u_v'), 'saved', 'five peer writes between stat and download: the save still lands'); n++;
+  assert.strictEqual(storedGames(bucket, name)!.length, 2, 'with both games'); n++;
 }
 
 console.log(`sybilfill.cloud.test.ts: ${n} checks passed`);

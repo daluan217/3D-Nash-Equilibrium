@@ -262,6 +262,15 @@ for (const [label, transform, why] of [
   assert.strictEqual(b.ops.write, w, 'and a re-run writes nothing'); n++;
 }
 
+// 13b. A differing copy's identity can't collide with a row whose own id looks like one (Sweep 23):
+// ids g_x, g_x (other bytes) and 'g_x#2' are three rows; every run succeeds and keeps all three.
+{
+  const b = memoryBucket();
+  const L = [g('g_x', 'u_h', { name: 'A' }), g('g_x', 'u_h', { name: 'B' }), g('g_x#2', 'u_h', { name: 'C' })];
+  for (let run = 0; run < 3; run++) await create({ bucket: b, capBytes: CAP }).migrate(L);
+  assert.deepStrictEqual(storedGames(b, create({ bucket: b, capBytes: CAP }).objectName('u_h'))!.map((x) => x.name), ['A', 'B', 'C'], 'three rows, three games, on every run'); n++;
+}
+
 // 14. Deletions owed to accounts removed elsewhere are retried until they land (Sweep 19, finding 4).
 {
   const b = memoryBucket();

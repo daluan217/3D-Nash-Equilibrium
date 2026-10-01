@@ -103,6 +103,8 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   const { bucket, capBytes, freshMs, cacheBytes, now } = opts;
   const log = opts.log ?? (() => {});
   const MAX_412 = 8; // re-read + re-apply rounds before an honest 503
+  // Jittered: instances racing for one object would otherwise re-collide in lockstep.
+  const backoff = (attempt: number) => new Promise((r) => setTimeout(r, Math.random() * Math.min(1_000, 25 * 2 ** attempt)));
   const READ_BACKOFF_MS = 30_000;
 
   // A legacy row with no usable owner keeps its bytes in `games/.json`: no
@@ -138,7 +140,8 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   };
 
   // freshUntil: when snapshot next re-checks (a failed re-check pushes it out);
-  // verifiedAt: when GCS last confirmed this copy (a read, a matching stat, our write).
+  // verifiedAt: GCS held this copy at some moment after it, i.e. the time the
+  // confirming stat (or our write) was SENT, never when its slow answer came.
   interface Entry { games: readonly G[]; generation: string; bytes: number; freshUntil: number; verifiedAt: number; deleted?: boolean; migrated: Migrated }
   const cache = new Map<string, Entry>(); // insertion order = LRU order
   let cachedBytes = 0;
@@ -197,23 +200,26 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         for (let vanished = 0; ;) {
           overtaken.delete(key);
           const start = cache.get(key);
+          const asOf = now();
           const st = await bucket.stat(name);
           let next: Entry | null = null;
-          if (st === null) next = { games: [], generation: "0", bytes: sizeOf(key, []), freshUntil: now() + freshMs, verifiedAt: now(), migrated: NONE };
+          if (st === null) next = { games: [], generation: "0", bytes: sizeOf(key, []), freshUntil: asOf + freshMs, verifiedAt: asOf, migrated: NONE };
           else if (!start || start.generation !== st.generation) {
             const raw = await bucket.read(name, st.generation);
             if (raw === null) {
-              if (vanished++ < 2) continue; // a peer wrote between the stat and the download: follow it
+              // A peer wrote between the stat and the download: follow it, with the
+              // write path's budget and jitter (instances racing for one object).
+              if (vanished < MAX_412) { await backoff(vanished++); continue; }
               throw new AccountStoreUnavailable(`${name}: generation ${st.generation} vanished before it could be read`);
             }
-            next = parse(key, raw, st.generation);
+            next = { ...parse(key, raw, st.generation), freshUntil: asOf + freshMs, verifiedAt: asOf };
           }
           const cur = cache.get(key);
           if (cur !== undefined && cur !== start) return cur; // our own write landed meanwhile: it is at least as new
           if (overtaken.has(key)) continue; // ... and its copy is gone again: what this read found may predate it
           if (next === null) { // unchanged since the copy held
-            start!.freshUntil = now() + freshMs;
-            start!.verifiedAt = now();
+            start!.freshUntil = asOf + freshMs;
+            start!.verifiedAt = asOf;
             return start!;
           }
           put(key, next);
@@ -306,7 +312,10 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         if (!rechecked && now() - cur.verifiedAt >= freshMs) {
           rechecked = true;
           try {
-            await refresh(key);
+            // Joining a re-check sent before this one asked may yield what GCS held
+            // before a peer's acked write (sweep 23): then ask once more, afresh.
+            const asked = now();
+            if ((await refresh(key)).verifiedAt < asked) await refresh(key);
           } catch (err) {
             throw new AccountStoreUnavailable(`${objectName(key)} re-check failed: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -318,9 +327,10 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
       const name = objectName(key);
       try {
         const text = deleting ? tombstone(key) : body(key, games, migrated);
+        const asOf = now();
         const generation = await bucket.write(name, text, cur.generation, { count: deleting ? "0" : String(games.length) });
-        const next: Entry = deleting ? { games: [], generation: generation ?? "", bytes: Buffer.byteLength(text), freshUntil: now() + freshMs, verifiedAt: now(), deleted: true, migrated: NONE }
-          : { games, generation: generation ?? "", bytes, freshUntil: now() + freshMs, verifiedAt: now(), migrated };
+        const next: Entry = deleting ? { games: [], generation: generation ?? "", bytes: Buffer.byteLength(text), freshUntil: asOf + freshMs, verifiedAt: asOf, deleted: true, migrated: NONE }
+          : { games, generation: generation ?? "", bytes, freshUntil: asOf + freshMs, verifiedAt: asOf, migrated };
         if (generation === null) drop(key); // landed, generation unknown: the next use re-reads
         else put(key, next);
         wroteHere(key);
@@ -330,8 +340,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
       } catch (err) {
         drop(key); // stale (412) or unknown (a deadline may still land): never build on this copy again
         if ((err as { code?: unknown })?.code === 412 && attempt < MAX_412) {
-          // Jittered backoff: instances racing for one object would otherwise re-collide in lockstep.
-          await new Promise((r) => setTimeout(r, Math.random() * Math.min(1_000, 25 * 2 ** attempt)));
+          await backoff(attempt);
           continue;
         }
         throw new AccountStoreUnavailable(`${name} write failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -483,7 +492,8 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
       return out;
     };
     // Identity, stable across runs over the same array: the id (copies that
-    // differ get #2, #3... in order; byte-identical copies share one), or with
+    // differ are id#2:, id#3:... in order, a prefix no plain id:<id> can take
+    // whatever the id holds; byte-identical copies share one), or with
     // no string id the row's JSON plus its occurrence number, so identical
     // id-less rows are neither merged nor duplicated.
     const identities = (rows: readonly G[]) => {
@@ -494,7 +504,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
           const copies = seen.get(g.id) ?? [];
           let k = copies.indexOf(j);
           if (k === -1) { k = copies.length; copies.push(j); seen.set(g.id, copies); }
-          return k === 0 ? `id:${g.id}` : `id:${g.id}#${k + 1}`;
+          return k === 0 ? `id:${g.id}` : `id#${k + 1}:${g.id}`;
         }
         const k = occ.get(j) ?? 0;
         occ.set(j, k + 1);
