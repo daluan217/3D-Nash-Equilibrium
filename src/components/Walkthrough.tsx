@@ -91,6 +91,28 @@ export const tourTargetScrollDelta = (targetTop: number, targetHeight: number, s
     ? targetTop - stripTop
     : (targetTop + targetHeight / 2) - (stripTop + stripHeight / 2);
 
+/** Absolute scroll target for a delta measured at `scrollY` (clamped at the page top). Unrounded (H21): a 0.22px
+ *  re-layout straddled .5 and two rounded keys differed by 1, so the same placement scrolled twice. */
+export const tourScrollTarget = (scrollY: number, delta: number) => Math.max(0, scrollY + delta);
+
+/** A re-run for the same step that computes the same target (within 1px) must not scroll again. */
+export const tourScrollIsRepeat = (issued: { i: number; top: number } | null, i: number, top: number) =>
+  !!issued && issued.i === i && Math.abs(issued.top - top) < 1;
+
+/** A tour scroll still moving. `i`: the step that issued or adopted it; `retry`: no visitor input since. */
+export type TourScrollFlight = { top: number; i: number; retry: boolean };
+/** H22: a step scrolls unless the page is at its destination, or a live flight is already headed there
+ *  (WebKit cancels a repeated same-top smooth scroll; an instant one mid-flight lands wrong in Chromium). */
+export const tourScrollMoves = (flight: TourScrollFlight | null, top: number, scrollY: number) =>
+  Math.abs((flight ? flight.top : scrollY) - top) >= 1;
+/** A flight is over once the page holds still: 2 frames AND 150 ms after it has moved, 10 AND 1000 ms before.
+ *  In-app (236 flights, both engines, 0/550 ms frames, Chromium 1x/4x) none held still once moving; unmoved it sat
+ *  up to 3 frames, or 1 frame of 2.9 s, and 2+ frames never passed 416 ms. The FRAME leg is the protection (5x
+ *  headroom); single long frames beat the ms leg alone, so never loosen frames on the strength of ms.
+ *  Not scrollend: Safari < 26.2 has none, and a visitor's scroll can stop a flight short. */
+export const tourFlightStopped = (stillFrames: number, stillMs: number, moved: boolean) =>
+  moved ? stillFrames >= 2 && stillMs >= 150 : stillFrames >= 10 && stillMs >= 1000;
+
 /** Bottom edge of the sticky header, which overlays the top of the page. */
 function headerOffset(): number {
   // Called during render (the Exit pill's top): no DOM outside a browser.
@@ -353,8 +375,46 @@ export function Walkthrough({
    * pointing at. Small screens instead centre the target in the strip of
    * screen left above the sheet.
   */
+  // H19: the last scroll this effect issued, so a re-run for the same step and target is a no-op.
+  const issuedScrollRef = useRef<{ i: number; top: number } | null>(null);
+  // H22: the tour scroll still moving. One that stops short (WebKit cancels it when a step's layout shift
+  // clamps the page) is re-placed once per step, unless the visitor gave input since it was issued or
+  // adopted (a step's own Next input comes before both).
+  const flightRef = useRef<TourScrollFlight | null>(null);
+  const replacedRef = useRef(-1);
+  const [replace, setReplace] = useState(0);
   useEffect(() => {
-    if (!open || !step) return;
+    const onInput = () => { if (flightRef.current) flightRef.current.retry = false; };
+    const inputs = ['wheel', 'touchstart', 'pointerdown', 'keydown'];
+    for (const t of inputs) window.addEventListener(t, onInput, { capture: true, passive: true });
+    return () => { for (const t of inputs) window.removeEventListener(t, onInput, { capture: true }); };
+  }, []);
+  const startFlight = (want: number) => {
+    const s = document.scrollingElement ?? document.documentElement;
+    const top = Math.min(want, s.scrollHeight - s.clientHeight); // the browser clamps; arrival must too
+    if (!tourScrollMoves(flightRef.current, top, window.scrollY)) {
+      if (flightRef.current) Object.assign(flightRef.current, { i, retry: true });
+      return false;
+    }
+    const flight: TourScrollFlight = { top, i, retry: true };
+    flightRef.current = flight;
+    let y = window.scrollY, since = performance.now(), still = 0, moved = false;
+    const watch = () => {
+      if (flightRef.current !== flight) return;
+      const cy = window.scrollY, now = performance.now();
+      if (Math.abs(cy - top) < 1) { flightRef.current = null; return; }
+      if (Math.abs(cy - y) >= 1) { y = cy; since = now; still = 0; moved = true; } else if (tourFlightStopped(++still, now - since, moved)) {
+        flightRef.current = null;
+        if (flight.retry && replacedRef.current !== flight.i) { replacedRef.current = flight.i; issuedScrollRef.current = null; setReplace((n) => n + 1); }
+        return;
+      }
+      requestAnimationFrame(watch);
+    };
+    requestAnimationFrame(watch);
+    return true;
+  };
+  useEffect(() => {
+    if (!open || !step) { issuedScrollRef.current = null; flightRef.current = null; replacedRef.current = -1; return; }
     const frame = requestAnimationFrame(() => {
       const el = document.querySelector(`[data-tour="${step.target}"]`);
       if (!el) return;
@@ -373,7 +433,12 @@ export function Walkthrough({
         floatHRef.current, tourFloatingCardWidth(window.innerWidth),
       );
       if (!willSheet && !isLand) {
-        el.scrollIntoView({ behavior, block: 'center' });
+        // H20: the same repeat key (the centred target in page coordinates) — WebKit cancelled a repeated
+        // smooth scrollIntoView mid-scroll (1024x1366, 550 ms frames: y=0, target under the card).
+        const centreTop = tourScrollTarget(window.scrollY, r0.top + r0.height / 2 - window.innerHeight / 2);
+        if (tourScrollIsRepeat(issuedScrollRef.current, i, centreTop)) return;
+        issuedScrollRef.current = { i, top: centreTop };
+        if (startFlight(centreTop)) el.scrollIntoView({ behavior, block: 'center' });
         return;
       }
       // The sticky header sits OVER the top of the page, so the usable strip
@@ -389,11 +454,17 @@ export function Walkthrough({
       // its top off screen at once. Align the top instead, so the part of the
       // picture being described is the part that stays visible.
       const delta = tourTargetScrollDelta(r0.top, r0.height, top, room);
-      window.scrollBy({ top: delta, behavior });
+      // Idempotent (TASK-18 H19): the effect re-runs when rect/cardH are measured, often mid-scroll.
+      // A relative scrollBy stacked on the pending one in WebKit (two runs -> y=996, target off-screen)
+      // and a repeated smooth scrollTo cancelled it (y=0). Absolute target; same target = no call.
+      const targetTop = tourScrollTarget(window.scrollY, delta);
+      if (tourScrollIsRepeat(issuedScrollRef.current, i, targetTop)) return;
+      issuedScrollRef.current = { i, top: targetTop };
+      if (startFlight(targetTop)) window.scrollTo({ top: targetTop, behavior });
     });
     return () => cancelAnimationFrame(frame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, placementKey]);
+  }, [open, i, placementKey, replace]);
 
   /**
    * OPUS-REVIEW-173/C2: the rendered layout FAMILY (bottom sheet vs floating

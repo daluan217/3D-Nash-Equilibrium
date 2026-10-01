@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
 import { chromium, devices } from 'playwright';
+import { isAnalyticsNoise } from './console-noise.mjs';
 import { dismissTourForSetup } from './tour.mjs';
 
 const PORT = process.env.MOBILE_PORT || '3097';
@@ -77,8 +78,8 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   const page = await ctx.newPage();
   page.setDefaultTimeout(120000);
   const errors = [];
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text().slice(0, 160)); });
-  page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message.slice(0, 160)));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push({ text: m.text().slice(0, 160), url: m.location()?.url ?? '' }); });
+  page.on('pageerror', (e) => errors.push({ text: 'PAGEERROR: ' + e.message.slice(0, 160) }));
 
   await page.goto(BASE, { waitUntil: 'networkidle' });
   record(`[${label}] the guided tour can be dismissed`, await dismissTour(page));
@@ -133,9 +134,8 @@ for (const label of ['iPhone 14 Pro', 'Pixel 7', 'iPad (gen 7)']) {
   // Exclude ONLY known third-party analytics. A blanket net::/ERR_ filter hid
   // failures of our own bundle, API and assets — exactly the breakage this
   // check exists to catch on a device.
-  const ANALYTICS = /googletagmanager|google-analytics|gtag|doubleclick|region1\.analytics/i;
-  const relevant = errors.filter((t) => !ANALYTICS.test(t));
-  record(`[${label}] no console or page errors`, relevant.length === 0, relevant.slice(0, 2).join(' | '));
+  const relevant = errors.filter((e) => !isAnalyticsNoise(e));
+  record(`[${label}] no console or page errors`, relevant.length === 0, relevant.slice(0, 2).map((e) => e.text).join(' | '));
   await ctx.close();
 }
 

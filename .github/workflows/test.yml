@@ -223,10 +223,72 @@ jobs:
           AUDIT_REQUIRE_SHIPPED: '1'
         run: node src/desktop/audit-packaged-asar.cjs
 
+  # TASK-18 sweeps 6, 7, 9, 10: a slow runner apt mirror (64-252 kB/s) made `playwright install --with-deps` take
+  # 225-784 s, which tripped the 420 s smoke wall check on shards whose sections were well inside budget and cancelled
+  # tour jobs at their timeouts. This job alone fills the browser deps cache (.github/actions/browser-deps), before any
+  # browser job's clock starts; every browser job needs it and only restores (dozens of parallel saves of one key race).
+  # It runs beside build, so a warm cache costs no wall time; a cold one spends the mirror's minutes here, once.
+  # Sweep 14 (CI 36784197311): the Playwright CDN then served chromium at 0.8 MB/s (215 s on smoke 22), so the browser
+  # builds are cached the same way: chromium with its headless shell and ffmpeg, and WebKit for the jobs that run it.
+  browser_deps:
+    name: browser deps cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: deps
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium webkit
+          lookup-only: 'true'
+
+      - if: steps.deps.outputs.cache-hit != 'true' || steps.deps.outputs.chromium-hit != 'true' || steps.deps.outputs.webkit-hit != 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - if: steps.deps.outputs.cache-hit != 'true' || steps.deps.outputs.chromium-hit != 'true' || steps.deps.outputs.webkit-hit != 'true'
+        run: npm ci
+
+      - name: Fetch every browser job's system packages (chromium and webkit cover them all)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npx playwright install-deps chromium webkit
+
+      - if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /var/cache/pw-apt/*.deb
+          key: ${{ steps.deps.outputs.key }}
+
+      # Sweep 14 (CI 36784197311): the Playwright CDN served chromium at 0.8 MB/s, 215 s on smoke 22's clock.
+      - name: Fetch the chromium build (with its headless shell and ffmpeg)
+        if: steps.deps.outputs.chromium-hit != 'true'
+        run: npx playwright install chromium
+
+      - if: steps.deps.outputs.chromium-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright/chromium*
+            ~/.cache/ms-playwright/ffmpeg-*
+          key: ${{ steps.deps.outputs.chromium-key }}
+
+      - name: Fetch the WebKit build
+        if: steps.deps.outputs.webkit-hit != 'true'
+        run: npx playwright install webkit
+
+      - if: steps.deps.outputs.webkit-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright/webkit-*
+          key: ${{ steps.deps.outputs.webkit-key }}
+
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: build
+    needs: [build, browser_deps]
     steps:
       - uses: actions/checkout@v5
 
@@ -237,6 +299,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium
 
       - name: Download the bundle built by the build job
         uses: actions/download-artifact@v4
@@ -686,17 +753,21 @@ jobs:
           COLORTERMS_RACE_PORT: '3182'
 
   e2e_smoke:
-    name: e2e smoke (${{ matrix.shard }}/35)
+    name: e2e smoke (${{ matrix.shard }}/38)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: build
+    needs: [build, browser_deps]
     strategy:
       # One bad shard must not cancel its siblings and destroy their evidence.
       # GitHub's "Re-run failed jobs" then re-runs only the failed matrix child.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]
     steps:
+      # First step: shard-cases.mjs clocks the job's wall from here against _ceiling_ms (sweep 3 F6).
+      - name: Start the job clock
+        run: echo "E2E_JOB_T0=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
@@ -742,17 +813,30 @@ jobs:
             echo "browsers=chromium" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: ${{ steps.webkit_need.outputs.browsers }}
+
       - name: Install headless browsers for this shard
-        run: npx playwright install --with-deps ${{ steps.webkit_need.outputs.browsers }}
+        # Timed: a wall-check trip names the install's seconds, so a slow runner mirror reads as one (TASK-18 sweep 6).
+        run: |
+          t=$(date +%s)
+          npx playwright install --with-deps ${{ steps.webkit_need.outputs.browsers }}
+          echo "E2E_INSTALL_S=$(( $(date +%s) - t ))" >> "$GITHUB_ENV"
 
       - name: Boot the production server and run the smoke suite
         # smoke.mjs retries only the failed named sections once. It never
-        # repeats the whole shard for a one-check SwiftShader stall.
+        # repeats the whole shard for a one-check SwiftShader stall. The exit
+        # code cannot see WHICH sections ran: shard-cases.mjs checks the log
+        # lists exactly this shard's, first attempts, in order (TASK-18 sweep 14),
+        # that their time fits the section budget the packing assumed, and the job's wall its ceiling.
         id: smoke
         run: |
           set +e
           node src/e2e/smoke.mjs 2>&1 | tee "$RUNNER_TEMP/e2e-smoke-${{ matrix.shard }}.log"
           status=${PIPESTATUS[0]}
+          node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-${{ matrix.shard }}.log" || [ "$status" -ne 0 ] || status=1
           set -e
           if [ "$status" -ne 0 ]; then
             echo "smoke_outcome=fail" >> "$GITHUB_OUTPUT"
@@ -763,7 +847,7 @@ jobs:
             echo "smoke_outcome=pass" >> "$GITHUB_OUTPUT"
           fi
         env:
-          E2E_SHARD: ${{ matrix.shard }}/35
+          E2E_SHARD: ${{ matrix.shard }}/38
           E2E_PORT: 309${{ matrix.shard }}
           E2E_BASE: http://localhost:309${{ matrix.shard }}
 
@@ -773,7 +857,12 @@ jobs:
       - name: Exercise section 47 after natural simulation completion
         if: matrix.shard == 24
         id: natural_stop
-        run: node src/e2e/smoke.mjs
+        run: |
+          set -o pipefail
+          node src/e2e/smoke.mjs 2>&1 | tee "$RUNNER_TEMP/e2e-smoke-47.log"
+          node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-47.log"
+          # Shard 24's section budget, charged this step's measured time, not its table entry.
+          env -u E2E_SECTION E2E_SHARD=24/38 node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-24.log" "$RUNNER_TEMP/e2e-smoke-47.log"
         env:
           E2E_SECTION: '47'
           E2E_SECTION47_NATURAL_STOP: '1'
@@ -788,8 +877,8 @@ jobs:
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-35_section-*-attempt-*.png
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-35_section-*-attempt-*.html
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-38_section-*-attempt-*.png
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-38_section-*-attempt-*.html
             /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.png
             /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log
@@ -800,7 +889,7 @@ jobs:
     name: e2e AI surface
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: build
+    needs: [build, browser_deps]
     steps:
       - uses: actions/checkout@v5
 
@@ -811,6 +900,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium
 
       - name: Download the short-timeout e2e bundle
         uses: actions/download-artifact@v4
@@ -847,27 +941,138 @@ jobs:
           E2E_PORT: '3098'
           E2E_BASE: http://localhost:3098
 
+      - name: Prove E2E_CPU_THROTTLE reaches every page smoke.mjs creates
+        # A throttle that silently skipped ctx.newPage() pages voided every local
+        # "green at 11x" for those sections (TASK-18 H16). Measured busy-loop ratio.
+        run: node src/e2e/throttle.test.mjs
+
+  e2e_tour_scroll:
+    name: e2e tour scroll (${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build, browser_deps]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium webkit
+
+      - name: Download the short-timeout e2e bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-e2e
+          path: dist
+
+      - name: Install headless Chromium and WebKit
+        # WebKit: the double-scroll defect was WebKit-only.
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: The guided tour scrolls to its target once, in chromium and webkit (TASK-18 H19, H20, H21)
+        # The step-1 scroll re-ran mid-flight; WebKit stacked the two relative scrolls (y=996, target off
+        # screen, card clamped to the top) and cancelled a repeated portrait scrollIntoView (y=0, H20).
+        # 42 cases (2 engines x layouts, 550 ms frames, sub-pixel re-layouts, mid-scroll re-targets, reopens),
+        # packed slowest-first over 2 shards by tour-timings.json (tour-cases.mjs packTour); non-zero exit on any failed check,
+        # the grep proves each ran.
+        run: |
+          set -o pipefail
+          node src/e2e/tour-scroll.test.mjs | tee "$RUNNER_TEMP/tour-scroll.log"
+          node src/e2e/shard-cases.mjs scroll "$RUNNER_TEMP/tour-scroll.log"
+          want=$(node --input-type=module -e "import { shardCases } from './src/e2e/shard-cases.mjs'; process.stdout.write(String(shardCases('scroll', process.env).length))")
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-scroll.log")" -eq "$want"
+          grep -q "^✓ tour scroll: shard ${{ matrix.shard }}/2, $want cases:" "$RUNNER_TEMP/tour-scroll.log"
+        env:
+          TOUR_SCROLL_PORT: '3099'
+          TOUR_SCROLL_SHARD: ${{ matrix.shard }}/2
+
+  e2e_tour_walk:
+    name: e2e tour walk (${{ matrix.shard }}/9)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build, browser_deps]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium webkit
+
+      - name: Download the short-timeout e2e bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-e2e
+          path: dist
+
+      - name: Install headless Chromium and WebKit
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: All 19 tour steps land, with scrollend removed, in chromium and webkit (TASK-18 H22)
+        # A same-target Next met a live flight WebKit then cancelled (step 16 at y=0, target off screen). 66 cases
+        # (2 engines x walk/flight/interrupt/long frame/slow/held start/page cancels in 3 Next modes), packed slowest-first
+        # over 9 shards by tour-timings.json (tour-cases.mjs packTour); the grep proves each ran. The packed CI timings fit
+        # the budget e2esharding checks; 8 cases a shard once ran 1071 s of this job's 1200 s (CI 36533916769).
+        run: |
+          set -o pipefail
+          node src/e2e/tour-walk.test.mjs | tee "$RUNNER_TEMP/tour-walk.log"
+          node src/e2e/shard-cases.mjs walk "$RUNNER_TEMP/tour-walk.log"
+          want=$(node --input-type=module -e "import { shardCases } from './src/e2e/shard-cases.mjs'; process.stdout.write(String(shardCases('walk', process.env).length))")
+          test "$(grep -c '^  · \[' "$RUNNER_TEMP/tour-walk.log")" -eq "$want"
+          grep -q "^✓ tour walk: shard ${{ matrix.shard }}/9, $want cases:" "$RUNNER_TEMP/tour-walk.log"
+        env:
+          TOUR_WALK_PORT: '3097'
+          TOUR_WALK_SHARD: ${{ matrix.shard }}/9
+
   # Branch protection requires the exact context "e2e". Keep that stable
   # while the implementation fans out behind it. The deploy gate therefore
-  # cannot pass until every smoke shard (the matrix above, packed by selection.js) and the AI-surface suite pass.
+  # cannot pass until every smoke shard (the matrix above, packed by selection.js), the AI-surface suite, the tour scroll and the tour walk pass.
   e2e:
     name: e2e
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [e2e_smoke, e2e_ai_surface]
+    needs: [e2e_smoke, e2e_ai_surface, e2e_tour_scroll, e2e_tour_walk]
     steps:
       - name: Require every e2e child job to pass
         env:
           SMOKE_RESULT: ${{ needs.e2e_smoke.result }}
           AI_SURFACE_RESULT: ${{ needs.e2e_ai_surface.result }}
+          TOUR_SCROLL_RESULT: ${{ needs.e2e_tour_scroll.result }}
+          TOUR_WALK_RESULT: ${{ needs.e2e_tour_walk.result }}
         run: |
-          if [ "$SMOKE_RESULT" != success ] || [ "$AI_SURFACE_RESULT" != success ]; then
+          if [ "$SMOKE_RESULT" != success ] || [ "$AI_SURFACE_RESULT" != success ] || [ "$TOUR_SCROLL_RESULT" != success ] || [ "$TOUR_WALK_RESULT" != success ]; then
             echo "Smoke matrix: $SMOKE_RESULT"
             echo "AI surface: $AI_SURFACE_RESULT"
+            echo "Tour scroll: $TOUR_SCROLL_RESULT"
+            echo "Tour walk: $TOUR_WALK_RESULT"
             exit 1
           fi
-          echo "All e2e shards and the AI-surface suite passed."
+          echo "All e2e shards, the AI-surface suite, the tour scroll and the tour walk passed."
 
   # The container Cloud Run actually runs. Until now nothing built it before
   # production did: Cloud Build builds this Dockerfile on push to main, main
@@ -979,7 +1184,7 @@ jobs:
   mobile:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: build
+    needs: [build, browser_deps]
     steps:
       - uses: actions/checkout@v5
 
@@ -990,6 +1195,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore the browser system packages and builds (a slow apt mirror or Playwright CDN stays off this job's clock)
+        uses: ./.github/actions/browser-deps
+        with:
+          browsers: chromium
 
       - name: Download the bundle built by the build job
         uses: actions/download-artifact@v4

@@ -9,9 +9,10 @@ import { dirname, join } from 'node:path';
 /**
  * How many CI shards the smoke suite is split into (test.yml's matrix must
  * match — e2esharding.test.ts pins both). Sections are packed into shards by
- * MEASURED duration (shard-timings.json, longest-first): a job pays ~75 s of
- * fixed overhead (checkout, dist, browsers, server boot) and must finish under
- * 300 s, so every shard holds at most 225 s of sections. 16 shards stopped
+ * MEASURED duration (shard-timings.json, longest-first): a job pays a
+ * measured fixed overhead (_overhead_ms: checkout, dist, browsers, server
+ * boot) and must finish under _ceiling_ms, so every shard holds at most the
+ * difference in sections (300 s / 225 s until TASK-18, below). 16 shards stopped
  * fitting on 2026-09-06 (4,040 s of sections; shards 6/7/8 at 390 s). The
  * first 20-shard run measured 4,260 s of sections on CI (CI runs ~5% slower
  * than the table it was packed from) — a 213 s mean, 288 s jobs, too close to
@@ -54,8 +55,36 @@ import { dirname, join } from 'node:path';
  * overpack again, so 32 was required. The split into 91/91b/91c (5b21f1f)
  * removed the over-budget section; 32 keeps every multi-section shard at or
  * under the line.
+ *
+ * TASK-18 (2026-09-23): the table had gone stale because the refresh refuses
+ * any over-budget section, and four were over it: §101 ran 1,086 s on CI
+ * against a 120 s entry, §102 735 s, §100 378 s, §103 326 s. Three CI runs
+ * summed 9,296 / 8,994 / 9,317 s of sections, but 35 x 225 s allows 7,875 s,
+ * so no split could make an honest table fit. The old table's ~190 s shards
+ * really ran 785-1,224 s. The ceiling is now 420 s and §100-§103 are split
+ * along their viewport lists. The overhead is measured, not assumed (sweep 3
+ * F6: WebKit jobs spent up to 124 s outside their sections against a hand-set
+ * 75 s), so the budget is 420 s less the measured overhead and the
+ * multi-section line 0.9x that; shard-cases.mjs checks the job's wall too.
+ * Raising the ceiling makes the budget honest; no check was dropped to fit.
+ * 35 stays: all three runs already peaked at 40 concurrent jobs. On CI
+ * 36695839492 the slowest smoke job ran 319 s (was 1,228); the e2e gate took
+ * 13.6 min (was 20.5), bound by the tour walk jobs (803 s). Shard 24 was the slowest in 7 of 8
+ * runs because test.yml reruns §47 there (78-96 s), so the packer now counts it.
+ *
+ * TASK-18 sweeps 11-13 (2026-09-30): browser system packages now come from the
+ * Actions cache, but smoke 19 on CI 36778548533 still spent 145 s outside its
+ * sections (dpkg unpacked the cached WebKit set in 58.8 s on a slow disk). The
+ * tables keep that maximum, so the budget is 275 s and the multi-section line
+ * 247.5 s: 35 shards pack 261 s, 37 leave 0.7 s under the line, 38 pack every
+ * shard at 222-235 s. Three more smoke jobs are the price of an honest table.
  */
-export const SHARD_COUNT = 35;
+export const SHARD_COUNT = 38;
+
+// The one census of smoke.mjs's sections, read as TEXT (importing smoke.mjs boots the suite). e2esharding counts
+// section( calls without this pattern, so a shape it cannot see fails there by name, never silently unpacked.
+export const parseSections = (smokeSource) => [...smokeSource.matchAll(/section\('([^']+)',\s*'([^']+)',\s*async\s*\(\)\s*=>/g)]
+  .map((m) => ({ id: m[1], name: m[2] }));
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const SHARD_TIMINGS = JSON.parse(readFileSync(join(here, 'shard-timings.json'), 'utf8'));
@@ -76,10 +105,14 @@ export function measuredMs(id, timings = SHARD_TIMINGS) {
 export function validateTimings(sectionIds, timings = SHARD_TIMINGS) {
   const problems = [];
   const budget = timings._ceiling_ms - timings._overhead_ms;
+  // Measured fixed costs (sweep 3 F6); a missing one made the budget NaN, and v > NaN passes every section.
+  for (const k of ['_ceiling_ms', '_overhead_ms', '_outside_ms']) {
+    if (!(Number.isInteger(timings[k]) && timings[k] >= 0)) problems.push(`${k} must be a whole, non-negative number of ms; got ${JSON.stringify(timings[k])}`);
+  }
   for (const id of sectionIds) {
     const v = timings[String(id)];
     if (typeof v !== 'number') problems.push(`section ${id} has no measured entry`);
-    else if (v > budget) problems.push(`section ${id} measures ${Math.round(v / 1000)} s, over the ${budget / 1000} s per-job section budget — split it`);
+    else if (!(v <= budget)) problems.push(`section ${id} measures ${Math.round(v / 1000)} s, over the ${budget / 1000} s per-job section budget — split it`);
   }
   for (const id of Object.keys(timings).filter((k) => !k.startsWith('_'))) {
     if (!sectionIds.map(String).includes(id)) problems.push(`timings name section ${id}, which is not registered`);
@@ -93,8 +126,12 @@ export function validateTimings(sectionIds, timings = SHARD_TIMINGS) {
  * the definitions with `.shard` set plus the per-shard totals, so the runner,
  * the contract test and the timings script all see one assignment.
  */
+// test.yml's shard-24 job reruns §47 in its own step (natural simulation completion). The
+// packer counts that rerun, or shard 24 ran 60-100 s over every other shard (8 of 8 runs).
+export const EXTRA_STEP_SECTIONS = { 24: '47' };
 export function assignShards(definitions, timings = SHARD_TIMINGS, count = SHARD_COUNT) {
-  const totals = Array.from({ length: count }, () => 0);
+  const totals = Array.from({ length: count }, (_, i) => (EXTRA_STEP_SECTIONS[i + 1] && count === SHARD_COUNT
+    ? measuredMs(EXTRA_STEP_SECTIONS[i + 1], timings) : 0));
   const ordered = [...definitions].sort((a, b) => measuredMs(b.id, timings) - measuredMs(a.id, timings) || String(a.id).localeCompare(String(b.id)));
   for (const definition of ordered) {
     let lightest = 0;
