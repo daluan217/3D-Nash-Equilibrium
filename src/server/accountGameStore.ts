@@ -337,8 +337,17 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
       } catch (err) {
         drop(key); // stale (412) or unknown (a deadline may still land): never build on this copy again
         const code = (err as { code?: unknown })?.code;
-        const mine = code === 412 ? await ownWrite(name, text) : undefined;
-        if (mine === undefined) {
+        let mine: string | null = null;
+        if (code === 412) {
+          try {
+            mine = await ownWrite(name, text);
+          } catch (e) {
+            // Whether it was ours is unknown, as after a deadline: an honest 503, never a
+            // re-apply of a batch that may have landed (Sweep 31).
+            throw new AccountStoreUnavailable(`${name} write answered 412 and could not be checked: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+        if (mine === null) {
           if (code === 412 && attempt < MAX_412) {
             await backoff(attempt);
             continue;
@@ -365,16 +374,13 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
    * attempt made. Re-applying the batch then answered a delete that happened
    * 404 and appended a POST without clientRequestId twice (Sweep 30). The
    * object holding exactly our bytes is that write (or the same state written
-   * by a peer: the same outcome); its generation, or undefined.
+   * by a peer: the same outcome); its generation, or null when it holds
+   * something else. A check that cannot be answered throws.
    */
-  async function ownWrite(name: string, text: string): Promise<string | undefined> {
-    try {
-      const st = await bucket.stat(name);
-      if (st === null) return undefined;
-      return (await bucket.read(name, st.generation)) === text ? st.generation : undefined;
-    } catch {
-      return undefined;
-    }
+  async function ownWrite(name: string, text: string): Promise<string | null> {
+    const st = await bucket.stat(name);
+    if (st === null) return null;
+    return (await bucket.read(name, st.generation)) === text ? st.generation : null;
   }
 
   // Group commit: one upload in flight per object; operations that arrive

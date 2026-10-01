@@ -445,6 +445,21 @@ for (const [label, transform, why] of [
   b.write = async (...a: Parameters<typeof realWrite>) => { const r = await realWrite(...a); if (lost++ === 0) throw new Http412('Precondition Failed'); return r; };
   await s.mutate('u_r', (games) => ({ games: [...games, g('g_3', 'u_r')], result: 'saved' }));
   assert.deepStrictEqual(storedGames(b, s.objectName('u_r'))!.map((x) => x.id), ['g_2', 'g_3'], 'and a save is stored once, not re-applied on top of itself'); n++;
+  // Sweep 31: when the check itself cannot be answered, whether it was ours is unknown: an honest
+  // error (503), never a re-apply of a batch that may have landed.
+  const realStat = b.stat.bind(b);
+  lost = 0;
+  let statFails = 1;
+  b.write = async (...a: Parameters<typeof realWrite>) => { const r = await realWrite(...a); if (lost++ === 0) throw new Http412('Precondition Failed'); return r; };
+  b.stat = async (n2: string) => { if (statFails-- > 0) throw new Error('GCS unavailable'); return realStat(n2); };
+  const unchecked = await s.mutate('u_r', (games) => (games.some((x) => x.id === 'g_2') ? { games: games.filter((x) => x.id !== 'g_2'), result: 'deleted' } : { result: 'not found' })).then((v) => v, (e) => e);
+  b.stat = realStat;
+  assert(unchecked instanceof Error && /could not be checked/.test(unchecked.message) && storedGames(b, s.objectName('u_r'))!.map((x) => x.id).join() === 'g_3',
+    `THE DEFECT (Sweep 31): an unanswerable check is an error, not a re-apply (no 404 for the delete that landed): ${String(unchecked)}`); n++;
+  await s.mutate('u_r', (games) => ({ games: [g('g_2', 'u_r'), ...games], result: 'restored' }));
+  // The hosted POST finds its own id in the object (its write, landed) instead of appending a second row.
+  assert(/const existing = games\.find\(\(g\) => g\.id === id \|\| \(clientRequestId !== undefined && g\.clientRequestId === clientRequestId\)\);/.test(source),
+    'the hosted POST is idempotent on its own id, with or without clientRequestId'); n++;
   // CONTROL: a genuine peer write is still a conflict: re-read and re-applied, the peer's game kept.
   b.write = realWrite;
   let peered = false;

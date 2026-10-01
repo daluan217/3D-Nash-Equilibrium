@@ -5738,9 +5738,11 @@ async function startServer() {
         const id = makeId("g"), createdAt = new Date().toISOString();
         // Applied to the object as it stands when its write goes out (a 412
         // re-applies it to the re-read object), so the clientRequestId retry
-        // check and the limit see every write that landed before it.
+        // check and the limit see every write that landed before it. Its own
+        // id found there is this request's write, landed: never a second row
+        // (Sweep 31: a re-apply after a lost answer appended it twice).
         const outcome = await accountGames.mutate<RouteOutcome>(user.id, (games) => {
-          const existing = clientRequestId ? games.find((g) => g.clientRequestId === clientRequestId) : undefined;
+          const existing = games.find((g) => g.id === id || (clientRequestId !== undefined && g.clientRequestId === clientRequestId));
           if (existing) {
             const updated: SavedGame = { ...existing, ...story() };
             return { games: games.map((g) => (g === existing ? updated : g)), result: { status: 200, body: { success: true, message: "Game saved successfully!", game: updated } } };
