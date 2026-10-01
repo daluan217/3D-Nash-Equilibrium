@@ -213,7 +213,7 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     close: () => new Promise((r) => server.close(() => r())),
     getStored: (name = OBJECT) => objects.get(name)?.content ?? null,
     // Replaces the bytes in place (same generation); null deletes the object, metadata with it.
-    setStored: (v, name = OBJECT) => { if (v === null) objects.delete(name); else if (objects.has(name)) objects.get(name).content = v; else write(name, v, null); },
+    setStored: (v, name = OBJECT, generation = undefined) => { if (v === null) objects.delete(name); else if (objects.has(name)) { objects.get(name).content = v; if (generation !== undefined) objects.get(name).generation = generation; } else write(name, v, null); },
     getCustom: (name = OBJECT) => objects.get(name)?.custom ?? null,
     getGeneration: (name = OBJECT) => objects.get(name)?.generation ?? null,
     names: () => [...objects.keys()],
@@ -2820,8 +2820,10 @@ try {
         lists[id] = (await (await fetch(`http://127.0.0.1:${s32App}/api/games`, { headers: { authorization: `Bearer ${t}` } })).json()).map((g) => g.id).sort();
       }
       await stop(S.child);
-      // (c) the clearing write "never happened": db.json carries every legacy row again, as if the process died before it.
-      fake.setStored(original);
+      // (c) the clearing write "never happened": db.json carries every legacy row again at the generation the
+      // migration read, as if the process died before it (the objects record that generation: Sweep 37).
+      const migratedAt = JSON.parse(fake.getStored('games/u_m1.json')).migrated?.['@generation'];
+      fake.setStored(original, OBJECT, Number(migratedAt));
       const gameUploads = () => fake.uploadLog().filter((u) => u.name.startsWith('games/')).length;
       const g0 = gameUploads();
       S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s32b-'))), s32App, s32Gcs, env)), s32App);

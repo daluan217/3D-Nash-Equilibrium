@@ -549,7 +549,9 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
    * one migrated into it, under `@generation`, a key no identity can take). A
    * read no newer than that is superseded: its changed single copy is the
    * OLDER content, not an edit, and is skipped (Sweep 37: it reverted an
-   * acked edit). Copies kept as one more copy are kept whatever the read's
+   * acked edit). Every newer read raises it, even one that changes no row
+   * (Sweep 38: after an A→B→A edit a slower read of B reverted the A): one
+   * more object write per account a newer legacy read covers, rollovers only. Copies kept as one more copy are kept whatever the read's
    * age. A restored db.json is a newer generation, so it still counts as an
    * edit.
    *
@@ -678,8 +680,11 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
               }
               record[id] = print; changed = true;
             });
-            if (changed && isGeneration(readGeneration)
-              && !(isGeneration(record[MIGRATED_AT]) && BigInt(record[MIGRATED_AT]) >= BigInt(readGeneration))) record[MIGRATED_AT] = readGeneration;
+            // Raised by every newer read, even one that changes nothing here: an A→B→A edit leaves the
+            // object as it was, and a slower read of B must still find itself superseded (Sweep 38).
+            if (isGeneration(readGeneration) && !(isGeneration(record[MIGRATED_AT]) && BigInt(record[MIGRATED_AT]) >= BigInt(readGeneration))) {
+              record[MIGRATED_AT] = readGeneration; changed = true;
+            }
             return changed
               ? { games: next, migrated: record, result: wrote.size, overCapOk: true, committed: (generation) => { ours = generation; } }
               : { result: 0 };

@@ -613,6 +613,21 @@ for (const [label, transform, why] of [
     assert(isDeepStrictEqual(names(b, s), ['A, before the edit', 'y']) && at(b, s) === '30', `CONTROL (w): a restored db.json is a newer generation, so its copy is taken for the edit: ${JSON.stringify(names(b, s))}`); n++;
   }
   {
+    // Sweep 38: an A→B→A edit on the previous revision. The newest read (300) changes no row here, yet must
+    // still be recorded, or a slower read of 200 (B) takes itself for the newer edit and reverts the A.
+    const b = memoryBucket();
+    const s = create({ bucket: b, capBytes: CAP });
+    await s.migrate([xA], '100');
+    const writes = b.ops.write;
+    await s.migrate([xA], '300');
+    assert(at(b, s) === '300' && b.ops.write === writes + 1, `THE DEFECT (Sweep 38): a newer read that changes no row still records its generation: @${at(b, s)}`); n++;
+    await s.migrate([xB], '200');
+    assert(isDeepStrictEqual(names(b, s), ['A, before the edit']) && at(b, s) === '300', `and the slower read of the middle edit leaves the latest one: ${JSON.stringify(names(b, s))} @${at(b, s)}`); n++;
+    const w2 = b.ops.write;
+    await s.migrate([xA], '300'); await s.migrate([xA], '250');
+    assert(b.ops.write === w2, `CONTROL: re-reading the same or an older generation writes nothing: ${b.ops.write - w2} writes`); n++;
+  }
+  {
     // The race itself: N1 read generation 10 and its write is slow; N2 reads 20 (the previous revision's
     // acked edit) and lands first; N1's write 412s and is re-applied on N2's object.
     const b = memoryBucket();
