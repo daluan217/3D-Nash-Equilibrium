@@ -461,22 +461,28 @@ check('SELF-TEST: `signal: x` and shorthand `signal` are accepted',
 {
   const start = source.indexOf('async function drainGcsSaves(');
   const end = source.indexOf('\n}\n', start) + 2;
-  let returnedAt = -1, landedAt = -1;
+  let returnedAt = -1, landedAt = -1, gameLandedAt = -1, gameReturnedAt = -1;
   if (start > 0 && end > start) {
     const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
     const t0 = Date.now();
     let reads = 0;
     const hostile = { now: () => t0 + (reads++ ? 3_600_000 : 0) };
-    const drain = new Function('Date', 'performance', 'setTimeout', 'state', `
+    // `accountGames`: the hosted per-account game store; null = no saved-game write in flight.
+    const drainWith = (accountGames: unknown, landed: () => void) => new Function('Date', 'performance', 'setTimeout', 'state', 'accountGames', `
       let gcsStoreBlocked = null, gcsUploadInFlight = true, gcsSaveRequested = false, wakeGcsPump = null;
       const gcsPumpDone = new Promise((r) => setTimeout(() => { gcsUploadInFlight = false; state.landed(); r(); }, 300));
       function scheduleGcsSave() {}
-      ${js}; return drainGcsSaves;`)(hostile, performance, setTimeout, { landed: () => { landedAt = performance.now(); } });
-    await drain(8_000);
+      ${js}; return drainGcsSaves;`)(hostile, performance, setTimeout, { landed }, accountGames);
+    await drainWith(null, () => { landedAt = performance.now(); })(8_000);
     returnedAt = performance.now();
+    // A saved-game write still in flight (answered only once it lands) outlasts the db.json pump.
+    await drainWith({ idle: () => new Promise((r) => setTimeout(() => { gameLandedAt = performance.now(); r(undefined); }, 900)) }, () => {})(8_000);
+    gameReturnedAt = performance.now();
   }
   check('SIGTERM drain waits for the in-flight upload through a wall-clock jump', landedAt > 0 && returnedAt >= landedAt,
     `landed ${landedAt.toFixed(0)}, returned ${returnedAt.toFixed(0)}`);
+  check('SIGTERM drain also waits for an in-flight saved-game write, not only the db.json pump', gameLandedAt > 0 && gameReturnedAt >= gameLandedAt,
+    `game write landed ${gameLandedAt.toFixed(0)}, returned ${gameReturnedAt.toFixed(0)}`);
   const body = (name: string) => { const i = source.indexOf(`function ${name}(`); return i < 0 ? '' : source.slice(i, source.indexOf('\n}\n', i)); };
   const onWall = ['rateLimit', 'pruneRateBuckets', 'mailCooldownLeft', 'requireGcsStore', 'syncFromGcs', 'drainGcsSaves']
     .filter((f) => !body(f) || /Date\.now\(/.test(body(f)));

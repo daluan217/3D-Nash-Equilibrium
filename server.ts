@@ -600,6 +600,7 @@ import type { ReportEnvelope, SuggestedScenario } from "./src/types";
 import { cleanUserColorTermPair, cleanUserColorTerms } from "./src/utils/colorTerms";
 import { pickScenarioDomainExcluding } from "./src/utils/scenarioDomains";
 import { bankAvailable, bankScenario, bankDomainFor, bankScenarioAvoiding } from "./src/utils/bankSource";
+import { createAccountGameStore, ACCOUNT_FULL, ACCOUNT_GONE, ACCOUNT_GAMES_PREFIX, type AccountBucket } from "./src/server/accountGameStore";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -1985,6 +1986,94 @@ function withDeadline<T>(p: Promise<T>, what: string, ms = GCS_DEADLINE_MS, peer
   });
 }
 
+
+/**
+ * The hosted saved-game store's bucket (src/server/accountGameStore.ts, which
+ * makes no GCS call of its own): @google-cloud/storage, every call under
+ * `withDeadline`.
+ */
+function gcsAccountBucket(): AccountBucket {
+  const bucket = import('@google-cloud/storage').then(({ Storage }) => new Storage().bucket(GCS_BUCKET!));
+  const notFound = (err: unknown) => (err as { code?: unknown })?.code === 404;
+  return {
+    async stat(name) {
+      try {
+        const [meta] = await withDeadline((await bucket).file(name).getMetadata(), `${name} getMetadata()`);
+        if (meta.generation == null) throw new Error(`${name} metadata carried no generation`);
+        return { generation: String(meta.generation) };
+      } catch (err) { if (notFound(err)) return null; throw err; }
+    },
+    async read(name, generation) {
+      try {
+        const [content] = await withDeadline((await bucket).file(name, { generation }).download(), `${name} download()`);
+        return content.toString('utf-8');
+      } catch (err) { if (notFound(err)) return null; throw err; }
+    },
+    async write(name, body, ifGenerationMatch, metadata) {
+      const file = (await bucket).file(name);
+      await withDeadline(file.save(body, {
+        contentType: 'application/json', resumable: false, validation: false, metadata: { metadata },
+        timeout: 30_000, preconditionOpts: { ifGenerationMatch },
+      }), `${name} save()`);
+      const generation = file.metadata?.generation; // OUR write's, off the upload response (as uploadDbToGcs)
+      return generation != null ? String(generation) : null;
+    },
+    async list(prefix) {
+      const [files] = await withDeadline((await bucket).getFiles({ prefix, autoPaginate: true }), `${prefix}* list`);
+      return files.map((f) => ({ name: f.name, generation: String(f.metadata.generation), metadata: (f.metadata.metadata ?? {}) as Record<string, string> }));
+    },
+  };
+}
+
+const ACCOUNT_GAMES_MAX_BYTES = (() => { const n = Number(process.env.ACCOUNT_GAMES_MAX_BYTES || 2 * 1024 * 1024); return Number.isFinite(n) && n > 0 ? n : 2 * 1024 * 1024; })();
+const ACCOUNT_GAMES_CACHE_BYTES = 16 * 1024 * 1024;
+const formatCap = (n: number) => (n % 1048576 === 0 ? `${n / 1048576} MB` : n % 1024 === 0 ? `${n / 1024} KB` : `${n} bytes`);
+const ACCOUNT_GAMES_FULL = `Saved games for this account exceeded the ${formatCap(ACCOUNT_GAMES_MAX_BYTES)} limit. Delete a saved game to make room, then save again.`;
+
+/** What a hosted game route answers, decided inside the object's write. */
+type RouteOutcome = { status: number; body: unknown };
+/** The objects an account's games live in: its own, then any duplicate account folded into it (dedupeAccounts). */
+const accountKeys = (u: User): string[] => [u.id, ...(u.mergedFrom ?? []).filter((k) => k !== u.id)];
+function accountGamesUnavailable(res: express.Response, err: unknown, error: string): express.Response {
+  console.error(`Saved-game store: ${err instanceof Error ? err.message : String(err)}`);
+  res.setHeader("Retry-After", "30");
+  return res.status(503).json({ error });
+}
+
+/**
+ * A tombstone on a LIVE account's object means its deletion was confirmed (a
+ * valid code reached delete-confirm, which tombstones before it removes the
+ * rows) but did not finish: a tombstone write past its deadline that landed
+ * anyway, or a db.json write lost to a scale-in. Finish it — every row the
+ * deletion covers goes and every object they own is tombstoned — rather than
+ * leave an account that signs in but can never save (Sweep 18, finding 2).
+ */
+async function finishAccountDeletion(user: User): Promise<void> {
+  const key = emailKey(user.email);
+  const doomed = loadDB().users.filter((u) => u.id === user.id || emailKey(u.email) === key);
+  await accountGames!.removeAll(doomed.flatMap(accountKeys));
+  const ids = new Set(doomed.map((u) => u.id));
+  const db = loadDB(); // after the await: other routes committed meanwhile (#208)
+  saveDB({ users: db.users.filter((u) => !ids.has(u.id)), games: db.games });
+  console.warn(`Finished an interrupted account deletion (its saved-game objects were already tombstoned): ${[...ids].join(", ")}`);
+}
+async function accountWasDeleted(res: express.Response, user: User): Promise<express.Response> {
+  try {
+    await finishAccountDeletion(user);
+  } catch (err) {
+    return accountGamesUnavailable(res, err, "Saved games are temporarily unavailable. Please try again shortly.");
+  }
+  return res.status(401).json({ error: "This account has been deleted." });
+}
+
+/** Hosted only (GCS, not desktop): the desktop and the no-bucket server keep every game in db.json, unchanged. */
+const accountGames = !process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET
+  ? createAccountGameStore<SavedGame>({
+    bucket: gcsAccountBucket(), capBytes: ACCOUNT_GAMES_MAX_BYTES, freshMs: 2_000, cacheBytes: ACCOUNT_GAMES_CACHE_BYTES,
+    now: () => performance.now(), log: (msg) => console.error(msg),
+  })
+  : null;
+
 /**
  * The ONE reader of the bucket's db.json, for boot, re-sync and the 412 retry.
  * Metadata first, then a download BOUND to that generation (`download()`
@@ -2073,6 +2162,7 @@ function blockGcsStore(reason: string): void {
  * wrote it back over them (#208).
  */
 let gcsAckEpoch = 0; // bumped when an upload of ours lands
+
 async function syncFromGcs(ifChanged = false): Promise<void> {
   const epoch = gcsAckEpoch;
   const remote = await readGcsDb(ifChanged ? gcsGeneration : null);
@@ -2081,7 +2171,27 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   // predate it: merged, it restored deleted games and accounts and moved the
   // generation back (sweep 2). Our acked state is at least as new; drop the
   // read. Anything a peer wrote meanwhile arrives by 412 merge or next re-check.
-  if (remote === 'unchanged' || gcsAckEpoch !== epoch) return;
+  if (remote === 'unchanged') return;
+  // Legacy games in db.json (written before per-account objects, or by a
+  // previous revision still serving during a rollover) move into their
+  // accounts' objects BEFORE this generation is adopted: once adopted, our next
+  // upload writes `games: []` over it, so a row must already be verified in its
+  // object by then. A failure throws here, the generation stays unadopted and
+  // the legacy rows stay in db.json; the next read migrates again, adding only
+  // what is missing (see `migrate`).
+  let migrated = false, legacyKept: SavedGame[] = [];
+  if (accountGames && remote !== null && remote.db.games.length > 0) {
+    const m = await accountGames.migrate(remote.db.games);
+    console.log(`Migrated ${m.rows} legacy game row(s) from db.json into ${m.accounts} per-account object(s) `
+      + `(${m.added} written by this run, the rest already there; every row written read back byte-identical).`);
+    if (m.conflicts.length > 0) {
+      console.warn(`Migration: ${m.conflicts.length} legacy row(s) not applied as they stand in db.json (the account's object `
+        + `stands, the account is deleted, or its object is blocked): ${m.conflicts.slice(0, 20).join(', ')}`);
+    }
+    migrated = true;
+    legacyKept = m.kept; // rows of a blocked account's object: they stay in db.json
+  }
+  if (gcsAckEpoch !== epoch) return;
   if (remote === null) {
     gcsBaselineDb = { users: [], games: [] };
     gcsGeneration = '0'; // GCS's own "must not exist yet" precondition
@@ -2090,15 +2200,31 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
     if (loadDB().users.length + loadDB().games.length > 0) scheduleGcsSave();
     return;
   }
-  const baseline = jsonClone(remote.db) as DB; // routes mutate records in place; the baseline must not follow
+  // Hosted, db.json holds accounts only: its games now live in their objects
+  // (bar the rows of an account whose object is blocked, kept as they were).
+  const remoteDb: DB = accountGames ? { users: remote.db.users, games: legacyKept } : remote.db;
+  // Verified accounts this process held, to see which the merge removes.
+  const heldBefore = accountGames ? loadDB().users.filter((u) => u.isVerified).map((u) => u.id) : [];
+  const baseline = jsonClone(remoteDb) as DB; // routes mutate records in place; the baseline must not follow
   const descends = gcsBaselineDb === null || remote.lineage === gcsLineage;
   // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
   // without it, a game created in it and deleted since came back (main too).
-  applyMergedDb(unionMergeDb(remote.db, loadDB(), gcsBaselineDb, gcsUnackedDb, descends));
+  applyMergedDb(unionMergeDb(remoteDb, loadDB(), gcsBaselineDb, gcsUnackedDb, descends));
+  if (accountGames) {
+    // An account the merge removed was deleted on another instance or revision
+    // (a folded duplicate is kept as an alias, not removed). A previous
+    // revision deleting it during a rollover never tombstoned its objects:
+    // do it here, so its games do not outlive it.
+    const left = new Set(loadDB().users.flatMap((u) => [u.id, ...(u.mergedFrom ?? [])]));
+    // Owed until they land: a failure is retried by the next sync, not forgotten.
+    accountGames.tombstoneEventually(heldBefore.filter((id) => !left.has(id)));
+  }
   gcsBaselineDb = baseline;
   gcsGeneration = remote.generation;
   gcsLineage = remote.lineage;
-  if (!descends) scheduleGcsSave(); // the rows the remote lacked live only in this process until written back
+  // The rows the remote lacked live only in this process until written back;
+  // a migrated legacy array is cleared by the same write.
+  if (!descends || migrated) scheduleGcsSave();
 }
 
 /** One sync at a time: the gate, the refresh and the pump share it. */
@@ -2121,6 +2247,10 @@ function syncShared(ifChanged = false): Promise<void> {
  */
 function requireGcsStore(req: express.Request, res: express.Response, next: express.NextFunction): void {
   if (process.env.ELECTRON_USER_DATA_PATH || !GCS_BUCKET) return next();
+  // One wait budget per request: the account's games re-check (see
+  // `accountGames.snapshot`) spends what this one left, so a slow GCS costs
+  // about 2s in total, not 2s per object.
+  res.locals.gcsWaitUntil = performance.now() + 2_000;
   const unavailable = () => {
     res.setHeader('Retry-After', '30');
     res.status(503).json({ error: 'Accounts and saved games are temporarily unavailable. Please try again shortly.' });
@@ -2165,7 +2295,8 @@ async function initDB(): Promise<boolean> {
     inMemoryDb = { users: [], games: [] }; // the merge target; stays empty (and unread) if the read fails
     try {
       await syncFromGcs();
-      console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb.users.length} users, ${inMemoryDb.games.length} games`);
+      console.log(`DB loaded from GCS bucket "${GCS_BUCKET}": ${inMemoryDb.users.length} users (saved games: one object per account under ${ACCOUNT_GAMES_PREFIX})`);
+      accountGames?.knownOwners(); // start the one listing the pending-row sweep needs
     } catch (err) {
       if (!gcsStoreBlocked) console.error('Error loading DB from GCS; DB routes will retry the read before serving:', err);
     }
@@ -2241,6 +2372,10 @@ function pickAccount(mine: User, theirs: User, was: User): User {
   const win = (theirsWins ? theirs : mine) as unknown as Record<string, unknown>;
   const lose = (theirsWins ? mine : theirs) as unknown as Record<string, unknown>, base = was as unknown as Record<string, unknown>;
   const out: Record<string, unknown> = { ...win };
+  // The accounts folded into this one stay folded whichever record wins: hosted,
+  // their games are reached only through `mergedFrom` (per-account objects).
+  const folded = [...new Set([...(mine.mergedFrom ?? []), ...(theirs.mergedFrom ?? []), ...(was.mergedFrom ?? [])])];
+  if (folded.length > 0) out.mergedFrom = folded;
   for (const f of Object.values(CODE_FIELDS)) {
     // A code the loser issued (and mailed) while the winner issued none stays
     // usable, as if issued after the winner's change (sweep 4).
@@ -2515,11 +2650,17 @@ function scheduleGcsSave(): void {
  */
 async function drainGcsSaves(ms: number): Promise<void> {
   const until = performance.now() + ms;
+  // A saved-game write in flight is answered only once it lands: let it land
+  // (its request then gets its 200) rather than cut the connection mid-upload.
+  const games = accountGames ? accountGames.idle().catch(() => {}) : Promise.resolve();
   while (!gcsStoreBlocked && (gcsUploadInFlight || gcsSaveRequested) && performance.now() < until) {
     wakeGcsPump?.();
     if (!gcsUploadInFlight) scheduleGcsSave();
     await Promise.race([gcsPumpDone, new Promise((r) => setTimeout(r, Math.max(0, until - performance.now())))]);
   }
+  await Promise.race([games, new Promise((r) => setTimeout(r, Math.max(0, until - performance.now())))]);
+  // The writes' own requests answer right after them: give those bytes a moment to leave.
+  if (accountGames) await new Promise((r) => setTimeout(r, Math.min(100, Math.max(0, until - performance.now()))));
 }
 if (!process.env.ELECTRON_USER_DATA_PATH && GCS_BUCKET) {
   process.once('SIGTERM', () => {
@@ -4022,7 +4163,7 @@ async function startServer() {
   app.use(["/api/admin", "/api/auth", "/api/games"], requireGcsStore);
 
   // ── Admin Stats API ────────────────────────────────────────────────────────
-  app.get("/api/admin/stats", rateLimit("admin", 10, 60_000), (req, res) => {
+  app.get("/api/admin/stats", rateLimit("admin", 10, 60_000), asyncHandler(async (req, res) => {
     const secret = req.headers["x-admin-secret"] as string;
     // Fail closed: reject when ADMIN_SECRET is unconfigured or the header is
     // missing — otherwise an unset env makes `undefined !== undefined` false and
@@ -4030,7 +4171,17 @@ async function startServer() {
     if (!process.env.ADMIN_SECRET || !secret || !safeEqual(secret, process.env.ADMIN_SECRET)) {
       return res.status(401).json({ error: "Unauthorized" });
     }
+    // Hosted, the games are counted off one listing of their objects.
+    let stored: Map<string, number> | null = null;
+    if (accountGames) {
+      try { stored = await accountGames.counts(); } catch (err) {
+        console.error("Admin stats: listing the saved-game objects failed:", err);
+        res.setHeader("Retry-After", "30");
+        return res.status(503).json({ error: "Saved-game counts are temporarily unavailable. Please try again shortly." });
+      }
+    }
     const db = loadDB();
+    const gamesOf = (u: User) => (stored ? [u.id, ...(u.mergedFrom ?? [])].reduce((n, k) => n + (stored.get(k) ?? 0), 0) : db.games.filter(g => g.userId === u.id).length);
     const now = Date.now();
     const day = 86400000;
     const signupsToday = db.users.filter(u => {
@@ -4047,17 +4198,17 @@ async function startServer() {
       totalUsers: db.users.length,
       verifiedUsers: db.users.filter(u => u.isVerified).length,
       unverifiedUsers: db.users.filter(u => !u.isVerified).length,
-      totalGames: db.games.length,
+      totalGames: stored ? [...stored.values()].reduce((a, b) => a + b, 0) : db.games.length,
       signupsToday,
       signupsThisWeek,
       users: db.users.map(u => ({
         username: u.username,
         email: u.email,
         isVerified: u.isVerified,
-        gamesCount: db.games.filter(g => g.userId === u.id).length,
+        gamesCount: gamesOf(u),
       })),
     });
-  });
+  }));
 
   // ── Authentication API ─────────────────────────────────────────────────────
 
@@ -4964,8 +5115,10 @@ async function startServer() {
     // sweeps pending rows whose code died an hour ago and own no games: db.json
     // cannot grow without bound from abandoned or junk registrations (sweep 6).
     const stale = Date.now() - PENDING_TTL_MS;
-    const owners = new Set(db.games.map((g) => g.userId));
-    const kept = db.users.filter((u) => u.isVerified || owners.has(u.id) || !(u.verificationCodeExpires < stale));
+    // Hosted, who owns games is known from the objects (null until listed: sweep nothing).
+    const owners = accountGames ? accountGames.knownOwners() : new Set(db.games.map((g) => g.userId));
+    const kept = owners === null ? db.users
+      : db.users.filter((u) => u.isVerified || owners.has(u.id) || !(u.verificationCodeExpires < stale));
     const newUser: User = {
       id: makeId("u"),
       username: usernameTrimmed,
@@ -5346,7 +5499,7 @@ async function startServer() {
   }));
 
   // Verify deletion code and delete account
-  app.post("/api/auth/delete-confirm", rateLimit("delete-confirm", 8, 60_000), (req, res) => {
+  app.post("/api/auth/delete-confirm", rateLimit("delete-confirm", 8, 60_000), asyncHandler(async (req, res) => {
     const { code } = req.body;
 
     if (!code) {
@@ -5397,10 +5550,35 @@ async function startServer() {
     // Both wipes come from the same snapshot: every user record sharing this id
     // or this email address, and the games of EVERY one of them (sweep 22, S1-2:
     // a second row's games outlived it, orphaned, under "all ... deleted").
-    const gone = new Set(db.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id).map(u => u.id));
+    let gone = new Set(db.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id).map(u => u.id));
+    if (accountGames) {
+      // Hosted: the games are objects of their own, tombstoned FIRST (each
+      // behind any write already queued for it), while this process refuses
+      // new game writes for these accounts (`accountGames.deleting`), so none
+      // is re-created under an account about to disappear. On a failure the
+      // rows stay: deleting them with objects left would strand games nobody
+      // could delete.
+      const doomed = db.users.filter(u => gone.has(u.id));
+      try {
+        await accountGames.removeAll(doomed.flatMap(accountKeys));
+      } catch (err) {
+        // Some tombstones may have landed (a write past its deadline can still land), so the
+        // account may be part-way deleted: the retry (the code is still valid) or the account's
+        // next games request (finishAccountDeletion) completes it. Never "nothing was removed".
+        console.error("Account deletion: tombstoning the saved-game objects failed; the deletion is unfinished:", err);
+        res.setHeader("Retry-After", "30");
+        return res.status(503).json({
+          error: "We could not finish deleting your account right now. Please try again in a moment."
+        });
+      }
+      // Re-read after the await: other routes committed meanwhile (#208).
+      const now = loadDB();
+      gone = new Set(now.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id).map(u => u.id));
+    }
+    const fresh = loadDB();
     const remaining: DB = {
-      users: db.users.filter(u => !gone.has(u.id)),
-      games: db.games.filter(g => !gone.has(g.userId)),
+      users: fresh.users.filter(u => !gone.has(u.id)),
+      games: fresh.games.filter(g => !gone.has(g.userId)),
     };
 
     if (!saveDB(remaining)) {
@@ -5413,7 +5591,7 @@ async function startServer() {
       success: true,
       message: "Your account and all saved game profiles have been successfully deleted from our records."
     });
-  });
+  }));
 
   // ── Desktop recovery hint ───────────────────────────────────────────────────
   // Unauthenticated `GET /api/games` returns 200 [] both for a brand-new
@@ -5435,16 +5613,26 @@ async function startServer() {
   // ── Custom Saved Games API ─────────────────────────────────────────────────
 
   // Get User's Custom Games
-  app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), (req, res) => {
+  app.get("/api/games", rateLimit("games-read", 60, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
     const user = resolveGameOwner(req);
     if (!user) {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
 
+    if (accountGames) {
+      try {
+        const parts = await accountGames.snapshot(accountKeys(user), res.locals.gcsWaitUntil ?? performance.now() + 2_000);
+        if (parts.some((p) => p.deleted)) return accountWasDeleted(res, user);
+        return res.json(parts.flatMap((p) => p.games));
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Saved games are temporarily unavailable. Please try again shortly.");
+      }
+    }
+
     const db = loadDB();
     const userGames = db.games.filter(g => g.userId === user.id);
     res.json(userGames);
-  });
+  }));
 
   // Create/Save a Custom Game
   app.post("/api/games", rateLimit("games-write", 20, 60_000, 'hosted-only'), asyncHandler(async (req, res) => {
@@ -5469,6 +5657,44 @@ async function startServer() {
     const clientRequestId = typeof rawRequestId === "string" && rawRequestId.length > 0 && rawRequestId.length <= 100
       ? rawRequestId
       : undefined;
+
+    if (accountGames) {
+      if (accountGames.deleting(user.id)) return res.status(409).json({ error: "This account is being deleted." });
+      const keys = accountKeys(user);
+      try {
+        // Games of a folded duplicate count toward this account's limits.
+        const others = keys.length > 1 ? await accountGames.snapshot(keys.slice(1), res.locals.gcsWaitUntil ?? 0) : [];
+        const otherCount = others.reduce((n, p) => n + p.games.length, 0), otherBytes = others.reduce((n, p) => n + p.bytes, 0);
+        const story = () => ({
+          name: cleanName,
+          description: cleanDescription || `Custom payoff matrix saved by ${user.username}`,
+          payoffs: cleanMatrix,
+          ...cleanLabels(req.body),
+          ...cleanColorTerms(req.body, true),
+        });
+        const id = makeId("g"), createdAt = new Date().toISOString();
+        // Applied to the object as it stands when its write goes out (a 412
+        // re-applies it to the re-read object), so the clientRequestId retry
+        // check and the limit see every write that landed before it.
+        const outcome = await accountGames.mutate<RouteOutcome>(user.id, (games) => {
+          const existing = clientRequestId ? games.find((g) => g.clientRequestId === clientRequestId) : undefined;
+          if (existing) {
+            const updated: SavedGame = { ...existing, ...story() };
+            return { games: games.map((g) => (g === existing ? updated : g)), result: { status: 200, body: { success: true, message: "Game saved successfully!", game: updated } } };
+          }
+          if (games.length + otherCount >= MAX_GAMES_PER_USER) {
+            return { result: { status: 409, body: { error: `You have reached the ${MAX_GAMES_PER_USER} saved-game limit. Delete a saved game to save a new one.` } } };
+          }
+          const newGame: SavedGame = { id, userId: user.id, ...story(), createdAt, ...(clientRequestId ? { clientRequestId } : {}) };
+          return { games: [...games, newGame], result: { status: 200, body: { success: true, message: "Game saved successfully!", game: newGame } } };
+        }, { extraBytes: otherBytes });
+        if (outcome === ACCOUNT_FULL) return res.status(413).json({ error: ACCOUNT_GAMES_FULL });
+        if (outcome === ACCOUNT_GONE) return accountWasDeleted(res, user); // its deletion reached the object
+        return res.status(outcome.status).json(outcome.body);
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Could not save your changes. Please try again.");
+      }
+    }
 
     // The ENTIRE read-build-save sequence is serialized (see
     // serializeGameWrite's own comment): `loadDB()` happens INSIDE the
@@ -5577,19 +5803,11 @@ async function startServer() {
       return res.status(400).json({ error: "Nothing to update." });
     }
 
-    // The ENTIRE read-find-build-save sequence is serialized (see
-    // serializeGameWrite's own comment) — including the not-found/ownership
-    // checks, which must read whatever the most recently queued write
-    // committed, not a snapshot from before this request waited its turn.
-    await serializeGameWrite(async () => {
-      const db = loadDB();
-      const game = db.games.find(g => g.id === req.params.id);
-      if (!game) {
-        return res.status(404).json({ error: "Game not found." });
-      }
-      if (game.userId !== user.id) {
-        return res.status(403).json({ error: "You are not authorized to edit this game." });
-      }
+    // The edit applied to a stored game: a NEW object (never the stored one
+    // mutated), or null when its highlights changed under it (409 below).
+    const HIGHLIGHTS_CHANGED = "This description's highlights changed on another device or tab. "
+      + "Reopen Edit to see the latest before saving again.";
+    const patched = (game: SavedGame): SavedGame | null => {
       // A NEW game object and a NEW games array — never mutate `game` (a
       // live reference into inMemoryDb.games) in place, or a failed write
       // would have nothing left to roll back FROM (saveDBAwaited's own
@@ -5650,14 +5868,53 @@ async function startServer() {
         const explicitAEmptiedByStoredB = !hasB && hasA && explicitA && pair.a.length === 0;
         const explicitBEmptiedByStoredA = !hasA && hasB && explicitB && pair.b.length === 0;
         if (untouchedAChanged || untouchedBChanged || explicitAEmptiedByStoredB || explicitBEmptiedByStoredA) {
-          return res.status(409).json({
-            error: "This description's highlights changed on another device or tab. "
-              + "Reopen Edit to see the latest before saving again.",
-          });
+          return null;
         }
         if (!hasA || explicitA || pair.a.length > 0 || allowClear) updatedGame.colorTermsA = pair.a;
         if (!hasB || explicitB || pair.b.length > 0 || allowClear) updatedGame.colorTermsB = pair.b;
       }
+      return updatedGame;
+    };
+
+    if (accountGames) {
+      if (accountGames.deleting(user.id)) return res.status(409).json({ error: "This account is being deleted." });
+      const keys = accountKeys(user);
+      try {
+        const parts = await accountGames.snapshot(keys, res.locals.gcsWaitUntil ?? 0);
+        // Another account's game is simply not in this account's objects: 404,
+        // which also says nothing about whether that id exists.
+        const at = parts.find((p) => p.games.some((g) => g.id === req.params.id)) ?? parts[0];
+        const otherBytes = parts.filter((p) => p !== at).reduce((n, p) => n + p.bytes, 0);
+        const outcome = await accountGames.mutate<RouteOutcome>(at.key, (games) => {
+          const game = games.find((g) => g.id === req.params.id);
+          if (!game) return { result: { status: 404, body: { error: "Game not found." } } };
+          const updatedGame = patched(game);
+          if (!updatedGame) return { result: { status: 409, body: { error: HIGHLIGHTS_CHANGED } } };
+          return { games: games.map((g) => (g === game ? updatedGame : g)), result: { status: 200, body: { success: true, message: "Game updated.", game: updatedGame } } };
+        }, { extraBytes: otherBytes });
+        if (outcome === ACCOUNT_FULL) return res.status(413).json({ error: ACCOUNT_GAMES_FULL });
+        if (outcome === ACCOUNT_GONE) return accountWasDeleted(res, user); // its deletion reached the object
+        return res.status(outcome.status).json(outcome.body);
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Could not save your changes. Please try again.");
+      }
+    }
+
+    // The ENTIRE read-find-build-save sequence is serialized (see
+    // serializeGameWrite's own comment) — including the not-found/ownership
+    // checks, which must read whatever the most recently queued write
+    // committed, not a snapshot from before this request waited its turn.
+    await serializeGameWrite(async () => {
+      const db = loadDB();
+      const game = db.games.find(g => g.id === req.params.id);
+      if (!game) {
+        return res.status(404).json({ error: "Game not found." });
+      }
+      if (game.userId !== user.id) {
+        return res.status(403).json({ error: "You are not authorized to edit this game." });
+      }
+      const updatedGame = patched(game);
+      if (!updatedGame) return res.status(409).json({ error: HIGHLIGHTS_CHANGED });
       // `users` is NOT part of this candidate — see saveDBAwaited's own
       // comment for why a users snapshot here would race a concurrent,
       // unserialized account write.
@@ -5712,6 +5969,23 @@ async function startServer() {
       return res.status(401).json({ error: "Invalid or expired session." });
     }
     const gameId = req.params.id;
+
+    if (accountGames) {
+      if (accountGames.deleting(user.id)) return res.status(409).json({ error: "This account is being deleted." });
+      try {
+        const parts = await accountGames.snapshot(accountKeys(user), res.locals.gcsWaitUntil ?? 0);
+        const at = parts.find((p) => p.games.some((g) => g.id === gameId)) ?? parts[0];
+        const outcome = await accountGames.mutate<RouteOutcome>(at.key, (games) => {
+          if (!games.some((g) => g.id === gameId)) return { result: { status: 404, body: { error: "Game not found." } } };
+          return { games: games.filter((g) => g.id !== gameId), result: { status: 200, body: { success: true, message: "Game deleted successfully." } } };
+        });
+        if (outcome === ACCOUNT_FULL) return res.status(413).json({ error: ACCOUNT_GAMES_FULL });
+        if (outcome === ACCOUNT_GONE) return accountWasDeleted(res, user); // its deletion reached the object
+        return res.status(outcome.status).json(outcome.body);
+      } catch (err) {
+        return accountGamesUnavailable(res, err, "Could not save your changes. Please try again.");
+      }
+    }
 
     // The ENTIRE read-find-save sequence is serialized (see
     // serializeGameWrite's own comment) — including the not-found/ownership
