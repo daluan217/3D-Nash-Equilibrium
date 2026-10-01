@@ -647,4 +647,32 @@ for (const [label, transform, why] of [
   }
 }
 
+{
+  // Sweep 39: a migration's in-place edit and a user's PATCH (or DELETE) of the same game queued behind
+  // one write in flight. Batched together, the migration read back the user's change, not its own, and
+  // failed the sync for nothing: a migration gets an upload of its own.
+  for (const userOp of ['patch', 'delete'] as const) {
+    const b = memoryBucket();
+    const s = create({ bucket: b, capBytes: CAP });
+    const xA = g('g_x', 'u_b', { name: 'A' }), xB = g('g_x', 'u_b', { name: 'B, the previous revision\'s edit' });
+    await s.migrate([xA], '100');
+    const realWrite = b.write.bind(b);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let holding = true;
+    b.write = async (...a: Parameters<typeof realWrite>) => { if (holding) { holding = false; await gate; } return realWrite(...a); };
+    const inFlight = s.mutate('u_b', (games) => ({ games: [...games, g('g_other', 'u_b')], result: 'saved' }));
+    await new Promise((r) => setTimeout(r, 5));
+    const migrated = s.migrate([xB], '200').then((r) => r, (e) => e);
+    const user = s.mutate('u_b', (games) => ({
+      games: userOp === 'patch' ? games.map((x) => (x.id === 'g_x' ? { ...x, name: 'the user\'s edit' } : x)) : games.filter((x) => x.id !== 'g_x'),
+      result: 'ok' }));
+    release();
+    const [m] = await Promise.all([migrated, user, inFlight]);
+    const left = storedGames(b, s.objectName('u_b'))!.map((x) => `${x.id}:${x.name}`);
+    assert(!(m instanceof Error) && isDeepStrictEqual(left, userOp === 'patch' ? ['g_x:the user\'s edit', 'g_other:n-g_other'] : ['g_other:n-g_other']),
+      `THE DEFECT (Sweep 39): a user's ${userOp} queued after a migration's edit neither fails the migration nor is lost: ${m instanceof Error ? m.message : 'ok'} ${JSON.stringify(left)}`); n++;
+  }
+}
+
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);

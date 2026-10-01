@@ -286,7 +286,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
     else if (owners.listing) owners.pending.set(key, has); // applied over the listing when it lands
   };
 
-  type Queued = { op: GameOp<G, unknown>; extraBytes: number; resolve: (v: unknown) => void; reject: (e: unknown) => void };
+  type Queued = { op: GameOp<G, unknown>; extraBytes: number; alone: boolean; resolve: (v: unknown) => void; reject: (e: unknown) => void };
   const DELETE_ACCOUNT: GameOp<G, boolean> = () => ({ games: null, result: true });
 
   async function commit(key: string, ops: Queued[]): Promise<unknown[]> {
@@ -386,18 +386,22 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   }
 
   // Group commit: one upload in flight per object; operations that arrive
-  // meanwhile are applied together, in arrival order, in the next one.
+  // meanwhile are applied together, in arrival order, in the next one. An
+  // `alone` operation (a migration's) gets an upload of its own, so what it
+  // reads back is exactly what it wrote: a route's edit batched after it made
+  // its read-back fail for nothing (Sweep 39).
   const queues = new Map<string, { waiting: Queued[]; run: Promise<void> | null }>();
-  function mutate<T>(key: string, op: GameOp<G, T>, options: { extraBytes?: number } = {}): Promise<T | typeof ACCOUNT_FULL | typeof ACCOUNT_GONE> {
+  function mutate<T>(key: string, op: GameOp<G, T>, options: { extraBytes?: number; alone?: boolean } = {}): Promise<T | typeof ACCOUNT_FULL | typeof ACCOUNT_GONE> {
     return new Promise((resolve, reject) => {
       let q = queues.get(key);
       if (!q) { q = { waiting: [], run: null }; queues.set(key, q); }
-      q.waiting.push({ op: op as GameOp<G, unknown>, extraBytes: options.extraBytes ?? 0, resolve: resolve as (v: unknown) => void, reject });
+      q.waiting.push({ op: op as GameOp<G, unknown>, extraBytes: options.extraBytes ?? 0, alone: options.alone === true, resolve: resolve as (v: unknown) => void, reject });
       if (!q.run) {
         const queue = q;
         queue.run = (async () => {
           while (queue.waiting.length > 0) {
-            const batch = queue.waiting.splice(0);
+            const cut = queue.waiting.findIndex((w) => w.alone);
+            const batch = queue.waiting.splice(0, cut === 0 ? 1 : cut === -1 ? queue.waiting.length : cut);
             try {
               const out = await commit(key, batch);
               batch.forEach((w, i) => w.resolve(out[i]));
@@ -688,7 +692,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
             return changed
               ? { games: next, migrated: record, result: wrote.size, overCapOk: true, committed: (generation) => { ours = generation; } }
               : { result: 0 };
-          });
+          }, { alone: true }); // its read-back must find exactly its own write (Sweep 39)
         } catch (err) {
           if (blocked.has(key)) { keep(key, rows); continue; }
           throw err;
