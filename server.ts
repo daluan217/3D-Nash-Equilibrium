@@ -2209,6 +2209,26 @@ function blockGcsStore(reason: string): void {
  */
 let gcsAckEpoch = 0; // bumped when an upload of ours lands
 
+/**
+ * Verified accounts of a db.json read whose legacy rows a migration may have written into their
+ * objects, with that read's lineage. A migration that failed partway, or whose read was dropped,
+ * wrote objects for accounts this process may never have held; the next adopted merge counts them
+ * as held, so one deleted meanwhile (by a previous revision, mid-rollover) has its object tombstoned
+ * instead of left where no account reaches it (Sweep 33). Only within the same lineage: absence
+ * from another lineage (a restored db.json) proves no deletion. Cleared once a merge is adopted.
+ */
+const migratedAccounts = new Map<string, { lineage: string; keys: string[] }>();
+function noteMigratedAccounts(seen: Map<string, { lineage: string; keys: string[] }>, users: readonly User[], games: readonly SavedGame[], lineage: string): void {
+  const owners = new Set(games.map((g) => g.userId));
+  for (const u of users) if (u.isVerified && accountKeys(u).some((k) => owners.has(k))) seen.set(u.id, { lineage, keys: accountKeys(u) });
+}
+/** Verified accounts this process held, plus those a migration of this lineage wrote objects for, with the objects they reach. */
+function heldAccounts(local: readonly User[], seen: ReadonlyMap<string, { lineage: string; keys: string[] }>, lineage: string): { id: string; keys: string[] }[] {
+  const held = new Map(local.filter((u) => u.isVerified).map((u) => [u.id, accountKeys(u)] as const));
+  for (const [id, v] of seen) if (v.lineage === lineage) held.set(id, [...new Set([...(held.get(id) ?? []), ...v.keys])]);
+  return [...held].map(([id, keys]) => ({ id, keys }));
+}
+
 async function syncFromGcs(ifChanged = false): Promise<void> {
   const epoch = gcsAckEpoch;
   const remote = await readGcsDb(ifChanged ? gcsGeneration : null);
@@ -2227,6 +2247,7 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   // what is missing (see `migrate`).
   let migrated = false, legacyKept: SavedGame[] = [];
   if (accountGames && remote !== null && remote.db.games.length > 0) {
+    noteMigratedAccounts(migratedAccounts, remote.db.users, remote.db.games, remote.lineage);
     const m = await accountGames.migrate(remote.db.games);
     console.log(`Migrated ${m.rows} legacy game row(s) from db.json into ${m.accounts} per-account object(s) `
       + `(${m.added} written by this run, the rest already there; every row written read back byte-identical).`);
@@ -2249,8 +2270,8 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   // Hosted, db.json holds accounts only: its games now live in their objects
   // (bar the rows of an account whose object is blocked, kept as they were).
   const remoteDb: DB = accountGames ? { users: remote.db.users, games: legacyKept } : remote.db;
-  // Verified accounts this process held, with the objects they reach, to see which the merge removes.
-  const heldBefore = accountGames ? loadDB().users.filter((u) => u.isVerified).map((u) => ({ id: u.id, keys: accountKeys(u) })) : [];
+  // Verified accounts this process held (or a migration wrote objects for), with the objects they reach, to see which the merge removes.
+  const heldBefore = accountGames ? heldAccounts(loadDB().users, migratedAccounts, remote.lineage) : [];
   const baseline = jsonClone(remoteDb) as DB; // routes mutate records in place; the baseline must not follow
   const descends = gcsBaselineDb === null || remote.lineage === gcsLineage;
   // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
@@ -2263,6 +2284,7 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
     // do it here, so its games do not outlive it.
     // Owed until they land: a failure is retried by the next sync, not forgotten.
     accountGames.tombstoneEventually(removedAccountKeys(heldBefore, loadDB().users));
+    migratedAccounts.clear(); // every account they named is now held, or removed and owed its tombstone
   }
   gcsBaselineDb = baseline;
   gcsGeneration = remote.generation;

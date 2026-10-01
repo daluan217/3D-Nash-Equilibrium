@@ -57,11 +57,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 2 account conflict (21) + 3 sybil fill and paged counts (s31) + 5 legacy-games migration (s32) + 2 unfinished deletions (s33) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 2 account conflict (21) + 3 sybil fill and paged counts (s31) + 5 legacy-games migration (s32) + 2 unfinished deletions (s33) + 1 failed-migration deletion (s34) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 149;
+const EXPECTED_CHECKS = 150;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -2884,6 +2884,30 @@ try {
       record('THE DEFECT (deleted on a previous revision): an account removed from db.json elsewhere has its games object tombstoned here; other accounts are untouched',
         stayList === 200 && prevTomb && fake.games('u_prev').length === 0 && JSON.parse(fake.getStored()).users.some((u) => u.id === 'u_stay'),
         JSON.stringify({ stayList, prevTomb, prevObject: fake.getStored('games/u_prev.json') }));
+    }
+    // s34 — A MIGRATION THAT FAILED PARTWAY, then a previous revision deletes an account it wrote (Sweep 33).
+    // At boot u_w's object is written but u_x's write is refused: the migration fails and the read is never
+    // adopted, so this process never held u_w. A previous revision then deletes u_w (its row and legacy game
+    // leave db.json). Once GCS recovers, the next re-check migrates u_x and adopts: u_w's object is
+    // tombstoned, not left holding a game no account reaches, and u_x keeps its game.
+    {
+      const s34Gcs = gcsPortA + 66, s34App = port1 + 66;
+      const pay = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 1 };
+      const row = (id, userId) => ({ id, userId, name: `n-${id}`, description: '', payoffs: pay, createdAt: '2026-01-01T00:00:00Z' });
+      const users = [seededUser('u_w', 'w', 'w@example.test', 'Sup3rSecret!23'), seededUser('u_x', 'x', 'x@example.test', 'Sup3rSecret!23')];
+      const fake = await trackFake(startFakeGcsDb({ port: s34Gcs, initialContent: JSON.stringify({ users, games: [row('g_w', 'u_w'), row('g_x', 'u_x')] }) }));
+      fake.failUploadsFor(['games/u_x.json']);
+      const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s34-'))), s34App, s34Gcs, { ...mail, GCS_DEADLINE_MS: '1500' })), s34App);
+      const wroteW = fake.games('u_w').map((g) => g.id).join(); // the failed run's write for u_w landed
+      const root = JSON.parse(fake.getStored());
+      fake.peerWrite(JSON.stringify({ users: root.users.filter((u) => u.id !== 'u_w'), games: root.games.filter((g) => g.userId !== 'u_w') }));
+      fake.failUploadsFor([]);
+      const signIn = await fetch(`http://127.0.0.1:${s34App}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'x@example.test', password: 'Sup3rSecret!23' }) });
+      const wTomb = await waitUntil(() => { try { return JSON.parse(fake.getStored('games/u_w.json')).deleted === true; } catch { return false; } }, 5000);
+      const left = { w: fake.games('u_w').length, x: fake.games('u_x').map((g) => g.id).join() };
+      await stop(S.child); await fake.close();
+      record('THE DEFECT (Sweep 33): an account a failed migration wrote an object for, deleted by a previous revision before any read was adopted, has its object tombstoned; the other account keeps its game',
+        wroteW === 'g_w' && signIn.status === 200 && wTomb && left.w === 0 && left.x === 'g_x', JSON.stringify({ wroteW, signIn: signIn.status, wTomb, ...left, wObject: fake.getStored('games/u_w.json') }));
     }
   }
 

@@ -583,8 +583,16 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
       kept.push(...rows);
       conflicts.push(`${objectName(key)} blocked (${blocked.get(key)}): its ${rows.length} row(s) stay in db.json`);
     };
+    // The first failure ends the run: no worker starts another account, and the run rejects only once
+    // the writes already sent have settled, so nothing writes after the caller has given up on this
+    // read (Sweep 33: abandoned workers kept writing objects from a db.json read never adopted).
+    let failed = false;
+    const next = () => (failed ? undefined : work.shift());
     const worker = async () => {
-      for (let item = work.shift(); item; item = work.shift()) {
+      try { await account(); } catch (err) { failed = true; throw err; }
+    };
+    const account = async () => {
+      for (let item = next(); item; item = next()) {
         const [key, rows] = item;
         if (blocked.has(key)) { keep(key, rows); continue; }
         const name = objectName(key);
@@ -651,7 +659,9 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         for (const id of clash) conflicts.push(`${name} ${shown(id)}`);
       }
     };
-    await Promise.all(Array.from({ length: Math.min(4, work.length) }, worker));
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(4, work.length) }, worker));
+    const failure = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failure) throw failure.reason;
     return { accounts: groups.size, rows: legacy.length, added, conflicts, kept };
   }
 

@@ -226,14 +226,18 @@ for (const [label, transform, why] of [
   assert(/const remoteDb: DB = accountGames \? \{ users: remote\.db\.users, games: legacyKept \} : remote\.db;/.test(body) && /legacyKept = m\.kept;/.test(body)
     && /applyMergedDb\(unionMergeDb\(remoteDb,/.test(body) && /if \(!descends \|\| migrated \|\| \(accountGames && foldsRemoteLacks\(loadDB\(\)\.users, remote\.db\.users\)\)\) scheduleGcsSave\(\);/.test(body),
     'hosted, the merged state carries only blocked accounts\' legacy rows and a migration schedules the write that clears the rest'); n++;
-  // An account the merge removes (deleted on a previous revision during a rollover) has its objects tombstoned.
   // An account the merge removes (deleted on a previous revision during a rollover) has its objects
   // tombstoned, folded duplicates' included (section 16 runs the selection itself).
-  assert(/const heldBefore = accountGames \? loadDB\(\)\.users\.filter\(\(u\) => u\.isVerified\)\.map\(\(u\) => \(\{ id: u\.id, keys: accountKeys\(u\) \}\)\) : \[\];/.test(body)
+  assert(/const heldBefore = accountGames \? heldAccounts\(loadDB\(\)\.users, migratedAccounts, remote\.lineage\) : \[\];/.test(body)
     && body.indexOf('const heldBefore') < body.indexOf('applyMergedDb(')
     && /accountGames\.tombstoneEventually\(removedAccountKeys\(heldBefore, loadDB\(\)\.users\)\);/.test(body)
     && body.indexOf('removedAccountKeys(heldBefore') > body.indexOf('applyMergedDb('),
     'an account the merge removes has its objects tombstoned'); n++;
+  // ... and so has one a migration wrote objects for without this process ever holding it (Sweep 33):
+  // noted before the migration runs, counted at the next adopted merge, forgotten once it is.
+  assert(/noteMigratedAccounts\(migratedAccounts, remote\.db\.users, remote\.db\.games, remote\.lineage\);\n\s*const m = await accountGames\.migrate\(/.test(body)
+    && /accountGames\.tombstoneEventually\(removedAccountKeys\(heldBefore, loadDB\(\)\.users\)\);\n\s*migratedAccounts\.clear\(\);/.test(body),
+    'accounts a migration wrote objects for count as held until a merge is adopted'); n++;
   // Both deletions go through the one re-reading loop (section 16 runs it), and the rows go only after it.
   const dc = source.slice(source.indexOf('if (accountGames) {', source.indexOf('let gone = new Set(db.users.filter(')), source.indexOf('const fresh = loadDB();', source.indexOf('let gone = new Set(db.users.filter(')));
   const fin = source.slice(source.indexOf('async function finishAccountDeletion('), source.indexOf('\n}\n', source.indexOf('async function finishAccountDeletion(')));
@@ -349,16 +353,18 @@ for (const [label, transform, why] of [
 // run from server.ts's own source (Sweeps 24 and 25).
 {
   const fn = (name: string) => { const i = source.indexOf(`function ${name}(`); return source.slice(source.lastIndexOf('\n', i) + 1, source.indexOf('\n}\n', i) + 2); };
-  const js = ts.transpileModule(`const accountKeys = ${source.slice(source.indexOf('const accountKeys = ') + 20, source.indexOf('\n', source.indexOf('const accountKeys = ')))}\n${fn('removedAccountKeys')}\n${fn('keepFolds')}\n${fn('foldsRemoteLacks')}\n${fn('tombstoneAccounts')}`,
+  const js = ts.transpileModule(`const accountKeys = ${source.slice(source.indexOf('const accountKeys = ') + 20, source.indexOf('\n', source.indexOf('const accountKeys = ')))}\n${fn('removedAccountKeys')}\n${fn('keepFolds')}\n${fn('foldsRemoteLacks')}\n${fn('tombstoneAccounts')}\n${fn('noteMigratedAccounts')}\n${fn('heldAccounts')}`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   type U = { id: string; email?: string; mergedFrom?: string[] };
   let db: { users: U[] } = { users: [] };
   const removed: string[][] = [];
   let onRemove = (_keys: string[]) => {};
   const accountGames = { removeAll: async (keys: string[]) => { removed.push([...keys]); onRemove(keys); } };
-  const m = new Function('loadDB', 'accountGames', `${js}; return { removedAccountKeys, keepFolds, foldsRemoteLacks, tombstoneAccounts, accountKeys };`)(() => db, accountGames) as {
+  const m = new Function('loadDB', 'accountGames', `${js}; return { removedAccountKeys, keepFolds, foldsRemoteLacks, tombstoneAccounts, accountKeys, noteMigratedAccounts, heldAccounts };`)(() => db, accountGames) as {
     removedAccountKeys: (b: { id: string; keys: string[] }[], a: U[]) => string[]; keepFolds: (u: U[], k: U[]) => U[]; foldsRemoteLacks: (u: U[], r: U[]) => boolean;
-    tombstoneAccounts: (match: (u: U) => boolean) => Promise<Set<string>>; accountKeys: (u: U) => string[] };
+    tombstoneAccounts: (match: (u: U) => boolean) => Promise<Set<string>>; accountKeys: (u: U) => string[];
+    noteMigratedAccounts: (seen: Map<string, { lineage: string; keys: string[] }>, users: U[], games: { userId?: string }[], lineage: string) => void;
+    heldAccounts: (local: U[], seen: Map<string, { lineage: string; keys: string[] }>, lineage: string) => { id: string; keys: string[] }[] };
   const K = { id: 'u_k', mergedFrom: ['u_d'] };
   const held = [{ id: K.id, keys: m.accountKeys(K) }];
   assert.deepStrictEqual(m.removedAccountKeys(held, []), ['u_k', 'u_d'], 'a removed account: its own object and its folded duplicate\'s'); n++;
@@ -377,6 +383,19 @@ for (const [label, transform, why] of [
   const gone = await m.tombstoneAccounts((u) => u.email === 'k');
   assert.deepStrictEqual(removed, [['u_k'], ['u_d', 'u_k2']], 'THE DEFECT (Sweep 24): what a sync brought in during the await is tombstoned too, each key once'); n++;
   assert.deepStrictEqual([...gone], ['u_k', 'u_k2'], 'and the rows it answers are those of its last read'); n++;
+  // Sweep 33: accounts a migration wrote objects for, though this process never held them (the
+  // migration failed, so the read was never adopted). A previous revision deletes one meanwhile.
+  type V = U & { isVerified?: boolean };
+  const seen = new Map<string, { lineage: string; keys: string[] }>();
+  m.noteMigratedAccounts(seen, [{ id: 'u_a', isVerified: true }, { id: 'u_b', isVerified: true }, { id: 'u_p', isVerified: false }, { id: 'u_f', isVerified: true, mergedFrom: ['u_old'] }] as V[],
+    [{ userId: 'u_a' }, { userId: 'u_p' }, { userId: 'u_old' }, { userId: 'u_nobody' }], 'L1');
+  assert.deepStrictEqual([...seen.keys()], ['u_a', 'u_f'], 'noted: verified accounts owning legacy rows, by their own or a folded key; never an owner with no account'); n++;
+  assert.deepStrictEqual(m.heldAccounts([{ id: 'u_h', isVerified: true }, { id: 'u_q', isVerified: false }] as V[], seen, 'L1'),
+    [{ id: 'u_h', keys: ['u_h'] }, { id: 'u_a', keys: ['u_a'] }, { id: 'u_f', keys: ['u_f', 'u_old'] }], 'counted as held with the objects they reach, beside the verified accounts held'); n++;
+  assert.deepStrictEqual(m.removedAccountKeys(m.heldAccounts([], seen, 'L1'), [{ id: 'u_f', mergedFrom: ['u_old'] }]), ['u_a'],
+    'THE DEFECT (Sweep 33): an account a failed migration wrote an object for, gone from the next generation, is tombstoned'); n++;
+  assert.deepStrictEqual(m.heldAccounts([{ id: 'u_h', isVerified: true }] as V[], seen, 'L2'), [{ id: 'u_h', keys: ['u_h'] }],
+    'CONTROL: another lineage (a restored db.json) proves no deletion: none counted'); n++;
 }
 
 // 17. db.json's unacked overlay (Sweep 28: the gcs-db-saves port moved sections 9/9b to game objects,
@@ -496,6 +515,23 @@ for (const [label, transform, why] of [
   const route = source.slice(source.indexOf('app.delete("/api/games/:id"'), source.indexOf('await serializeGameWrite(', source.indexOf('app.delete("/api/games/:id"')));
   assert(/const rest = withoutFirstGame\(games, gameId\);\s*if \(rest === null\) return \{ result: \{ status: 404,[^\n]*\n\s*return \{ games: rest,/.test(route) && !/g\.id !== gameId/.test(route),
     'the hosted DELETE route removes through withoutFirstGame'); n++;
+}
+
+{
+  // Sweep 33: a migration that fails stops. No worker starts another account, and the run rejects only
+  // once the writes already sent have settled: nothing writes after the caller gave up on the read.
+  const b = memoryBucket();
+  b.beforeWrite = (name) => { if (name === 'games/u_a.json') throw new Error('GCS 503'); };
+  const realWrite = b.write.bind(b); // the other accounts' writes are slower: still in flight when u_a's fails
+  b.write = async (...a: Parameters<typeof realWrite>) => { if (a[0] !== 'games/u_a.json') await new Promise((r) => setTimeout(r, 50)); return realWrite(...a); };
+  const s = create({ bucket: b, capBytes: CAP });
+  const owners = 'abcdefghijk'.split('');
+  const failed = await s.migrate(owners.map((c) => g(`g_${c}`, `u_${c}`))).then(() => null, (e) => e);
+  const objects = () => [...b.objects.keys()].filter((k) => k.startsWith('games/')).length;
+  const atReject = objects(), writesAtReject = b.ops.write;
+  await new Promise((r) => setTimeout(r, 200));
+  assert(failed instanceof Error && objects() === atReject && b.ops.write === writesAtReject && atReject < owners.length - 1,
+    `THE DEFECT (Sweep 33): a failed migration writes nothing once it has rejected: ${String(failed)} ${atReject} -> ${objects()} objects, ${writesAtReject} -> ${b.ops.write} writes`); n++;
 }
 
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);
