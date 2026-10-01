@@ -141,4 +141,51 @@ const save = (store: ReturnType<typeof create>, userId: string, extraBytes = 0) 
   assert.strictEqual(await save(A, 'u_flaky'), 'saved', 'the failed re-check confirmed nothing: the save re-checks and fits'); n++;
 }
 
+// Sweep 22: a re-check that was out when a save of ours was acked must not be served once that
+// save's copy is gone again (a later 412, eviction): it may predate the acked save.
+const heldStat = (bucket: ReturnType<typeof memoryBucket>) => {
+  const h = { hold: false, release: () => {} };
+  const gate = new Promise<void>((r) => (h.release = r));
+  const wrapped = { ...bucket, stat: async (name: string) => { const held = h.hold; const r = await bucket.stat(name); if (held) await gate; return r; } };
+  return { h, wrapped };
+};
+{
+  // 412 path: the PATCH after a peer's write rebuilds on a fresh read, which still has the acked game.
+  const bucket = memoryBucket();
+  const { h, wrapped } = heldStat(bucket);
+  let t = 0;
+  const S = create({ bucket: wrapped, capBytes: 1e6, now: () => t });
+  const peer = create({ bucket, capBytes: 1e6, now: () => t });
+  await S.mutate('u_r', (g) => ({ games: [...g, bigGame('u_r')], result: 'ok' }));
+  t += 3_000;
+  h.hold = true;
+  await S.snapshot(['u_r'], t); // background re-check out, its answer held
+  h.hold = false;
+  const x = bigGame('u_r');
+  assert.strictEqual(await S.mutate('u_r', (g) => ({ games: [...g, x], result: 'saved' })), 'saved', 'the save is acked'); n++;
+  await peer.mutate('u_r', (g) => ({ games: [...g, bigGame('u_r')], result: 'ok' }));
+  const patch = S.mutate('u_r', (g) => (g.some((q) => q.id === x.id) ? { games: g.map((q) => (q.id === x.id ? { ...q, name: 'renamed' } : q)), result: 'patched' } : { result: 'not found' }));
+  setTimeout(() => h.release(), 50);
+  assert.strictEqual(await patch, 'patched', 'after a 412, the PATCH finds the acked game (the held re-check is not served)'); n++;
+  assert.deepStrictEqual((await S.snapshot(['u_r'], t + 1_000))[0].games.length, 3, 'and the list has all three games'); n++;
+}
+{
+  // Eviction path: a GET that joins the held re-check lists the acked game.
+  const bucket = memoryBucket();
+  const { h, wrapped } = heldStat(bucket);
+  let t = 0;
+  const S = create({ bucket: wrapped, capBytes: 1e6, cacheBytes: 10, now: () => t });
+  await S.mutate('u_e', (g) => ({ games: [...g, bigGame('u_e')], result: 'ok' }));
+  t += 3_000;
+  h.hold = true;
+  await S.snapshot(['u_e'], t);
+  h.hold = false;
+  const x = bigGame('u_e');
+  await S.mutate('u_e', (g) => ({ games: [...g, x], result: 'saved' }));
+  await S.mutate('u_other', (g) => ({ games: [...g, bigGame('u_other')], result: 'ok' })); // evicts u_e
+  const get = S.snapshot(['u_e'], t + 1_000);
+  setTimeout(() => h.release(), 50);
+  assert((await get)[0].games.some((q) => q.id === x.id), 'after eviction, the GET lists the acked game'); n++;
+}
+
 console.log(`sybilfill.cloud.test.ts: ${n} checks passed`);

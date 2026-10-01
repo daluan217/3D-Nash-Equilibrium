@@ -182,36 +182,44 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   }
 
   // One refresh per object at a time; a read that a write of ours overtook is
-  // dropped (sweep 2's straddle: the older copy undid an acked delete).
+  // dropped (sweep 2's straddle: the older copy undid an acked delete). When
+  // that write's copy is gone again by the time the read lands (a later 412,
+  // eviction, an unknown generation), the read is not served either: it may
+  // predate the acked write, so it reads again (sweep 22).
   const refreshing = new Map<string, Promise<Entry>>();
+  const overtaken = new Set<string>();
+  const wroteHere = (key: string) => { if (refreshing.has(key)) overtaken.add(key); };
   function refresh(key: string): Promise<Entry> {
     let p = refreshing.get(key);
     if (!p) {
       p = (async () => {
-        const start = cache.get(key);
         const name = objectName(key);
-        for (let attempt = 0; ; attempt++) {
+        for (let vanished = 0; ;) {
+          overtaken.delete(key);
+          const start = cache.get(key);
           const st = await bucket.stat(name);
-          let next: Entry;
+          let next: Entry | null = null;
           if (st === null) next = { games: [], generation: "0", bytes: sizeOf(key, []), freshUntil: now() + freshMs, verifiedAt: now(), migrated: NONE };
-          else if (start && start.generation === st.generation) {
-            start.freshUntil = now() + freshMs;
-            start.verifiedAt = now();
-            return cache.get(key) ?? start;
-          } else {
+          else if (!start || start.generation !== st.generation) {
             const raw = await bucket.read(name, st.generation);
             if (raw === null) {
-              if (attempt < 2) continue; // a peer wrote between the stat and the download: follow it
+              if (vanished++ < 2) continue; // a peer wrote between the stat and the download: follow it
               throw new AccountStoreUnavailable(`${name}: generation ${st.generation} vanished before it could be read`);
             }
             next = parse(key, raw, st.generation);
           }
           const cur = cache.get(key);
           if (cur !== undefined && cur !== start) return cur; // our own write landed meanwhile: it is at least as new
+          if (overtaken.has(key)) continue; // ... and its copy is gone again: what this read found may predate it
+          if (next === null) { // unchanged since the copy held
+            start!.freshUntil = now() + freshMs;
+            start!.verifiedAt = now();
+            return start!;
+          }
           put(key, next);
           return next;
         }
-      })().finally(() => refreshing.delete(key));
+      })().finally(() => { refreshing.delete(key); overtaken.delete(key); });
       refreshing.set(key, p);
     }
     return p;
@@ -315,6 +323,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
           : { games, generation: generation ?? "", bytes, freshUntil: now() + freshMs, verifiedAt: now(), migrated };
         if (generation === null) drop(key); // landed, generation unknown: the next use re-reads
         else put(key, next);
+        wroteHere(key);
         noteOwner(key, !deleting && games.length > 0);
         for (const f of landed) f(generation);
         return out;
