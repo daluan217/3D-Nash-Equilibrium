@@ -102,7 +102,10 @@ function fingerprint(s: string): string {
 export function createAccountGameStore<G extends StoredGame>(opts: AccountGameStoreOptions) {
   const { bucket, capBytes, freshMs, cacheBytes, now } = opts;
   const log = opts.log ?? (() => {});
-  const MAX_412 = 8; // re-read + re-apply rounds before an honest 503
+  // Re-read + re-apply rounds before an honest 503. Every 412 means another
+  // writer landed; 8 starved ~2% of saves with three instances on one account
+  // (worst-case backoff sum at 16 is ~11.6 s, inside the client's 22 s).
+  const MAX_412 = 16;
   // Jittered: instances racing for one object would otherwise re-collide in lockstep.
   const backoff = (attempt: number) => new Promise((r) => setTimeout(r, Math.random() * Math.min(1_000, 25 * 2 ** attempt)));
   const READ_BACKOFF_MS = 30_000;
@@ -565,11 +568,15 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         let raw = ours ? await bucket.read(name, ours) : null;
         const exact = raw !== null;
         let generation = ours ?? "";
-        if (raw === null) {
+        // A peer writing between the stat and the download is followed, as in refresh (Sweep 24).
+        for (let vanished = 0; raw === null; vanished++) {
           const st = await bucket.stat(name);
-          if (st) { generation = st.generation; raw = await bucket.read(name, st.generation); }
+          if (st === null) throw new Error(`migration: ${name} is missing after its write`);
+          generation = st.generation;
+          raw = await bucket.read(name, st.generation);
+          if (raw === null && vanished >= MAX_412) throw new AccountStoreUnavailable(`migration: ${name} kept changing under its read-back`);
+          if (raw === null) await backoff(vanished);
         }
-        if (raw === null) throw new Error(`migration: ${name} is missing after its write`);
         const stored = parse(key, raw, generation);
         if (stored.deleted) { for (const id of rowIds) conflicts.push(`${name} ${id} (account deleted)`); continue; }
         const byId = new Map(identities(stored.games).map((id, i) => [id, JSON.stringify(stored.games[i])] as const));

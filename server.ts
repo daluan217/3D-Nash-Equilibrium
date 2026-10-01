@@ -2203,8 +2203,9 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   // Hosted, db.json holds accounts only: its games now live in their objects
   // (bar the rows of an account whose object is blocked, kept as they were).
   const remoteDb: DB = accountGames ? { users: remote.db.users, games: legacyKept } : remote.db;
-  // Verified accounts this process held, to see which the merge removes.
-  const heldBefore = accountGames ? loadDB().users.filter((u) => u.isVerified).map((u) => u.id) : [];
+  // Verified accounts this process held, with the duplicates folded into them
+  // (their objects go with them), to see which the merge removes (Sweep 24).
+  const heldBefore = accountGames ? loadDB().users.filter((u) => u.isVerified).flatMap(accountKeys) : [];
   const baseline = jsonClone(remoteDb) as DB; // routes mutate records in place; the baseline must not follow
   const descends = gcsBaselineDb === null || remote.lineage === gcsLineage;
   // `gcsUnackedDb`: an upload we gave up on may still have landed; merged
@@ -5560,7 +5561,18 @@ async function startServer() {
       // could delete.
       const doomed = db.users.filter(u => gone.has(u.id));
       try {
-        await accountGames.removeAll(doomed.flatMap(accountKeys));
+        // A sync during the await can bring in a fold (or a duplicate row) this
+        // snapshot lacked: tombstone those objects too before any row goes, so
+        // no game outlives the account under an alias (Sweep 24).
+        const covered = new Set<string>();
+        for (let keys = doomed.flatMap(accountKeys); keys.length > 0;) {
+          for (const k of keys) covered.add(k);
+          await accountGames.removeAll(keys);
+          const now = loadDB(); // after the await: other routes committed meanwhile (#208)
+          const users = now.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id);
+          gone = new Set(users.map(u => u.id));
+          keys = users.flatMap(accountKeys).filter(k => !covered.has(k));
+        }
       } catch (err) {
         // Some tombstones may have landed (a write past its deadline can still land), so the
         // account may be part-way deleted: the retry (the code is still valid) or the account's
@@ -5571,9 +5583,6 @@ async function startServer() {
           error: "We could not finish deleting your account right now. Please try again in a moment."
         });
       }
-      // Re-read after the await: other routes committed meanwhile (#208).
-      const now = loadDB();
-      gone = new Set(now.users.filter(u => emailKey(u.email) === userEmail || u.id === user.id).map(u => u.id));
     }
     const fresh = loadDB();
     const remaining: DB = {

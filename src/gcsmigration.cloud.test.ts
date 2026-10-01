@@ -227,6 +227,15 @@ for (const [label, transform, why] of [
   // An account the merge removes (deleted on a previous revision during a rollover) has its objects tombstoned.
   assert(/accountGames\.tombstoneEventually\(heldBefore\.filter\(\(id\) => !left\.has\(id\)\)\);/.test(body),
     'an account the merge removes has its objects tombstoned'); n++;
+  // ... including the objects of the duplicates folded into it (Sweep 24): they are its games too.
+  assert(/const heldBefore = accountGames \? loadDB\(\)\.users\.filter\(\(u\) => u\.isVerified\)\.flatMap\(accountKeys\) : \[\];/.test(body),
+    'the accounts held before a merge include their folded duplicates\' objects'); n++;
+  // Delete-confirm: a fold or duplicate row a sync brings in while the tombstones are written is
+  // tombstoned too before any row goes (Sweep 24), so no game outlives the account under an alias.
+  const dc = source.slice(source.indexOf('const doomed = db.users.filter(u => gone.has(u.id));'), source.indexOf('const fresh = loadDB();', source.indexOf('const doomed = db.users.filter(u => gone.has(u.id));')));
+  assert(/for \(let keys = doomed\.flatMap\(accountKeys\); keys\.length > 0;\) \{/.test(dc) && /await accountGames\.removeAll\(keys\);/.test(dc)
+    && /keys = users\.flatMap\(accountKeys\)\.filter\(k => !covered\.has\(k\)\);/.test(dc),
+    'delete-confirm tombstones every alias a sync brought in during its await, before the rows go'); n++;
 }
 
 // 12. A ROW MISSING FROM A LATER LEGACY ARRAY IS NEVER TAKEN FOR A DELETION (Sweep 20). Rows vanish from
@@ -269,6 +278,22 @@ for (const [label, transform, why] of [
   const L = [g('g_x', 'u_h', { name: 'A' }), g('g_x', 'u_h', { name: 'B' }), g('g_x#2', 'u_h', { name: 'C' })];
   for (let run = 0; run < 3; run++) await create({ bucket: b, capBytes: CAP }).migrate(L);
   assert.deepStrictEqual(storedGames(b, create({ bucket: b, capBytes: CAP }).objectName('u_h'))!.map((x) => x.name), ['A', 'B', 'C'], 'three rows, three games, on every run'); n++;
+}
+
+// 13c. The read-back follows a peer writing between its stat and its download (Sweep 24): the
+// account saving on another instance at the wrong moment must not fail the migration.
+{
+  const b = memoryBucket();
+  const s = create({ bucket: b, capBytes: CAP });
+  const name = s.objectName('u_rb');
+  const peerSave = (id: string) => { const doc = JSON.parse(b.objects.get(name)!.body); doc.games.push(g(id, 'u_rb')); b.peerWrite(name, JSON.stringify(doc)); };
+  let phase = 0;
+  b.afterWrite = (n2) => { if (n2 === name && phase === 0) { phase = 1; peerSave('peer1'); } };
+  const rawStat = b.stat.bind(b);
+  b.stat = async (n2) => { const r = await rawStat(n2); if (n2 === name && phase === 1) { phase = 2; peerSave('peer2'); } return r; };
+  const r = await s.migrate([g('g_rb', 'u_rb')]);
+  assert.strictEqual(phase, 2, 'fixture: a peer wrote after the migration write and again between the read-back stat and download'); n++;
+  assert(r.added === 1 && storedGames(b, name)!.map((x) => x.id).join() === 'g_rb,peer1,peer2', `the migration succeeds with every game: ${JSON.stringify(r)}`); n++;
 }
 
 // 14. Deletions owed to accounts removed elsewhere are retried until they land (Sweep 19, finding 4).
