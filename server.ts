@@ -2000,7 +2000,8 @@ function gcsAccountBucket(): AccountBucket {
       try {
         const [meta] = await withDeadline((await bucket).file(name).getMetadata(), `${name} getMetadata()`);
         if (meta.generation == null) throw new Error(`${name} metadata carried no generation`);
-        return { generation: String(meta.generation) };
+        const custom = Object.entries((meta.metadata ?? {}) as Record<string, unknown>).filter(([, v]) => typeof v === 'string');
+        return { generation: String(meta.generation), metadata: Object.fromEntries(custom) as Record<string, string> };
       } catch (err) { if (notFound(err)) return null; throw err; }
     },
     async read(name, generation) {

@@ -34,8 +34,8 @@
  */
 
 export interface AccountBucket {
-  /** The object's live generation, or null when there is no object. */
-  stat(name: string): Promise<{ generation: string } | null>;
+  /** The object's live generation and custom metadata, or null when there is no object. */
+  stat(name: string): Promise<{ generation: string; metadata?: Record<string, string> } | null>;
   /** That generation's bytes, or null when it is no longer live (a peer wrote since). */
   read(name: string, generation: string): Promise<string | null>;
   /**
@@ -332,17 +332,18 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
       }
       const name = objectName(key);
       const text = deleting ? tombstone(key) : body(key, games, migrated);
+      const nonce = globalThis.crypto.randomUUID(); // this upload's own mark: a peer's identical bytes are not ours (Sweep 42)
       const asOf = now();
       let generation: string | null;
       try {
-        generation = await bucket.write(name, text, cur.generation, { count: deleting ? "0" : String(games.length) });
+        generation = await bucket.write(name, text, cur.generation, { count: deleting ? "0" : String(games.length), w: nonce });
       } catch (err) {
         drop(key); // stale (412) or unknown (a deadline may still land): never build on this copy again
         const code = (err as { code?: unknown })?.code;
         let mine: string | null = null;
         if (code === 412) {
           try {
-            mine = await ownWrite(name, text);
+            mine = await ownWrite(name, nonce);
           } catch (e) {
             // Whether it was ours is unknown, as after a deadline: an honest 503, never a
             // re-apply of a batch that may have landed (Sweep 31).
@@ -375,14 +376,15 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
    * ifGenerationMatch is set), and the retry meets the generation the first
    * attempt made. Re-applying the batch then answered a delete that happened
    * 404 and appended a POST without clientRequestId twice (Sweep 30). The
-   * object holding exactly our bytes is that write (or the same state written
-   * by a peer: the same outcome); its generation, or null when it holds
-   * something else. A check that cannot be answered throws.
+   * live object carrying this upload's nonce is that write: its generation,
+   * or null when it is anyone else's. Identical bytes are not enough: two
+   * instances each deleting one copy of a duplicated id build the same bytes,
+   * and the second took the first's write for its own (Sweep 42). A check
+   * that cannot be answered throws.
    */
-  async function ownWrite(name: string, text: string): Promise<string | null> {
+  async function ownWrite(name: string, nonce: string): Promise<string | null> {
     const st = await bucket.stat(name);
-    if (st === null) return null;
-    return (await bucket.read(name, st.generation)) === text ? st.generation : null;
+    return st !== null && st.metadata?.w === nonce ? st.generation : null;
   }
 
   // Group commit: one upload in flight per object; operations that arrive

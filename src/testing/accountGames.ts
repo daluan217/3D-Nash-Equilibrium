@@ -75,7 +75,7 @@ export function memoryBucket(): MemoryBucket {
     objects,
     ops: { stat: 0, read: 0, write: 0, list: 0 },
     peerWrite(name, body) { objects.set(name, { body, generation: String(++gen), metadata: {} }); },
-    async stat(name) { b.ops.stat++; await tick(); const o = objects.get(name); return o ? { generation: o.generation } : null; },
+    async stat(name) { b.ops.stat++; await tick(); const o = objects.get(name); return o ? { generation: o.generation, metadata: { ...o.metadata } } : null; },
     async read(name, generation) { b.ops.read++; await tick(); const o = objects.get(name); return o && o.generation === generation ? o.body : null; },
     async write(name, body, ifGenerationMatch, metadata) {
       b.ops.write++; await tick();

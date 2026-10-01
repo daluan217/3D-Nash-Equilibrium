@@ -448,6 +448,9 @@ for (const [label, transform, why] of [
   const adapter = source.slice(source.indexOf('function gcsAccountBucket('), source.indexOf('\n}\n', source.indexOf('function gcsAccountBucket(')));
   assert(/autoPaginate: false, maxResults: 1000/.test(adapter) && !/autoPaginate: true/.test(adapter) && /next: \(next as \{ pageToken\?: string \} \| null \| undefined\)\?\.pageToken \?\? null/.test(adapter),
     'the GCS adapter lists one page per call (never autoPaginate), returning the next page token'); n++;
+  assert(/return \{ generation: String\(meta\.generation\), metadata: Object\.fromEntries\(custom\) as Record<string, string> \};/.test(adapter)
+    && /Object\.entries\(\(meta\.metadata \?\? \{\}\)/.test(adapter),
+    'the GCS adapter\'s stat returns the object\'s custom metadata, where a write\'s nonce is (Sweep 42)'); n++;
 }
 {
   const b = memoryBucket();
@@ -673,6 +676,21 @@ for (const [label, transform, why] of [
     assert(!(m instanceof Error) && isDeepStrictEqual(left, userOp === 'patch' ? ['g_x:the user\'s edit', 'g_other:n-g_other'] : ['g_other:n-g_other']),
       `THE DEFECT (Sweep 39): a user's ${userOp} queued after a migration's edit neither fails the migration nor is lost: ${m instanceof Error ? m.message : 'ok'} ${JSON.stringify(left)}`); n++;
   }
+}
+
+{
+  // Sweep 42: two instances each delete one copy of a duplicated id. Both build the same bytes from the
+  // same generation; the second's 412 must not take the first's write for its own (identical bytes are not
+  // a nonce), so it re-applies and removes the other copy.
+  const b = memoryBucket();
+  const s1 = create({ bucket: b, capBytes: CAP }), s2 = create({ bucket: b, capBytes: CAP });
+  await s1.migrate([g('X', 'u_dd', { name: 'a' }), g('X', 'u_dd', { name: 'b' })]);
+  const peek = () => ({ result: 0 });
+  await s1.mutate('u_dd', peek); await s2.mutate('u_dd', peek); // both hold the same generation
+  const delFirst = (games: readonly Game[]) => { const i = games.findIndex((x) => x.id === 'X'); return i === -1 ? { result: 404 } : { games: games.filter((_, k) => k !== i), result: 200 }; };
+  const r1 = await s1.mutate('u_dd', delFirst), r2 = await s2.mutate('u_dd', delFirst);
+  assert(r1 === 200 && r2 === 200 && storedGames(b, s1.objectName('u_dd'))!.length === 0,
+    `THE DEFECT (Sweep 42): two acked deletes remove both copies: ${r1} ${r2} ${JSON.stringify(storedGames(b, s1.objectName('u_dd')))}`); n++;
 }
 
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);
