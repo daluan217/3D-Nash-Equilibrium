@@ -222,7 +222,7 @@ for (const [label, transform, why] of [
   assert(mig > 0 && mig < body.indexOf('gcsGeneration = remote.generation') && mig < body.indexOf('applyMergedDb('),
     'syncFromGcs migrates before it adopts the generation or merges'); n++;
   assert(/const remoteDb: DB = accountGames \? \{ users: remote\.db\.users, games: legacyKept \} : remote\.db;/.test(body) && /legacyKept = m\.kept;/.test(body)
-    && /applyMergedDb\(unionMergeDb\(remoteDb,/.test(body) && /if \(!descends \|\| migrated\) scheduleGcsSave\(\);/.test(body),
+    && /applyMergedDb\(unionMergeDb\(remoteDb,/.test(body) && /if \(!descends \|\| migrated \|\| \(accountGames && foldsRemoteLacks\(loadDB\(\)\.users, remote\.db\.users\)\)\) scheduleGcsSave\(\);/.test(body),
     'hosted, the merged state carries only blocked accounts\' legacy rows and a migration schedules the write that clears the rest'); n++;
   // An account the merge removes (deleted on a previous revision during a rollover) has its objects tombstoned.
   // An account the merge removes (deleted on a previous revision during a rollover) has its objects
@@ -340,15 +340,15 @@ for (const [label, transform, why] of [
 // run from server.ts's own source (Sweeps 24 and 25).
 {
   const fn = (name: string) => { const i = source.indexOf(`function ${name}(`); return source.slice(source.lastIndexOf('\n', i) + 1, source.indexOf('\n}\n', i) + 2); };
-  const js = ts.transpileModule(`const accountKeys = ${source.slice(source.indexOf('const accountKeys = ') + 20, source.indexOf('\n', source.indexOf('const accountKeys = ')))}\n${fn('removedAccountKeys')}\n${fn('keepFolds')}\n${fn('tombstoneAccounts')}`,
+  const js = ts.transpileModule(`const accountKeys = ${source.slice(source.indexOf('const accountKeys = ') + 20, source.indexOf('\n', source.indexOf('const accountKeys = ')))}\n${fn('removedAccountKeys')}\n${fn('keepFolds')}\n${fn('foldsRemoteLacks')}\n${fn('tombstoneAccounts')}`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   type U = { id: string; email?: string; mergedFrom?: string[] };
   let db: { users: U[] } = { users: [] };
   const removed: string[][] = [];
   let onRemove = (_keys: string[]) => {};
   const accountGames = { removeAll: async (keys: string[]) => { removed.push([...keys]); onRemove(keys); } };
-  const m = new Function('loadDB', 'accountGames', `${js}; return { removedAccountKeys, keepFolds, tombstoneAccounts, accountKeys };`)(() => db, accountGames) as {
-    removedAccountKeys: (b: { id: string; keys: string[] }[], a: U[]) => string[]; keepFolds: (u: U[], k: U[]) => U[];
+  const m = new Function('loadDB', 'accountGames', `${js}; return { removedAccountKeys, keepFolds, foldsRemoteLacks, tombstoneAccounts, accountKeys };`)(() => db, accountGames) as {
+    removedAccountKeys: (b: { id: string; keys: string[] }[], a: U[]) => string[]; keepFolds: (u: U[], k: U[]) => U[]; foldsRemoteLacks: (u: U[], r: U[]) => boolean;
     tombstoneAccounts: (match: (u: U) => boolean) => Promise<Set<string>>; accountKeys: (u: U) => string[] };
   const K = { id: 'u_k', mergedFrom: ['u_d'] };
   const held = [{ id: K.id, keys: m.accountKeys(K) }];
@@ -358,6 +358,10 @@ for (const [label, transform, why] of [
   assert.deepStrictEqual(m.removedAccountKeys(held, [{ id: 'u_z', mergedFrom: ['u_d'] }]), ['u_k'], 'removed, but its duplicate lives on elsewhere: only its own object'); n++;
   const kept = m.keepFolds([{ id: 'u_k' }, { id: 'u_x' }], [K, { id: 'u_gone', mergedFrom: ['u_g'] }]);
   assert.deepStrictEqual(kept, [{ id: 'u_k', mergedFrom: ['u_d'] }, { id: 'u_x' }], 'a record that came back without its mergedFrom keeps the folds this side knew; a removed account is not revived'); n++;
+  // ... and is written back, not held here only (Sweep 26): a restart would otherwise lose it for good.
+  assert(m.foldsRemoteLacks(kept, [{ id: 'u_k' }, { id: 'u_x' }]), 'THE DEFECT (Sweep 26): a fold the remote lost is a reason to upload'); n++;
+  assert(!m.foldsRemoteLacks(kept, [{ id: 'u_k', mergedFrom: ['u_d'] }, { id: 'u_x' }]) && !m.foldsRemoteLacks([{ id: 'u_x' }], [{ id: 'u_x', mergedFrom: ['u_y'] }]),
+    'CONTROL: folds the remote already has (or has more of) are not'); n++;
   // The loop: a sync during the first await brings in a fold and a duplicate row; both are covered.
   db = { users: [{ id: 'u_k', email: 'k' }, { id: 'u_other', email: 'o', mergedFrom: ['u_o2'] }] };
   onRemove = () => { if (removed.length === 1) db = { users: [{ id: 'u_k', email: 'k', mergedFrom: ['u_d'] }, { id: 'u_k2', email: 'k' }, db.users[1]] }; };

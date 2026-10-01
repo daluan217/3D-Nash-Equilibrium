@@ -2249,8 +2249,9 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   gcsGeneration = remote.generation;
   gcsLineage = remote.lineage;
   // The rows the remote lacked live only in this process until written back;
-  // a migrated legacy array is cleared by the same write.
-  if (!descends || migrated) scheduleGcsSave();
+  // a migrated legacy array is cleared by the same write; so are folds the
+  // remote lost (keepFolds restored them here only: Sweep 26).
+  if (!descends || migrated || (accountGames && foldsRemoteLacks(loadDB().users, remote.db.users))) scheduleGcsSave();
 }
 
 /** One sync at a time: the gate, the refresh and the pump share it. */
@@ -2403,6 +2404,12 @@ function keepFolds(users: User[], known: readonly User[]): User[] {
     const all = new Set([...(u.mergedFrom ?? []), ...(folds.get(u.id) ?? [])]);
     return all.size === (u.mergedFrom?.length ?? 0) ? u : { ...u, mergedFrom: [...all] };
   });
+}
+
+/** Whether these accounts carry a fold the remote copy of the same account lacks (one to write back). */
+function foldsRemoteLacks(users: readonly User[], remote: readonly User[]): boolean {
+  const theirs = new Map(remote.map((u) => [u.id, new Set(u.mergedFrom ?? [])]));
+  return users.some((u) => (u.mergedFrom ?? []).some((k) => !theirs.get(u.id)?.has(k)));
 }
 
 function pickAccount(mine: User, theirs: User, was: User): User {
