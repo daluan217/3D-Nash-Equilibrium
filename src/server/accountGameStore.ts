@@ -532,8 +532,13 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
    * stays in its object (it reappears; nothing is lost).
    *
    * Rows sharing an id: byte-identical copies are one row; copies that differ
-   * are kept as distinct rows (`id:X`, `id:X#2`, ...), exactly as db.json held
-   * them, so no copy is lost and a re-run reaches the same assignment.
+   * are kept as distinct rows (`id:X`, `id#2:X`, ...), exactly as db.json held
+   * them, so no copy is lost. Those identities are positional, so they shift
+   * when db.json loses a copy (a previous revision's merge keys games by id):
+   * a row whose content is recorded under ANY identity of its id was migrated,
+   * and an edit is applied only to an id with one recorded copy. A changed row
+   * of an id with several is kept as one more copy, never written over one
+   * (Sweep 34: a re-run overwrote copy 1 with copy 2).
    *
    * Every row this run wrote is then read BACK from GCS — the very generation
    * this run wrote, never the cache — and compared byte for byte (its JSON);
@@ -573,6 +578,8 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         return `json:${j}#${k}`;
       });
     };
+    // The id an `id:` / `id#k:` identity stands for (null for an id-less row's).
+    const rawId = (id: string) => (id.startsWith("id:") ? id.slice(3) : /^id#\d+:/.test(id) ? id.slice(id.indexOf(":") + 1) : null);
     // What the log names a row by: an id-less row's identity is its whole JSON (game contents), so its fingerprint (Sweep 30).
     const shown = (id: string) => (id.startsWith("json:") ? `json#${fingerprint(id)}` : id);
     const groups = byOwner(legacy);
@@ -598,17 +605,38 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         const name = objectName(key);
         const rowIds = identities(rows), prints = rows.map((g) => fingerprint(JSON.stringify(g)));
         const clash = new Set<string>(), wrote = new Set<number>(); // rows this run put in the object (must read back byte-identical)
+        const used = new Map<number, string>(); // rows recorded under another identity than their position gives
         let ours: string | null | undefined; // the generation this run's write produced (undefined: it wrote nothing)
         let r: number | typeof ACCOUNT_FULL | typeof ACCOUNT_GONE;
         try {
           r = await mutate(key, (games, object) => {
-            clash.clear(); wrote.clear(); ours = undefined;
+            clash.clear(); wrote.clear(); used.clear(); ours = undefined;
             const at = new Map(identities(games).map((id, i) => [id, i] as const));
             const next = [...games], record: Record<string, string> = { ...object.migrated };
+            // Each id's recorded copies, fingerprint -> the identity it is recorded under.
+            const copies = new Map<string, Map<string, string>>();
+            const note = (id: string, print: string) => {
+              const x = rawId(id);
+              if (x !== null) copies.set(x, (copies.get(x) ?? new Map()).set(print, id));
+            };
+            for (const [id, print] of Object.entries(record)) note(id, print);
             let changed = false;
             rows.forEach((g, i) => {
               const id = rowIds[i], print = prints[i], was = record[id], j = at.get(id);
               if (was === print) return; // migrated before with this content: what the account did since stands
+              const x = rawId(id), known = x === null ? undefined : copies.get(x);
+              const under = known?.get(print);
+              if (under !== undefined) { used.set(i, under); return; } // migrated before, as another copy of its id
+              if (was !== undefined && x !== null && known !== undefined && known.size > 1) {
+                // Changed, or moved to another copy's place: which copy it was cannot be told. Kept
+                // as one more copy under a fresh identity, never written over one (Sweep 34).
+                let k = 2;
+                while (record[`id#${k}:${x}`] !== undefined || at.has(`id#${k}:${x}`)) k++;
+                const fresh = `id#${k}:${x}`;
+                at.set(fresh, next.length); next.push(g); wrote.add(i); used.set(i, fresh);
+                record[fresh] = print; note(fresh, print); changed = true;
+                return;
+              }
               if (was !== undefined) {
                 // The db.json copy changed since it was migrated: edited on a previous revision.
                 if (j !== undefined && fingerprint(JSON.stringify(next[j])) === was) { next[j] = g; wrote.add(i); } else clash.add(id);
@@ -617,7 +645,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
               } else if (JSON.stringify(next[j]) !== JSON.stringify(g)) {
                 clash.add(id);
               }
-              record[id] = print; changed = true;
+              record[id] = print; note(id, print); changed = true;
             });
             return changed
               ? { games: next, migrated: record, result: wrote.size, overCapOk: true, committed: (generation) => { ours = generation; } }
@@ -649,8 +677,11 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         const stored = parse(key, raw, generation);
         if (stored.deleted) { for (const id of rowIds) conflicts.push(`${name} ${shown(id)} (account deleted)`); continue; }
         const byId = new Map(identities(stored.games).map((id, i) => [id, JSON.stringify(stored.games[i])] as const));
+        const texts = new Set(stored.games.map((x) => JSON.stringify(x)));
         rows.forEach((g, i) => {
-          const id = rowIds[i], s = byId.get(id);
+          const id = used.get(i) ?? rowIds[i];
+          // A row kept under a fresh identity sits wherever the object put it: found by its bytes.
+          const s = used.has(i) ? (texts.has(JSON.stringify(g)) ? JSON.stringify(g) : undefined) : byId.get(id);
           if (stored.migrated[id] === undefined) throw new Error(`migration: ${shown(id)} of ${name} is not recorded as migrated`);
           if (!wrote.has(i) || s === JSON.stringify(g)) return;
           if (!exact && stored.migrated[id] === prints[i]) return; // the account changed it after this run's write landed

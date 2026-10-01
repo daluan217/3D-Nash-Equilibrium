@@ -534,4 +534,44 @@ for (const [label, transform, why] of [
     `THE DEFECT (Sweep 33): a failed migration writes nothing once it has rejected: ${String(failed)} ${atReject} -> ${objects()} objects, ${writesAtReject} -> ${b.ops.write} writes`); n++;
 }
 
+{
+  // Sweep 34: copies sharing an id get positional identities (id:X, id#2:X), which shift when db.json
+  // loses a copy (a previous revision's merge keys games by id). A re-run must find each copy by its
+  // content, and a changed copy of an id with several is kept as one more, never written over one.
+  const b = memoryBucket();
+  const s = create({ bucket: b, capBytes: CAP });
+  const c1 = g('g_X', 'u_cp', { name: 'first copy' }), c2 = g('g_X', 'u_cp', { name: 'second copy' });
+  const names = () => storedGames(b, s.objectName('u_cp'))!.map((x) => x.name);
+  await s.migrate([c1, c2]);
+  const writes = b.ops.write;
+  const lost = await s.migrate([c2]);
+  assert(isDeepStrictEqual(names(), ['first copy', 'second copy']) && lost.conflicts.length === 0 && b.ops.write === writes,
+    `THE DEFECT (Sweep 34): a re-run without copy 1 finds copy 2 as migrated and writes nothing over copy 1: ${JSON.stringify(names())} ${JSON.stringify(lost.conflicts)}`); n++;
+  await s.migrate([c2, c1]);
+  assert(b.ops.write === writes, 'the same copies in another order: nothing written'); n++;
+  const c2edited = g('g_X', 'u_cp', { name: 'second copy, edited on the previous revision' });
+  const edited = await s.migrate([c1, c2edited]);
+  assert(isDeepStrictEqual(names(), ['first copy', 'second copy', 'second copy, edited on the previous revision']) && edited.added === 1,
+    `a changed copy of an id with several is kept as one more copy, read back: ${JSON.stringify(names())} added=${edited.added}`); n++;
+  const w2 = b.ops.write;
+  await s.migrate([c1, c2edited]); await s.migrate([c2edited]); await s.migrate([c1, c2, c2edited]);
+  assert(b.ops.write === w2 && names().length === 3, `and re-runs over any of them add nothing: ${b.ops.write - w2} writes, ${names().length} copies`); n++;
+  // The account deleted a copy since, so the fresh identity no longer matches a position in the
+  // object: the kept copy is verified by its bytes, not missed by the read-back.
+  const b2 = memoryBucket();
+  const s2 = create({ bucket: b2, capBytes: CAP });
+  await s2.migrate([c1, c2]);
+  await s2.mutate('u_cp', (games) => ({ games: games.slice(1), result: 'deleted copy 1' }));
+  const gap = await s2.migrate([c1, c2edited]).then((r) => r, (e) => e);
+  assert(!(gap instanceof Error) && isDeepStrictEqual(storedGames(b2, s2.objectName('u_cp'))!.map((x) => x.name), ['second copy', 'second copy, edited on the previous revision']),
+    `a copy kept after the account deleted another reads back by its bytes (copy 1 stays deleted): ${String(gap?.message ?? JSON.stringify(storedGames(b2, s2.objectName('u_cp'))!.map((x) => x.name)))}`); n++;
+  const w3 = b2.ops.write; // the fresh identity took no recorded one: every copy is still known by content
+  await s2.migrate([c1, c2, c2edited]); await s2.migrate([c2, c1]);
+  assert(b2.ops.write === w3 && storedGames(b2, s2.objectName('u_cp'))!.length === 2, `and re-runs over every copy write nothing (no copy added twice, copy 1 not back): ${b2.ops.write - w3} writes`); n++;
+  // CONTROL: an id with ONE recorded copy still takes the previous revision's edit in place.
+  const d1 = g('g_D', 'u_cp', { name: 'single' }), d1edited = g('g_D', 'u_cp', { name: 'single, edited' });
+  await s.migrate([d1]); await s.migrate([d1edited]);
+  assert(isDeepStrictEqual(names().slice(3), ['single, edited']), `CONTROL: a single copy's edit lands in place: ${JSON.stringify(names())}`); n++;
+}
+
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);
