@@ -2018,9 +2018,18 @@ function gcsAccountBucket(): AccountBucket {
       const generation = file.metadata?.generation; // OUR write's, off the upload response (as uploadDbToGcs)
       return generation != null ? String(generation) : null;
     },
-    async list(prefix) {
-      const [files] = await withDeadline((await bucket).getFiles({ prefix, autoPaginate: true }), `${prefix}* list`);
-      return files.map((f) => ({ name: f.name, generation: String(f.metadata.generation), metadata: (f.metadata.metadata ?? {}) as Record<string, string> }));
+    // One page per call, each under its own deadline: never every object at once (Sweep 30).
+    // With `fields` set, storage v7 hands back the raw JSON items (no File objects):
+    // `metadata` is then the object's custom metadata itself.
+    async list(prefix, pageToken) {
+      const [files, next] = await withDeadline((await bucket).getFiles({
+        prefix, autoPaginate: false, maxResults: 1000, fields: 'items(name,metadata),nextPageToken', ...(pageToken ? { pageToken } : {}),
+      }), `${prefix}* list page`);
+      const items = files as unknown as { name: string; metadata?: Record<string, string> }[];
+      return {
+        items: items.map((f) => ({ name: f.name, metadata: f.metadata ?? {} })),
+        next: (next as { pageToken?: string } | null | undefined)?.pageToken ?? null,
+      };
     },
   };
 }

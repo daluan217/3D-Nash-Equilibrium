@@ -44,7 +44,8 @@ export interface AccountBucket {
    * generation, or null when the answer carried none (landed, generation unknown).
    */
   write(name: string, body: string, ifGenerationMatch: string, metadata: Record<string, string>): Promise<string | null>;
-  list(prefix: string): Promise<{ name: string; generation: string; metadata: Record<string, string> }[]>;
+  /** One page of a prefix listing (`next`: the token for the following page, null at the end). */
+  list(prefix: string, pageToken?: string): Promise<{ items: { name: string; metadata: Record<string, string> }[]; next: string | null }>;
 }
 
 export interface AccountGameStoreOptions {
@@ -328,26 +329,51 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         return out;
       }
       const name = objectName(key);
+      const text = deleting ? tombstone(key) : body(key, games, migrated);
+      const asOf = now();
+      let generation: string | null;
       try {
-        const text = deleting ? tombstone(key) : body(key, games, migrated);
-        const asOf = now();
-        const generation = await bucket.write(name, text, cur.generation, { count: deleting ? "0" : String(games.length) });
-        const next: Entry = deleting ? { games: [], generation: generation ?? "", bytes: Buffer.byteLength(text), freshUntil: asOf + freshMs, verifiedAt: asOf, deleted: true, migrated: NONE }
-          : { games, generation: generation ?? "", bytes, freshUntil: asOf + freshMs, verifiedAt: asOf, migrated };
-        if (generation === null) drop(key); // landed, generation unknown: the next use re-reads
-        else put(key, next);
-        wroteHere(key);
-        noteOwner(key, !deleting && games.length > 0);
-        for (const f of landed) f(generation);
-        return out;
+        generation = await bucket.write(name, text, cur.generation, { count: deleting ? "0" : String(games.length) });
       } catch (err) {
         drop(key); // stale (412) or unknown (a deadline may still land): never build on this copy again
-        if ((err as { code?: unknown })?.code === 412 && attempt < MAX_412) {
-          await backoff(attempt);
-          continue;
+        const code = (err as { code?: unknown })?.code;
+        const mine = code === 412 ? await ownWrite(name, text) : undefined;
+        if (mine === undefined) {
+          if (code === 412 && attempt < MAX_412) {
+            await backoff(attempt);
+            continue;
+          }
+          throw new AccountStoreUnavailable(`${name} write failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-        throw new AccountStoreUnavailable(`${name} write failed: ${err instanceof Error ? err.message : String(err)}`);
+        generation = mine;
       }
+      const next: Entry = deleting ? { games: [], generation: generation ?? "", bytes: Buffer.byteLength(text), freshUntil: asOf + freshMs, verifiedAt: asOf, deleted: true, migrated: NONE }
+        : { games, generation: generation ?? "", bytes, freshUntil: asOf + freshMs, verifiedAt: asOf, migrated };
+      if (generation === null) drop(key); // landed, generation unknown: the next use re-reads
+      else put(key, next);
+      wroteHere(key);
+      noteOwner(key, !deleting && games.length > 0);
+      for (const f of landed) f(generation);
+      return out;
+    }
+  }
+
+  /**
+   * A 412 that is our own write, landed: the storage library retries a
+   * conditional upload whose answer was lost (v7 turns auto-retry on when
+   * ifGenerationMatch is set), and the retry meets the generation the first
+   * attempt made. Re-applying the batch then answered a delete that happened
+   * 404 and appended a POST without clientRequestId twice (Sweep 30). The
+   * object holding exactly our bytes is that write (or the same state written
+   * by a peer: the same outcome); its generation, or undefined.
+   */
+  async function ownWrite(name: string, text: string): Promise<string | undefined> {
+    try {
+      const st = await bucket.stat(name);
+      if (st === null) return undefined;
+      return (await bucket.read(name, st.generation)) === text ? st.generation : undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -428,14 +454,28 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   }
 
   /** key -> stored game count, from one listing (custom metadata stamped on every write). */
-  async function counts(): Promise<Map<string, number>> {
-    const out = new Map<string, number>();
-    for (const f of await bucket.list(ACCOUNT_GAMES_PREFIX)) {
-      if (!f.name.endsWith(".json")) continue;
-      const n = Number(f.metadata?.count);
-      out.set(keyOf(f.name), Number.isFinite(n) && n >= 0 ? n : 0);
-    }
-    return out;
+  // Page by page, each under its own deadline (the adapter's), keeping only
+  // key -> count: the objects only grow (every account that saved, and a
+  // tombstone per deleted one), and one listing of them all held at once ran
+  // a 128 MB heap out of memory on every boot past ~15k (Sweep 30). Callers
+  // share the listing in flight, so they never stack.
+  let counting: Promise<Map<string, number>> | null = null;
+  function counts(): Promise<Map<string, number>> {
+    counting ??= (async () => {
+      const out = new Map<string, number>();
+      let token: string | undefined;
+      do {
+        const page = await bucket.list(ACCOUNT_GAMES_PREFIX, token);
+        for (const f of page.items) {
+          if (!f.name.endsWith(".json")) continue;
+          const n = Number(f.metadata?.count);
+          out.set(keyOf(f.name), Number.isFinite(n) && n >= 0 ? n : 0);
+        }
+        token = page.next ?? undefined;
+      } while (token);
+      return out;
+    })().finally(() => { counting = null; });
+    return counting;
   }
 
   /**
@@ -527,6 +567,8 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         return `json:${j}#${k}`;
       });
     };
+    // What the log names a row by: an id-less row's identity is its whole JSON (game contents), so its fingerprint (Sweep 30).
+    const shown = (id: string) => (id.startsWith("json:") ? `json#${fingerprint(id)}` : id);
     const groups = byOwner(legacy);
     const conflicts: string[] = [], kept: G[] = [];
     let added = 0;
@@ -573,7 +615,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         }
         // The account was deleted (its object is a tombstone): its legacy rows go with it,
         // as unionMergeDb drops the games of a deleted account. Reported, not restored.
-        if (r === ACCOUNT_GONE) { for (const id of rowIds) conflicts.push(`${name} ${id} (account deleted)`); continue; }
+        if (r === ACCOUNT_GONE) { for (const id of rowIds) conflicts.push(`${name} ${shown(id)} (account deleted)`); continue; }
         added += r as number;
         // Read back from GCS itself, never the cache: the generation this run wrote
         // when it wrote one, else (nothing to write, or the account wrote since)
@@ -591,16 +633,16 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
           if (raw === null) await backoff(vanished);
         }
         const stored = parse(key, raw, generation);
-        if (stored.deleted) { for (const id of rowIds) conflicts.push(`${name} ${id} (account deleted)`); continue; }
+        if (stored.deleted) { for (const id of rowIds) conflicts.push(`${name} ${shown(id)} (account deleted)`); continue; }
         const byId = new Map(identities(stored.games).map((id, i) => [id, JSON.stringify(stored.games[i])] as const));
         rows.forEach((g, i) => {
           const id = rowIds[i], s = byId.get(id);
-          if (stored.migrated[id] === undefined) throw new Error(`migration: ${id} of ${name} is not recorded as migrated`);
+          if (stored.migrated[id] === undefined) throw new Error(`migration: ${shown(id)} of ${name} is not recorded as migrated`);
           if (!wrote.has(i) || s === JSON.stringify(g)) return;
           if (!exact && stored.migrated[id] === prints[i]) return; // the account changed it after this run's write landed
-          throw new Error(`migration: ${id} of ${name} ${s === undefined ? "did not reach GCS" : "reads back different bytes"}`);
+          throw new Error(`migration: ${shown(id)} of ${name} ${s === undefined ? "did not reach GCS" : "reads back different bytes"}`);
         });
-        for (const id of clash) conflicts.push(`${name} ${id}`);
+        for (const id of clash) conflicts.push(`${name} ${shown(id)}`);
       }
     };
     await Promise.all(Array.from({ length: Math.min(4, work.length) }, worker));

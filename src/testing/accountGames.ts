@@ -62,7 +62,9 @@ export interface MemoryBucket {
   stat(name: string): Promise<{ generation: string } | null>;
   read(name: string, generation: string): Promise<string | null>;
   write(name: string, body: string, ifGenerationMatch: string, metadata: Record<string, string>): Promise<string | null>;
-  list(prefix: string): Promise<{ name: string; generation: string; metadata: Record<string, string> }[]>;
+  list(prefix: string, pageToken?: string): Promise<{ items: { name: string; metadata: Record<string, string> }[]; next: string | null }>;
+  /** Objects per listing page (GCS may return fewer than asked). */
+  pageSize: number;
 }
 
 export function memoryBucket(): MemoryBucket {
@@ -85,9 +87,12 @@ export function memoryBucket(): MemoryBucket {
       b.afterWrite?.(name);
       return g;
     },
-    async list(prefix) {
+    pageSize: 1000,
+    async list(prefix, pageToken) {
       b.ops.list++; await tick();
-      return [...objects].filter(([n]) => n.startsWith(prefix)).map(([name, o]) => ({ name, generation: o.generation, metadata: o.metadata }));
+      const all = [...objects].filter(([n]) => n.startsWith(prefix)).sort(([a], [c]) => (a < c ? -1 : 1));
+      const from = pageToken ? Number(pageToken) : 0, to = from + b.pageSize;
+      return { items: all.slice(from, to).map(([name, o]) => ({ name, metadata: o.metadata })), next: to < all.length ? String(to) : null };
     },
   };
   return b;

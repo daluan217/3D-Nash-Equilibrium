@@ -57,11 +57,11 @@ const OBJECT = 'db.json';
 const VERSION_OBJECT = 'app-version.json';
 
 // 12 pre-existing + 9 deadline (section 4) + 3 hung-re-sync (section 5)
-// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 2 account conflict (21) + 2 sybil fill (s31) + 5 legacy-games migration (s32) + 2 unfinished deletions (s33) + 1 suite-wide precondition.
+// + 2 unread-store gate (section 3) + 12 shape/legacy-warning (6) + 12 merge (7, 7b, 7c incl. rename visibility, 7d) + 3 outage/drain (8) + 4 abandoned (9, 9b) + 2 no-generation (10) + 3 SMTP deadline + feedback injection (11) + 2 fresh reads (12) + 2 auth field types (13) + 2 412 storm (14) + 2 provider hang (15) + 2 re-check straddle (16) + 2 generation race (17) + 2 re-check cost (18) + 2 dropped-read peer write (19) + 2 backoff freshness (20) + 2 account conflict (21) + 3 sybil fill and paged counts (s31) + 5 legacy-games migration (s32) + 2 unfinished deletions (s33) + 1 suite-wide precondition.
 // Calibrated by RUNNING the suite, not by counting by eye — this constant has
 // now been wrong twice (22 vs 21, then 21 vs 23) and the floor caught it both
 // times, which is the whole point of declaring rather than counting.
-const EXPECTED_CHECKS = 148;
+const EXPECTED_CHECKS = 149;
 const results = [];
 function record(name, pass, detail) {
   results.push({ name, pass, detail });
@@ -123,7 +123,11 @@ function startFakeGcsDb({ port, initialContent, initialGeneration = 1, deferList
     if (req.method === 'GET' && u.pathname === base) {
       lists += 1;
       const prefix = u.searchParams.get('prefix') ?? '';
-      json(res, 200, { kind: 'storage#objects', items: [...objects].filter(([n]) => n.startsWith(prefix))
+      // Paged as GCS pages (nextPageToken), and at most 2 a page (GCS may return fewer than
+      // maxResults), so every listing in this suite crosses pages.
+      const all = [...objects].filter(([n]) => n.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1));
+      const from = Number(u.searchParams.get('pageToken') ?? 0), to = from + Math.min(2, Number(u.searchParams.get('maxResults') ?? 1000));
+      json(res, 200, { kind: 'storage#objects', ...(to < all.length ? { nextPageToken: String(to) } : {}), items: all.slice(from, to)
         .map(([name, o]) => ({ name, bucket: BUCKET, generation: String(o.generation), size: String(o.content.length), ...(o.custom ? { metadata: o.custom } : {}) })) });
       return;
     }
@@ -2726,7 +2730,7 @@ try {
       const sybils = [1, 2, 3, 4].map((i) => seededUser(`u_syb${i}`, `sybil${i}`, `syb${i}@example.test`, 'Sup3rSecret!23'));
       const fake = await trackFake(startFakeGcsDb({ port: s31Gcs, initialContent: JSON.stringify({ users: [...sybils, seededUser('u_vic', 'victim', 'vic@example.test', 'Sup3rSecret!23')], games: [] }) }));
       const S = await waitReady(track(spawnServer(trackDir(mkdtempSync(path.join(tmpdir(), 'nash-gcs-s31-'))), s31App, s31Gcs,
-        { ...mail, TRUST_PROXY: '1', ACCOUNT_GAMES_MAX_BYTES: String(CAP), DB_MAX_BYTES: String(BUDGET) })), s31App);
+        { ...mail, TRUST_PROXY: '1', ACCOUNT_GAMES_MAX_BYTES: String(CAP), DB_MAX_BYTES: String(BUDGET), ADMIN_SECRET: 'super-admin-secret-2026' })), s31App);
       let hop = 0; // a fresh /48 per request: no rate limit is in play
       const call = async (method, route, token, body) => {
         const r = await fetch(`http://127.0.0.1:${s31App}${route}`, { method, headers: { 'content-type': 'application/json', 'x-forwarded-for': `2001:db8:${(0x3100 + hop++).toString(16)}::1`, ...(token ? { authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -2752,7 +2756,15 @@ try {
       const m0 = mailed.length;
       const signUp = await call('POST', '/api/auth/register', null, { username: 'after-flood', email: 'after-flood@example.test', password: 'Sup3rSecret!23' });
       const root = JSON.parse(fake.getStored());
+      // Admin stats count every object's games from the listing, which the real storage library pages
+      // (this fake hands out 2 objects a page): 5 objects, 3 pages (Sweep 30: never all at once).
+      const stats = await fetch(`http://127.0.0.1:${s31App}/api/admin/stats`, { headers: { 'x-admin-secret': 'super-admin-secret-2026', 'x-forwarded-for': '2001:db8:31ff::1' } });
+      const statsBody = await stats.json().catch(() => ({}));
+      const storedTotal = fake.allGames().length, listPages = fake.lists();
       await stop(S.child); await fake.close();
+      record('admin stats count the games of every account object, read page by page through the storage library',
+        stats.status === 200 && statsBody.totalGames === storedTotal && storedTotal > 3 && listPages >= 3,
+        JSON.stringify({ status: stats.status, totalGames: statsBody.totalGames, storedTotal, listPages }));
       record('fixture: each sybil was refused only once its object was within one widest row of the cap, and together they store more than db.json\'s whole budget',
         refusals.length === 4 && sizes.every((s) => s <= CAP && s > CAP - rowBytes - 1) && sizes.reduce((a, b) => a + b, 0) > BUDGET,
         JSON.stringify({ sizes, CAP, BUDGET, widestRowBytes: rowBytes, at200Games: rowBytes * 200, refusedAfter: refusals.map((r) => r.saved) }));

@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import ts from 'typescript';
 import { clampGraphemeSafe } from './utils/textSafety';
-import { loadAccountGameStore, memoryBucket, storedGames, type Game, type MemoryBucket } from './testing/accountGames.ts';
+import { loadAccountGameStore, memoryBucket, storedGames, Http412, type Game, type MemoryBucket } from './testing/accountGames.ts';
 
 const { create, GONE, source } = await loadAccountGameStore();
 const CAP = 2 * 1024 * 1024;
@@ -408,6 +408,58 @@ for (const [label, transform, why] of [
   assert(/if \(err\?\.code !== 412\) gcsUnackedDb = overlayDb\(gcsUnackedDb \?\? \{ users: \[\], games: \[\] \}, sent\);/.test(source)
     && /applyMergedDb\(unionMergeDb\(remoteDb, loadDB\(\), gcsBaselineDb, gcsUnackedDb, descends\)\);/.test(source),
     'the pump records an abandoned upload and syncFromGcs merges with it'); n++;
+}
+
+// 18. Sweep 30. (i) The saved-game listing is paged and shared: it only grows (an object per account
+// that saved, a tombstone per deleted one), and listing it all at once crashed a 128 MB heap on every
+// boot past ~15k objects. (ii) A 412 that is our own landed write (the storage library retries a
+// conditional upload whose answer was lost) is that write, not a peer's. (iii) The migration log
+// names an id-less row by fingerprint, never by its contents.
+{
+  const b = memoryBucket();
+  b.pageSize = 3;
+  const s = create({ bucket: b, capBytes: CAP });
+  for (let i = 0; i < 10; i++) b.peerWrite(s.objectName(`u_p${i}`), '{}');
+  for (const [i, k] of ['u_p2', 'u_p7'].entries()) b.objects.get(s.objectName(k))!.metadata = { count: String(i + 1) };
+  const lists = b.ops.list;
+  const [c1, c2] = await Promise.all([s.counts(), s.counts()]);
+  assert(c1 === c2 && c1.size === 10, 'every page is read (10 objects over 4 pages of 3), one result for both callers'); n++;
+  assert.deepStrictEqual([c1.get('u_p2'), c1.get('u_p7'), c1.get('u_p0')], [1, 2, 0], 'counts come from each object\'s metadata'); n++;
+  assert.strictEqual(b.ops.list - lists, 4, 'callers share the listing in flight: 4 page reads, not 8'); n++;
+  const adapter = source.slice(source.indexOf('function gcsAccountBucket('), source.indexOf('\n}\n', source.indexOf('function gcsAccountBucket(')));
+  assert(/autoPaginate: false, maxResults: 1000/.test(adapter) && !/autoPaginate: true/.test(adapter) && /next: \(next as \{ pageToken\?: string \} \| null \| undefined\)\?\.pageToken \?\? null/.test(adapter),
+    'the GCS adapter lists one page per call (never autoPaginate), returning the next page token'); n++;
+}
+{
+  const b = memoryBucket();
+  const s = create({ bucket: b, capBytes: CAP });
+  await s.mutate('u_r', () => ({ games: [g('g_1', 'u_r'), g('g_2', 'u_r')], result: 'ok' }));
+  const realWrite = b.write.bind(b);
+  let lost = 0;
+  // The first attempt lands, its answer is lost, the library's retry meets its own generation: 412.
+  b.write = async (...a: Parameters<typeof realWrite>) => { const r = await realWrite(...a); if (lost++ === 0) throw new Http412('Precondition Failed'); return r; };
+  const del = await s.mutate('u_r', (games) => (games.some((x) => x.id === 'g_1') ? { games: games.filter((x) => x.id !== 'g_1'), result: 'deleted' } : { result: 'not found' }));
+  assert.strictEqual(del, 'deleted', 'THE DEFECT: a delete whose write landed under a 412 answers deleted, not 404'); n++;
+  b.write = realWrite;
+  lost = 0;
+  b.write = async (...a: Parameters<typeof realWrite>) => { const r = await realWrite(...a); if (lost++ === 0) throw new Http412('Precondition Failed'); return r; };
+  await s.mutate('u_r', (games) => ({ games: [...games, g('g_3', 'u_r')], result: 'saved' }));
+  assert.deepStrictEqual(storedGames(b, s.objectName('u_r'))!.map((x) => x.id), ['g_2', 'g_3'], 'and a save is stored once, not re-applied on top of itself'); n++;
+  // CONTROL: a genuine peer write is still a conflict: re-read and re-applied, the peer's game kept.
+  b.write = realWrite;
+  let peered = false;
+  b.beforeWrite = (name) => { if (!peered && name === s.objectName('u_r')) { peered = true; const doc = JSON.parse(b.objects.get(name)!.body); doc.games.push(g('g_peer', 'u_r')); b.peerWrite(name, JSON.stringify(doc)); } };
+  await s.mutate('u_r', (games) => ({ games: [...games, g('g_4', 'u_r')], result: 'saved' }));
+  assert.deepStrictEqual(storedGames(b, s.objectName('u_r'))!.map((x) => x.id), ['g_2', 'g_3', 'g_peer', 'g_4'], 'CONTROL: a peer\'s 412 is still re-read and re-applied'); n++;
+}
+{
+  const b = memoryBucket();
+  const s = create({ bucket: b, capBytes: CAP });
+  await s.removeAll(['u_gone2']);
+  const secret = { userId: 'u_gone2', name: 'PRIVATE-NAME', description: 'PRIVATE-DESCRIPTION' }; // no id
+  const r = await create({ bucket: b, capBytes: CAP }).migrate([secret]);
+  assert(r.conflicts.length === 1 && /^games\/u_gone2\.json json#\S+ \(account deleted\)$/.test(r.conflicts[0]) && !/PRIVATE/.test(r.conflicts.join()),
+    `an id-less row is reported by fingerprint, not by its contents: ${JSON.stringify(r.conflicts)}`); n++;
 }
 
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);
