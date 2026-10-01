@@ -137,7 +137,9 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
     return n + Math.max(0, games.length - 1);
   };
 
-  interface Entry { games: readonly G[]; generation: string; bytes: number; freshUntil: number; deleted?: boolean; migrated: Migrated }
+  // freshUntil: when snapshot next re-checks (a failed re-check pushes it out);
+  // verifiedAt: when GCS last confirmed this copy (a read, a matching stat, our write).
+  interface Entry { games: readonly G[]; generation: string; bytes: number; freshUntil: number; verifiedAt: number; deleted?: boolean; migrated: Migrated }
   const cache = new Map<string, Entry>(); // insertion order = LRU order
   let cachedBytes = 0;
   const blocked = new Map<string, string>(); // key -> why its object is not a database we can trust
@@ -176,7 +178,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
     const rows = games as G[];
     const migrated = (mig as Migrated | undefined) ?? NONE;
     const deleted = (doc as { deleted?: unknown }).deleted === true;
-    return { games: deleted ? [] : rows, generation, bytes: sizeOf(key, rows, migrated), freshUntil: now() + freshMs, migrated, ...(deleted ? { deleted } : {}) };
+    return { games: deleted ? [] : rows, generation, bytes: sizeOf(key, rows, migrated), freshUntil: now() + freshMs, verifiedAt: now(), migrated, ...(deleted ? { deleted } : {}) };
   }
 
   // One refresh per object at a time; a read that a write of ours overtook is
@@ -191,9 +193,10 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         for (let attempt = 0; ; attempt++) {
           const st = await bucket.stat(name);
           let next: Entry;
-          if (st === null) next = { games: [], generation: "0", bytes: sizeOf(key, []), freshUntil: now() + freshMs, migrated: NONE };
+          if (st === null) next = { games: [], generation: "0", bytes: sizeOf(key, []), freshUntil: now() + freshMs, verifiedAt: now(), migrated: NONE };
           else if (start && start.generation === st.generation) {
             start.freshUntil = now() + freshMs;
+            start.verifiedAt = now();
             return cache.get(key) ?? start;
           } else {
             const raw = await bucket.read(name, st.generation);
@@ -267,6 +270,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
   const DELETE_ACCOUNT: GameOp<G, boolean> = () => ({ games: null, result: true });
 
   async function commit(key: string, ops: Queued[]): Promise<unknown[]> {
+    let rechecked = false;
     for (let attempt = 0; ; attempt++) {
       const cur = await current(key, attempt > 0);
       // A deleted account's object stays deleted: every operation on it is refused.
@@ -285,13 +289,30 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         if (step.committed) landed.push(step.committed);
         return step.result;
       });
-      if (games === cur.games && migrated === cur.migrated && !deleting) return out;
+      if (games === cur.games && migrated === cur.migrated && !deleting) {
+        // Nothing to write, so no precondition vouches for this copy: an answer
+        // (413 full, 409 limit, 404 not found) comes only from a copy GCS
+        // confirmed within freshMs. One re-check (a stat when unchanged), then
+        // the batch runs again on what it found (sweep 21: a copy held for an
+        // hour refused saves another instance had made room for).
+        if (!rechecked && now() - cur.verifiedAt >= freshMs) {
+          rechecked = true;
+          try {
+            await refresh(key);
+          } catch (err) {
+            throw new AccountStoreUnavailable(`${objectName(key)} re-check failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          attempt--;
+          continue;
+        }
+        return out;
+      }
       const name = objectName(key);
       try {
         const text = deleting ? tombstone(key) : body(key, games, migrated);
         const generation = await bucket.write(name, text, cur.generation, { count: deleting ? "0" : String(games.length) });
-        const next: Entry = deleting ? { games: [], generation: generation ?? "", bytes: Buffer.byteLength(text), freshUntil: now() + freshMs, deleted: true, migrated: NONE }
-          : { games, generation: generation ?? "", bytes, freshUntil: now() + freshMs, migrated };
+        const next: Entry = deleting ? { games: [], generation: generation ?? "", bytes: Buffer.byteLength(text), freshUntil: now() + freshMs, verifiedAt: now(), deleted: true, migrated: NONE }
+          : { games, generation: generation ?? "", bytes, freshUntil: now() + freshMs, verifiedAt: now(), migrated };
         if (generation === null) drop(key); // landed, generation unknown: the next use re-reads
         else put(key, next);
         noteOwner(key, !deleting && games.length > 0);

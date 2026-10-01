@@ -95,4 +95,50 @@ const save = (store: ReturnType<typeof create>, userId: string, extraBytes = 0) 
   assert.strictEqual(await save(store, 'u_kept'), 'saved', 'CONTROL: the same save without them fits'); n++;
 }
 
+{
+  // Two instances (sweep 21): a refusal writes nothing, so no precondition vouches for the copy it
+  // came from. Instance A holds a full account; the user frees room on instance B; an hour later A
+  // must not answer 413 (or a 404 for a game B saved) from its old copy.
+  const bucket = memoryBucket();
+  let t = 0;
+  const A = create({ bucket, capBytes: 30_000, now: () => t });
+  const B = create({ bucket, capBytes: 30_000, now: () => t });
+  while ((await save(A, 'u_two')) === 'saved');
+  assert.strictEqual(await save(A, 'u_two'), FULL, 'instance A: the account is full'); n++;
+  await B.snapshot(['u_two'], 0);
+  const added = bigGame('u_two');
+  assert.strictEqual(await B.mutate('u_two', (g) => ({ games: [...g.slice(2), added], result: 'swapped' })), 'swapped', 'instance B frees room and saves'); n++;
+  t += 60 * 60_000;
+  const findOnA = await A.mutate('u_two', (g) => ({ result: g.some((x) => x.id === added.id) ? 'found' : 'not found' }));
+  assert.strictEqual(findOnA, 'found', 'an hour later, A finds the game B saved (a no-write answer re-checks a stale copy)'); n++;
+  assert.strictEqual(await save(A, 'u_two'), 'saved', 'and A saves into the room B made, not 413 from its old copy'); n++;
+  // A copy confirmed within freshMs answers without a GCS call; one re-check per answer, not a loop.
+  const stats = bucket.ops.stat;
+  assert.strictEqual(await save(A, 'u_two'), FULL, 'full again'); n++;
+  assert.strictEqual(bucket.ops.stat, stats, 'a refusal from a copy confirmed just now costs no GCS call'); n++;
+  t += 60 * 60_000;
+  assert.strictEqual(await save(A, 'u_two'), FULL, 'still full an hour later'); n++;
+  assert.strictEqual(bucket.ops.stat, stats + 1, 'a refusal from an old copy costs one stat'); n++;
+}
+
+{
+  // A failed snapshot re-check backs off (the copy keeps being served for reading) but confirms
+  // nothing: a refusal during the backoff still re-checks, and finds the room made meanwhile.
+  const bucket = memoryBucket();
+  let t = 0, down = false;
+  const flaky = { ...bucket, stat: (name: string) => (down ? Promise.reject(new Error('GCS unavailable')) : bucket.stat(name)) };
+  const A = create({ bucket: flaky, capBytes: 30_000, now: () => t, log: () => {} });
+  const B = create({ bucket, capBytes: 30_000, now: () => t });
+  while ((await save(A, 'u_flaky')) === 'saved');
+  await B.snapshot(['u_flaky'], 0);
+  await B.mutate('u_flaky', (g) => ({ games: g.slice(2), result: 'freed' }));
+  t += 60 * 60_000;
+  down = true;
+  const seen = await A.snapshot(['u_flaky'], t + 1_000);
+  assert(seen[0].games.length > 0, 'GCS down: the snapshot serves the copy held'); n++;
+  down = false;
+  t += 1_000; // inside freshMs of the failed re-check (and its 30 s backoff)
+  assert.strictEqual(await save(A, 'u_flaky'), 'saved', 'the failed re-check confirmed nothing: the save re-checks and fits'); n++;
+}
+
 console.log(`sybilfill.cloud.test.ts: ${n} checks passed`);
