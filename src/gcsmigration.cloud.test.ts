@@ -220,9 +220,9 @@ for (const [label, transform, why] of [
 {
   const s = source.indexOf('async function syncFromGcs(');
   const body = source.slice(s, source.indexOf('\n}\n', s));
-  const mig = body.indexOf('await accountGames.migrate(remote.db.games)');
+  const mig = body.indexOf('await accountGames.migrate(remote.db.games, remote.generation)');
   assert(mig > 0 && mig < body.indexOf('gcsGeneration = remote.generation') && mig < body.indexOf('applyMergedDb('),
-    'syncFromGcs migrates before it adopts the generation or merges'); n++;
+    'syncFromGcs migrates before it adopts the generation or merges, passing the generation it read (Sweep 37)'); n++;
   assert(/const remoteDb: DB = accountGames \? \{ users: remote\.db\.users, games: legacyKept \} : remote\.db;/.test(body) && /legacyKept = m\.kept;/.test(body)
     && /applyMergedDb\(unionMergeDb\(remoteDb,/.test(body) && /if \(!descends \|\| migrated \|\| \(accountGames && foldsRemoteLacks\(loadDB\(\)\.users, remote\.db\.users\)\)\) scheduleGcsSave\(\);/.test(body),
     'hosted, the merged state carries only blocked accounts\' legacy rows and a migration schedules the write that clears the rest'); n++;
@@ -587,6 +587,49 @@ for (const [label, transform, why] of [
   const d1 = g('g_D', 'u_cp', { name: 'single' }), d1edited = g('g_D', 'u_cp', { name: 'single, edited' });
   await s.migrate([d1]); await s.migrate([d1edited]);
   assert(isDeepStrictEqual(names().slice(3), ['single, edited']), `CONTROL: a single copy's edit lands in place: ${JSON.stringify(names())}`); n++;
+}
+
+{
+  // Sweep 37: migrations of db.json generations applied out of order. A read no newer than the one
+  // recorded in the object is superseded: its changed single copy is the OLDER content, not an edit.
+  const xA = g('g_x', 'u_gen', { name: 'A, before the edit' }), xB = g('g_x', 'u_gen', { name: 'B, the acked edit' });
+  const yNew = g('g_y', 'u_gen', { name: 'y' });
+  const at = (b: MemoryBucket, s: { objectName: (k: string) => string }) => (JSON.parse(b.objects.get(s.objectName('u_gen'))!.body).migrated as Record<string, string>)['@generation'];
+  const names = (b: MemoryBucket, s: { objectName: (k: string) => string }) => storedGames(b, s.objectName('u_gen'))!.map((x) => x.name);
+  {
+    const b = memoryBucket();
+    const s = create({ bucket: b, capBytes: CAP });
+    await s.migrate([xA], '10');
+    await s.migrate([xB], '20');
+    assert(isDeepStrictEqual(names(b, s), ['B, the acked edit']) && at(b, s) === '20', `a newer read's edit lands and its generation is recorded: ${JSON.stringify(names(b, s))} @${at(b, s)}`); n++;
+    const writes = b.ops.write;
+    const old = await s.migrate([xA], '10');
+    assert(isDeepStrictEqual(names(b, s), ['B, the acked edit']) && b.ops.write === writes && old.conflicts.length === 0,
+      `THE DEFECT (Sweep 37): an older read never writes its copy over the newer edit: ${JSON.stringify(names(b, s))}`); n++;
+    await s.migrate([xA, yNew], '10');
+    assert(at(b, s) === '20' && isDeepStrictEqual(names(b, s), ['B, the acked edit', 'y']),
+      `an older read still adds what it alone holds, and never lowers the generation recorded: @${at(b, s)} ${JSON.stringify(names(b, s))}`); n++;
+    await s.migrate([xA, yNew], '30');
+    assert(isDeepStrictEqual(names(b, s), ['A, before the edit', 'y']) && at(b, s) === '30', `CONTROL (w): a restored db.json is a newer generation, so its copy is taken for the edit: ${JSON.stringify(names(b, s))}`); n++;
+  }
+  {
+    // The race itself: N1 read generation 10 and its write is slow; N2 reads 20 (the previous revision's
+    // acked edit) and lands first; N1's write 412s and is re-applied on N2's object.
+    const b = memoryBucket();
+    const realWrite = b.write.bind(b);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let held = false;
+    b.write = async (...a: Parameters<typeof realWrite>) => { if (!held && String(a[1]).includes('A, before the edit')) { held = true; await gate; } return realWrite(...a); };
+    const n1 = create({ bucket: b, capBytes: CAP }), n2 = create({ bucket: b, capBytes: CAP });
+    const first = n1.migrate([xA], '10');
+    while (!held) await new Promise((r) => setTimeout(r, 1));
+    await n2.migrate([xB], '20');
+    release();
+    const r1 = await first;
+    assert(isDeepStrictEqual(names(b, n2), ['B, the acked edit']) && r1.conflicts.length === 0,
+      `THE DEFECT (Sweep 37): the slower, older migration does not revert the acked edit: ${JSON.stringify(names(b, n2))}`); n++;
+  }
 }
 
 console.log(`gcsmigration.cloud.test.ts: ${n} checks passed`);

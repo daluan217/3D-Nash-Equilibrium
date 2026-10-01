@@ -22,7 +22,7 @@ export interface Store {
   tombstoneEventually(keys: string[]): void;
   counts(): Promise<Map<string, number>>;
   knownOwners(): Set<string> | null;
-  migrate(legacy: unknown[]): Promise<{ accounts: number; rows: number; added: number; conflicts: string[]; kept: Game[] }>;
+  migrate(legacy: unknown[], readGeneration?: string): Promise<{ accounts: number; rows: number; added: number; conflicts: string[]; kept: Game[] }>;
   idle(): Promise<void>;
   objectName(key: string): string;
   sizeOf(key: string, games: readonly Game[]): number;

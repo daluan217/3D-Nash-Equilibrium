@@ -2262,8 +2262,12 @@ try {
       const ok = (st) => st.every((x) => x === 200);
       record('fixture: pass 1 ran all 41 writes and landed 38 games on GCS, giving the true size T',
         ok(p1.st) && p1.st.length === 41 && landedGames === 11 - 3 + 30 && T > 20000, JSON.stringify({ n: p1.st.length, bad: p1.st.filter((x) => x !== 200), landedGames, T }));
+      const sameMigration = (text) => { const o = JSON.parse(text); const { '@generation': _gen, ...rest } = o.migrated ?? {}; return JSON.stringify({ ...o, migrated: rest }); };
       record('fixture: every pass started from the same migrated object (db.json\'s legacy rows, moved byte-identical each time)',
-        typeof p1.start === 'string' && p1.start === p2.start && p2.start === p3.start && JSON.parse(p1.start).games.length === 11,
+        // Byte for byte bar the db.json generation each pass's migration records (each pass re-stores the
+        // seed, a new generation: Sweep 37), which must be there, a number.
+        [p1, p2, p3].every((p) => typeof p.start === 'string' && /^\d+$/.test(JSON.parse(p.start).migrated?.['@generation'] ?? ''))
+          && sameMigration(p1.start) === sameMigration(p2.start) && sameMigration(p2.start) === sameMigration(p3.start) && JSON.parse(p1.start).games.length === 11,
         JSON.stringify({ starts: [p1.start, p2.start, p3.start].map((x) => (x ?? '').length) }));
       record('THE DEFECT (cap drift): a cap of T passes all 41 writes and T-1 refuses exactly the last add (413)',
         ok(p2.st) && ok(p3.st.slice(0, 40)) && p3.st[40] === 413,

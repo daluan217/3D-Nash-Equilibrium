@@ -2248,7 +2248,7 @@ async function syncFromGcs(ifChanged = false): Promise<void> {
   let migrated = false, legacyKept: SavedGame[] = [];
   if (accountGames && remote !== null && remote.db.games.length > 0) {
     noteMigratedAccounts(migratedAccounts, remote.db.users, remote.db.games, remote.lineage);
-    const m = await accountGames.migrate(remote.db.games);
+    const m = await accountGames.migrate(remote.db.games, remote.generation);
     console.log(`Migrated ${m.rows} legacy game row(s) from db.json into ${m.accounts} per-account object(s) `
       + `(${m.added} written by this run, the rest already there; every row written read back byte-identical).`);
     if (m.conflicts.length > 0) {

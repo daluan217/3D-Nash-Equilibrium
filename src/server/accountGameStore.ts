@@ -84,6 +84,8 @@ export type GameOp<G, T> = (games: readonly G[], object: { migrated: Migrated })
 export class AccountStoreUnavailable extends Error {}
 
 export const ACCOUNT_GAMES_PREFIX = "games/";
+/** The `migrated` key holding the highest db.json generation migrated into the object (see `migrate`). */
+const MIGRATED_AT = "@generation";
 /** The write would grow the account past its cap. */
 export const ACCOUNT_FULL: unique symbol = Symbol("account-games-full");
 /** The account's object is a tombstone: the account was deleted (on any instance). */
@@ -541,6 +543,16 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
    * changed row is kept as one more copy, never written over one — a duplicate
    * at worst, never a loss (Sweeps 34 and 35).
    *
+   * Two instances can migrate db.json generations out of order (one's write
+   * 412s behind another's and is re-applied on it). `readGeneration`, the db.json
+   * generation the rows were read from, is recorded in the object (the highest
+   * one migrated into it, under `@generation`, a key no identity can take). A
+   * read no newer than that is superseded: its changed single copy is the
+   * OLDER content, not an edit, and is skipped (Sweep 37: it reverted an
+   * acked edit). Copies kept as one more copy are kept whatever the read's
+   * age. A restored db.json is a newer generation, so it still counts as an
+   * edit.
+   *
    * Every row this run wrote is then read BACK from GCS — the very generation
    * this run wrote, never the cache — and compared byte for byte (its JSON);
    * any miss throws, and the caller must not clear the legacy array. The cap
@@ -548,7 +560,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
    * database we can trust) is skipped and its rows are returned in `kept`, to
    * stay in db.json: one corrupt object must not stall every account.
    */
-  async function migrate(legacy: readonly unknown[]): Promise<{ accounts: number; rows: number; added: number; conflicts: string[]; kept: G[] }> {
+  async function migrate(legacy: readonly unknown[], readGeneration?: string): Promise<{ accounts: number; rows: number; added: number; conflicts: string[]; kept: G[] }> {
     const byOwner = (rows: readonly unknown[]) => {
       const out = new Map<string, G[]>();
       for (const g of rows as G[]) {
@@ -579,6 +591,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
         return `json:${j}#${k}`;
       });
     };
+    const isGeneration = (g: string | undefined): g is string => g !== undefined && /^\d{1,30}$/.test(g);
     // The id an `id:` / `id#k:` identity stands for (null for an id-less row's).
     const rawId = (id: string) => (id.startsWith("id:") ? id.slice(3) : /^id#\d+:/.test(id) ? id.slice(id.indexOf(":") + 1) : null);
     // What the log names a row by: an id-less row's identity is its whole JSON (game contents), so its fingerprint (Sweep 30).
@@ -623,6 +636,9 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
               const x = rawId(id);
               if (x !== null) copies.set(x, (copies.get(x) ?? new Map()).set(print, id));
             }
+            // This read is no newer than one already migrated here: it can carry no newer edit (Sweep 37).
+            const superseded = isGeneration(readGeneration) && isGeneration(record[MIGRATED_AT])
+              && BigInt(readGeneration) <= BigInt(record[MIGRATED_AT]);
             const inRows = new Map<string, number>(); // distinct copies of each id among these rows
             for (const id of new Set(rowIds)) { const x = rawId(id); if (x !== null) inRows.set(x, (inRows.get(x) ?? 0) + 1); }
             let changed = false;
@@ -635,6 +651,7 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
                 if (only === `id:${x}`) {
                   // One copy, recorded, and one in db.json that changed since: edited on a previous
                   // revision. It lands if the account has not touched the copy here; else this side stands.
+                  if (superseded) return; // an older read: the recorded copy is the newer one
                   const j = at.get(only);
                   if (j !== undefined && fingerprint(JSON.stringify(next[j])) === record[only]) {
                     next[j] = g; wrote.add(i);
@@ -661,6 +678,8 @@ export function createAccountGameStore<G extends StoredGame>(opts: AccountGameSt
               }
               record[id] = print; changed = true;
             });
+            if (changed && isGeneration(readGeneration)
+              && !(isGeneration(record[MIGRATED_AT]) && BigInt(record[MIGRATED_AT]) >= BigInt(readGeneration))) record[MIGRATED_AT] = readGeneration;
             return changed
               ? { games: next, migrated: record, result: wrote.size, overCapOk: true, committed: (generation) => { ours = generation; } }
               : { result: 0 };
