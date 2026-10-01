@@ -3044,8 +3044,9 @@ function runTests() {
 
 // Runs as the entry point; breakaheap.test.ts imports createInitialState and
 // nothing else. Any other importer is refused, so a mis-fire cannot pass silently.
-const entry = import.meta.filename === process.argv[1];
-if (!entry && !/breakaheap\.test\.ts$/.test(process.argv[1] ?? '')) throw new Error(`src/test.ts loaded by ${process.argv[1]} without running`);
+const mainScript = process.argv[1] ?? '';
+const entry = mainScript.endsWith('src/test.ts') || mainScript.endsWith('src/test.js');
+if (!entry && !/breakaheap\.test\.ts$/.test(mainScript)) throw new Error(`src/test.ts loaded by ${mainScript} without running`);
 if (entry) try {
   runTests();
 } catch (err: any) {
