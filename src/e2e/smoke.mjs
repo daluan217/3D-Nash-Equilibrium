@@ -12,7 +12,7 @@
  * Exit 0 only if every check passes and the browser logged no console errors.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
@@ -12079,6 +12079,89 @@ const suggestedScenario = {
         (await dlg.locator('textarea').first().inputValue()) === beforeDiscard);
     }
     await p97.close();
+  });
+
+  // ══ 109. BLUE-LOOP-MATH-22 F4/F5: a saved game's card shows the game "Load" commits.
+  //      Rows saved before cleanPayoffs (2026-06-17) hold raw 4-dp payoffs; the card solved
+  //      them raw ("x*=0.828 … E[B]=0.058"), Load committed 3-dp ("x*=0.827 … E[B]=0.059")
+  //      and the explainer lost the story. A row with `payoffs: null` crashed the whole app.
+  //      Packaged condition: env -i shape, empty cwd, rows on disk. Unit twin: mathreload.
+  section('109', 'stored rows (legacy 4-dp, payoffs:null): the card, the loaded panel and the explainer request describe one game', async () => {
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 3);
+    const deskBase = `http://127.0.0.1:${deskPort}`;
+    const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-legacyrow-'));
+    const runDir = mkdtempSync(path.join(tmpdir(), 'nash-e2e-legacyrow-cwd-'));
+    const NAME = 'Legacy 4dp';
+    writeFileSync(path.join(deskData, 'db.json'), JSON.stringify({
+      users: [{ id: 'local-owner', username: 'This device', email: 'local@device', passwordHash: '' }],
+      games: [
+        { id: 'g-legacy-4dp', userId: 'local-owner', name: NAME, description: 'Saved before 2026-06-17.', createdAt: '2026-06-10T00:00:00.000Z',
+          payoffs: { a11: -5.3067, a12: -8.854, a21: -9.2666, a22: -4.1166, b11: -0.5135, b12: -1.3647, b21: 2.8025, b22: 6.8882 } },
+        { id: 'g-null', userId: 'local-owner', name: 'Null payoffs', description: 'A malformed row.', createdAt: '2026-06-11T00:00:00.000Z', payoffs: null },
+      ],
+    }));
+    // electron-main.cjs's own env, nothing inherited (no repo .env, no credentials).
+    const desk = spawn(process.execPath, [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
+      cwd: runDir,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production', PORT: deskPort, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: deskData,
+        NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    desk.stderr.on('data', () => {});
+    const deskCtx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36',
+    });
+    try {
+      const up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
+      record('§109 precondition: a packaged-shape server (IS_ELECTRON, empty cwd) is up on its own port', up);
+      const stored = await fetch(`${deskBase}/api/games`).then((r) => r.json()).catch(() => null);
+      record('§109 precondition: GET /api/games returns the legacy row as stored (a11 = -5.3067) and the null row',
+        Array.isArray(stored) && stored.some((g) => g.payoffs?.a11 === -5.3067) && stored.some((g) => g.payoffs === null), JSON.stringify(stored));
+      const dp = trackPage(await deskCtx.newPage());
+      const pageErrors = [];
+      dp.on('pageerror', (e) => pageErrors.push(String(e).slice(0, 160)));
+      const reports = [];
+      dp.on('request', (r) => { if (r.url().includes('/api/report') && r.method() === 'POST') reports.push(r.postData()); });
+      await dp.goto(deskBase, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(dp, 'setup: clear a possible tour before reading the saved card'); /* decided below */
+      let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
+      if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
+      record('§109 precondition: the guided tour is dismissed', tourGone);
+      const body = await dp.locator('body').innerText();
+      record('§109 F5: a stored row with payoffs:null does not take the app down ("Something went wrong")',
+        !/something went wrong/i.test(body) && pageErrors.length === 0, JSON.stringify(pageErrors));
+
+      await dp.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await dp.getByRole('button', { name: /library/i }).first().click();
+      const card = dp.locator('[data-drawer-game]', { hasText: NAME }).first();
+      await card.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      const cardLines = (await card.locator('li').allInnerTexts().catch(() => [])).map((l) => l.replace(/\s+/g, ' ').trim());
+      record('§109 F4: the card shows the loaded game "Mixed NE (x*=0.827, y*=0.545) val (E[A]=-6.922, E[B]=0.059)", never the raw solve',
+        cardLines.includes('Mixed NE (x*=0.827, y*=0.545) val (E[A]=-6.922, E[B]=0.059)') && !cardLines.some((l) => l.includes('x*=0.828')),
+        JSON.stringify(cardLines));
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+
+      await dp.getByRole('button', { name: NAME, exact: true }).click();
+      await dp.waitForFunction(() => /x\*=/.test(document.querySelector('[data-tour="ne"]')?.textContent || ''), null, { timeout: 8000 }).catch(() => {});
+      const panelLines = (await dp.locator('[data-tour="ne"] li').allInnerTexts()).map((l) => l.replace(/\s+/g, ' ').trim());
+      const asCard = panelLines.map((l) => l.replace(' with values ', ' val (').replace(/(E\[B\]=\S+)$/, '$1)'));
+      record('§109 F4: card lines == the panel lines after Load, one for one',
+        cardLines.length > 0 && JSON.stringify(asCard) === JSON.stringify(cardLines), `card ${JSON.stringify(cardLines)} | panel ${JSON.stringify(panelLines)}`);
+
+      await dp.getByRole('button', { name: /explain this game/i }).first().click();
+      const deadline = Date.now() + 8000;
+      while (!reports.length && Date.now() < deadline) await dp.waitForTimeout(100);
+      const req = reports.length ? JSON.parse(reports[0]) : null;
+      record('§109 F4: the explainer request carries the saved game\'s story for the loaded matrix',
+        req?.scenario?.name === NAME && req?.payoffs?.a11 === -5.307, JSON.stringify({ scenario: req?.scenario ?? null, a11: req?.payoffs?.a11 }));
+      await dp.close();
+    } finally {
+      await deskCtx.close().catch(() => {});
+      if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
+      for (const d of [deskData, runDir]) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+    }
   });
 
 await executeSections();

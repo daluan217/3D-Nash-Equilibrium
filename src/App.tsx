@@ -29,6 +29,7 @@ import {
   // themselves — a pasted U+2212 minus lost on blur, and x0 = 0 discarded by a
   // falsy-zero fallback. src/test.ts asserts no such call site survives.
   commitPayoffInput,
+  commitPayoffs,
   commitStartCoordinate,
   parseNumericInput,
   containsAmbiguousComma,
@@ -4059,13 +4060,16 @@ export default function App() {
   const mergedPresets = useMemo(() => {
     const merged: Record<string, PresetGame> = { ...PRESETS };
     userCustomGames.forEach((g) => {
+      // The same door the saved card reads (F4): a legacy 4-dp row must load,
+      // and match its story, as the game its card describes.
+      const c = commitPayoffs(g.payoffs);
       merged[g.id] = {
         key: g.id,
         name: g.name,
-        a11: g.payoffs.a11, b11: g.payoffs.b11,
-        a12: g.payoffs.a12, b12: g.payoffs.b12,
-        a21: g.payoffs.a21, b21: g.payoffs.b21,
-        a22: g.payoffs.a22, b22: g.payoffs.b22,
+        a11: c.a11, b11: c.b11,
+        a12: c.a12, b12: c.b12,
+        a21: c.a21, b21: c.b21,
+        a22: c.a22, b22: c.b22,
         desc: g.description || '',
         // Saved games carry option labels exactly like presets do. Merging them
         // here rather than reading them separately downstream keeps ONE source
@@ -4257,15 +4261,9 @@ export default function App() {
   }, [regenView.preview, isEditModalOpen, editTerms, saveTerms]);
 
 
-  // Clamp a whole matrix through the one cell parser, and derive its editable
-  // string twin from the RESULT — so payoffs and rawPayoffs cannot disagree
-  // whatever a preset, a generated game or a saved game supplies.
-  const commitPayoffs = (g: GamePayoffs): GamePayoffs => ({
-    a11: commitPayoffInput(String(g.a11)), b11: commitPayoffInput(String(g.b11)),
-    a12: commitPayoffInput(String(g.a12)), b12: commitPayoffInput(String(g.b12)),
-    a21: commitPayoffInput(String(g.a21)), b21: commitPayoffInput(String(g.b21)),
-    a22: commitPayoffInput(String(g.a22)), b22: commitPayoffInput(String(g.b22)),
-  });
+  // A matrix's editable string twin, derived from the COMMITTED matrix
+  // (commitPayoffs) — so payoffs and rawPayoffs cannot disagree whatever a
+  // preset, a generated game or a saved game supplies.
   const rawOf = (g: GamePayoffs): Record<keyof GamePayoffs, string> => ({
     a11: String(g.a11), b11: String(g.b11), a12: String(g.a12), b12: String(g.b12),
     a21: String(g.a21), b21: String(g.b21), a22: String(g.a22), b22: String(g.b22),

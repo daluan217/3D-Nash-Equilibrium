@@ -361,6 +361,14 @@ export function commitPayoffInput(raw: string | null | undefined): number {
   return commitNumericField(raw, PAYOFF_RANGE, { fallback: 0, quantise: true }).value;
 }
 
+/** A whole matrix through the one cell door. Stored rows can predate the server's
+ *  3-dp clean (2026-06-17) or be malformed, so a saved card and the game it loads
+ *  must both read THIS, never the row as stored (BLUE-LOOP-MATH-22 F4). */
+export function commitPayoffs(g: Partial<Record<keyof GamePayoffs, unknown>> | null | undefined): GamePayoffs {
+  const c = (k: keyof GamePayoffs) => commitPayoffInput(String(g?.[k]));
+  return { a11: c('a11'), a12: c('a12'), a21: c('a21'), a22: c('a22'), b11: c('b11'), b12: c('b12'), b21: c('b21'), b22: c('b22') };
+}
+
 /**
  * What a start coordinate commits. Only a genuinely unparseable field falls
  * back — 0 is a legal start point, not a missing one.
