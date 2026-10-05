@@ -162,7 +162,7 @@ function checkGame(g: GamePayoffs, heavy: boolean): void {
     if (!w) continue;
     const exactHere = [x, y].some((r) => r && r.n * BigInt(w[1]) === BigInt(w[0]) * r.d);
     wordHits++;
-    check('E6 briefing-words-exact', exactHere && String(Math.round((w[0] / w[1]) * 1e4) / 1e4) === hit[1],
+    check('E6 briefing-words-exact', exactHere && fmtProb(w[0] / w[1]) === hit[1],
       `${gs} briefing "${hit[0]}"`);
   }
   // E7 payload-agrees: the grounding payload states the mixed point with the panel's own digits.
@@ -192,7 +192,7 @@ check('F1 no mixed NE at a boundary root', !computeAllNE(F1).some((n) => n.type 
 check('F2 panel label and converged box print one y*', computeAllNE(F2a).some((n) => n.label === 'Mixed NE (x*=0.4, y*=0.688)')
   && computeAllNE(F2b).some((n) => /y\*=0\.313\)/.test(n.label)), computeAllNE(F2a).map((n) => n.label).join(' | '));
 check('F3 briefing never prints "0.5005 (a half)"', !geometryBriefing(F3).includes('0.5005 (a half)')
-  && geometryBriefing(F3).includes('y = 0.5005'), geometryBriefing(F3));
+  && geometryBriefing(F3).includes(`y = ${fmtProb(0.5005)} —`), geometryBriefing(F3));
 for (const g of [F1, F2a, F2b, F3]) checkGame(g, true);
 
 // ── sweep ─────────────────────────────────────────────────────────────────────

@@ -1035,7 +1035,7 @@ function testGeometryBriefingTruth() {
     // the other branch. PD's roots are both at -1, so it is the preset that
     // exercises the sentence class (d) had to leave alone.
     ['PD', PD, '  There is NO interior joint flat spot. The equilibrium sits on an edge or corner of the square, where a player is pinned to one action rather than balanced between two.'],
-    ['BoS', BOS, "  Both surfaces are level at the same interior point (x = 0.6667 (two-thirds), y = 0.3333 (a third)) — the joint flat spot, which is the mixed equilibrium."],
+    ['BoS', BOS, "  Both surfaces are level at the same interior point (x = 0.667 (two-thirds), y = 0.333 (a third)) — the joint flat spot, which is the mixed equilibrium."],
     ['matching pennies', MATCHING_PENNIES, "  A's surface goes LEVEL along A's axis when B plays y = 0.5 (a half) — that flat shelf is A's indifference."],
   ];
   for (const [name, g, line] of PRESET_LINES)

@@ -235,6 +235,7 @@ const RENDERING_PATH_FILES = [
   'src/utils/plotting.ts',
   'src/components/PlotlyView.tsx',
   'src/components/equilibriumPanel.ts',
+  'src/utils/geometry.ts',   // the explainer's briefing (math-loop-22 F6)
 ];
 
 /**
