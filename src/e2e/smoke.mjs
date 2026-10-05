@@ -12164,6 +12164,151 @@ const suggestedScenario = {
     }
   });
 
+  // ══ 110. BLUE-LOOP-MATH-22 sweep 1 angle 5: the plot under a burst. Edits, legend clicks, theme,
+  // Reset View and resizes interleaved with no settling; afterwards the surfaces are EXACTLY E_A/E_B of
+  // the committed boxes, the background is the theme's, the camera finite, a legend choice survives the
+  // next redraws, and one click flips exactly its own entry. Seeded, so a failure replays.
+  section('110', 'a burst of edits, legend clicks, theme, Reset View and resizes leaves the plot describing the committed game', async () => {
+    const bp = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    // trackPage records every console error and page error ("Plotly mutation failed" is a console.error).
+    const errorsBefore = consoleErrors.length;
+    try {
+      await bp.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(bp, '§110 setup: clear a possible tour before the burst');
+      const inputs = await bp.locator('input[aria-label$="payoff"]').all();
+      record('§110 precondition: eight payoff boxes and a Plotly legend', inputs.length === 8
+        && await bp.locator('.legend .traces').count() > 0);
+      let seed = 110;
+      const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+      const LEG = ['Starting Point', 'Pure NE', 'Domain boundary', 'Current position (A)'];
+      const legend = () => bp.evaluate(() => {
+        const by = {};
+        for (const d of document.getElementById('plotly-3d-market-simulation')?._fullData || []) {
+          const k = d.legendgroup || d.name;
+          if (k === '_' || (!d.showlegend && !(k in by))) continue;
+          (by[k] ??= []).push(d.visible === true);
+        }
+        return Object.fromEntries(Object.entries(by).map(([k, v]) => [k, v.every(Boolean) ? 'on' : v.some(Boolean) ? 'MIXED' : 'off']));
+      });
+      const clickLegend = async (n) => {
+        const item = bp.locator('.legend .traces', { hasText: n }).first();
+        if (!(await item.count())) return false;
+        await item.scrollIntoViewIfNeeded();
+        await item.locator('rect.legendtoggle').click({ force: true });
+        return true;
+      };
+      const blur = () => bp.locator('body').click({ position: { x: 2, y: 2 } });
+      let clicks = 0;
+      const themes = new Set();
+      for (let round = 0; round < 3; round++) {
+        for (let k = 0; k < 30; k++) {
+          const r = rnd();
+          if (r < 0.55) await inputs[Math.floor(rnd() * 8)].fill(String(Math.round((rnd() * 20 - 10) * 1000) / 1000));
+          else if (r < 0.7) clicks += await clickLegend(LEG[Math.floor(rnd() * LEG.length)]) ? 1 : 0;
+          else if (r < 0.8) await bp.locator('button[aria-label="Toggle dark mode"]').first().click();
+          else if (r < 0.9) await bp.locator('button', { hasText: 'Reset View' }).first().click();
+          else await bp.setViewportSize({ width: 900 + Math.floor(rnd() * 600), height: 700 + Math.floor(rnd() * 300) });
+        }
+        await blur();
+        await bp.waitForTimeout(2500);
+        const st = await bp.evaluate(() => {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const t = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface');
+          return { vals: [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => i.value),
+            zA: t('E[A]')?.z, zB: t('E[B]')?.z, visA: t('E[A]')?.visible, visB: t('E[B]')?.visible,
+            dark: document.documentElement.classList.contains('dark'), bg: gd?._fullLayout?.paper_bgcolor,
+            eye: gd?._fullLayout?.scene?.camera?.eye };
+        });
+        // Box order a11,b11,a12,b12,a21,b21,a22,b22 (row-major, A then B per cell).
+        const [a11, b11, a12, b12, a21, b21, a22, b22] = st.vals.map(Number);
+        let err = 0;
+        for (let yi = 0; yi <= 28; yi++) for (let xi = 0; xi <= 28; xi++) {
+          const x = xi / 28, y = yi / 28;
+          const ea = x * y * a11 + x * (1 - y) * a12 + (1 - x) * y * a21 + (1 - x) * (1 - y) * a22;
+          const eb = x * y * b11 + x * (1 - y) * b12 + (1 - x) * y * b21 + (1 - x) * (1 - y) * b22;
+          const d = Math.max(Math.abs(st.zA?.[yi]?.[xi] - ea), Math.abs(st.zB?.[yi]?.[xi] - eb));
+          err = Number.isNaN(d) ? Infinity : Math.max(err, d);
+        }
+        record(`§110 round ${round}: both surfaces are exactly E_A/E_B of the committed boxes after the burst`,
+          err < 1e-9 && st.visA === true && st.visB === true, `max |dz| ${err} boxes ${st.vals.join(',')}`);
+        themes.add(st.dark);
+        record(`§110 round ${round}: the plot background is the theme's`, st.bg === (st.dark ? '#000000' : '#ffffff'), `${st.dark} ${st.bg}`);
+        record(`§110 round ${round}: the camera eye is finite`, !!st.eye && [st.eye.x, st.eye.y, st.eye.z].every(Number.isFinite), JSON.stringify(st.eye));
+        // A legend choice survives the next redraws (an edit, a theme switch). New keys = a new game shape.
+        if ((await legend())['Starting Point'] === 'on') { await clickLegend('Starting Point'); await bp.waitForTimeout(900); }
+        const s1 = await legend();
+        await inputs[0].fill(st.vals[0] === '1' ? '2' : '1'); await blur(); await bp.waitForTimeout(1500);
+        const s2 = await legend();
+        await bp.locator('button[aria-label="Toggle dark mode"]').first().click(); await bp.waitForTimeout(1500);
+        const s3 = await legend();
+        const bg2 = await bp.evaluate(() => [document.documentElement.classList.contains('dark'), document.getElementById('plotly-3d-market-simulation')?._fullLayout?.paper_bgcolor]);
+        themes.add(bg2[0]);
+        record(`§110 round ${round}: after a theme switch the plot background follows it`, bg2[0] !== st.dark && bg2[1] === (bg2[0] ? '#000000' : '#ffffff'), JSON.stringify(bg2));
+        const shared = Object.keys(s1).filter((k) => k in s2 && k in s3);
+        record(`§110 round ${round}: a legend choice survives an edit and a theme switch, and no group is half-shown`,
+          s1['Starting Point'] === 'off' && shared.length >= 3 && shared.every((k) => s1[k] === s2[k] && s2[k] === s3[k])
+          && ![s1, s2, s3].some((x) => Object.values(x).includes('MIXED')), `${JSON.stringify(s1)} -> ${JSON.stringify(s2)} -> ${JSON.stringify(s3)}`);
+        for (const n of ['Starting Point', 'Domain boundary']) {
+          const before = await legend();
+          if (!(await clickLegend(n))) continue;
+          await bp.waitForTimeout(900);
+          const after = await legend();
+          const flipped = Object.keys(before).filter((k) => before[k] !== after[k]);
+          record(`§110 round ${round}: one settled click on "${n}" flips exactly that entry`, flipped.length === 1 && flipped[0] === n,
+            `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+        }
+      }
+      // A react held in flight (a slow device, made deterministic): edits typed one by one and two clicks on
+      // one legend entry all land behind it. On release the surfaces must describe the LAST edit and the
+      // two clicks must cancel out (the second reads the first's pending intent, not the stale trace).
+      await bp.evaluate(() => {
+        const P = window.Plotly, orig = P.react;
+        P.react = async (...a) => { if (window.__e2eHold) await window.__e2eHold; return orig.apply(P, a); };
+      });
+      for (let v = 0; v < 3; v++) {
+        await bp.locator('button', { hasText: 'Reset View' }).first().click();
+        await bp.waitForTimeout(800);
+        const before = await legend();
+        const rev = () => bp.evaluate(() => Number(document.getElementById('plotly-3d-market-simulation')?.dataset.plotReactRevision ?? 0));
+        const rev0 = await rev();
+        await bp.evaluate(() => { window.__e2eHold = new Promise((r) => { window.__e2eRelease = () => { window.__e2eHold = null; r(); }; }); });
+        const target = Array.from({ length: 8 }, () => String(Math.round((rnd() * 20 - 10) * 1000) / 1000));
+        for (let i = 0; i < 8; i++) {
+          await inputs[i].fill(target[i]);
+          if (i === 2) await clickLegend('Starting Point');
+        }
+        await clickLegend('Starting Point');
+        const held = (await rev()) === rev0;
+        await bp.evaluate(() => window.__e2eRelease());
+        await blur();
+        await bp.waitForFunction((r0) => Number(document.getElementById('plotly-3d-market-simulation')?.dataset.plotReactRevision ?? 0) > r0, rev0, { timeout: 15000 }).catch(() => {});
+        await bp.waitForTimeout(1500);
+        const z = await bp.evaluate(() => {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const t = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface');
+          return { vals: [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => i.value), zA: t('E[A]')?.z, zB: t('E[B]')?.z };
+        });
+        const [a11, b11, a12, b12, a21, b21, a22, b22] = z.vals.map(Number);
+        const corner = (zz, x, y) => zz?.[y * 28]?.[x * 28];
+        const ok = JSON.stringify(z.vals) === JSON.stringify(target)
+          && corner(z.zA, 1, 1) === a11 && corner(z.zA, 1, 0) === a12 && corner(z.zA, 0, 1) === a21 && corner(z.zA, 0, 0) === a22
+          && corner(z.zB, 1, 1) === b11 && corner(z.zB, 1, 0) === b12 && corner(z.zB, 0, 1) === b21 && corner(z.zB, 0, 0) === b22;
+        record(`§110 volley ${v}: edits typed behind an in-flight react leave the surfaces' corners at the last edit's payoffs`, ok,
+          `boxes ${z.vals.join(',')} target ${target.join(',')} zA corners ${[corner(z.zA, 1, 1), corner(z.zA, 1, 0), corner(z.zA, 0, 1), corner(z.zA, 0, 0)]}`);
+        const after = await legend();
+        record(`§110 volley ${v}: two clicks on "Starting Point" behind the in-flight react cancel out`,
+          before['Starting Point'] === after['Starting Point'] && !Object.values(after).includes('MIXED'), `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+        record(`§110 volley ${v} reach: no react completed until the release (the volley really was behind one)`, held, String(held));
+      }
+      record('§110 reach: the bursts clicked the legend', clicks >= 5, String(clicks));
+      record('§110 reach: the background was checked in both themes', themes.size === 2, JSON.stringify([...themes]));
+      const errors = consoleErrors.slice(errorsBefore).filter((e) => !isAnalyticsNoise(e));
+      record('§110: no page error, console error or failed Plotly mutation during the bursts', errors.length === 0, JSON.stringify(errors.slice(0, 4)));
+    } finally {
+      await bp.close().catch(() => {});
+    }
+  });
+
 await executeSections();
 
 } catch (e) {
