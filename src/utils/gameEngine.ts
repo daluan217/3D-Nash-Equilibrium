@@ -1637,8 +1637,8 @@ export function doStep(
   const mover: 'A' | 'B' = (s.stepCount % 2 === 0) ? firstMover : (firstMover === 'A' ? 'B' : 'A');
   s.stepCount++;
 
-  let nx = s.cx;
-  let ny = s.cy;
+  let nx = s.exactX;
+  let ny = s.exactY;
 
   if (pureNEs.length > 1 && committedNE) {
     if (mover === firstMover) {
@@ -1647,15 +1647,15 @@ export function doStep(
       if (mover === 'A') nx = committedNE.x;
       else ny = committedNE.y;
     } else if (mover === 'A') {
-      // Follower A best-responds to the current y.
+      // Follower A best-responds to the current y, breaking ties toward committedNE.
       const valRow1 = s.cy * g.a11 + (1 - s.cy) * g.a12;
       const valRow2 = s.cy * g.a21 + (1 - s.cy) * g.a22;
-      nx = valRow1 >= valRow2 ? 1 : 0;
+      nx = Math.abs(valRow1 - valRow2) < 1e-9 ? committedNE.x : (valRow1 > valRow2 ? 1 : 0);
     } else {
-      // Follower B best-responds to the current x.
+      // Follower B best-responds to the current x, breaking ties toward committedNE.
       const valCol1 = s.cx * g.b11 + (1 - s.cx) * g.b21;
       const valCol2 = s.cx * g.b12 + (1 - s.cx) * g.b22;
-      ny = valCol1 >= valCol2 ? 1 : 0;
+      ny = Math.abs(valCol1 - valCol2) < 1e-9 ? committedNE.y : (valCol1 > valCol2 ? 1 : 0);
     }
   } else if (pureNEs.length >= 1) {
     // Alternating best response: each mover best-responds to the opponent's
@@ -2062,9 +2062,10 @@ export function doStep(
       // STATIONARY IS NOT EQUILIBRIUM. Check the independent regret oracle
       // before using the words "Nash equilibrium": the path can go stationary
       // at a point a player would leave (regret 18 on the fixture in types.ts).
-      const rq = Math.max(Math.abs(regretA(s.cx, s.cy, g)), Math.abs(regretB(s.cx, s.cy, g)));
-      s.convergedIsNE = Math.abs(regretA(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'A')
-        && Math.abs(regretB(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'B');
+      const rq = Math.max(Math.abs(regretA(s.exactX, s.exactY, g)), Math.abs(regretB(s.exactX, s.exactY, g)));
+      const isPure = (s.exactX === 0 || s.exactX === 1) && (s.exactY === 0 || s.exactY === 1);
+      s.convergedIsNE = Math.abs(regretA(s.exactX, s.exactY, g)) <= (isPure ? 1e-9 : neTolerancePlayer(g, 'A'))
+        && Math.abs(regretB(s.exactX, s.exactY, g)) <= (isPure ? 1e-9 : neTolerancePlayer(g, 'B'));
       // CodeRabbit (round 9): the headline's coordinates/payoffs, and the
       // continuum-membership check inside formatConvergenceLogLine, must use
       // the EXACT (s.exactX/s.exactY), not the r3-rounded (s.cx/s.cy),
