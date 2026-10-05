@@ -24,6 +24,7 @@
  */
 
 import type { GamePayoffs } from '../types';
+import { indifferenceRoot } from './gameEngine';
 
 export interface Geometry {
   /** A's twist. Zero means A's surface is a flat plane: no strategic interaction. */
@@ -158,8 +159,10 @@ export function describeGeometry(g: GamePayoffs): Geometry {
   const twistA = g.a11 - g.a12 - g.a21 + g.a22;
   const twistB = g.b11 - g.b12 - g.b21 + g.b22;
 
-  const yStar = Math.abs(twistA) < EPS ? NaN : (g.a22 - g.a12) / twistA;
-  const xStar = Math.abs(twistB) < EPS ? NaN : (g.b22 - g.b21) / twistB;
+  // The solver's own root (NaN when the twist is < 1e-9), so the briefing's
+  // shelf and the solver's x*/y* cannot round differently (11/16 vs 0.687...).
+  const yStar = indifferenceRoot(g.a11 - g.a21, g.a12 - g.a22);
+  const xStar = indifferenceRoot(g.b11 - g.b12, g.b21 - g.b22);
 
   const inUnit = (v: number) => Number.isFinite(v) && v > EPS && v < 1 - EPS;
 
@@ -236,7 +239,9 @@ export function geometryBriefing(g: GamePayoffs): string {
   ];
   const rw = (v: number) => {
     if (!Number.isFinite(v)) return 'undefined';
-    const hit = WORDS.find(([n]) => Math.abs(v - n) < 5e-4);
+    // EXACT fractions only: within 5e-4 printed "0.5005 (a half)". A 3dp root is p/q with
+    // q <= 400000, so any other fraction p/q sits >= 5e-7 away and 1e-9 cannot misname it.
+    const hit = WORDS.find(([n]) => Math.abs(v - n) < 1e-9);
     return hit ? `${r(v)} (${hit[1]})` : r(v);
   };
   const lines: string[] = ['Geometry of the two expected-payoff surfaces (computed, authoritative):'];

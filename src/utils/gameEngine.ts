@@ -559,19 +559,32 @@ export function indifferenceAt(g: GamePayoffs, x: number, y: number): { a: boole
 }
 
 // ── NE computation ───────────────────────────────────────────────────────────
+const NE_EPS = 1e-9;
+
+/**
+ * THE root of v*d1 + (1-v)*d2 = 0 (a player's indifference point); NaN if level.
+ * One function for the solver, best-reply sets, geometry and validator: two float
+ * formulas printed 11/16 as 0.687 and 0.688, and called x*=1 "0.9999999999999999".
+ * ponytail: exact on 3dp payoffs (every shipping path quantises); float otherwise.
+ */
+export function indifferenceRoot(d1: number, d2: number): number {
+  const slope = d1 - d2;
+  if (Math.abs(slope) < NE_EPS) return NaN;
+  const d1I = Math.round(d1 * 1000);
+  const d2I = Math.round(d2 * 1000);
+  if (Math.abs(d1 * 1000 - d1I) < 1e-6 && Math.abs(d2 * 1000 - d2I) < 1e-6) {
+    const den = d1I - d2I;
+    if (den !== 0) return -d2I / den;
+  }
+  return -d2 / slope;
+}
+
 export function computeMixedNE(g: GamePayoffs): { x: number; y: number } | null {
-  const dY = g.a11 - g.a12 - g.a21 + g.a22;
-  const dX = g.b11 - g.b21 - g.b12 + g.b22;
-  if (Math.abs(dY) < 1e-9 || Math.abs(dX) < 1e-9) return null;
-  const yE = (g.a22 - g.a12) / dY;
-  const xE = (g.b22 - g.b21) / dX;
-  // Test the EXACT coordinate, then round only for reporting. Testing the
-  // ROUNDED one deleted genuine equilibria: on a=[[-2,5],[-1,3]],
-  // b=[[8.002,8],[3,7]] the equilibrium sits at x* = 0.9995002 with regret
-  // exactly 0, but r3 lifts it to 1.000 so "xS >= 1" fired and the app told the
-  // user "No standard NE found in real dimensions" while the prose named it.
-  // Same 3-decimal blind spot as the renderer's probability bug, one layer down.
-  if (xE <= 0 || xE >= 1 || yE <= 0 || yE >= 1) return null;
+  const yE = indifferenceRoot(g.a11 - g.a21, g.a12 - g.a22);
+  const xE = indifferenceRoot(g.b11 - g.b12, g.b21 - g.b22);
+  // A 3dp root inside (0,1) is >= 1/400000 from an edge, so NE_EPS cannot misclassify it.
+  if (!Number.isFinite(xE) || !Number.isFinite(yE)) return null;
+  if (xE <= NE_EPS || xE >= 1 - NE_EPS || yE <= NE_EPS || yE >= 1 - NE_EPS) return null;
   // EXACT coordinates, not rounded. Rounding here made the reported tuple
   // (x, y, eA, eB) describe a point that is not the equilibrium, and it was the
   // root of the prose/solver digit disagreement: the prose computed payoffs at
@@ -957,18 +970,18 @@ export function computeIndifference(g: GamePayoffs): IndifferenceStatus {
  */
 export interface Rect { x0: number; x1: number; y0: number; y1: number }
 
-const NE_EPS = 1e-9;
-
 /** Rectangles covering { (x,y) : x is a best reply to y }. */
 function brA(g: GamePayoffs): Rect[] {
-  const slope = (g.a11 - g.a21) - (g.a12 - g.a22);   // DA(y) = slope*y + c
-  const c = g.a12 - g.a22;
+  const d1 = g.a11 - g.a21;
+  const d2 = g.a12 - g.a22;
+  const slope = d1 - d2;   // DA(y) = slope*y + c
+  const c = d2;
   const out: Rect[] = [];
   if (Math.abs(slope) < NE_EPS) {
     if (Math.abs(c) < NE_EPS) return [{ x0: 0, x1: 1, y0: 0, y1: 1 }];   // indifferent everywhere
     return [c > 0 ? { x0: 1, x1: 1, y0: 0, y1: 1 } : { x0: 0, x1: 0, y0: 0, y1: 1 }];
   }
-  const root = -c / slope;                                            // DA(root) = 0
+  const root = indifferenceRoot(d1, d2);                              // DA(root) = 0
   const interior = root > NE_EPS && root < 1 - NE_EPS;
   const onSquare = root >= -NE_EPS && root <= 1 + NE_EPS;                   // a root AT y=0 or y=1 is
   const sgnAt = (y: number) => slope * y + c;                         // still a real indifference
@@ -983,14 +996,16 @@ function brA(g: GamePayoffs): Rect[] {
 
 /** Rectangles covering { (x,y) : y is a best reply to x }. */
 function brB(g: GamePayoffs): Rect[] {
-  const slope = (g.b11 - g.b12) - (g.b21 - g.b22);
-  const c = g.b21 - g.b22;
+  const d1 = g.b11 - g.b12;
+  const d2 = g.b21 - g.b22;
+  const slope = d1 - d2;
+  const c = d2;
   const out: Rect[] = [];
   if (Math.abs(slope) < NE_EPS) {
     if (Math.abs(c) < NE_EPS) return [{ x0: 0, x1: 1, y0: 0, y1: 1 }];
     return [c > 0 ? { x0: 0, x1: 1, y0: 1, y1: 1 } : { x0: 0, x1: 1, y0: 0, y1: 0 }];
   }
-  const root = -c / slope;
+  const root = indifferenceRoot(d1, d2);
   const interior = root > NE_EPS && root < 1 - NE_EPS;
   const onSquare = root >= -NE_EPS && root <= 1 + NE_EPS;
   const sgnAt = (x: number) => slope * x + c;

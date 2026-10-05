@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import {
-  PRESETS, computeAllNE, computeMixedNE, doStep, resolveProfile, indifferenceAt,
+  PRESETS, computeAllNE, computeMixedNE, indifferenceRoot, doStep, resolveProfile, indifferenceAt,
   EA, EB, r3, fmtPayoff, payoffTexRhs, neTolerancePlayer,
 } from './utils/gameEngine';
 import { indifferenceLines, indifferenceLine, neValues } from './components/equilibriumPanel';
@@ -471,9 +471,12 @@ for (const SCALE of [10, 100]) {
   // specific class; it is safe for ANY caller now, by construction.
   const cont = { a11: -0.993, a12: -0.67, a21: 0.54, a22: -0.766,
                  b11: 0.138, b12: 0.138, b21: -0.457, b22: -0.912 } as GamePayoffs;
-  const mn = computeMixedNE(cont);
-  ok(mn !== null, 'the reachable-shape fixture must have a mixed NE');
-  const off = resolveProfile(cont, { exactX: mn!.x + 4e-4, exactY: mn!.y - 4e-4 } as unknown as SimState);
+  // b11 == b12 puts B's root at x = 1 EXACTLY, so this game has no mixed NE (computeMixedNE once
+  // returned x = 0.9999999999999999, the F1 defect); start from the same point via the shared root.
+  ok(computeMixedNE(cont) === null, 'the fixture has no interior mixed NE: B\'s root is exactly x = 1');
+  const yStar = indifferenceRoot(cont.a11 - cont.a21, cont.a12 - cont.a22);
+  ok(yStar > 0 && yStar < 1, `the fixture's A-root must be interior, got ${yStar}`);
+  const off = resolveProfile(cont, { exactX: 1 + 4e-4, exactY: yStar - 4e-4 } as unknown as SimState);
   ok(off.concept === 'mixed' && (off.x === 0 || off.x === 1),
     `the fixture must resolve to a MIXED panel with a player at a vertex, got ${JSON.stringify(off)}`);
   const bad = indifferenceLines(cont, off.x, off.y);

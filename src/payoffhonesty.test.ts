@@ -2785,15 +2785,18 @@ testAppTsxUsesContinuumAwareLogAndDisplay();
 function testPayloadCoordinatesUseFmtProb() {
   const tokensOf = (payload: string) => [...payload.matchAll(/\b([xy])=([^,)]+)/g)].map((m) => m[2].trim());
   const rawFloat = (tok: string) => /^-?\d*\.\d{4,}(e-?\d+)?$/.test(tok) || /e-\d+$/.test(tok);
-  // Known positive from the red's 2M-game sweep: a continuum whose mixed point sits within
-  // float noise of y=1 — fmtProb says "more than 0.999"; the raw float has 16 digits.
+  // The red's fixture: its "y=0.9999999999999987" was F1 (math-loop-22) — a root EXACTLY at y=1
+  // listed as a mixed NE. The true set is x in [0, 0.474], y = 1, so only exact corners may appear.
   const g: GamePayoffs = { a11: -70.328, a12: 80.795, a21: -70.328, a22: 91.429, b11: -19.676, b12: 34.718, b21: -36.633, b22: -85.653 };
-  const payload = buildGroundingPayload(g);
-  const toks = tokensOf(payload);
-  ok(toks.length >= 2, `fixture: the continuum payload must state at least one (x, y) point; payload="${payload.slice(0, 300)}"`);
-  ok(toks.includes('more than 0.999'),
-    `fixture: the near-boundary coordinate (y=0.9999999999999987) must print exactly "more than 0.999"; tokens=${JSON.stringify(toks)}`);
-  ok(!toks.some(rawFloat), `fixture: no raw solver float may reach the payload; tokens=${JSON.stringify(toks)}`);
+  const toks = tokensOf(buildGroundingPayload(g));
+  ok(toks.length >= 2 && toks.every((t) => t === '0' || t === '1'),
+    `fixture: the continuum payload offers only its true corner (x=0, y=1); tokens=${JSON.stringify(toks)}`);
+  // Genuine sub-resolution positive: x* = 0.9995002 exactly (regret 0), not float noise.
+  const near: GamePayoffs = { a11: -2, a12: 5, a21: -1, a22: 3, b11: 8.002, b12: 8, b21: 3, b22: 7 };
+  const nearToks = tokensOf(buildGroundingPayload(near)).map((t) => t.replace(/ \(payoffs.*$/, ''));
+  ok(nearToks.includes('more than 0.999'),
+    `fixture: x* = 0.9995002 must print exactly "more than 0.999"; tokens=${JSON.stringify(nearToks)}`);
+  ok(!nearToks.some(rawFloat), `fixture: no raw solver float may reach the payload; tokens=${JSON.stringify(nearToks)}`);
   // Sweep: 4000 random 3dp games — every coordinate token the payload states is fmtProb-shaped.
   const rnd = mk(0x19f0);
   let games = 0, continua = 0;
