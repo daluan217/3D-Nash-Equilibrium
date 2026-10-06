@@ -1396,6 +1396,10 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
 
   s.cx    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
   s.cy    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
+  // The sphere is drawn at exactX/exactY: clamp them with the readout, or a cycle frame shows
+  // the sphere at the old corner, outside the domain the log just printed (review R1, 2026-10-06).
+  s.exactX = Math.max(s.domainLo, Math.min(s.domainHi, s.exactX));
+  s.exactY = Math.max(s.domainLo, Math.min(s.domainHi, s.exactY));
   s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
   s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
   // Squeeze the strategy-line representative into the contracted corridor so it

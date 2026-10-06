@@ -508,6 +508,38 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   check('D11 reach: both surfaces of 300 games, every grid cell', cells === 300 * 2 * 29 * 29, `${cells}`);
 }
 
+// ── D12 / R1 (review, 2026-10-06): the sphere sits on the readout after every step, cycle frames included ──
+// applyBisectCycleStep clamped cx/cy into the new domain but not exactX/exactY, and the sphere is drawn at
+// exact: matching pennies, shrink 0.1, step 6 read (0.1, 0.9) in domain [0.1, 0.9] with the sphere at (0, 1).
+{
+  const sphere = (g: GamePayoffs, s: SimState, mode: 'shrink' | 'regret') => (makeTraces(dummySurf, g, s, 'both', computeAllNE(g), false, mode) as any[])
+    .filter((t) => /^Current position \([AB]\)$/.test(t.name)).map((t) => [t.x[0], t.y[0]]);
+  const MP: GamePayoffs = { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 };
+  const sv = makeState(0.217, 0.217, MP), allMP = computeAllNE(MP);
+  for (let k = 0; k < 6; k++) doStep(MP, sv, 'A', 0.1, allMP, null, () => {}, () => {}, () => {}, 'shrink');
+  check('R1 verbatim: matching pennies step 6 (cycle) draws both spheres at the readout (0.1, 0.9), inside domain [0.1, 0.9]',
+    sv.cx === 0.1 && sv.cy === 0.9 && sv.domainLo === 0.1 && sphere(MP, sv, 'shrink').every(([x, y]) => x === 0.1 && y === 0.9), JSON.stringify(sphere(MP, sv, 'shrink')));
+  const r12 = mulberry32(0xd12), V = [-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25], pk = <T,>(a: T[]) => a[Math.floor(r12() * a.length)];
+  const reach12 = { frames: 0, cycles: 0 };
+  for (let i = 0; i < 600; i++) {
+    const g = commitPayoffs(Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, pk(V)])) as unknown as GamePayoffs);
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const step = pk([0.1, 0.333, 0.05, 0.25, 0.007]), s = makeState(pk([0.217, 0, 1, 0.9]), pk([0.217, 0, 1, 0.1]), g);
+      for (let k = 0; k < 600 && !s.converged; k++) {
+        let cyc = false;
+        doStep(g, s, mover, step, all, committed, () => {}, () => { cyc = true; }, () => {}, mode);
+        reach12.frames++; if (cyc) reach12.cycles++;
+        const at = `${mode} ${mover} step ${step} k ${k + 1}${cyc ? ' cycle' : ''} ${JSON.stringify(g)} readout (${s.cx}, ${s.cy})`;
+        check('D12 the exact position is the readout to r3 after every step', Math.max(Math.abs(s.exactX - s.cx), Math.abs(s.exactY - s.cy)) <= 5e-4 + 1e-12, `${at} exact (${s.exactX}, ${s.exactY})`);
+        if (cyc) check('D12 a cycle frame draws the sphere on the readout', sphere(g, s, mode).every(([x, y]) => Math.max(Math.abs(x - s.cx), Math.abs(y - s.cy)) <= (s.converged ? 1.5e-3 : 5e-4 + 1e-12)), `${at} spheres ${JSON.stringify(sphere(g, s, mode))}`);
+      }
+    }
+  }
+  check('D12 reach: frames and cycle frames over every mode/mover', reach12.frames >= 25000 && reach12.cycles >= 5000, JSON.stringify(reach12));
+}
+
 // ── Final reporting ───────────────────────────────────────────────────────────
 const failCount = Object.keys(fails).length;
 if (failCount > 0) {
