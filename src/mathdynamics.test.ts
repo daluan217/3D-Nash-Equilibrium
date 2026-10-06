@@ -652,7 +652,7 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   const gp: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, allp = computeAllNE(gp);
   const fp = makeState(0.217, 0.217, gp), probe = structuredClone(fp), lp: string[] = [];
   doStep(gp, probe, 'A', 0.25, allp, null, () => {}, () => {}, () => {}, 'shrink');
-  fp.visitedPositions = [probe.cx.toFixed(3) + ',' + probe.cy.toFixed(3)];
+  fp.visitedPositions = [probe.exactX + ',' + probe.exactY];   // the pure branch keys EXACT positions (S11)
   doStep(gp, fp, 'A', 0.25, allp, null, (m) => lp.push(m), () => {}, () => {}, 'shrink');
   const tipP = [fp.pathSegmentsA.at(-1)!.xs.at(-1), fp.pathSegmentsA.at(-1)!.ys.at(-1)];
   check('D15 forced pure-NE cycle: the branch fired and its clamp moved the position', lp.some((l) => l.startsWith('↺ Cycle 1 → domain')) && (fp.cx !== probe.cx || fp.cy !== probe.cy), `${lp.join(' | ')} cx (${fp.cx}, ${fp.cy}) pre (${probe.cx}, ${probe.cy})`);
@@ -750,10 +750,8 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     doStep(gm, sm, 'A', 0.1, computeAllNE(gm), null, (m) => lm.push(m), () => {}, () => {}, mode);
     check(`D16 ${mode}: a NOT-NE mixed-branch stop names where it stopped`, lm.at(-1) === '━━ Settled at x=0.1, y=0.1 — NOT an equilibrium (a player still gains 1.440 by switching)  E[A]=0.640  E[B]=-0.640', lm.join(' | '));
   }
-  // (e) verbatim, seed-2606 fuzz: ━━ printed the exact "y=more than 0.999  E[A]=6.999" beside the banner's (0.5, 1).
-  const fe = run({ a11: 7, a12: 5, a21: 7, a22: 2, b11: 3, b12: -1, b21: -3, b22: 1 }, 'regret', 'B', 0.25, 0.5, 0.9996, 9999);
-  check('D16 (e) verbatim: the ━━ line names the banner\'s point (0.5, 1)', fe.s.exactY === 0.9996 && fe.logs.at(-1) === '━━ Settled on the equilibrium continuum at x=0.5, y=1: A continuum of equilibria: B plays Col 1 while A mixes with x anywhere from 0.5 to 1.  E[A]=7.000  E[B]=0', fe.logs.join(' | '));
-  check('D16 (e) verbatim: the panel prints that point', fe.panel === '0.500 1.000 7.000 0', fe.panel);
+  // (e) seed-2606 stopped at exact (0.5, 0.9996) beside the banner's (0.5, 1); since S11 the pure branch stops only
+  // on a fixed point of the exact dynamics, which D17 pins to the equilibrium set (its own (e) is that run now).
   // No rendering formats the r3-collapsed dynamics inputs (cycle "now" lines included: equal digits on every reached
   // frame today, 0 of ~160k, so only this pin keeps them on the exact point).
   const eng = readFileSync(new URL('./utils/gameEngine.ts', import.meta.url), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
@@ -791,6 +789,67 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D16 reach: frames where cx differs from the shown point, cycle "now" lines, convergences, sub-resolution frames', reach16.frames >= 16000 && reach16.cxDiffers >= 280 && reach16.cycleNow >= 300 && reach16.conv >= 1300 && reach16.subres >= 220, JSON.stringify(reach16));
+}
+
+// ── D17 (sweep 11 HIT): pure-branch dynamics decide on the EXACT position, not its r3 shadow ────────────────────
+// Unfixed: start (0.0002, 0.217) went 0.0002 -> 0 on step 1, the r3 delta read "no move", and the run stopped as
+// "━━ Mixed NE: x=0, y=0.217" (flagged NE, regret 0.000783) one step before B leaves for the only NE (0, 1); and
+// sB at r3(0.0004) = 0 had the opposite sign to sB at 0.0004, sending B to a strictly worse column. Fixtures are
+// verbatim and the fuzz asserts the invariants (fixed point, exact best response) on every frame.
+{
+  const run = (g: GamePayoffs, mode: 'shrink' | 'regret', mover: 'A' | 'B', step: number, x: number, y: number) => {
+    const s = makeState(x, y, g), all = computeAllNE(g), logs: string[] = [];
+    for (let k = 0; k < 50 && !s.converged; k++) doStep(g, s, mover, step, all, null, (m) => logs.push(m), () => {}, () => {}, mode);
+    return { s, logs, last: logs.at(-1) ?? '' };
+  };
+  const fa = run({ a11: -0.5, a12: -0.001, a21: 3, a22: 0, b11: 0.001, b12: 5, b21: 0.09, b22: 0.089 }, 'shrink', 'B', 0.007, 0.0002, 0.217);
+  check('D17 (a) verbatim: the run reaches the only NE (0, 1), not "Mixed NE: x=0, y=0.217"', fa.last === '━━ Pure NE: x=0, y=1  E[A]=3.000  E[B]=0.090' && fa.s.stepCount === 4, fa.logs.join(' | '));
+  const fw = run({ a11: 7, a12: -100, a21: 0.001, a22: -100, b11: -3, b12: 100, b21: 1.001, b22: 1 }, 'shrink', 'A', 0.007, 0.0004, 0);
+  check('D17 (w) verbatim: B best-responds to x=0.0004 (stays on Col 2), it does not jump to y=1', fw.logs[1] === 'Step 2 (B): x=less than 0.001, y=0.000  E[A]=-100.000  E[B]=1.040' && fw.s.converged && fw.s.exactX === 0.0004 && fw.s.exactY === 0, fw.logs.join(' | '));
+  // (e) of D16 moved with the fix: (0.5, 0.9996) is NOT an equilibrium (A gains 0.0006 by Row 1), so A now moves.
+  const fe = run({ a11: 7, a12: 5, a21: 7, a22: 2, b11: 3, b12: -1, b21: -3, b22: 1 }, 'regret', 'B', 0.25, 0.5, 0.9996);
+  check('D17 (e): A leaves (0.5, 0.9996), where it gains 0.0006, and B then settles on Col 1', fe.logs[1] === 'Step 2 (A): x=1.000, y=more than 0.999  E[A]=6.999  E[B]=2.998' && fe.s.exactX === 1 && fe.s.exactY === 1, fe.logs.join(' | '));
+  const eng = readFileSync(new URL('./utils/gameEngine.ts', import.meta.url), 'utf8');
+  check('D17 the pure-branch convergence test compares exact positions', eng.includes('const prevX = s.exactX, prevY = s.exactY;') && eng.includes('if (s.stepCount >= 2 && s.exactX === prevX && s.exactY === prevY) {'));
+
+  const r17 = mulberry32(0xd17), V = [-3, -2, -1, 0, 1, 2, 3, 5, 7, 100, -100, -0.5, 0.25, 0.001, -0.001, 0.002, 0.09], pk = <T,>(a: T[]) => a[Math.floor(r17() * a.length)];
+  const D = [0.001, -0.001, 0.002, -0.002, 0.0005, 0.003, 0.01, -0.01], sib: Record<string, string> = { a11: 'a21', a21: 'a11', a12: 'a22', a22: 'a12', b11: 'b12', b12: 'b11', b21: 'b22', b22: 'b21' };
+  const cl = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 1e4) / 1e4;
+  const reach17 = { runs: 0, frames: 0, subres: 0, committed: 0 };
+  for (let i = 0; i < 1500; i++) {
+    const p: Record<string, number> = Object.fromEntries(Object.keys(sib).map((k) => [k, pk(V)]));
+    const t = pk(Object.keys(sib)); p[t] = p[sib[t]] + pk(D);   // a near-tie: the indifference line sits close to a vertex
+    const g = commitPayoffs(p as unknown as GamePayoffs), all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    if (!pure.length) continue;
+    const xs = (g.b22 - g.b21) / (g.b11 - g.b21 - g.b12 + g.b22), ys = (g.a22 - g.a12) / (g.a11 - g.a12 - g.a21 + g.a22);
+    const XS = [0, 1, 0.9996, 0.0004, 0.0002, 0.5, 0.217, ...(Number.isFinite(xs) ? [cl(xs), cl(xs + 0.0004), cl(xs - 0.0004)] : [])];
+    const YS = [0, 1, 0.9996, 0.0004, 0.0002, 0.5, 0.217, ...(Number.isFinite(ys) ? [cl(ys), cl(ys + 0.0004), cl(ys - 0.0004)] : [])];
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length > 1 ? pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b)) : null;
+      const step = pk([0.1, 0.333, 0.05, 0.25, 0.007, 0.5]), s = makeState(pk(XS), pk(YS), g);
+      const tag = () => `${mode} ${mover} ${step} start (${s.startX},${s.startY}) ${JSON.stringify(g)} step ${s.stepCount} exact (${s.exactX}, ${s.exactY})`;
+      reach17.runs++; if (committed) reach17.committed++;
+      for (let k = 0; k < 6000 && !s.converged; k++) {
+        const px = s.exactX, py = s.exactY, mv = s.stepCount % 2 === 0 ? mover : (mover === 'A' ? 'B' : 'A'); let cyc = false;
+        doStep(g, s, mover, step, all, committed, () => {}, () => { cyc = true; }, () => {}, mode);
+        reach17.frames++; if ([px, py].some((v) => v !== 0 && v !== 1 && (r3(v) === 0 || r3(v) === 1))) reach17.subres++;
+        if (!cyc && (!committed || mv !== mover)) {
+          const loss = mv === 'A' ? EA(px, py, g) - EA(s.exactX, py, g) : EB(px, py, g) - EB(px, s.exactY, g);
+          check('D17 a best-response move never lowers the mover\'s payoff against the exact opponent', loss <= 1e-12, `${tag()} from (${px}, ${py}) loss ${loss}`);
+        }
+      }
+      check('D17 every pure-branch run converges (exact equality must not stall a run)', s.converged, tag());
+      if (!s.converged) continue;
+      const c = structuredClone(s); c.converged = false;
+      doStep(g, c, mover, step, all, committed, () => {}, () => {}, () => {}, mode);
+      check('D17 a converged pure-branch run is a fixed point: one more step does not move the exact position', c.exactX === s.exactX && c.exactY === s.exactY, `${tag()} next (${c.exactX}, ${c.exactY})`);
+      if (s.convergedIsNE) {
+        const r = resolveProfile(g, s);
+        check('D17 a run flagged NE stands on the equilibrium set', r.x === s.exactX && r.y === s.exactY, `${tag()} resolved (${r.x}, ${r.y})`);
+      }
+    }
+  }
+  check('D17 reach: runs, frames, frames starting sub-resolution, committed-follower runs', reach17.runs >= 5000 && reach17.frames >= 15000 && reach17.subres >= 4500 && reach17.committed >= 1200, JSON.stringify(reach17));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────

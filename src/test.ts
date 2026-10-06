@@ -2748,8 +2748,8 @@ function testNoQuadraticSnapshotting() {
     'historyStack is gone from the engine: it had exactly one reader, of the element it had just pushed');
   assert(!/historyStack/.test(codeOf('src/types.ts')),
     'and gone from SimState, so it cannot be silently repopulated by a future writer');
-  assert(/const prevCx = s\.cx, prevCy = s\.cy;/.test(eng),
-    'the delta check must read two locals captured before the move');
+  assert(/const prevX = s\.exactX, prevY = s\.exactY;/.test(eng),
+    'the delta check must read two locals captured before the move (exact, S11)');
   console.log('✓ class guard: no per-step deep copying of the trajectory');
 }
 

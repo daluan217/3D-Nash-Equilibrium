@@ -1722,7 +1722,7 @@ export function doStep(
   // `historyStack: []`, and Back/"Go to step" are implemented by replayToStep,
   // not by undo. So the stack had exactly one consumer, reading exactly the
   // element it had just pushed.
-  const prevCx = s.cx, prevCy = s.cy;
+  const prevX = s.exactX, prevY = s.exactY;
 
   const pureNEs = allNE.filter(n => n.type === 'pure');
   const mixedNE = allNE.find(n => n.type === 'mixed');
@@ -1751,18 +1751,19 @@ export function doStep(
     }
   } else if (pureNEs.length >= 1) {
     // Alternating best response: each mover best-responds to the opponent's
-    // CURRENT strategy (s.cy / s.cx), not a frozen reference. (calcX/calcY are
-    // kept in sync below; previously they were read here but never updated, so
+    // CURRENT strategy, EXACT (S11: r3(0.0004) = 0 flipped sB's sign and sent B to a strictly worse column),
+    // not a frozen reference. (calcX/calcY are kept in sync below; previously they were read here but never
+    // updated, so
     // both players forever best-responded to the START point — converging to the
     // mutual best response to the start rather than the equilibrium.)
     if (mover === 'A') {
-      const sY = s.cy;
+      const sY = s.exactY;
       const sA = sY * (g.a11 - g.a21) + (1 - sY) * (g.a12 - g.a22);
       if (sA > 1e-9) nx = s.domainHi;
       else if (sA < -1e-9) nx = s.domainLo;
       else if (mixedNE) nx = Math.max(s.domainLo, Math.min(s.domainHi, mixedNE.x));
     } else {
-      const sX = s.cx;
+      const sX = s.exactX;
       const sB = sX * (g.b11 - g.b12) + (1 - sX) * (g.b21 - g.b22);
       if (sB > 1e-9) ny = s.domainHi;
       else if (sB < -1e-9) ny = s.domainLo;
@@ -2145,16 +2146,15 @@ export function doStep(
 
   // Check convergence conditions
   if (pureNEs.length > 0) {
-    // Identical values to the old snapshot read: the snapshot was taken at the
-    // top of THIS call, before any mutation, so prev.cx was s.cx at that moment.
-    const dx = Math.abs(s.cx - prevCx);
-    const dy = Math.abs(s.cy - prevCy);
+    // A fixed point of the update, on the EXACT position. The r3 delta (< 0.0003 on cx) read 0.0002 -> 0 as "no
+    // move" and stopped at "Mixed NE: x=0, y=0.217" one step before B leaves for the only NE (0, 1) (S11). Pure-
+    // branch positions are assigned (domain bounds, clamped roots, the committed NE, the start), never computed.
     // Require both players to have moved at least once (stepCount >= 2) before
     // declaring convergence. Otherwise, if the first mover starts exactly on its
     // own indifference line (sA=0 / sB=0 → it legitimately doesn't move), this
     // delta check would fire after a single non-move and freeze at the start
     // point before the opponent ever responds.
-    if (s.stepCount >= 2 && dx < 0.0003 && dy < 0.0003) {
+    if (s.stepCount >= 2 && s.exactX === prevX && s.exactY === prevY) {
       s.converged = true;
       // STATIONARY IS NOT EQUILIBRIUM. Check the independent regret oracle
       // before using the words "Nash equilibrium": the path can go stationary
@@ -2242,8 +2242,10 @@ export function doStep(
 
   // ── Pure NE cycle detection ────────────────────────────────────────────────
   if (pureNEs.length > 0) {
-    // not-a-rendering: a dedupe KEY for cycle detection, never shown.
-    const posKey = s.cx.toFixed(3) + ',' + s.cy.toFixed(3);
+    // not-a-rendering: a dedupe KEY, EXACT like the convergence test above (S11): an r3 key took a 0.0004 -> 0
+    // move for a revisit of (1, 0) and shrank the domain off the NE. Positions come from a finite set, so a
+    // real cycle still revisits a key exactly.
+    const posKey = s.exactX + ',' + s.exactY;
     if (s.visitedPositions.includes(posKey)) {
       s.cycleCount++;
       s.visitedPositions = [];
