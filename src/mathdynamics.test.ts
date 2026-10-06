@@ -437,6 +437,25 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   }
   check('D9 reach: small determinants (|D| < 0.154, where the tolerance moved) and tiny ones (< 0.02) at every step size',
     reach9.smallD >= 800 && reach9.tinyD >= 300 && reach9.mixedD >= 300 && reach9.steps.size === steps9.length, JSON.stringify({ ...reach9, steps: reach9.steps.size }));
+  // D9b (sweep 7): the 3-dp floor itself. Gaps in whole thousandths, |D| = 0.001..0.003 for A, B or
+  // both, corner and off-grid starts; mixed-only games are kept so every run must find the root.
+  const reach9b = { runs: 0, mixedOnly: 0 };
+  for (let i = 0; reach9b.mixedOnly < 150 && i < 20000; i++) {
+    const tiny = pick9(['A', 'B', 'AB']), gap = (t: boolean) => { const dm = (t ? pick9([1, 2, 3]) : pick9([7, 50, 1000])) * pick9([1, -1]), u2 = -Math.sign(dm) * (1 + Math.floor(r9() * Math.abs(dm))); return [(u2 + dm) / 1000, u2 / 1000]; };
+    const [[a1, a2], [b1, b2]] = [gap(tiny !== 'B'), gap(tiny !== 'A')], o = () => pick9([0, Math.round(r9() * 200000 - 100000) / 1000]);
+    const [oa, ob, oc, od] = [o(), o(), o(), o()];
+    const g = commitPayoffs({ a11: oa + a1, a21: oa, a12: ob + a2, a22: ob, b11: oc + b1, b12: oc, b21: od + b2, b22: od });
+    if (computeAllNE(g).some((n) => n.type === 'pure') || !computeMixedNE(g)) continue;
+    reach9b.mixedOnly++;
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const step = pick9(steps9), [x0, y0] = pick9([[0.217, 0.217], [0, 1], [1, 0], [1, 1], [Math.round(r9() * 1e6) / 1e6, Math.round(r9() * 1e6) / 1e6]]);
+      const { s } = run16(g, mover, mode, step, x0, y0), rp = s.converged ? resolveProfile(g, s) : null, m = computeMixedNE(g)!;
+      reach9b.runs++;
+      check('D9b at the 3-dp determinant floor every mixed-only run converges on the root', !!rp && s.convergedIsNE !== false && rp.x === m.x && rp.y === m.y,
+        `${mode} ${mover} step ${step} (${x0},${y0}) ${JSON.stringify(g)} at [${s.domainLo},${s.domainHi}] rp ${JSON.stringify(rp)}`);
+    }
+  }
+  check('D9b reach: 150 mixed-only games with a determinant at the 3-dp floor', reach9b.mixedOnly >= 150, JSON.stringify(reach9b));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
