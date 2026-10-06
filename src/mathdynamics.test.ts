@@ -257,6 +257,36 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     reach.games >= 100 && reach.named >= 1000 && reach.nearHalf >= 3, JSON.stringify(reach));
 }
 
+// ── D6: every "✓ x/y-coordinate discovered: v" log line prints the solver's root (sweep 3, empty probe) ──
+// Both modes, both movers, four starts, ±100 / ±0.001 range edges: the log is a claim about x* / y*.
+{
+  const r6 = mulberry32(0x5d3);
+  const gens: (() => number)[] = [() => Math.floor(r6() * 19) - 9, () => Math.round((r6() * 200 - 100) * 1000) / 1000,
+    () => [100, -100, 99.999, -99.999, 0.001, -0.001, 0][Math.floor(r6() * 7)], () => Math.round((r6() * 2 - 1) * 1000) / 1000];
+  const reach = { games: 0, lines: 0, sub: 0 };
+  for (const gen of gens) for (let i = 0; i < 400; i++) {
+    const g = Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, gen()])) as unknown as GamePayoffs;
+    const all = computeAllNE(g);
+    if (!all.some((n) => n.type === 'mixed') || all.some((n) => n.type === 'pure')) continue;
+    reach.games++;
+    const m = computeMixedNE(g)!;
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) for (const [x0, y0] of [[0.2, 0.8], [0, 1], [1, 0], [0.5, 0.5]]) {
+      const s = makeState(x0, y0, g); const logs: string[] = [];
+      for (let k = 0; k < 3000 && !s.converged; k++) doStep(g, s, mover, 0.1, all, null, (l) => logs.push(l), () => {}, () => {}, mode);
+      for (const l of logs) {
+        const d = l.match(/^✓ ([xy])-coordinate discovered: (.+)$/);
+        if (!d) continue;
+        reach.lines++; if (/than/.test(d[2])) reach.sub++;
+        const want = fmtProb(d[1] === 'x' ? m.x : m.y);
+        check('D6 every "coordinate discovered" log line prints the solver\'s x* / y* (fmtProb)', d[2] === want,
+          `${mode} ${mover} (${x0},${y0}) ${JSON.stringify(g)} "${l}" want ${want}`);
+      }
+    }
+  }
+  check('D6 reach: mixed-only games, discovery lines, and sub-resolution roots all occurred',
+    reach.games >= 150 && reach.lines >= 5000 && reach.sub >= 50, JSON.stringify(reach));
+}
+
 // ── Final reporting ───────────────────────────────────────────────────────────
 const failCount = Object.keys(fails).length;
 if (failCount > 0) {
