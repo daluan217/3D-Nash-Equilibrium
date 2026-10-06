@@ -433,6 +433,9 @@ for (const [kind, cell] of Object.entries(KINDS)) {
       if (dMin < 0.02 && Math.max(Math.abs(g.a11 - g.a12 - g.a21 + g.a22), Math.abs(g.b11 - g.b12 - g.b21 + g.b22)) >= 0.154) reach9.mixedD++;
       check('D9 every run converges within the app\'s 20000-step cap, at every step size', s.converged, `${mode} ${mover} step ${step} (${x0},${y0}) ${JSON.stringify(g)} at [${s.domainLo},${s.domainHi}]`);
       check('D9 no run settles off the equilibrium set', !s.converged || s.convergedIsNE !== false, `${mode} ${mover} step ${step} ${JSON.stringify(g)} at (${s.exactX},${s.exactY})`);
+      const rp = s.converged ? resolveProfile(g, s) : null;   // measured worst 0.000571 (4/7 found at 0.572)
+      check('D9 a run stops within discovery\'s tolerance (0.00065) of the equilibrium it reports', !rp || Math.max(Math.abs(rp.x - s.exactX), Math.abs(rp.y - s.exactY)) <= 0.00065,
+        `${mode} ${mover} step ${step} ${JSON.stringify(g)} at (${s.exactX},${s.exactY}) reports ${JSON.stringify(rp)}`);
     }
   }
   check('D9 reach: small determinants (|D| < 0.154, where the tolerance moved) and tiny ones (< 0.02) at every step size',
