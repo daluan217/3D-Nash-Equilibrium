@@ -19,7 +19,7 @@ import {
   precomputeThinHistory, replayToStep, shownPoint, toThin,
 } from './utils/gameEngine';
 import { readFileSync } from 'node:fs';
-import { makeTraces, buildSurfaces } from './utils/plotting';
+import { makeTraces, buildSurfaces, applyPlotHoverContract } from './utils/plotting';
 import type { GamePayoffs, NashEquilibrium, SimState } from './types';
 
 let checks = 0;
@@ -1097,6 +1097,53 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   }
   check('D20 reach: replay runs/frames/replays, exact-BR frames (sub-resolution), no-pure convergence runs',
     reach.runs >= 900 && reach.frames >= 12000 && reach.replays >= 3500 && reach.brFrames >= 150000 && reach.brSub >= 30000 && reach.convRuns >= 800, JSON.stringify(reach));
+}
+
+// ── D21 (sweep 15, empty probe checked in): single-surface tracking ('A' is the App default) ─────────────────
+// Every sweep-9..14 probe drew 'both'. Under 'A'/'B' every marker sits exactly on the TRACKED surface and its hover
+// prints its own (x, y, payoff); every line point lies exactly on some surface (box/pillars/NE connectors exempt).
+{
+  const r21 = mulberry32(0xd21), pk = <T,>(a: T[]) => a[Math.floor(r21() * a.length)];
+  const mk = (x: number, y: number, g: GamePayoffs): SimState => ({ cx: x, cy: y, exactX: x, exactY: y, calcX: x, calcY: y, displayX: x, displayY: y, startX: x, startY: y, domainLo: 0, domainHi: 1, domXLo: 0, domXHi: 1, domYLo: 0, domYHi: 1, stratX: x, stratY: y, cycleCount: 0, visitedPositions: [], ghostVisitedPositions: [], discoveredMixedX: null, discoveredMixedY: null, foundAxis: null, running: false, converged: false, stepCount: 0, pathSegmentsA: [{ xs: [x], ys: [y], zs: [EA(x, y, g)], mover: 'A' }], pathSegmentsB: [{ xs: [x], ys: [y], zs: [EB(x, y, g)], mover: 'A' }], phase1PtsA: null, phase1PtsB: null, ghostPathSegmentsA: [], ghostPathSegmentsB: [], cyclePattern: null, bisecting: false, bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1, ghostCyclePattern: null, ghostBisecting: false, ghostBisectGoodLo: 0, ghostBisectGoodHi: 1, ghostBisectBadLo: 0, ghostBisectBadHi: 1 } as unknown as SimState);
+  const SC = [[-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 0.001, -0.001], [100, -100, 50, 0, -37.5, 99.999], [0.001, -0.001, 0, 0.002, -0.003]];
+  const on = (z: number, w: number) => Math.abs(z - w) <= 1e-12 * Math.max(1, Math.abs(w));
+  const reach = { frames: 0, markers: 0, lines: 0, subMarkers: 0 };
+  for (let i = 0; i < 400; i++) {
+    const V = pk(SC), g = commitPayoffs({ a11: pk(V), a12: pk(V), a21: pk(V), a22: pk(V), b11: pk(V), b12: pk(V), b21: pk(V), b22: pk(V) });
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure'), surf = buildSurfaces(g);
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const s = mk(pk([0.217, 0.5, 1, 0, 0.9, 0.0004]), pk([0.217, 0.5, 1, 0, 0.1, 0.9996]), g), step = pk([0.1, 0.333, 0.05, 0.25]);
+      for (let k = 0; k < 800 && !s.converged; k++) {
+        doStep(g, s, mover, step, all, committed, () => {}, () => {}, () => {}, mode);
+        if (k % 4 && !s.converged) continue;
+        for (const tm of ['A', 'B'] as const) {
+          reach.frames++;
+          const F = tm === 'A' ? EA : EB, T = applyPlotHoverContract(makeTraces(surf, g, s, tm, all, false, mode) as never[]) as any[];
+          const tag = `${tm} ${mode} ${mover} step ${step} k ${k + 1} start (${s.startX},${s.startY}) ${JSON.stringify(g)}`;
+          for (const t of T) {
+            if (t.type !== 'scatter3d' || !Array.isArray(t.x)) continue;
+            if (t.mode === 'markers') t.x.forEach((x: number, j: number) => {
+              const y = t.y[j], z = t.z[j]; if (!Number.isFinite(x)) return; reach.markers++;
+              if (fmtProb(x) !== String(r3(x)) || fmtProb(y) !== String(r3(y))) reach.subMarkers++;
+              check('D21 a marker sits exactly on the tracked surface', on(z, F(x, y, g)), `${t.name} ${tag} (${x}, ${y}, ${z}) want ${F(x, y, g)}`);
+              const want = `<br>x: ${fmtProb(x)}<br>y: ${fmtProb(y)}<br>payoff: ${fmtPayoff(F(x, y, g))}`;
+              check('D21 a marker hover prints its own point on the tracked surface', typeof t.text?.[j] === 'string' && t.text[j].endsWith(want), `${t.name} ${tag} ${t.text?.[j]} want ${want}`);
+            });
+            else if (/lines/.test(t.mode ?? '')) {
+              if (/boundary|corridor/.test(t.name) || ['#e67e22', '#27ae60'].includes(t.line?.color) || (t.name === '_' && /pureNE|mixedNE|continuumNE/.test(t.legendgroup ?? ''))) continue;
+              t.x.forEach((x: number, j: number) => {
+                const y = t.y[j], z = t.z[j]; if (!Number.isFinite(x)) return; reach.lines++;
+                check('D21 a line point lies exactly on a surface', on(z, EA(x, y, g)) || on(z, EB(x, y, g)), `${t.name} ${tag} (${x}, ${y}, ${z})`);
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  check('D21 reach: single-surface frames, markers (sub-resolution too), line points',
+    reach.frames >= 3000 && reach.markers >= 12000 && reach.subMarkers >= 200 && reach.lines >= 150000, JSON.stringify(reach));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
