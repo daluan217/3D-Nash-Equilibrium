@@ -2559,36 +2559,13 @@ export function validateProseClaims(
     }
   }
 
-  // Which options can carry positive probability at SOME equilibrium. On a
-  // degenerate game (a fully indifferent player) the solver enumerates only
-  // corners, so the set is derived directly: the indifferent player may play
-  // anything; the other player's option is admissible iff it is a best reply
-  // at one end of the indifferent player's axis (best-reply advantage is
-  // linear in the mix, so the endpoints suffice).
-  const ind = computeIndifference(g);
-  const admissible = (player: 'A' | 'B', option: 1 | 2): boolean => {
-    if (!degenerate) return truth.some((t) => ((player === 'A' ? t.x : t.y) === undefined ? false : ((option === 1 ? (player === 'A' ? t.x : t.y) : 1 - (player === 'A' ? t.x : t.y)) > 1e-3)));
-    if (player === 'A' && ind.aIndifferent) return true;
-    if (player === 'B' && ind.bIndifferent) return true;
-    if (player === 'A') {
-      // A's advantage of option vs alt as a function of B's mix y ∈ {0,1}.
-      const adv = (y: number) => (option === 1 ? 1 : -1) * ((g.a11 - g.a21) * y + (g.a12 - g.a22) * (1 - y));
-      return adv(0) >= -1e-9 || adv(1) >= -1e-9;
-    }
-    const adv = (x: number) => (option === 1 ? 1 : -1) * ((g.b11 - g.b12) * x + (g.b21 - g.b22) * (1 - x));
-    return adv(0) >= -1e-9 || adv(1) >= -1e-9;
-  };
-
+  // Degenerate games used to take a separate "best reply at either end of the indifferent axis" rule. It assumes
+  // FULL indifference; `degenerate` also covers partial ties, where it admitted options no equilibrium plays
+  // (int[-9,9]: 787 of 15,000 games). equilibriumSet below is exact on every shape, so it decides every game.
   if (claims) {
     for (const a of actionList ?? []) {
       if ((a.player !== 'A' && a.player !== 'B') || !isOpt12(a.option)) {
         issues.push(`equilibrium-action claim is malformed (player=${a.player}, option=${a.option})`);
-        continue;
-      }
-      if (degenerate) {
-        if (!admissible(a.player, a.option as 1 | 2)) {
-          issues.push(`prose says ${a.player} plays option ${a.option} at an equilibrium, but on this game's equilibrium continuum that option is never a best reply`);
-        }
         continue;
       }
       // Valid iff SOME equilibrium gives this option positive probability.
@@ -2614,7 +2591,9 @@ export function validateProseClaims(
       const rects = equilibriumSet(g);
       const matches = rects.some((r) => {
         const [lo, hi] = a.player === 'A' ? [r.x0, r.x1] : [r.y0, r.y1];
-        return (a.option === 1 ? hi : 1 - lo) > 1e-3;
+        // Exactly positive: the rects are exact, and `> 1e-3` refused true claims at x* = 2e-5 with
+        // "every equilibrium gives that option probability 0".
+        return (a.option === 1 ? hi : 1 - lo) > 0;
       });
       if (!matches) {
         issues.push(
@@ -2773,7 +2752,11 @@ export function validateReport(rawReport: LlmReport, g: GamePayoffs): Validation
       continue;
     }
 
-    const idx = truth.findIndex((t) => coordsMatch(t, claim));
+    // A mixed NE can sit within COORD_TOL of a pure corner (payload "more than 0.999"): first-match bound the
+    // mixed claim to the corner, failing a correct report as wrong-type + omitted. Prefer the same-type candidate.
+    // Pure corners are 1 apart and there is one mixed NE, so a cluster holds at most one of each type.
+    const near = truth.flatMap((t, i) => (coordsMatch(t, claim) ? [i] : []));
+    const idx = near.find((i) => truth[i].type === claim.type) ?? near[0] ?? -1;
     if (idx === -1) {
       mismatches.push({
         kind: 'not-in-solver',
@@ -3062,7 +3045,9 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     const allHitsW = findLabels(text, sets);
     const WORD: Record<string, number> = { half: 0.5, third: 1 / 3, quarter: 0.25, fifth: 0.2, sixth: 1 / 6, eighth: 0.125, tenth: 0.1 };
     const NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, nine: 9 };
-    const fracRe = /\b(?:(one|two|three|four|five|six|seven|nine)[-\s])?(half|third|quarter|fifth|sixth|eighth|tenth)s?\b|\b(\d{1,3})\s*(?:%|percent)\b/gi;
+    // `%\b` never matched "60% of" or "60%." (no word boundary after %), so every percent claim went unchecked.
+    // The lookbehind keeps "2.5%" from parsing as 5%; decimals parse whole.
+    const fracRe = /\b(?:(one|two|three|four|five|six|seven|nine)[-\s])?(half|third|quarter|fifth|sixth|eighth|tenth)s?\b|(?<![\d.,])(\d{1,3}(?:\.\d+)?)\s*(?:%|percent\b)/gi;
     for (const m of text.matchAll(fracRe)) {
       let p: number;
       if (m[3]) p = Number(m[3]) / 100; else p = (m[1] ? NUM[m[1].toLowerCase()] : 1) * WORD[m[2].toLowerCase()];
@@ -3080,6 +3065,9 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         // campaign's only correct-withheld).
         ?? allHitsW.filter((h) => h.index + h.length <= at && h.index + h.length >= at - 30 && /^\s*(?:with|at|about|roughly|around)?\s*(?:probability\s+|weight\s+|frequency\s+)?(?:of\s+)?$/i.test(text.slice(h.index + h.length, at))).pop();
       if (!lab) continue;
+      // Bound BACKWARD, a price word right after the figure makes it a price, not a mix: "Cooperate at 20% off",
+      // "Cooperate at half price" (the fraction form was flagged on true prose before percents parsed at all).
+      if (lab.index < at && /^\s*(?:off|discount\w*|price\w*|cheaper|dearer|interest|mark-?ups?|tax\w*|fees?|surcharges?|rebates?|refunds?|commissions?|returns?|bonus\w*|savings?|cuts?|raises?)\b/i.test(after)) continue;
       // "Row 1 and Row 2 with two-thirds/one-third odds": a list of same-side labels before the fraction is ambiguous — skip.
       if (lab.index < at && allHitsW.some((h) => h !== lab && h.player === lab.player && h.index < lab.index && h.index >= lab.index - 40 && /^\s*(?:and|or|\/|,)\s*(?:the\s+)?$/i.test(text.slice(h.index + h.length, lab.index)))) continue;
       if (/\b(?:of\s+the\s+(?:payoff|score|gain|value)|payoff|less|more|higher|lower)\b/i.test(after.slice(0, 20)) || /\b(?:if|when|whenever|suppose|whether|should|were)\b/i.test(text.slice(Math.max(text.lastIndexOf('.', at), text.lastIndexOf(';', at)) + 1, at))) continue;
@@ -3096,13 +3084,16 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // near-boundary probability. Matched to the sibling `truthW` check's
       // own 0.02 tolerance two lines below, for the same coarse-precision
       // reason.
-      const compsW = continuumComponents(g);
-      if (compsW.some((r) => {
-        const [lo, hi] = lab.player === 'A' ? [r.x0, r.x1] : [r.y0, r.y1];
-        const pl = lab.option === 1 ? p : 1 - p;
-        return pl >= lo - 0.02 && pl <= hi + 0.02;
-      })) continue;
-      const ok = truthW.some((t) => { const p1 = lab.player === 'A' ? t.x : t.y; const pl = lab.option === 1 ? p1 : 1 - p1; return Math.abs(pl - p) < 0.02; });
+      // A bare "0%"/"100%" is a pure-strategy claim: exact, like "with probability 0/1" below (x* = 2e-5 is not 0%).
+      // Hedged ("almost 100%") or decimal ("0.0%") figures keep the coarse tolerance.
+      const hedged = /\b(?:about|roughly|around|nearly|almost|approximately|virtually|essentially|practically|close\s+to)\s*$/i.test(before);
+      // ONE distance rule for points and continua: the continuum branch was inclusive (0.02 off passed) and the
+      // point branch strict on floats (|0.48 - 0.5| = 0.020000000000000018 failed). Now strict in both, 1e-9 slack.
+      const exact = /^(?:0|100)$/.test(m[3] ?? '') && !hedged;
+      const near = (lo: number, hi: number, v: number) => { const d = Math.max(lo - v, v - hi, 0); return exact ? d < 1e-9 : d < 0.02 - 1e-9; };
+      const pl = lab.option === 1 ? p : 1 - p;
+      if (continuumComponents(g).some((r) => (lab.player === 'A' ? near(r.x0, r.x1, pl) : near(r.y0, r.y1, pl)))) continue;
+      const ok = truthW.some((t) => { const p1 = lab.player === 'A' ? t.x : t.y; return near(p1, p1, pl); });
       if (!ok && truthW.length) issues.push(`prose puts ${lab.player}'s option ${lab.option} at probability ${p.toFixed(3)}, but no equilibrium does`);
     }
   }
@@ -3156,7 +3147,9 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const ok = truthLocal.some((t) => {
         const p1 = lab.player === 'A' ? t.x : t.y;
         const pl = lab.option === 1 ? p1 : 1 - p1;
-        return Math.abs(pl - p) < 1e-3;
+        // Exact (computeAllNE's own corner tolerance): `< 1e-3` let "with probability 0" stand for x* = 2e-5,
+        // a mixed equilibrium the panel prints as "less than 0.001", never 0.
+        return Math.abs(pl - p) < 1e-9;
       });
       if (!ok && truthLocal.length) issues.push(`prose gives ${lab.player}'s option ${lab.option} probability ${p}, but no equilibrium does`);
     }
