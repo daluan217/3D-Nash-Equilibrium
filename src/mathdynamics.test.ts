@@ -13,7 +13,7 @@
  *   npx tsx src/mathdynamics.test.ts
  */
 import {
-  doStep, computeAllNE, resolveProfile, formatConvergenceLogLine, equilibriumSet, regretA, regretB,
+  doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
   EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtPayoff, commitPayoffs,
 } from './utils/gameEngine';
@@ -482,6 +482,30 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D10 reach: continua among the resolved games', cont >= 4000, `${cont}`);
+}
+
+// ── D11 (sweep 8): each surface cell is its own player's payoff at (x[i], y[j]) ──
+// Plotly reads z[j][i] at (x[i], y[j]). The only end-to-end check (§93) reads the (1,1) corner, which a
+// transpose leaves fixed, so a swapped grid or an A/B swap painted the wrong surface under green CI.
+{
+  const r11 = mulberry32(0xd11);
+  let cells = 0;
+  for (let i = 0; i < 300; i++) {
+    const g = Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, Math.round((r11() * 200 - 100) * 1000) / 1000])) as unknown as GamePayoffs;
+    const s = makeState(r11(), r11(), g), all = computeAllNE(g);
+    for (const t of (makeTraces(buildSurfaces(g), g, s, 'both', all, false, 'shrink') as any[]).filter((t) => t.type === 'surface')) {
+      const pay = t.name === 'E[A]' ? EA : t.name === 'E[B]' ? EB : null;
+      check('D11 the plot has exactly the E[A] and E[B] surfaces', !!pay, t.name);
+      if (!pay) continue;
+      t.z.forEach((row: number[], j: number) => row.forEach((z, k) => {
+        cells++;
+        const m = t.text?.[j]?.[k]?.match(/<br>x: (.+)<br>y: (.+)<br>payoff: (.+)$/);
+        check('D11 surface z[j][i] is the player\'s payoff at (x[i], y[j])', z === pay(t.x[k], t.y[j], g), `${t.name} [${j}][${k}] ${z} vs ${pay(t.x[k], t.y[j], g)} ${JSON.stringify(g)}`);
+        check('D11 the surface hover prints that cell\'s own x, y and payoff', !!m && m[1] === fmtProb(t.x[k]) && m[2] === fmtProb(t.y[j]) && m[3] === fmtPayoff(z), `${t.name} [${j}][${k}] ${t.text?.[j]?.[k]}`);
+      }));
+    }
+  }
+  check('D11 reach: both surfaces of 300 games, every grid cell', cells === 300 * 2 * 29 * 29, `${cells}`);
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
