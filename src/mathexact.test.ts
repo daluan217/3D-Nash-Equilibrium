@@ -7,7 +7,7 @@
  *   npx tsx src/mathexact.test.ts
  */
 import { computeAllNE, computeMixedNE, equilibriumSet, pointInRect, kindOf, fmtProb, indifferenceRoot,
-  EA, EB, fmtPayoff, payoffTexRhs, formatConvergenceLogLine, commitStartCoordinate, parseNumericInput, r3 } from './utils/gameEngine';
+  EA, EB, fmtPayoff, payoffTexRhs, formatConvergenceLogLine, commitStartCoordinate, parseNumericInput, r3, commitPayoffs } from './utils/gameEngine';
 import { readFileSync } from 'node:fs';
 import { neValues, indifferenceLines } from './components/equilibriumPanel';
 import { tieProse } from './utils/tieProse';
@@ -354,6 +354,23 @@ check('F14 verbatim: typed x0 "0.3333333333333333" reads E[A] = less than 0.001,
   fmtPayoff(EA(commitStartCoordinate('0.3333333333333333'), 0.5, F14)) === 'less than 0.001',
   fmtPayoff(EA(commitStartCoordinate('0.3333333333333333'), 0.5, F14)));
 const e12 = { typed: 0, preFix: 0, zero: 0 };
+// E1b edge-cross (sweep 7): every 4-cell combination of the range-edge, tie and near-zero thousandths
+// through the cell door. The root is -d2/(d1 - d2) in whole thousandths, and a mixed NE is listed iff it
+// is strictly inside (0, 1): 390,625 games, about 30,000 of them with the root exactly ON 0 or 1.
+{
+  const r1b = mulberry(0xe1b), cells = [-100, -99.999, -99.998, -50.001, -33.333, -1, -0.002, -0.001, 0, 0.001, 0.002, 0.5, 33.333, 66.667, 99.998, 99.999, 100];
+  for (let i = 0; i < 8; i++) cells.push(Math.round(r1b() * 200000 - 100000) / 1000);
+  const reach = { games: 0, interior: 0, onEdge: 0 }, ms = (v: number) => Math.round(v * 1000);
+  for (const a11 of cells) for (const a21 of cells) for (const a12 of cells) for (const a22 of cells) {
+    const g = commitPayoffs({ a11, a21, a12, a22, b11: a11, b12: a21, b21: a12, b22: a22 });   // B mirrors A: x* = y*
+    const d2 = ms(g.a12) - ms(g.a22), den = ms(g.a11) - ms(g.a21) - d2, want = den === 0 ? NaN : -d2 / den, inside = want > 0 && want < 1;
+    const got = indifferenceRoot(g.a11 - g.a21, g.a12 - g.a22), mn = computeMixedNE(g);
+    reach.games++; if (inside) reach.interior++; if (want === 0 || want === 1) reach.onEdge++;
+    check('E1b edge-cross: the root is the exact thousandths quotient, NaN when level', Number.isNaN(want) ? Number.isNaN(got) : got === want, `${JSON.stringify(g)} got ${got} want ${want}`);
+    check('E1b edge-cross: a mixed NE is listed iff the root is strictly inside (0, 1), at that root', !!mn === inside && (!mn || (mn.x === want && mn.y === want)), `${JSON.stringify(g)} ${JSON.stringify(mn)} want ${want}`);
+  }
+  check('E1b reach: the full edge cross product, interior roots and roots exactly on the square\'s edge', reach.games === 25 ** 4 && reach.interior >= 100000 && reach.onEdge >= 10000, JSON.stringify(reach));
+}
 // E12 typed-start: whatever is typed, the start coordinate held is a plain decimal of at most 6 places
 // (what the box shows after blur), and EA/EB at it are 0 iff the payoff at THAT decimal is exactly 0.
 {
