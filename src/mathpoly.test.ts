@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { buildPolyStr, EA, EB } from './utils/gameEngine';
 import type { GamePayoffs } from './types';
+import { seededRandom } from './testing/prng';
 
 const fails: Record<string, number> = {}, firstFail: Record<string, string> = {};
 let checks = 0;
@@ -15,7 +16,7 @@ const check = (name: string, ok: boolean, detail = ''): void => {
   checks++; if (ok) return; fails[name] = (fails[name] ?? 0) + 1; firstFail[name] ??= detail;
 };
 const K = ['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const;
-let seed = 23; const R = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+const R = seededRandom(23);
 const T = (v: number) => Math.round(v * 1000);
 /** "c xy + c x - c y + c" -> integer-thousandths coefficients, or the token that does not parse. */
 const parse = (s: string): Record<string, number> | { bad: string } => {

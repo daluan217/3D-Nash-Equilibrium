@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { GameGraphMiniature } from './components/GameGraphMiniature';
 import { continuumComponents, indifferenceRoot, kindOf, PRESETS, splitEquilibriaByContinuum } from './utils/gameEngine';
 import type { GamePayoffs } from './types';
+import { seededRandom } from './testing/prng';
 
 let checks = 0;
 const fails: Record<string, number> = {};
@@ -164,8 +165,7 @@ compareSet(F9, 'F9 segment');
 compareSet(F9_AREA, 'F9 area');
 
 // ── Sweeps: every preset, small integers (ties are common), 3-dp, near-level slopes ──
-let seed = 2207;
-const R = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+const R = seededRandom(2207);
 const reach = { games: 0, fullA: 0, fullB: 0, edgeRoot: 0, interiorRoot: 0, continuum: 0 };
 const sweep = (g: GamePayoffs, tag: string) => {
   reach.games++;

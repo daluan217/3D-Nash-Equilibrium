@@ -12182,7 +12182,7 @@ const suggestedScenario = {
       record('§110 precondition: eight payoff boxes and a Plotly legend', inputs.length === 8
         && await bp.locator('.legend .traces').count() > 0);
       let seed = 110;
-      const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+      const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
       const LEG = ['Starting Point', 'Pure NE', 'Domain boundary', 'Current position (A)'];
       const legend = () => bp.evaluate(() => {
         const by = {};
@@ -12348,7 +12348,7 @@ const suggestedScenario = {
         ce: r.json?.report?.claimedEquilibria, pc: r.json?.report?.proseClaims, nums: nums(r.json?.report?.prose) });
       const K = ['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'];
       let seed = 111;
-      const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+      const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
       const games = [];
       for (let i = 0; i < 100; i++) games.push(Object.fromEntries(K.map((k) => [k, Math.floor(rnd() * 7) - 3])));   // ties common
       for (let i = 0; i < 100; i++) games.push(Object.fromEntries(K.map((k) => [k, Math.round((rnd() * 200 - 100) * 1000) / 1000])));
