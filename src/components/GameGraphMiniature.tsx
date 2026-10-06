@@ -5,7 +5,7 @@
 
 import React, { useMemo } from 'react';
 import { GamePayoffs } from '../types';
-import { bestReplySets, computeAllNE, kindOf } from '../utils/gameEngine';
+import { bestReplySets, continuumComponents, kindOf, splitEquilibriaByContinuum } from '../utils/gameEngine';
 
 interface GameGraphMiniatureProps {
   payoffs: GamePayoffs;
@@ -13,11 +13,13 @@ interface GameGraphMiniatureProps {
 }
 
 export const GameGraphMiniature: React.FC<GameGraphMiniatureProps> = ({ payoffs, isDark = false }) => {
-  const allNE = useMemo(() => {
+  // The solver's equilibrium SET: a continuum is drawn whole and only isolated points get a dot. Corner
+  // dots alone showed an edge of equilibria as one pure NE, the square as four (BLUE-LOOP-MATH-22 F9).
+  const { comps, allNE } = useMemo(() => {
     try {
-      return computeAllNE(payoffs);
+      return { comps: continuumComponents(payoffs), allNE: splitEquilibriaByContinuum(payoffs).stray };
     } catch {
-      return [];
+      return { comps: [], allNE: [] };
     }
   }, [payoffs]);
 
@@ -99,6 +101,15 @@ export const GameGraphMiniature: React.FC<GameGraphMiniatureProps> = ({ payoffs,
               stroke={colour} strokeWidth="1.75" strokeLinecap="round" />
           );
         }))}
+
+        {/* Equilibrium continua (segment or the whole square), dashed in the mixed-NE colour */}
+        {comps.map((r, i) => kindOf(r) === 'area' ? (
+          <rect key={'c' + i} x={mapX(r.x0)} y={mapY(r.y1)} width={(r.x1 - r.x0) * 90} height={(r.y1 - r.y0) * 90}
+            fill="none" stroke="#a855f7" strokeWidth="2" strokeDasharray="5 3" rx="6" />
+        ) : (
+          <line key={'c' + i} x1={mapX(r.x0)} y1={mapY(r.y0)} x2={mapX(r.x1)} y2={mapY(r.y1)}
+            stroke="#a855f7" strokeWidth="3.5" strokeDasharray="5 3" />
+        ))}
 
         {/* Draw plotted Nash Equilibria */}
         {allNE.map((ne, idx) => {

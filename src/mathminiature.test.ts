@@ -11,7 +11,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { GameGraphMiniature } from './components/GameGraphMiniature';
-import { indifferenceRoot, PRESETS } from './utils/gameEngine';
+import { continuumComponents, indifferenceRoot, kindOf, PRESETS, splitEquilibriaByContinuum } from './utils/gameEngine';
 import type { GamePayoffs } from './types';
 
 let checks = 0;
@@ -119,10 +119,54 @@ check('F7 full: the card draws every x as a best reply for A, not "always Row 2"
 check('F7 edge: the card draws A\'s indifference at y = 1', compare(F7_EDGE, 'F7 edge'));
 check('F7 full B: the card draws every y as a best reply for B', compare(F7_FULL_B, 'F7 full B'));
 
+// ── F9: the card's equilibrium marks are the solver's equilibrium SET (sweep 3) ─────────────────────
+// The card dotted computeAllNE's corners only: a continuum (x=0, y in [0.5,1]) showed as ONE isolated pure-NE
+// dot at its corner, while the card's own list and the main plot draw the whole component.
+const MIXED = '#a855f7';
+/** Core NE dots (r 3 / 3.5) and continuum strokes (dashed, mixed colour) as unit-square geometry. */
+function marks(svg: string): { dots: number[][]; comps: number[][] } {
+  const dots: number[][] = [], comps: number[][] = [];
+  for (const el of svg.match(/<(?:circle|line|rect|path|polyline|polygon)\b[^>]*>/g) ?? []) {
+    if (el.startsWith('<circle') && /^(3|3\.5)$/.test(attr(el, 'r') ?? '') && attr(el, 'fill') !== 'none')
+      dots.push([ux(+attr(el, 'cx')!), uy(+attr(el, 'cy')!)]);
+    else if (attr(el, 'stroke') === MIXED && attr(el, 'stroke-dasharray')) {
+      // [x0, x1, y0, y1, 1 if drawn as an area outline]: a diagonal across the square is not the square
+      if (el.startsWith('<line')) {
+        const [x0, y0, x1, y1] = [ux(+attr(el, 'x1')!), uy(+attr(el, 'y1')!), ux(+attr(el, 'x2')!), uy(+attr(el, 'y2')!)];
+        comps.push([Math.min(x0, x1), Math.max(x0, x1), Math.min(y0, y1), Math.max(y0, y1), 0]);
+      } else if (el.startsWith('<rect')) {
+        const x = ux(+attr(el, 'x')!), y = uy(+attr(el, 'y')!), w = +attr(el, 'width')! / 90, h = +attr(el, 'height')! / 90;
+        comps.push([x, x + w, y - h, y, 1]);
+      } else comps.push([NaN, NaN, NaN, NaN, NaN]);   // any other dashed shape is unmeasured -> fails the match
+    }
+  }
+  return { dots, comps };
+}
+const key = (v: number[]) => v.map((c) => Math.round(c * 1e6) / 1e6).join(',');
+function compareSet(g: GamePayoffs, tag: string): boolean {
+  const m = marks(renderToStaticMarkup(createElement(GameGraphMiniature, { payoffs: g })));
+  const want = continuumComponents(g).map((r) => key([r.x0, r.x1, r.y0, r.y1, kindOf(r) === 'area' ? 1 : 0])).sort();
+  const wantDots = splitEquilibriaByContinuum(g).stray.map((e) => key([e.x, e.y])).sort();
+  const okC = JSON.stringify(m.comps.map(key).sort()) === JSON.stringify(want);
+  const okD = JSON.stringify(m.dots.map(key).sort()) === JSON.stringify(wantDots);
+  check(`${tag}: every continuum component is drawn, exactly (segment as a line, area as its outline)`, okC,
+    `${JSON.stringify(g)} drawn ${JSON.stringify(m.comps.map(key))} set ${JSON.stringify(want)}`);
+  check(`${tag}: a dot marks each isolated equilibrium and nothing else (no corner of a continuum)`, okD,
+    `${JSON.stringify(g)} dots ${JSON.stringify(m.dots.map(key))} isolated ${JSON.stringify(wantDots)}`);
+  return okC && okD;
+}
+const F9: GamePayoffs = { a11: 0, a12: 1, a21: 1, a22: 0, b11: 2, b12: -1, b21: 2, b22: 2 };
+const F9_AREA: GamePayoffs = { a11: 1, a12: 1, a21: 1, a22: 1, b11: 0, b12: 0, b21: 0, b22: 0 };
+check('F9 precondition: the set is the segment x=0, y in [0.5,1], whose corner (0,1) computeAllNE lists',
+  key(Object.values(continuumComponents(F9)[0])) === key([0, 0, 0.5, 1]) && splitEquilibriaByContinuum(F9).onContinuum.length === 1);
+check('F9 precondition: both players indifferent everywhere -> the whole square', kindOf(continuumComponents(F9_AREA)[0]) === 'area');
+compareSet(F9, 'F9 segment');
+compareSet(F9_AREA, 'F9 area');
+
 // ── Sweeps: every preset, small integers (ties are common), 3-dp, near-level slopes ──
 let seed = 2207;
 const R = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
-const reach = { games: 0, fullA: 0, fullB: 0, edgeRoot: 0, interiorRoot: 0 };
+const reach = { games: 0, fullA: 0, fullB: 0, edgeRoot: 0, interiorRoot: 0, continuum: 0 };
 const sweep = (g: GamePayoffs, tag: string) => {
   reach.games++;
   if (g.a11 === g.a21 && g.a12 === g.a22) reach.fullA++;
@@ -132,6 +176,8 @@ const sweep = (g: GamePayoffs, tag: string) => {
     else if (r > 0 && r < 1) reach.interiorRoot++;
   }
   compare(g, tag);
+  compareSet(g, tag);
+  if (continuumComponents(g).length) reach.continuum++;
 };
 for (const p of Object.values(PRESETS)) sweep(Object.fromEntries(K.map((k) => [k, p[k]])) as unknown as GamePayoffs, 'S1 presets');
 for (let i = 0; i < 6000; i++) sweep(Object.fromEntries(K.map((k) => [k, Math.floor(R() * 5) - 2])) as unknown as GamePayoffs, 'S2 int[-2,2]');
@@ -142,8 +188,8 @@ for (let i = 0; i < 2000; i++) {   // slopes of 0.001 next to level: the old 1e-
   g.b22 = Math.round((g.b21 + g.b12 - g.b11 + (R() < 0.5 ? 0.001 : 0)) * 1000) / 1000;
   sweep(g, 'S4 near-level');
 }
-check('reach: presets + 11000 games, with full and edge indifference on both players',
-  reach.games >= 11000 && reach.fullA >= 100 && reach.fullB >= 100 && reach.edgeRoot >= 500 && reach.interiorRoot >= 2000,
+check('reach: presets + 11000 games, with full and edge indifference on both players and continua',
+  reach.games >= 11000 && reach.fullA >= 100 && reach.fullB >= 100 && reach.edgeRoot >= 500 && reach.interiorRoot >= 2000 && reach.continuum >= 1000,
   JSON.stringify(reach));
 
 // ── Source gate: the miniature has no root formula of its own ──
