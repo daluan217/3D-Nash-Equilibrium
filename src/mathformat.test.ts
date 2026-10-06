@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { geometryBriefing, describeGeometry } from './utils/geometry';
 import { buildGroundingPayload } from './utils/report';
-import { fmtProb, fmtPayoffProse, commitPayoffs, PRESETS, hasEquilibriumContinuum, computeMixedNE, equilibriumSet } from './utils/gameEngine';
+import { fmtProb, fmtPayoffProse, commitPayoffs, PRESETS, hasEquilibriumContinuum, computeMixedNE, equilibriumSet, describeContinua, continuumComponents } from './utils/gameEngine';
 import { tieProse } from './utils/tieProse';
 import type { GamePayoffs } from './types';
 
@@ -172,6 +172,32 @@ for (let i = 0; i < 20000; i++) {
   if (/NO interior joint flat spot/.test(b)) { t2.none++; check('T2 "NO interior joint flat spot" never when a mixed NE exists', !m, `${tag} ${JSON.stringify(m)}`); }
 }
 check('reach: T2 joint points, interior-profile continua and no-flat-spot games', t2.joint >= 2000 && t2.profiles >= 300 && t2.none >= 10000, JSON.stringify(t2));
+// T3 (sweep 8): every continuum sentence back-parses, whole, to the rectangle it describes: the fixed
+// player's action or its value (fmtProb, or "above 0.999"/"below 0.001"), and the free range at fmtProb.
+const t3 = { sent: 0, area: 0, mixFixed: 0, phrase: 0 };
+const atP = (axis: string, v: number) => { const t = fmtProb(v); return t.startsWith('less') ? `${axis} below 0.001` : t.startsWith('more') ? `${axis} above 0.999` : `${axis} = ${t}`; };
+const sideOk = (m: RegExpMatchArray | null, fix: number, lo: number, hi: number, ax: string) => {
+  if (!m) return false;
+  if (m[3]) { t3.mixFixed++; if (/above|below/.test(m[3])) t3.phrase++; }
+  const fixedOk = m[2] ? fix === (m[2] === '1' ? 1 : 0) : m[3] === atP(ax === 'y' ? 'x' : 'y', fix) && fix !== 0 && fix !== 1;
+  return fixedOk && (m[4].startsWith('plays ANY') ? lo === 0 && hi === 1 : m[5] === fmtProb(lo) && m[6] === fmtProb(hi) && !(lo === 0 && hi === 1));
+};
+for (let i = 0; i < 40000; i++) {
+  const g = cells(() => (i % 3 ? EDGE[Math.floor(rnd() * EDGE.length)] : Math.floor(rnd() * 7) - 3));
+  if (i % 2 === 0) g.a21 = g.a11; if (i % 3 === 0) g.b12 = g.b11; if (i % 11 === 0) g.a22 = g.a12; if (i % 13 === 0) g.b22 = g.b21;
+  const rects = continuumComponents(g), d = describeContinua(g);
+  check('T3 one continuum sentence per component', rects.length === d.length, JSON.stringify(g));
+  rects.forEach((q, k) => {
+    t3.sent++;
+    const s = d[k] ?? '', tag = `T3 ${JSON.stringify(g)} ${JSON.stringify(q)} :: ${s}`;
+    if (q.x0 === 0 && q.x1 === 1 && q.y0 === 0 && q.y1 === 1) { t3.area++; check('T3 the whole-square continuum says so', s.startsWith('Every pair of mixtures in the whole'), tag); return; }
+    const ok = q.x0 === q.x1
+      ? sideOk(s.match(/^A continuum of equilibria: A (plays Row ([12])|mixes at (.+?)) while B (plays ANY mixture \(y anywhere in \[0, 1\]\)|mixes with y anywhere from (.+?) to (.+?))\.$/), q.x0, q.y0, q.y1, 'y')
+      : q.y0 === q.y1 && sideOk(s.match(/^A continuum of equilibria: B (plays Col ([12])|mixes at (.+?)) while A (plays ANY mixture \(x anywhere in \[0, 1\]\)|mixes with x anywhere from (.+?) to (.+?))\.$/), q.y0, q.x0, q.x1, 'x');
+    check('T3 a continuum sentence parses whole and names its own rectangle', ok, tag);
+  });
+}
+check('reach: T3 sentences, whole-square continua, mixed fixed players and above/below phrases', t3.sent >= 30000 && t3.area >= 300 && t3.mixFixed >= 1000 && t3.phrase >= 100, JSON.stringify(t3));
 // Reach: the sweep must contain the shapes the defect lives in, or P1-P6 pass by not looking.
 check('reach: interior roots that are sub-resolution', reach.subIn > 50, JSON.stringify(reach));
 check('reach: outside roots within 5e-4 of an edge', reach.outNear > 50, JSON.stringify(reach));
