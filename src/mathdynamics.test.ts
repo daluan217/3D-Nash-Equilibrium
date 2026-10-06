@@ -15,7 +15,7 @@
 import {
   doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
-  EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtPayoff, commitPayoffs,
+  EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtProbFixed, fmtPayoff, commitPayoffs,
   precomputeThinHistory, replayToStep,
 } from './utils/gameEngine';
 import { makeTraces, buildSurfaces } from './utils/plotting';
@@ -609,6 +609,99 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D14 reach: first-coordinate snapshots occurred', snaps >= 250, `${snaps}`);   // measured 292
+}
+
+// ── D15 (sweep 9 HIT, F17/F19/F20): the drawn path ends at the sphere, moves along its own axis, stays in its box ──
+// Legend: "A Moves (x)" red, "B Moves (y)" blue. A discovery snap or a cycle clamp that moves both axes was drawn
+// as one diagonal in the mover's colour, a clamp left the tip behind the sphere, and regret's position sat outside
+// the box it had just contracted. Verbatim repros first (each fails on the unfixed tree), then the fuzz.
+{
+  const run = (g: GamePayoffs, mode: 'shrink' | 'regret', mover: 'A' | 'B', step: number, x: number, y: number, k: number) => {
+    const s = makeState(x, y, g), all = computeAllNE(g); let logs: string[] = [];
+    for (let i = 0; i < k; i++) { logs = []; doStep(g, s, mover, step, all, null, (m) => logs.push(m), () => {}, () => {}, mode); }
+    return { s, logs, T: makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[] };
+  };
+  const box = (T: any[]) => { const b = T.find((t) => t.name === 'Domain boundary' || t.name === 'Search corridor'); return [Math.min(...b.x), Math.max(...b.x), Math.min(...b.y), Math.max(...b.y)]; };
+  const sph = (T: any[]) => { const t = T.find((u) => u.name === 'Current position (A)'); return [t.x[0], t.y[0]]; };
+  const offAxis = (T: any[]) => T.filter((t) => t.legendgroup === 'amoves' || t.legendgroup === 'bmoves').flatMap((t) => {
+    const other = t.legendgroup === 'amoves' ? t.y : t.x;
+    return other.flatMap((v: number, j: number) => (j && Number.isFinite(v) && Number.isFinite(other[j - 1]) && Math.abs(v - other[j - 1]) > 1e-9 ? [`${t.legendgroup} (${t.x[j - 1]},${t.y[j - 1]})->(${t.x[j]},${t.y[j]})`] : []));
+  });
+  // F17 verbatim: the log printed "A∈[0.007,0.957] B∈[0.013,0.963]" then "Step 6 (B): x=1.000, y=1.000".
+  const f17 = run({ a11: -2, a12: -2, a21: 1, a22: -3, b11: 3, b12: -2, b21: -0.5, b22: 0.25 }, 'regret', 'A', 0.05, 0.217, 0.217, 6);
+  const [l17, h17, m17, n17] = box(f17.T), [x17, y17] = sph(f17.T);
+  check('D15 F17 verbatim: fixture still contracts to A∈[0.007,0.957] B∈[0.013,0.963] on step 6', f17.logs.some((l) => l.startsWith('↺ Cycle 1 → A∈[0.007,0.957] B∈[0.013,0.963]')), f17.logs.join(' | '));
+  check('D15 F17 verbatim: the readout and the sphere are inside the box the cycle line printed', [f17.s.cx, x17].every((v) => v >= l17 && v <= h17) && [f17.s.cy, y17].every((v) => v >= m17 && v <= n17), `cx (${f17.s.cx}, ${f17.s.cy}) sphere (${x17}, ${y17}) box [${l17},${h17}]x[${m17},${n17}]`);
+  // F19 verbatim: the discovery snap x: 1 -> 0.467 was drawn inside a "B Moves (y)" line, (1,0)->(0.467,1).
+  const f19 = run({ a11: -0.001, a12: 2, a21: 5, a22: -0.5, b11: 2, b12: 0, b21: 0.25, b22: 2 }, 'regret', 'B', 0.25, 1, 0.5, 5);
+  check('D15 F19 verbatim: fixture discovers x on step 5', f19.logs.includes('✓ x-coordinate discovered: 0.467'), f19.logs.join(' | '));
+  check('D15 F19 verbatim: no drawn move line changes the other player\'s axis', offAxis(f19.T).length === 0, offAxis(f19.T).join('; '));
+  // F20 verbatim: "Step 5 (A): x=0.000, y=0.000" then "↺ Cycle 1 → domain [0.250,0.750]": sphere (0.25, 0.25), tip (0.25, 0).
+  const f20 = run({ a11: 0.25, a12: 0.25, a21: -3, a22: 1, b11: -2, b12: -0.001, b21: 3, b22: -1 }, 'shrink', 'A', 0.25, 0.217, 0, 5);
+  const tip20 = [f20.s.pathSegmentsA.at(-1)!.xs.at(-1), f20.s.pathSegmentsA.at(-1)!.ys.at(-1)];
+  check('D15 F20 verbatim: fixture cycles into [0.250,0.750] from (0, 0) on step 5', f20.logs[0].startsWith('Step 5 (A): x=0.000, y=0.000') && f20.logs[1]?.startsWith('↺ Cycle 1 → domain [0.250,0.750]'), f20.logs.join(' | '));
+  check('D15 F20 verbatim: the path tip is the sphere (0.25, 0.25)', JSON.stringify(tip20) === JSON.stringify([0.25, 0.25]) && JSON.stringify(sph(f20.T)) === JSON.stringify([0.25, 0.25]), `tip ${tip20} sphere ${sph(f20.T)}`);
+  // Shrink convergence: the green box stood at [0.467,0.467]² while the sphere sat at (0.467, 0.333).
+  const fc = run({ a11: -0.001, a12: 2, a21: 5, a22: -0.5, b11: 2, b12: 0, b21: 0.25, b22: 2 }, 'shrink', 'A', 0.25, 0.217, 0.1, 65);
+  const [lc, hc, mc, nc] = box(fc.T), [xc, yc] = sph(fc.T);
+  check('D15 conv verbatim: fixture converges on step 65 at (0.467, 0.333)', fc.s.converged && fc.s.stepCount === 65 && fc.s.cy === 0.333, `${fc.s.stepCount} (${fc.s.cx}, ${fc.s.cy})`);
+  check('D15 conv verbatim: the closed box is the sphere\'s point', lc === xc && hc === xc && mc === yc && nc === yc, `box [${lc},${hc}]x[${mc},${nc}] sphere (${xc}, ${yc})`);
+
+  // The pure-NE cycle branch never fires naturally (0 in 80,000 runs): force it by seeding the key the step lands on.
+  const gp: GamePayoffs = { a11: 3, a12: 0, a21: 5, a22: 1, b11: 3, b12: 5, b21: 0, b22: 1 }, allp = computeAllNE(gp);
+  const fp = makeState(0.217, 0.217, gp), probe = structuredClone(fp), lp: string[] = [];
+  doStep(gp, probe, 'A', 0.25, allp, null, () => {}, () => {}, () => {}, 'shrink');
+  fp.visitedPositions = [probe.cx.toFixed(3) + ',' + probe.cy.toFixed(3)];
+  doStep(gp, fp, 'A', 0.25, allp, null, (m) => lp.push(m), () => {}, () => {}, 'shrink');
+  const tipP = [fp.pathSegmentsA.at(-1)!.xs.at(-1), fp.pathSegmentsA.at(-1)!.ys.at(-1)];
+  check('D15 forced pure-NE cycle: the branch fired and its clamp moved the position', lp.some((l) => l.startsWith('↺ Cycle 1 → domain')) && (fp.cx !== probe.cx || fp.cy !== probe.cy), `${lp.join(' | ')} cx (${fp.cx}, ${fp.cy}) pre (${probe.cx}, ${probe.cy})`);
+  check('D15 forced pure-NE cycle: the path tip is the sphere', tipP[0] === r3(fp.exactX) && tipP[1] === r3(fp.exactY), `tip ${tipP} exact (${fp.exactX}, ${fp.exactY})`);
+
+  const r15 = mulberry32(0xd15), V = [-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 0.001, -0.001], pk = <T,>(a: T[]) => a[Math.floor(r15() * a.length)];
+  const reach15: Record<string, number> = { frames: 0, drawn: 0, cycles: 0, regretClamps: 0, splits: 0, shrinkConv: 0 };
+  for (let i = 0; i < 300; i++) {
+    const g = commitPayoffs(Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, pk(V)])) as unknown as GamePayoffs);
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const step = pk([0.1, 0.333, 0.05, 0.25, 0.007]), s = makeState(pk([0.217, 0, 1, 0.9, 0.5]), pk([0.217, 0, 1, 0.1, 0.5]), g);
+      for (let k = 0; k < 400 && !s.converged; k++) {
+        const logs: string[] = [], segs = s.pathSegmentsA.length, pts = s.pathSegmentsA.reduce((n, sg) => n + sg.xs.length, 0);
+        const pre = [s.cx, s.cy];
+        const lastLen = s.pathSegmentsA[segs - 1].xs.length, tip0 = [s.pathSegmentsA[segs - 1].xs.at(-1), s.pathSegmentsA[segs - 1].ys.at(-1)];
+        const who = k % 2 === 0 ? mover : mover === 'A' ? 'B' : 'A';
+        doStep(g, s, mover, step, all, committed, (m) => logs.push(m), () => {}, () => {}, mode);
+        reach15.frames++;
+        // The step is the mover's: when its own coordinate changed, its colour is drawn first, then any snap/clamp.
+        const first = s.pathSegmentsA[segs - 1].xs.length > lastLen ? s.pathSegmentsA[segs - 1].mover : s.pathSegmentsA[segs]?.mover;
+        if (first && r3(who === 'A' ? s.exactX : s.exactY) !== (who === 'A' ? tip0[0] : tip0[1]) && (s.discoveredMixedX === null) === (s.discoveredMixedY === null))
+          check('D15 the mover\'s own move is drawn first', first === who, `${mode} ${who} k ${k + 1} ${JSON.stringify(g)} first ${first}`);
+        const cyc = logs.some((l) => l.startsWith('↺')), at = `${mode} ${mover} step ${step} k ${k + 1} start (${s.startX},${s.startY}) ${JSON.stringify(g)}`;
+        if (cyc) reach15.cycles++;
+        if (s.pathSegmentsA.reduce((n, sg) => n + sg.xs.length, 0) - pts > (s.pathSegmentsA.length > segs ? 2 : 1)) reach15.splits++;
+        for (const [arr, key] of [[s.pathSegmentsA, 'A'], [s.pathSegmentsB, 'B']] as const) {
+          const last = arr.at(-1)!;
+          check('D15 the path tip is the sphere, every frame', last.xs.at(-1) === r3(s.exactX) && last.ys.at(-1) === r3(s.exactY), `${at} ${key} tip (${last.xs.at(-1)}, ${last.ys.at(-1)}) exact (${s.exactX}, ${s.exactY})`);
+        }
+        for (const sg of s.pathSegmentsA) for (let j = 1; j < sg.xs.length; j++)
+          check('D15 a recorded A move changes only x, a B move only y', (sg.mover === 'A' ? sg.ys : sg.xs)[j] === (sg.mover === 'A' ? sg.ys : sg.xs)[j - 1], `${at} ${sg.mover} (${sg.xs[j - 1]},${sg.ys[j - 1]})->(${sg.xs[j]},${sg.ys[j]})`);
+        const now = logs.find((l) => /^↺ Cycle \d+ → domain/.test(l));
+        if (now) check('D15 a shrink cycle line states the clamped position', now.endsWith(`now x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}`), `${at} ${now} cx (${s.cx}, ${s.cy})`);
+        if (k % 3 && !cyc && !s.converged) continue;
+        reach15.drawn++;
+        const T = makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[], [lo, hi, ylo, yhi] = box(T), [px, py] = sph(T);
+        check('D15 no drawn move line changes the other player\'s axis', offAxis(T).length === 0, `${at} ${offAxis(T)[0]}`);
+        const oneFound = (s.discoveredMixedX !== null) !== (s.discoveredMixedY !== null), regretBox = mode === 'regret' && !pure.length;
+        if (regretBox && cyc && (pre[0] < lo || pre[0] > hi || pre[1] < ylo || pre[1] > yhi)) reach15.regretClamps++;
+        if (mode === 'shrink' && s.converged && s.discoveredMixedX !== null && s.discoveredMixedY !== null) reach15.shrinkConv++;
+        // Shrink's phase-2 square is the ghost's corridor: only the unfound axis lives in it (the found one is locked).
+        const inX = px >= lo - 1e-9 && px <= hi + 1e-9, inY = py >= ylo - 1e-9 && py <= yhi + 1e-9;
+        const ok = mode === 'shrink' && oneFound ? (s.discoveredMixedX !== null ? inY : inX) : !pure.length || mode === 'shrink' ? inX && inY : true;
+        check('D15 the sphere is inside the drawn box', ok, `${at} sphere (${px}, ${py}) box [${lo},${hi}]x[${ylo},${yhi}]`);
+      }
+    }
+  }
+  check('D15 reach: cycle, regret-clamp, split-move and shrink-convergence frames drawn', reach15.frames >= 10000 && reach15.cycles >= 1800 && reach15.regretClamps >= 800 && reach15.splits >= 900 && reach15.shrinkConv >= 35, JSON.stringify(reach15));   // measured 12321/2183/1042/1126/45
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────

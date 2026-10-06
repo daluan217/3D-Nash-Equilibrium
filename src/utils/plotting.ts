@@ -248,10 +248,13 @@ export function makeTraces(
       && allNE.some(n => n.type === 'mixed') && !allNE.some(n => n.type === 'pure');
     // Regret mode brackets each player with their own domain, so the box is the
     // rectangle [A's x-domain] × [B's y-domain], contracting onto the NE.
-    const loX = regretBox ? s.domXLo : s.domainLo;
-    const hiX = regretBox ? s.domXHi : s.domainHi;
-    const loY = regretBox ? s.domYLo : s.domainLo;
-    const hiY = regretBox ? s.domYHi : s.domainHi;
+    // Both coordinates found: the box has closed on the found point, which is where the sphere is.
+    // Shrink's shared [lo,hi] would stand the pillar at (x*,x*), away from the NE (S9).
+    const both = s.discoveredMixedX !== null && s.discoveredMixedY !== null;
+    const loX = both ? px : regretBox ? s.domXLo : s.domainLo;
+    const hiX = both ? px : regretBox ? s.domXHi : s.domainHi;
+    const loY = both ? py : regretBox ? s.domYLo : s.domainLo;
+    const hiY = both ? py : regretBox ? s.domYHi : s.domainHi;
     const zC = [
       EA(loX, loY, g), EA(loX, hiY, g), EA(hiX, loY, g), EA(hiX, hiY, g),
       EB(loX, loY, g), EB(loX, hiY, g), EB(hiX, loY, g), EB(hiX, hiY, g)

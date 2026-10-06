@@ -1556,6 +1556,18 @@ export function pickShrinkStep(
   return defaultStep;
 }
 
+// Draw the position's move to (x, y) from the path tip. The legend reads "A Moves (x)" / "B Moves (y)",
+// so a move that also changes the other axis (a discovery snap, a cycle clamp) is drawn as the
+// mover's own-axis move, then the other axis's move in that player's colour (F17/F19/F20).
+function drawMoveTo(s: SimState, g: GamePayoffs, x: number, y: number, mover: 'A' | 'B') {
+  const seg = s.pathSegmentsA[s.pathSegmentsA.length - 1], n = seg ? seg.xs.length - 1 : -1;
+  const tx = n >= 0 ? seg.xs[n] : x, ty = n >= 0 ? seg.ys[n] : y;
+  const at = (px: number, py: number, who: 'A' | 'B') => pushToSegs(s, px, py, r3(EA(px, py, g)), r3(EB(px, py, g)), who);
+  if (mover === 'A' ? y === ty : x === tx) return at(x, y, mover);
+  if (mover === 'A' ? x !== tx : y !== ty) at(mover === 'A' ? x : tx, mover === 'A' ? ty : y, mover);
+  at(x, y, mover === 'A' ? 'B' : 'A');
+}
+
 // ── Helper to append points into paths ────────────────────────────────────────
 export function pushToSegs(
   state: SimState,
@@ -1886,6 +1898,12 @@ export function doStep(
             addLog('✓ y-coordinate discovered: ' + fmtProb(_ry ? _ry.y : s.stratY));
           }
         }
+        // The box just contracted: bring the position into it, or the sphere and readout sit outside
+        // the box the line below prints (F17, "A∈[0.007,0.957] | Step 6 (B): x=1.000").
+        nx = Math.max(s.domXLo, Math.min(s.domXHi, nx));
+        ny = Math.max(s.domYLo, Math.min(s.domYHi, ny));
+        s.calcX = r3(nx);
+        s.calcY = r3(ny);
         addLog(`↺ Cycle ${s.cycleCount} → A∈${fmtProbInterval(s.domXLo, s.domXHi)} B∈${fmtProbInterval(s.domYLo, s.domYHi)} (regretλ=${r3(lambda)})`);
         onCycleDetected();
       } else {
@@ -2095,9 +2113,7 @@ export function doStep(
   s.exactX = s.discoveredMixedX !== null ? s.discoveredMixedX : nx;
   s.exactY = s.discoveredMixedY !== null ? s.discoveredMixedY : ny;
 
-  const eA = r3(EA(s.cx, s.cy, g));
-  const eB = r3(EB(s.cx, s.cy, g));
-  pushToSegs(s, s.displayX, s.displayY, eA, eB, mover);
+  drawMoveTo(s, g, s.displayX, s.displayY, mover);
 
   const domStr = (s.domainLo > 0.0005 || s.domainHi < 0.9995)
     ? ' ' + fmtProbInterval(s.domainLo, s.domainHi) : '';
@@ -2205,7 +2221,8 @@ export function doStep(
       s.cycleCount++;
       s.visitedPositions = [];
       applyBisectCycleStep(s, g, defaultShrinkStep, mover);
-      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
+      drawMoveTo(s, g, r3(s.exactX), r3(s.exactY), mover);   // the clamp is drawn: tip = sphere (F20)
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}`);
       onCycleDetected();
       return;
     }
@@ -2224,7 +2241,8 @@ export function doStep(
       s.exactY = s.discoveredMixedY !== null ? s.discoveredMixedY : Math.max(s.domainLo, Math.min(s.domainHi, s.exactY));
       s.cx = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
       s.cy = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
-      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
+      drawMoveTo(s, g, r3(s.exactX), r3(s.exactY), mover);   // the clamp is drawn: tip = sphere (F20)
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}`);
       onCycleDetected();
       return;
     }

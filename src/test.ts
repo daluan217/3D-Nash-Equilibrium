@@ -2887,8 +2887,9 @@ function testTourStagesTheDisplayedMethod() {
   // keeps its own line rather than being deleted as redundant.
   assert(regret.snaps.length !== shrink.snaps.length && regret.neState?.stepCount !== shrink.neState?.stepCount,
     'the two modes must stay distinguishable by BOTH discriminators, or this test stops being able to see the defect');
-  assert(regret.snaps.length - 1 === 30 && regret.neState?.stepCount === 24,
-    `fixture: regret stages 30 steps with first-find at 24 (got ${regret.snaps.length - 1}, ${regret.neState?.stepCount})`);
+  // 28/21 since F17 (2026-10-06): the position now enters each contracted regret box, so it closes sooner.
+  assert(regret.snaps.length - 1 === 28 && regret.neState?.stepCount === 21,
+    `fixture: regret stages 28 steps with first-find at 21 (got ${regret.snaps.length - 1}, ${regret.neState?.stepCount})`);
   assert(shrink.snaps.length - 1 === 58 && shrink.neState?.stepCount === 37,
     `fixture: shrink stages 58 steps with first-find at 37 (got ${shrink.snaps.length - 1}, ${shrink.neState?.stepCount})`);
 
