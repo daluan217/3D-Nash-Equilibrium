@@ -15,7 +15,7 @@
 import {
   doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
-  EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb,
+  EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtPayoff,
 } from './utils/gameEngine';
 import { makeTraces, buildSurfaces } from './utils/plotting';
 import type { GamePayoffs, NashEquilibrium, SimState } from './types';
@@ -285,6 +285,48 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   }
   check('D6 reach: mixed-only games, discovery lines, and sub-resolution roots all occurred',
     reach.games >= 150 && reach.lines >= 5000 && reach.sub >= 50, JSON.stringify(reach));
+}
+
+// ── D7: every marker's hover readout is its own point on its own player's surface (sweep 3, empty probe) ──
+// A swapped [zA, zB], a ghost read off the other surface, or a label printing a neighbour's x/y would each
+// pass a format check; here payoff must equal E_A or E_B at the marker's (x, y), for the surface it sits on.
+{
+  const r7 = mulberry32(0xd7);
+  const gens: (() => number)[] = [() => Math.floor(r7() * 5) - 2, () => Math.round((r7() * 200 - 100) * 1000) / 1000,
+    () => [100, -100, 99.999, -99.999, 0.001, -0.001, 0][Math.floor(r7() * 7)]];
+  const reach: Record<string, number> = { games: 0, pts: 0 };
+  const who = (name: string, tm: string, j: number, n: number): 'A' | 'B' | null => /\(A\)|Ghost A/.test(name) ? 'A'
+    : /\(B\)|Ghost B/.test(name) ? 'B' : tm !== 'both' ? (tm as 'A' | 'B') : n === 2 ? (j ? 'B' : 'A') : null;
+  for (const gen of gens) for (let i = 0; i < 120; i++) {
+    const g = Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, gen()])) as unknown as GamePayoffs;
+    const all = computeAllNE(g); reach.games++;
+    for (const mode of ['shrink', 'regret'] as const) {
+      const s = makeState(r7(), r7(), g);
+      for (let k = 0; k < 400 && !s.converged; k++) {
+        doStep(g, s, k % 2 ? 'A' : 'B', 0.1, all, null, () => {}, () => {}, () => {}, mode);
+        if (k % 37 && !s.converged) continue;
+        for (const tm of ['A', 'B', 'both'] as const) for (const t of makeTraces(dummySurf, g, s, tm, all, false, mode) as any[]) {
+          if (t.mode !== 'markers' || t.hoverinfo === 'skip') continue;
+          check('D7 every hoverable marker trace carries one readout per point', Array.isArray(t.text) && t.text.length === t.x.length,
+            `${t.name} text=${JSON.stringify(t.text)}`);
+          (t.text ?? []).forEach((txt: string, j: number) => {
+            const [x, y, z] = [t.x[j], t.y[j], t.z[j]], p = who(t.name, tm, j, t.x.length);
+            const want = p === 'A' ? EA(x, y, g) : p === 'B' ? EB(x, y, g) : NaN;
+            const ok = p ? r3(z) === r3(want) : r3(z) === r3(EA(x, y, g)) || r3(z) === r3(EB(x, y, g));
+            const m = txt.match(/<br>x: (.+)<br>y: (.+)<br>payoff: (.+)$/);
+            reach.pts++; reach[t.legendgroup ?? t.name] = (reach[t.legendgroup ?? t.name] ?? 0) + 1;
+            check('D7 hover payoff is E_A / E_B at the marker\'s own (x, y) on its own player\'s surface', ok,
+              `${mode} tm=${tm} ${t.name}[${j}] p=${p} "${txt}" (${x},${y},${z}) EA=${EA(x, y, g)} EB=${EB(x, y, g)} ${JSON.stringify(g)}`);
+            check('D7 hover text prints the marker\'s own x, y and payoff', !!m && m[1] === fmtProb(x) && m[2] === fmtProb(y) && m[3] === fmtPayoff(z),
+              `"${txt}" vs (${x},${y},${z})`);
+          });
+        }
+      }
+    }
+  }
+  check('D7 reach: every marker family (start, pure/mixed/continuum NE, both spheres, both ghosts) was hovered',
+    reach.pts >= 10000 && ['Starting Point', 'pureNE', 'mixedNE', 'continuumNE', 'Current position (A)', 'Current position (B)',
+      'Search position (Ghost A)', 'ghostB'].every((k) => (reach[k] ?? 0) >= 50), JSON.stringify(reach));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
