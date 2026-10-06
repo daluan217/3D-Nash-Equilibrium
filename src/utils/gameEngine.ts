@@ -1337,12 +1337,16 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
     bHi: sBFn(s.domainHi), bLo: sBFn(s.domainLo),
   };
 
-  const EPS_PAT = 1e-4;
+  // A flip smaller than discovery's own tolerance (|D| * 0.00065) is no flip. A flat 1e-4 let a
+  // bound sit past the root by 1e-4/|D| (0.01 at D = 0.01) and still count as good, so the bracket
+  // lost the root and the bisection stalled for good (F16).
+  const dA = Math.abs(g.a11 - g.a12 - g.a21 + g.a22), dB = Math.abs(g.b11 - g.b12 - g.b21 + g.b22);
+  const EPS_PAT_A = dA > 1e-9 ? dA * 0.00065 : 0.00065, EPS_PAT_B = dB > 1e-9 ? dB * 0.00065 : 0.00065;
   const patternOK = s.cyclePattern === null || (
-    !(Math.abs(pat.aHi) > EPS_PAT && Math.sign(pat.aHi) !== Math.sign(s.cyclePattern.aHi)) &&
-    !(Math.abs(pat.aLo) > EPS_PAT && Math.sign(pat.aLo) !== Math.sign(s.cyclePattern.aLo)) &&
-    !(Math.abs(pat.bHi) > EPS_PAT && Math.sign(pat.bHi) !== Math.sign(s.cyclePattern.bHi)) &&
-    !(Math.abs(pat.bLo) > EPS_PAT && Math.sign(pat.bLo) !== Math.sign(s.cyclePattern.bLo))
+    !(Math.abs(pat.aHi) > EPS_PAT_A && Math.sign(pat.aHi) !== Math.sign(s.cyclePattern.aHi)) &&
+    !(Math.abs(pat.aLo) > EPS_PAT_A && Math.sign(pat.aLo) !== Math.sign(s.cyclePattern.aLo)) &&
+    !(Math.abs(pat.bHi) > EPS_PAT_B && Math.sign(pat.bHi) !== Math.sign(s.cyclePattern.bHi)) &&
+    !(Math.abs(pat.bLo) > EPS_PAT_B && Math.sign(pat.bLo) !== Math.sign(s.cyclePattern.bLo))
   );
 
   let newLo: number;

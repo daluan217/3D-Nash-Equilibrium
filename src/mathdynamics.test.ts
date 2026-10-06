@@ -15,7 +15,7 @@
 import {
   doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
-  EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtPayoff,
+  EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtPayoff, commitPayoffs,
 } from './utils/gameEngine';
 import { makeTraces, buildSurfaces } from './utils/plotting';
 import type { GamePayoffs, NashEquilibrium, SimState } from './types';
@@ -399,6 +399,44 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   }
   check('D8 reach: a corridor bound sat on the root with both bounds one sign (F15), and follower ties between pure NEs occurred',
     reach.residueRoot >= 100 && reach.followerTie >= 500, JSON.stringify(reach));
+
+  // ── D9 / F16 (sweep 6): every user step size, small determinants ──
+  // The Phase-1 bisection read a sign flip under a flat 1e-4 as "no flip": at |D| = 0.01 a bound
+  // 0.01 past the root stayed "good", the bracket lost the root and the run sat at [0.311, 0.692]
+  // for 20000 steps (x* = y* = 0.3, step 0.333). D8 ran only step 0.1 and integer payoffs.
+  const F16: GamePayoffs = { a11: -0.007, a12: 82.665, a21: 0, a22: 82.662, b11: 0.007, b12: 0, b21: 2.54, b22: 2.543 };
+  const run16 = (g: GamePayoffs, mover: 'A' | 'B', mode: 'shrink' | 'regret', step: number, x0: number, y0: number) => {
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+    const s = makeState(x0, y0, g), logs: string[] = [];
+    for (let k = 0; k < 20000 && !s.converged; k++) doStep(g, s, mover, step, all, committed, (l) => logs.push(l), () => {}, () => {}, mode);
+    return { s, logs };
+  };
+  const f16 = run16(F16, 'A', 'shrink', 0.333, 1, 1);
+  check('F16 verbatim: step 0.333 from (1,1) converges on the mixed NE (0.3, 0.3) (it sat at [0.311, 0.692] for 20000 steps)',
+    f16.s.converged && f16.s.convergedIsNE === true && f16.logs.at(-1)?.startsWith('━━ Mixed NE: x=0.3, y=0.3 ') === true, `${f16.logs.at(-1)}`);
+  const r9 = mulberry32(0xf16), pick9 = <T,>(xs: T[]) => xs[Math.floor(r9() * xs.length)];
+  const steps9 = [0.001, 0.003, 0.007, 0.01, 0.033, 0.07, 0.1, 0.125, 0.2, 0.25, 0.333, 0.5, 0.6, 0.75, 0.9, 0.999];
+  const reach9 = { runs: 0, smallD: 0, tinyD: 0, mixedD: 0, steps: new Set<number>() };
+  for (let i = 0; i < 1500; i++) {
+    // mixed root (p, q) on a step multiple or k/den, A/B gaps scaled by s (|D| = s), 3-dp offsets
+    const step = pick9(steps9), p = pick9([0.3, 0.5, 0.25, 0.1, 0.9, 1 / 3, 2 / 3, 0.7]), q = pick9([0.3, 0.5, 0.75, 0.2, 0.6, 1 / 7]);
+    const S = [0.003, 0.007, 0.01, 0.02, 0.05, 0.1, 0.15, 1, 50], scA = pick9(S), scB = pick9(S);   // independent: A's |D| is not B's
+    const sa = pick9([1, -1]), sb = pick9([1, -1]), o = () => pick9([0, Math.round(r9() * 200000 - 100000) / 1000]);
+    const [oa, ob, oc, od] = [o(), o(), o(), o()];
+    const g = commitPayoffs({ a11: oa + sa * scA * (1 - q), a21: oa, a12: ob - sa * scA * q, a22: ob, b11: oc + sb * scB * (1 - p), b12: oc, b21: od - sb * scB * p, b22: od });
+    const dMin = Math.min(Math.abs(g.a11 - g.a12 - g.a21 + g.a22), Math.abs(g.b11 - g.b12 - g.b21 + g.b22));
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const [x0, y0] = pick9([[0.217, 0.217], [1, 1], [0, 0], [0.5, 0.5]]);
+      const { s } = run16(g, mover, mode, step, x0, y0);
+      reach9.runs++; reach9.steps.add(step); if (dMin < 0.154) reach9.smallD++; if (dMin < 0.02) reach9.tinyD++;
+      if (dMin < 0.02 && Math.max(Math.abs(g.a11 - g.a12 - g.a21 + g.a22), Math.abs(g.b11 - g.b12 - g.b21 + g.b22)) >= 0.154) reach9.mixedD++;
+      check('D9 every run converges within the app\'s 20000-step cap, at every step size', s.converged, `${mode} ${mover} step ${step} (${x0},${y0}) ${JSON.stringify(g)} at [${s.domainLo},${s.domainHi}]`);
+      check('D9 no run settles off the equilibrium set', !s.converged || s.convergedIsNE !== false, `${mode} ${mover} step ${step} ${JSON.stringify(g)} at (${s.exactX},${s.exactY})`);
+    }
+  }
+  check('D9 reach: small determinants (|D| < 0.154, where the tolerance moved) and tiny ones (< 0.02) at every step size',
+    reach9.smallD >= 800 && reach9.tinyD >= 300 && reach9.mixedD >= 300 && reach9.steps.size === steps9.length, JSON.stringify({ ...reach9, steps: reach9.steps.size }));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
