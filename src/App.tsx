@@ -4308,8 +4308,8 @@ export default function App() {
     const startValX = commitStartCoordinate(x0);
     const startValY = commitStartCoordinate(y0);
 
-    const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, rp))], mover: 'A' as const };
-    const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, rp))], mover: 'A' as const };
+    const initSegA = { xs: [startValX], ys: [startValY], zs: [EA(startValX, startValY, rp)], mover: 'A' as const };
+    const initSegB = { xs: [startValX], ys: [startValY], zs: [EB(startValX, startValY, rp)], mover: 'A' as const };
 
     setSimState({
       cx: startValX,

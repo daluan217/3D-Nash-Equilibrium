@@ -16,7 +16,7 @@ import {
   doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
   EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtProbFixed, fmtPayoff, commitPayoffs,
-  precomputeThinHistory, replayToStep, shownPoint,
+  precomputeThinHistory, replayToStep, shownPoint, toThin,
 } from './utils/gameEngine';
 import { readFileSync } from 'node:fs';
 import { makeTraces, buildSurfaces } from './utils/plotting';
@@ -959,6 +959,12 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   const src = readFileSync(new URL('./utils/plotting.ts', import.meta.url), 'utf8') + readFileSync(new URL('./components/PlotlyView.tsx', import.meta.url), 'utf8');
   check('D19 no legend calls the regret strategy line "at current y/x" (it is drawn at the domain midpoint)',
     !/at current [xy]\)/.test(src) && (src.match(/strategy line \(E\[[AB]\] at mid-domain [xy]\)/g) ?? []).length === 6);
+  // The tour callouts (PlotlyView, not reachable from makeTraces) are a z on a surface too: no r3 in that file.
+  const pv = readFileSync(new URL('./components/PlotlyView.tsx', import.meta.url), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+  const appSrc = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+  check('D19 every App path start (default state, Step, Reset) is the exact payoff, never r3 of it',
+    !/zs: \[r3\(/.test(appSrc) && (appSrc.match(/zs: \[E[AB]\(/g) ?? []).length === 6, (appSrc.match(/.*zs: \[r3\(.*/) ?? [''])[0]);
+  check('D19 PlotlyView draws no r3-rounded z (tour callouts sit on the exact payoff)', !/\br3\(/.test(pv) && pv.includes('const zA = zAraw + calloutLift;') && pv.includes('const zGa = zAraw;'), (pv.match(/.*\br3\(.*/) ?? [''])[0]);
   const r19 = mulberry32(0xd19), pk = <T,>(a: T[]) => a[Math.floor(r19() * a.length)];
   const SC = [[-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 7, -4], [0.001, -0.001, 0, 0.002, -0.002, 0.003, -0.004], [0.01, -0.01, 0.02, 0, -0.03, 0.007], [100, -100, 50, 0, -37.5, 99.999]];
   const reach19 = { frames: 0, pathPts: 0, lines: 0, flat: 0, strat: 0, tiny: 0 };
@@ -1002,6 +1008,95 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   }
   check('D19 reach: frames, path points, lines, flat lines, strategy lines, tiny-range frames',
     reach19.frames >= 7000 && reach19.pathPts >= 550000 && reach19.lines >= 6500 && reach19.flat >= 1100 && reach19.strat >= 4000 && reach19.tiny >= 1500, JSON.stringify(reach19));
+}
+
+// ── D20 (sweeps 12-13, empty probes checked in): replay = live, exact best responses, every no-pure run lands ──
+// (a) the App's forward chain (spread + array copies), the thin snapshots and replayToStep agree field by field and
+// never touch the state they copied; (b) on the mixed branch a mover never goes to the strictly worse side of the
+// EXACT opponent; (c) every no-pure-NE run converges, flagged NE, within 1e-3 of the mixed NE (payoffs up to ±100).
+{
+  const r20 = mulberry32(0xd20), pk = <T,>(a: T[]) => a[Math.floor(r20() * a.length)];
+  const copy = (p: SimState): SimState => ({ ...p, visitedPositions: [...p.visitedPositions], ghostVisitedPositions: [...p.ghostVisitedPositions],
+    pathSegmentsA: p.pathSegmentsA.map((s) => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })), pathSegmentsB: p.pathSegmentsB.map((s) => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })),
+    ghostPathSegmentsA: p.ghostPathSegmentsA.map((s) => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })), ghostPathSegmentsB: p.ghostPathSegmentsB.map((s) => ({ ...s, xs: [...s.xs], ys: [...s.ys], zs: [...s.zs] })) });   // = App.tsx handleStep
+  const reach = { runs: 0, frames: 0, replays: 0, brFrames: 0, brSub: 0, convRuns: 0 };
+  const V = [-3, -2, -1, 0, 1, 2, 3, 5, 7, 100, -100, -0.5, 0.25, 0.001, -0.001, 0.002, 0.09], D = [0.001, -0.001, 0.002, -0.002, 0.0005, 0.003, 0.01, -0.01];
+  const sib: Record<string, string> = { a11: 'a21', a21: 'a11', a12: 'a22', a22: 'a12', b11: 'b12', b12: 'b11', b21: 'b22', b22: 'b21' };
+  const cl = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 1e4) / 1e4;
+  for (let i = 0; i < 250; i++) {   // (a)
+    const p: Record<string, number> = Object.fromEntries(Object.keys(sib).map((k) => [k, pk(V)]));
+    if (r20() < 0.8) { const t = pk(Object.keys(sib)); p[t] = p[sib[t]] + pk(D); }
+    const g = commitPayoffs(p as unknown as GamePayoffs), all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    const xs = (g.b22 - g.b21) / (g.b11 - g.b21 - g.b12 + g.b22), ys = (g.a22 - g.a12) / (g.a11 - g.a12 - g.a21 + g.a22);
+    const XS = [0, 1, 0.9996, 0.0004, 0.5, 0.217, ...(Number.isFinite(xs) ? [cl(xs), cl(xs + 0.0004)] : [])], YS = [0, 1, 0.9996, 0.0004, 0.5, 0.217, ...(Number.isFinite(ys) ? [cl(ys), cl(ys - 0.0004)] : [])];
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const step = pk([0.1, 0.333, 0.05, 0.25, 0.007, 0.5]), init = makeState(pk(XS), pk(YS), g), init0 = JSON.stringify(init);
+      const at = `${mode} ${mover} step ${step} start (${init.startX},${init.startY}) ${JSON.stringify(g)}`;
+      const { snaps } = precomputeThinHistory(init, g, mover, step, all, committed, mode);
+      reach.runs++;
+      let live = copy(init);
+      for (let k = 1; k < snaps.length; k++) {
+        reach.frames++;
+        const before = JSON.stringify(live), next = copy(live);
+        doStep(g, next, mover, step, all, committed, () => {}, () => {}, () => { next.running = false; }, mode);
+        check('D20 doStep leaves the state the App copied it from untouched', JSON.stringify(live) === before, `${at} k ${k}`);
+        live = next;
+        const thin = JSON.stringify(toThin(live)), snap = JSON.stringify(snaps[k]);
+        check('D20 the live chain matches the thin snapshot at every step', thin === snap, `${at} k ${k} live ${thin} snap ${snap}`);
+        if (thin !== snap) break;
+        if (k % 9 === 0 || k === snaps.length - 1 || k < 3) {
+          reach.replays++;
+          const rep = replayToStep(init, k, g, mover, step, all, committed, mode) as unknown as Record<string, unknown>, lv = live as unknown as Record<string, unknown>;
+          const bad = Object.keys({ ...rep, ...lv }).filter((f) => f !== 'running' && JSON.stringify(rep[f]) !== JSON.stringify(lv[f]));
+          check('D20 "Go to step N" replays every state field the live run has at step N', bad.length === 0, `${at} k ${k} fields ${bad.join(',')}`);
+        }
+      }
+      check('D20 precompute and replay leave the initial state untouched', JSON.stringify(init) === init0, at);
+    }
+  }
+  for (let i = 0; i < 1200; i++) {   // (b) roots next to an edge or a 3dp grid point; starts on both sides of them
+    const ys = pk([0.0003, 0.0004, 0.0002, 0.9997, 0.9996, 0.2173, 0.5004, 0.0006, 0.0014]), xs = pk([0.0003, 0.0004, 0.9996, 0.2172, 0.5004, 0.0007]), sc = pk([1, 2, 5, 10, 100]);
+    const g = commitPayoffs({ a11: 0, a21: -sc * (1 - ys), a12: 0, a22: sc * ys, b11: 0, b12: sc * (1 - xs), b21: 0, b22: -sc * xs }), all = computeAllNE(g), m = computeMixedNE(g);
+    if (all.some((n) => n.type === 'pure') || !m) continue;
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const off = pk([0.0001, -0.0001, 0.0002, -0.0002, 0.0004, -0.0004, 0]);
+      const sx = Math.min(1, Math.max(0, Math.round((m.x + pk([off, 0.3, -0.3, 0])) * 1e4) / 1e4)), sy = Math.min(1, Math.max(0, Math.round((m.y + pk([off, 0.3, -0.3, 0])) * 1e4) / 1e4));
+      const s = makeState(pk([sx, 0.0004, 0.9996, 0.217]), pk([sy, 0.0004, 0.9996, 0.217]), g), step = pk([0.1, 0.333, 0.05, 0.25, 0.007]);
+      for (let k = 0; k < 4000 && !s.converged; k++) {
+        const px = s.exactX, py = s.exactY, mv = s.stepCount % 2 === 0 ? mover : (mover === 'A' ? 'B' : 'A'), f0 = s.discoveredMixedX, f1 = s.discoveredMixedY;
+        let cyc = false; const logs: string[] = [];
+        doStep(g, s, mover, step, all, null, (l) => logs.push(l), () => { cyc = true; }, () => {}, mode);
+        const p2 = mode === 'shrink' && (s.discoveredMixedX !== null) !== (s.discoveredMixedY !== null);   // Phase 2 snaps to a corridor bound
+        if (cyc || s.converged || p2 || f0 !== s.discoveredMixedX || f1 !== s.discoveredMixedY || logs.some((l) => /discovered|Ghost|corridor/.test(l))) continue;
+        reach.brFrames++; if ([px, py].some((v) => v !== r3(v))) reach.brSub++;
+        const loss = mv === 'A' ? EA(px, py, g) - EA(s.exactX, py, g) : EB(px, py, g) - EB(px, s.exactY, g);
+        check('D20 a mixed-branch move never lowers the mover\'s payoff against the exact opponent', loss <= 1e-12, `${mode} ${mover} step ${step} start (${s.startX},${s.startY}) ${JSON.stringify(g)} k ${k + 1} (${px}, ${py}) -> (${s.exactX}, ${s.exactY}) loss ${loss}`);
+      }
+    }
+  }
+  const VC = [-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 0.001, -0.001, 7, 9.996, -0.004, 0.3, -0.7, 1.5, 4, -4, 100, -100, 99.999, -99.999];
+  for (let i = 0; i < 700; i++) {   // (c)
+    let g: GamePayoffs;
+    if (r20() < 0.4) g = commitPayoffs({ a11: pk(VC), a12: pk(VC), a21: pk(VC), a22: pk(VC), b11: pk(VC), b12: pk(VC), b21: pk(VC), b22: pk(VC) });
+    else {
+      const ys = pk([0.0004, 0.9996, 0.2174, 0.5006, 0.0006, 0.3335, 0.7, 0.00001, 0.99999, 0.0005, 0.9995]), xs = pk([0.0004, 0.9996, 0.2176, 0.0007, 0.4995, 0.3, 0.00001, 0.99999, 0.0005]);
+      const sc = pk([0.01, 1, 2, 10, 100]), sb = pk([0.01, 1, 10, 100]);
+      g = commitPayoffs({ a11: 0, a21: -sc * (1 - ys), a12: 0, a22: sc * ys, b11: 0, b12: sb * (1 - xs), b21: 0, b22: -sb * xs });
+    }
+    const all = computeAllNE(g), m = computeMixedNE(g);
+    if (all.some((n) => n.type === 'pure') || !m) continue;
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const s = makeState(pk([0.217, 0.0004, 0.9996, 0.5, 1, 0, 0.0005]), pk([0.217, 0.0004, 0.9996, 0.5, 1, 0, 0.9995]), g), step = pk([0.1, 0.333, 0.05, 0.25, 0.007, 0.5, 0.9, 0.001]);
+      for (let k = 0; k < 20000 && !s.converged; k++) doStep(g, s, mover, step, all, null, () => {}, () => {}, () => {}, mode);
+      reach.convRuns++;
+      const tag = `${mode} ${mover} step ${step} start (${s.startX},${s.startY}) ${JSON.stringify(g)} root (${m.x}, ${m.y}) end (${s.exactX}, ${s.exactY})`;
+      check('D20 every no-pure-NE run converges, flagged NE, within 1e-3 of the mixed NE',
+        s.converged && s.convergedIsNE === true && Math.abs(s.exactX - m.x) <= 1e-3 && Math.abs(s.exactY - m.y) <= 1e-3, `${tag} conv ${s.converged} isNE ${s.convergedIsNE}`);
+    }
+  }
+  check('D20 reach: replay runs/frames/replays, exact-BR frames (sub-resolution), no-pure convergence runs',
+    reach.runs >= 900 && reach.frames >= 12000 && reach.replays >= 3500 && reach.brFrames >= 150000 && reach.brSub >= 30000 && reach.convRuns >= 800, JSON.stringify(reach));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
