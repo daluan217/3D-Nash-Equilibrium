@@ -126,6 +126,15 @@ function checkGame(g: GamePayoffs, heavy: boolean): void {
     if (v !== 0 && v !== 1) check('E1 root-correctly-rounded', !!rt && v === floatOf(rt), `${gs} rect endpoint ${v}`);
   }
 
+  // E8 set-shape: the components are maximal and distinct, and each is named by its exact dimension
+  // (endpoints are exact roots per E1, so == on floats is exact here; NE_EPS must not blur a 3dp root).
+  rects.forEach((r, i) => {
+    const w = r.x1 > r.x0, h = r.y1 > r.y0;
+    check('E8 set-shape: kindOf is the exact dimension', kindOf(r) === (w && h ? 'area' : w || h ? 'segment' : 'point'), `${gs} ${JSON.stringify(r)} ${kindOf(r)}`);
+    check('E8 set-shape: no component is a duplicate of, or inside, another', !rects.some((o, j) => j !== i
+      && o.x0 <= r.x0 && o.x1 >= r.x1 && o.y0 <= r.y0 && o.y1 >= r.y1), `${gs} ${JSON.stringify(rects)}`);
+  });
+
   // E4 list-sound-complete: every listed NE is exact; every exact isolated breakpoint NE is listed.
   const nes = computeAllNE(g);
   for (const ne of nes) if (ne.type === 'pure') {
@@ -210,6 +219,16 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     void kind;
   }
 }
+// Exhaustive: EVERY game over three 3-value alphabets (unit, ±0.001 band edge, ±100 range edge), so
+// each tie / level / edge-root shape is present by construction, not by the seed's luck.
+let shapes = 0;
+for (const alpha of [[-1, 0, 1], [-0.001, 0, 0.001], [-100, 0.001, 100]]) for (let c = 0; c < 6561; c++) {
+  let t = c;
+  const g = Object.fromEntries(K.map((k) => { const v = alpha[t % 3]; t = Math.floor(t / 3); return [k, v]; })) as unknown as GamePayoffs;
+  if (equilibriumSet(g).length > 1) shapes++;
+  checkGame(g, false);
+}
+check('reach: exhaustive alphabets ran with multi-component sets', shapes > 5000, `${shapes}`);
 // Reach: the sweep must actually exercise each class, or a pass means nothing.
 check('reach: mixed equilibria exercised', mixed > games / 20, `${mixed}/${games}`);
 check('reach: continua exercised', continua > games / 20, `${continua}/${games}`);
