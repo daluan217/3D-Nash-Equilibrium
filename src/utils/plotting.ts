@@ -491,12 +491,10 @@ export function makeTraces(
     // flattens gradually, one cycle at a time, instead of snapping.
     const xRep = s.discoveredMixedX ?? r3((s.domXLo + s.domXHi) / 2);
     const yRep = s.discoveredMixedY ?? r3((s.domYLo + s.domYHi) / 2);
-    const Dy = g.a11 - g.a12 - g.a21 + g.a22;
-    const Dx = g.b11 - g.b12 - g.b21 + g.b22;
-    const sA = yRep * (g.a11 - g.a21) + (1 - yRep) * (g.a12 - g.a22);
-    const sB = xRep * (g.b11 - g.b12) + (1 - xRep) * (g.b21 - g.b22);
-    const aFlat = Math.abs(sA) < Math.max(1e-4, Math.abs(Dy) * 0.01);
-    const bFlat = Math.abs(sB) < Math.max(1e-4, Math.abs(Dx) * 0.01);
+    // "indifferent (y = y*)" is a claim about y*: make it only once the run has declared that
+    // coordinate. A 1% flatness band named the reset midpoint 0.5 "y = y*" for y* = 0.497 (F8).
+    const aFlat = s.discoveredMixedY !== null;
+    const bFlat = s.discoveredMixedX !== null;
 
     if (trackingMode === 'A' || trackingMode === 'both') {
       const xs: number[] = [], ys: number[] = [], zs: number[] = [];

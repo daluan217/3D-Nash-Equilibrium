@@ -15,7 +15,7 @@
 import {
   doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
-  EA, EB, r3, regretA, regretB, neTolerancePlayer,
+  EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb,
 } from './utils/gameEngine';
 import { makeTraces, buildSurfaces } from './utils/plotting';
 import type { GamePayoffs, NashEquilibrium, SimState } from './types';
@@ -216,6 +216,45 @@ for (const [kind, cell] of Object.entries(KINDS)) {
       }
     }
   }
+}
+
+// ── F8: a regret-mode line is NAMED "indifferent (y = y*)" only where y = y* (sweep 2) ──
+// Before the first cycle the lines sit at the corridor midpoint 0.5; a 1% flatness band named
+// that line "A indifferent (y = y*)" for y* = 0.497. Truth is display resolution (fmtProb).
+{
+  const F8: GamePayoffs = { a11: 9.792, a12: -6.731, a21: 5.054, a22: -2.05, b11: -9.164, b12: -0.811, b21: 3.407, b22: -8.902 };
+  const named = (g: GamePayoffs, s: SimState) => makeTraces(dummySurf, g, s, 'both', computeAllNE(g), false, 'regret')
+    .filter((t: any) => t.showlegend === true && / indifferent \((?:y = y|x = x)\*\)$/.test(t.name ?? ''));
+  const lies = (g: GamePayoffs, s: SimState) => {
+    const m = computeMixedNE(g)!;
+    return named(g, s).filter((t: any) => t.name.startsWith('A') ? fmtProb(t.y[0]) !== fmtProb(m.y) : fmtProb(t.x[0]) !== fmtProb(m.x));
+  };
+  check('F8 precondition: y* = 0.497, inside the old 1% band around the 0.5 midpoint',
+    fmtProb(computeMixedNE(F8)!.y) === '0.497' && computeAllNE(F8).every((n) => n.type === 'mixed'));
+  check('F8 verbatim: at reset no line is named indifferent at y = 0.5 when y* = 0.497',
+    lies(F8, makeState(0.2, 0.8, F8)).length === 0, JSON.stringify(lies(F8, makeState(0.2, 0.8, F8)).map((t: any) => t.name)));
+  const r8 = mulberry32(0xf8);
+  const reach = { games: 0, frames: 0, named: 0, nearHalf: 0 };
+  for (let i = 0; i < 1500; i++) {
+    const g = Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const)
+      .map((k) => [k, i % 2 ? Math.floor(r8() * 9) - 4 : Math.round((r8() * 20 - 10) * 1000) / 1000])) as unknown as GamePayoffs;
+    const all = computeAllNE(g);
+    if (!all.some((n) => n.type === 'mixed') || all.some((n) => n.type === 'pure')) continue;
+    reach.games++;
+    const m = computeMixedNE(g)!;
+    if (Math.abs(m.y - 0.5) < 0.01 || Math.abs(m.x - 0.5) < 0.01) reach.nearHalf++;
+    const s = makeState(r8(), r8(), g);
+    for (let k = 0; k < 400 && !s.converged; k++) {
+      doStep(g, s, k % 3 ? 'A' : 'B', 0.1, all, null, () => {}, () => {}, () => {}, 'regret');
+      reach.frames++;
+      reach.named += named(g, s).length;
+      const bad = lies(g, s);
+      check('F8 sweep: every line named indifferent sits at the solver\'s y* / x* (display resolution)', bad.length === 0,
+        `${JSON.stringify(g)} step ${k}: ${bad.map((t: any) => `${t.name} at ${t.name.startsWith('A') ? t.y[0] : t.x[0]}`).join('; ')}`);
+    }
+  }
+  check('F8 reach: regret runs, named-indifferent frames, and roots near the 0.5 midpoint all occurred',
+    reach.games >= 100 && reach.named >= 1000 && reach.nearHalf >= 3, JSON.stringify(reach));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
