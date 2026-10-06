@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 import { geometryBriefing, describeGeometry } from './utils/geometry';
 import { buildGroundingPayload } from './utils/report';
-import { fmtProb, fmtPayoffProse, commitPayoffs, PRESETS, hasEquilibriumContinuum } from './utils/gameEngine';
+import { fmtProb, fmtPayoffProse, commitPayoffs, PRESETS, hasEquilibriumContinuum, computeMixedNE, equilibriumSet } from './utils/gameEngine';
 import { tieProse } from './utils/tieProse';
 import type { GamePayoffs } from './types';
 
@@ -153,6 +153,25 @@ for (let i = 0; i < 6000; i++) {
   }
 }
 check('reach: T1 tie paragraphs over the edge alphabet', tieN >= 3000, `${tieN}`);
+// T2 (sweep 8): the briefing's flat-spot claims are the solver's. "level at the same interior point (x, y)"
+// iff computeMixedNE, at its digits; "interior profiles" only when the set has an interior point; "NO
+// interior joint flat spot" never when a mixed NE exists. Ties every 6th/10th game force continua.
+const t2 = { joint: 0, none: 0, profiles: 0 };
+for (let i = 0; i < 20000; i++) {
+  const g = cells(() => (i % 2 ? EDGE[Math.floor(rnd() * EDGE.length)] : Math.floor(rnd() * 7) - 3));
+  if (i % 6 === 0) g.a21 = g.a11; if (i % 10 === 0) g.b12 = g.b11;
+  const b = geometryBriefing(g), m = computeMixedNE(g), tag = `T2 ${JSON.stringify(g)}`;
+  const j = b.match(/level at the same interior point \(x = (.+?), y = (.+?)\) — the joint/), dig = (w: string) => w.replace(/ \(.*\)$/, '');
+  if (j) t2.joint++;
+  check('T2 "the same interior point (x, y)" is stated iff a mixed NE exists, at fmtProb of its coordinates',
+    m ? !!j && dig(j[1]) === fmtProb(m.x) && dig(j[2]) === fmtProb(m.y) : !j, `${tag} ${j?.[0]} vs ${JSON.stringify(m)}`);
+  if (/level at the same interior profiles/.test(b)) {
+    t2.profiles++;
+    check('T2 "interior profiles" only when the equilibrium set has a strictly interior point', equilibriumSet(g).some((q) => q.x1 > 0 && q.x0 < 1 && q.y1 > 0 && q.y0 < 1), tag);
+  }
+  if (/NO interior joint flat spot/.test(b)) { t2.none++; check('T2 "NO interior joint flat spot" never when a mixed NE exists', !m, `${tag} ${JSON.stringify(m)}`); }
+}
+check('reach: T2 joint points, interior-profile continua and no-flat-spot games', t2.joint >= 2000 && t2.profiles >= 300 && t2.none >= 10000, JSON.stringify(t2));
 // Reach: the sweep must contain the shapes the defect lives in, or P1-P6 pass by not looking.
 check('reach: interior roots that are sub-resolution', reach.subIn > 50, JSON.stringify(reach));
 check('reach: outside roots within 5e-4 of an edge', reach.outNear > 50, JSON.stringify(reach));
