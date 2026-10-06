@@ -7,7 +7,8 @@
  *   npx tsx src/mathexact.test.ts
  */
 import { computeAllNE, computeMixedNE, equilibriumSet, pointInRect, kindOf, fmtProb, indifferenceRoot,
-  EA, EB, fmtPayoff, payoffTexRhs, formatConvergenceLogLine, commitStartCoordinate, parseNumericInput } from './utils/gameEngine';
+  EA, EB, fmtPayoff, payoffTexRhs, formatConvergenceLogLine, commitStartCoordinate, parseNumericInput, r3 } from './utils/gameEngine';
+import { readFileSync } from 'node:fs';
 import { neValues, indifferenceLines } from './components/equilibriumPanel';
 import { tieProse } from './utils/tieProse';
 import { describeGeometry, geometryBriefing } from './utils/geometry';
@@ -378,6 +379,15 @@ const e12 = { typed: 0, preFix: 0, zero: 0 };
           (v === 0) === (ex.n === 0n) && shown.includes(fmtPayoff(v)), `${p}/${q} typed ${S} held ${box} ${p2}: ${v} "${fmtPayoff(v)}" want ${shown}`);
       }
     }
+  }
+  // Odd typed shapes (sweep 7): the box App writes back after blur is a fixed point of the door, in [0, 1].
+  const appBox = (c: number) => (c === r3(c) ? c.toFixed(3) : String(c));   // App.tsx commitStartField, verbatim
+  check('E12 the box text is App.tsx\'s own expression', readFileSync(new URL('./App.tsx', import.meta.url), 'utf8').includes('committed === r3(committed) ? committed.toFixed(3) : String(committed)'));
+  for (const S of ['1e-7', '5e-7', '4.9999999e-7', '0.0000015', '0.9999995', '0.99999949', '1.0000001', '-0', '-0.0000001', '.5', ' 0.3 ',
+    '0.3333335', '0.1234565', '1E-3', '0x1', 'Infinity', '', '1/3', '0,5', '2', '-2', '1e400', '1e-400', '9.99999e-7', '0.' + '9'.repeat(30)]) {
+    const c = commitStartCoordinate(S), b = appBox(c);
+    check('E12 typed-start: any typed text holds a value in [0, 1] whose box re-commits to itself',
+      c >= 0 && c <= 1 && !Object.is(c, -0) && /^[01](\.\d{1,6})?$/.test(b) && commitStartCoordinate(b) === c, `${JSON.stringify(S)} -> ${c} box ${b}`);
   }
   check('E12 reach: typed floats the unquantised door read as an exact root (the F14 class), and exact roots typed',
     e12.preFix >= 1000 && e12.zero >= 500, JSON.stringify(e12));
