@@ -12,7 +12,7 @@
  * Exit 0 only if every check passes and the browser logged no console errors.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, chmodSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
@@ -12306,6 +12306,151 @@ const suggestedScenario = {
       record('§110: no page error, console error or failed Plotly mutation during the bursts', errors.length === 0, JSON.stringify(errors.slice(0, 4)));
     } finally {
       await bp.close().catch(() => {});
+    }
+  });
+
+  // ══ 111. BLUE-LOOP-MATH-22 sweep 1 angle 6: desktop parity. The packaged server (electron-main's env,
+  // empty cwd, bank stories) and the hosted one (cloudbuild's rung-3 flags, no credentials) get the same
+  // matrices: status, ground truth, claims and every number the prose states agree, and the prose is
+  // byte-identical once the hosted side is handed the desktop's story. Then an Electron-UA page and a
+  // plain page show the same panel, surfaces and rendered report for the same boxes.
+  section('111', 'the desktop and hosted builds state the same numbers for one game (report, panel, surfaces)', async () => {
+    const portBase = Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000;
+    const deskBase = `http://127.0.0.1:${portBase + 5}`, webBase = `http://127.0.0.1:${portBase + 6}`;
+    const root = path.resolve(import.meta.dirname, '../..');
+    const dirs = ['desk', 'deskcwd', 'web'].map((k) => mkdtempSync(path.join(tmpdir(), `nash-e2e-parity-${k}-`)));
+    symlinkSync(path.join(root, 'dist'), path.join(dirs[2], 'dist'));   // hosted resolves dist/ from its cwd
+    const rung3 = { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production', NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1' };
+    const boot = (cwd, env) => {
+      const p = spawn(process.execPath, [path.join(root, 'dist/server.cjs')], { cwd, env: { ...rung3, ...env }, stdio: ['ignore', 'ignore', 'pipe'] });
+      p.stderr.on('data', () => {});
+      return p;
+    };
+    const desk = boot(dirs[1], { PORT: String(portBase + 5), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: dirs[0] });
+    const web = boot(dirs[2], { PORT: String(portBase + 6), TRUST_PROXY: '1' });
+    const contexts = [];
+    try {
+      const up = await Promise.all([waitForOwnServer(desk, deskBase), waitForOwnServer(web, webBase)]).then(() => true, () => false);
+      record('§111 precondition: a packaged-shape server and a hosted-shape server are up on their own ports', up);
+      // ── the wire: one seeded corpus, both servers ──
+      let xff = 0;   // TRUST_PROXY=1 as on Cloud Run: one client per request keeps the 20/min limit out of the way
+      const post = (b, g, scenario) => fetch(`${b}/api/report`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.11.${(++xff >> 8) & 255}.${xff & 255}` },
+        body: JSON.stringify(scenario ? { payoffs: g, scenario } : { payoffs: g }) })
+        .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }), () => ({ status: 0, json: null }));
+      const nums = (s) => (s ?? '').replace(/\b(?:Row|Col) [12]\b/g, '').match(/-?\d+(?:\.\d+)?|(?:less|more|greater) than/g) ?? [];
+      const facts = (r) => JSON.stringify({ status: r.status, source: r.json?.source, gt: r.json?.groundTruth,
+        ce: r.json?.report?.claimedEquilibria, pc: r.json?.report?.proseClaims, nums: nums(r.json?.report?.prose) });
+      const K = ['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'];
+      let seed = 111;
+      const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+      const games = [];
+      for (let i = 0; i < 100; i++) games.push(Object.fromEntries(K.map((k) => [k, Math.floor(rnd() * 7) - 3])));   // ties common
+      for (let i = 0; i < 100; i++) games.push(Object.fromEntries(K.map((k) => [k, Math.round((rnd() * 200 - 100) * 1000) / 1000])));
+      for (let i = 0; i < 40; i++) games.push(Object.fromEntries(K.map((k) => [k, rnd() * 260 - 130])));   // raw floats, some past ±100
+      games.push({ a11: 0.001, a12: -100, a21: 0, a22: 99.999, b11: 1, b12: 0, b21: 0, b22: 1 },   // y* within 5e-5 of 1
+        { a11: 3, a12: 0, a21: 0, a22: 0.001, b11: 1, b12: 3, b21: 3, b22: 1 },                    // y* = 1/3001
+        { a11: 0.2, a12: -0.1, a21: -0.1, a22: 0.7, b11: 0.2, b12: 0.2, b21: -0.1, b22: 0.1 },      // F1
+        { a11: 0.05, a12: 0.1, a21: 0.1, a22: -0.01, b11: 0.03, b12: -0.06, b21: -0.06, b22: 0 });  // F2
+      const reach = { ok: 0, tie: 0, plain: 0, story: 0, raw: 0, bounds: 0 };
+      const diffs = [], proseDiffs = [];
+      for (const g of games) {
+        const [d, w] = [await post(deskBase, g), await post(webBase, g)];
+        if (d.status === 200 && w.status === 200 && d.json?.source === 'template' && w.json?.source === 'template') reach.ok++;
+        if (nums(d.json?.report?.prose).some((t) => t.endsWith('than'))) reach.bounds++;
+        if (K.some((k) => Math.round(g[k] * 1000) / 1000 !== g[k])) reach.raw++;
+        if (/payoff tie/.test(d.json?.report?.prose ?? '')) reach.tie++; else reach.plain++;
+        if (facts(d) !== facts(w) && diffs.length < 3) diffs.push(`${JSON.stringify(g)}\n D ${facts(d).slice(0, 300)}\n W ${facts(w).slice(0, 300)}`);
+        else if (facts(d) !== facts(w)) diffs.push('…');
+        const story = d.json?.report?.suggestedScenario;
+        if (!story) continue;
+        reach.story++;
+        const w2 = await post(webBase, g, story);
+        if (w2.json?.report?.prose !== d.json?.report?.prose || JSON.stringify(w2.json?.report?.proseClaims) !== JSON.stringify(d.json?.report?.proseClaims)) {
+          proseDiffs.push(proseDiffs.length < 3 ? `${JSON.stringify(g)}\n D ${d.json?.report?.prose}\n W ${w2.json?.report?.prose}` : '…');
+        }
+      }
+      record('§111 wire: every game answers 200 "template" on both builds', reach.ok === games.length, JSON.stringify(reach));
+      record('§111 wire: ground truth, claimed equilibria, prose claims and every number in the prose agree across the builds',
+        diffs.length === 0, `${diffs.length} differ\n${diffs.join('\n')}`);
+      record('§111 wire: handed the desktop\'s bank story, the hosted build writes the same prose and claims byte for byte',
+        proseDiffs.length === 0, `${proseDiffs.length} differ\n${proseDiffs.join('\n')}`);
+      record('§111 wire reach: ties, plain games, raw floats the server must round, sub-resolution bounds and bank stories all occurred',
+        reach.tie >= 40 && reach.plain >= 100 && reach.raw >= 30 && reach.bounds >= 1 && reach.story >= 200, JSON.stringify(reach));
+
+      // ── the UI: an Electron-UA page on the desktop server, a plain page on the hosted one ──
+      const errorsBefore = consoleErrors.length;
+      const ua = { desk: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36' };
+      const pages = [];
+      for (const [base, userAgent] of [[deskBase, ua.desk], [webBase, undefined]]) {
+        const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, ...(userAgent ? { userAgent } : {}) });
+        contexts.push(ctx);
+        const pg = trackPage(await ctx.newPage());
+        await pg.goto(base, { waitUntil: 'load' });
+        await dismissTourForSetup(pg, '§111 setup: clear a possible tour before filling the matrix');
+        pages.push(pg);
+      }
+      record('§111 precondition: the desktop page runs as Electron (no "Get the desktop app" button), the hosted page does not',
+        await pages[0].getByRole('button', { name: /get (?:the )?desktop app/i }).count() === 0
+        && await pages[1].getByRole('button', { name: /get (?:the )?desktop app/i }).count() > 0);
+      const read = (pg) => pg.evaluate(() => {
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        const z = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface')?.z;
+        const h = [...document.querySelectorAll('p')].find((p) => p.textContent?.startsWith('Generated from the solver'));
+        return { boxes: [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => i.value),
+          panel: [...document.querySelectorAll('[data-tour="ne"] li')].map((l) => l.innerText.replace(/\s+/g, ' ').trim()),
+          zA: z('E[A]'), zB: z('E[B]'), head: h?.textContent ?? null, prose: h?.nextElementSibling?.textContent ?? null };
+      });
+      // Box DOM order a11,b11,a12,b12,a21,b21,a22,b22; a surface's corner (x,y) sits at z[28y][28x].
+      const settled = (pg) => pg.waitForFunction(() => {
+        const v = [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => Number(i.value));
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        const z = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface')?.z;
+        const a = z('E[A]'), b = z('E[B]');
+        return !!a && !!b && a[28][28] === v[0] && a[0][28] === v[2] && a[28][0] === v[4] && a[0][0] === v[6]
+          && b[28][28] === v[1] && b[0][28] === v[3] && b[28][0] === v[5] && b[0][0] === v[7];
+      }, null, { timeout: 15000 }).then(() => true, () => false);
+      const UI = [
+        ...['Search Game', 'Battle of the Sexes', 'Prisoners Dilemma', 'Cops & Robbers', 'Spy vs. Analyst', 'Penalty Kick'].map((preset) => ({ preset })),
+        // F1/F2/the 5e-5 root are wire games above; here only what a page adds (a continuum bullet, a bound, the input door)
+        { tag: 'continuum', v: [1, 1, 0, 0, 1, 0, 1, 0] },
+        { tag: 'y* = 1/3001', v: [3, 0, 0, 0.001, 1, 3, 3, 1] },
+        { tag: 'typed past the grid and the clamp', v: ['1.23456', '-0.0004', '250', '-7.0005', '0.3333', '2.5e1', '-101', '0.0005'] },
+      ];
+      let uiOk = 0;
+      for (const game of UI) {
+        const tag = game.preset ?? game.tag;
+        const st = await Promise.all(pages.map(async (pg) => {
+          if (game.preset) await pg.getByRole('button', { name: game.preset, exact: true }).first().click();
+          else {
+            const [a11, a12, a21, a22, b11, b12, b21, b22] = game.v;
+            const boxes = pg.locator('input[aria-label$="payoff"]');
+            for (const [i, val] of [a11, b11, a12, b12, a21, b21, a22, b22].entries()) { await boxes.nth(i).fill(String(val)); await boxes.nth(i).blur(); }
+          }
+          const plotted = await settled(pg);
+          await pg.getByRole('button', { name: /explain this game/i }).first().click();
+          await pg.waitForFunction(() => [...document.querySelectorAll('p')].some((p) => p.textContent?.startsWith('Generated from the solver')
+            && p.nextElementSibling?.textContent), null, { timeout: 15000 }).catch(() => {});
+          return { plotted, ...(await read(pg)) };
+        }));
+        const [d, w] = st;
+        record(`§111 ${tag}: both pages committed the same boxes and drew surfaces through them`,
+          d.plotted && w.plotted && JSON.stringify(d.boxes) === JSON.stringify(w.boxes), `${d.boxes} | ${w.boxes}`);
+        record(`§111 ${tag}: the equilibrium panel reads the same on the desktop and the web`,
+          d.panel.length > 0 && JSON.stringify(d.panel) === JSON.stringify(w.panel), `${JSON.stringify(d.panel)} | ${JSON.stringify(w.panel)}`);
+        record(`§111 ${tag}: both surfaces are the same grid on the desktop and the web`,
+          JSON.stringify([d.zA, d.zB]) === JSON.stringify([w.zA, w.zB]));
+        record(`§111 ${tag}: the rendered report states the same numbers under the same header`,
+          !!d.prose && !!w.prose && d.head === w.head && JSON.stringify(nums(d.prose)) === JSON.stringify(nums(w.prose)), `D ${d.head} ${d.prose}\n W ${w.head} ${w.prose}`);
+        uiOk += d.panel.length > 0 && !!d.prose ? 1 : 0;
+      }
+      record('§111 UI reach: every game produced a panel and a rendered report on the desktop page', uiOk === UI.length, String(uiOk));
+      const errors = consoleErrors.slice(errorsBefore).filter((e) => !isAnalyticsNoise(e));
+      record('§111: no page error or console error on either page', errors.length === 0, JSON.stringify(errors.slice(0, 4)));
+    } finally {
+      for (const c of contexts) await c.close().catch(() => {});
+      for (const p of [desk, web]) if (p.exitCode === null) { const exited = new Promise((r) => p.once('exit', r)); p.kill('SIGKILL'); await exited; }
+      for (const d of dirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
     }
   });
 
