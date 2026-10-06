@@ -841,8 +841,12 @@ export function buildGroundingPayload(g: GamePayoffs, scenario?: Scenario): stri
           if (e.type === 'pure') {
             return `${base} — that is: A plays Row ${e.x === 1 ? 1 : 2}, B plays Col ${e.y === 1 ? 1 : 2}`;
           }
-          return `${base} — that is: A plays Row 1 with probability ${fmtProb(e.x)} and Row 2 with probability ${fmtProb(1 - e.x)}; `
-            + `B plays Col 1 with probability ${fmtProb(e.y)} and Col 2 with probability ${fmtProb(1 - e.y)}`;
+          // Option 2 is the complement of option 1's PRINTED digits: at an exact half-thousandth both
+          // rounded up ("0.063 and 0.938" at x* = 1/16), and the validator's own sum-to-1 check then
+          // rejected the model for echoing the payload (BLUE-LOOP-MATH-22 F13).
+          const comp = (v: number) => { const m = Math.round(v * 1000); return m === 0 ? 'more than 0.999' : m === 1000 ? 'less than 0.001' : String((1000 - m) / 1000); };
+          return `${base} — that is: A plays Row 1 with probability ${fmtProb(e.x)} and Row 2 with probability ${comp(e.x)}; `
+            + `B plays Col 1 with probability ${fmtProb(e.y)} and Col 2 with probability ${comp(e.y)}`;
         }).join('\n')
       : '  none enumerated',
     '',

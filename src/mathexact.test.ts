@@ -12,6 +12,7 @@ import { neValues, indifferenceLines } from './components/equilibriumPanel';
 import { tieProse } from './utils/tieProse';
 import { describeGeometry, geometryBriefing } from './utils/geometry';
 import { buildGroundingPayload } from './utils/report';
+import { validateProseDirections } from './utils/nashValidator';
 import type { GamePayoffs } from './types';
 
 const fails: Record<string, number> = {};
@@ -78,6 +79,15 @@ const rawE = (x: number, y: number, g: GamePayoffs, p: 'a' | 'b') => {
   return x * y * c('11') + x * (1 - y) * c('12') + (1 - x) * y * c('21') + (1 - x) * (1 - y) * c('22');
 };
 const e9 = { dust: 0, sub: 0, mid: 0, prose: 0 };
+/** fmtProb's reading of n/d (0 < n/d < 1): a phrase at the ends, else 3dp without trailing zeros (both at a half). */
+function probShown(n: bigint, d: bigint): string[] {
+  const t = 1000n * n, fl = t / d, rem = t - fl * d;
+  return (2n * rem < d ? [fl] : 2n * rem > d ? [fl + 1n] : [fl, fl + 1n])
+    .map((r) => r === 0n ? 'less than 0.001' : r === 1000n ? 'more than 0.999' : String(Number(r) / 1000));
+}
+const e11 = { half: 0, echo: 0 };
+const ECHO = ['A plays Hold with probability P and Fold with probability Q.', 'B plays Raise with probability P and Call with probability Q.'];
+const ECHO_L = { row1: 'Hold', row2: 'Fold', col1: 'Raise', col2: 'Call' };
 
 // ── generators (fixed seed) ──────────────────────────────────────────────────
 function mulberry(seed: number) {
@@ -238,6 +248,30 @@ function checkGame(g: GamePayoffs, heavy: boolean): void {
     }
   }
 
+  // E7 payload-agrees: the grounding payload states the mixed point with the panel's own digits.
+  if (mn && !rects.some((r) => kindOf(r) !== 'point')) {
+    const pl = buildGroundingPayload(g);
+    payloadHits++;
+    check('E7 payload-agrees', pl.includes(`x=${fmtProb(floatOf(x!))}, y=${fmtProb(floatOf(y!))}`), `${gs} payload`);
+    // E11 payload-split-sums: each player's "option 1 P and option 2 Q" is a correct display of the exact
+    // root and its complement, AND the printed pair sums to 1 (F13: "0.063 and 0.938" at x* = 1/16).
+    const sp = /plays Row 1 with probability (.+?) and Row 2 with probability (.+?); B plays Col 1 with probability (.+?) and Col 2 with probability (.+)$/m.exec(pl);
+    check('E11 payload-split-sums: the payload spells out both splits', !!sp, `${gs} payload`);
+    for (const [r, p, q, say] of sp ? [[x!, sp[1], sp[2], ECHO[0]], [y!, sp[3], sp[4], ECHO[1]]] as const : []) {
+      const pm = p.includes('than') ? null : Math.round(Number(p) * 1000), qm = q.includes('than') ? null : Math.round(Number(q) * 1000);
+      if (2n * ((1000n * r.n) % r.d) === r.d) e11.half++;
+      check('E11 payload-split-sums: option 2 is a correct display of the exact complement',
+        probShown(r.d - r.n, r.d).includes(q) && p === fmtProb(floatOf(r)), `${gs} "${p}" / "${q}"`);
+      check('E11 payload-split-sums: the two printed probabilities sum to 1',
+        pm !== null && qm !== null ? pm + qm === 1000 : (p === 'less than 0.001') === (q === 'more than 0.999'), `${gs} "${p}" + "${q}"`);
+      if (heavy && pm !== null && qm !== null) {
+        e11.echo++;
+        const echo = validateProseDirections(say.replace('P', p).replace('Q', q), ECHO_L, g);
+        check('E11 payload-split-sums: echoing the payload split verbatim passes the validator', !echo.some((i) => i.includes('sum to')), `${gs} ${echo}`);
+      }
+    }
+  }
+
   if (!heavy) return;
   // E9 continued: the tie paragraph's "at a representative point" payoffs (set[0]'s midpoint).
   const rep = rects[0], rp = rep && pts.find((p) => p.px === (rep.x0 + rep.x1) / 2 && p.py === (rep.y0 + rep.y1) / 2);
@@ -258,12 +292,6 @@ function checkGame(g: GamePayoffs, heavy: boolean): void {
     wordHits++;
     check('E6 briefing-words-exact', exactHere && fmtProb(w[0] / w[1]) === hit[1],
       `${gs} briefing "${hit[0]}"`);
-  }
-  // E7 payload-agrees: the grounding payload states the mixed point with the panel's own digits.
-  if (mn && !rects.some((r) => kindOf(r) !== 'point')) {
-    const pl = buildGroundingPayload(g);
-    payloadHits++;
-    check('E7 payload-agrees', pl.includes(`x=${fmtProb(floatOf(x!))}, y=${fmtProb(floatOf(y!))}`), `${gs} payload`);
   }
 }
 
@@ -307,7 +335,15 @@ check('F10 verbatim: tie paragraph "E[A] = 1 and E[B] = 0." at the representativ
 check('F10 verbatim: continuum endpoint (1, 0.6) headline "= 0" and panel Row 1 "0.000" (exact)',
   payoffTexRhs(EA(1, 0.6, F10c)) === '= 0' && indifferenceLines(F10c, 1, 0.6).a.tex === '\\mathbb{E}[\\text{Row 1}] = 0.000 > \\mathbb{E}[\\text{Row 2}] = -1.000',
   indifferenceLines(F10c, 1, 0.6).a.tex);
-for (const g of [F1, F2a, F2b, F3, F10, F10b, F10c]) checkGame(g, true);
+// F13: B indifferent at x* = 1/(9+6+1) = 1/16 = 0.0625, an exact half-thousandth, so x and 1 - x both
+// rounded up and the payload said "0.063 and 0.938"; the validator rejected that echo as summing to 1.001.
+const F13: GamePayoffs = { a11: 1, a12: 0, a21: 0, a22: 1, b11: 9, b12: -6, b21: 0, b22: 1 };
+check('fixture F13: exact x* = 1/16 and 1 - x* rounds half-up past the complement',
+  rootsOf(F13).x!.n * 16n === rootsOf(F13).x!.d && fmtProb(1 - 0.0625) === '0.938' && fmtProb(0.0625) === '0.063');
+check('F13 verbatim: the payload splits A as 0.063 / 0.937, never 0.063 / 0.938',
+  buildGroundingPayload(F13).includes('A plays Row 1 with probability 0.063 and Row 2 with probability 0.937;')
+  && !buildGroundingPayload(F13).includes('0.938'), buildGroundingPayload(F13));
+for (const g of [F1, F2a, F2b, F3, F10, F10b, F10c, F13]) checkGame(g, true);
 // E10 zero-iff-exact: at every coordinate the app holds (0, 1, the 3dp grid, the game's own roots and
 // their midpoints), EA/EB are 0 exactly when the exact payoff is 0, and a genuinely nonzero payoff below
 // the 1e-9 dust band (±0.001 cells at roots near 5e-6) is never zeroed.
@@ -364,12 +400,19 @@ for (const alpha of [[-1, 0, 1], [-0.001, 0, 0.001], [-100, 0.001, 100]]) for (l
   checkGame(g, false);
 }
 check('reach: exhaustive alphabets ran with multi-component sets', shapes > 5000, `${shapes}`);
+// Constructed: every half-thousandth root p/2000 (p odd) on each axis, x* = b22/(b11+b22), y* = a22/(a11+a22).
+for (let p = 1; p < 2000; p += 2) {
+  const jm = 2 * ((p * 7) % 1000) + 1, k = (2000 - p) / 1000, q = p / 1000, j = (2000 - jm) / 1000, jq = jm / 1000;
+  checkGame({ a11: j, a12: 0, a21: 0, a22: jq, b11: k, b12: 0, b21: 0, b22: q }, p % 16 === 1);
+  checkGame({ a11: k, a12: 0, a21: 0, a22: q, b11: 1, b12: 0, b21: 0, b22: 1 }, p % 16 === 9);
+}
 // Reach: the sweep must actually exercise each class, or a pass means nothing.
 check('reach: mixed equilibria exercised', mixed > games / 20, `${mixed}/${games}`);
 check('reach: continua exercised', continua > games / 20, `${continua}/${games}`);
 check('reach: exact boundary roots exercised (the F1 class)', boundary > 200, `${boundary}`);
 check('reach: briefing fraction words exercised (E6)', wordHits > 100, `${wordHits}`);
 check('reach: grounding payload mixed points exercised (E7)', payloadHits > 100, `${payloadHits}`);
+check('reach: E11 exact half-thousandth roots (the F13 class) and validator echoes', e11.half >= 50 && e11.echo >= 500, JSON.stringify(e11));
 check('reach: E9 exact zeros under float dust, nonzero sub-resolution payoffs, continuum midpoints and tie paragraphs',
   e9.dust >= 150 && e9.sub >= 1000 && e9.mid >= 10000 && e9.prose >= 1000, JSON.stringify(e9));
 
@@ -378,4 +421,4 @@ if (failed.length) {
   for (const k of failed) console.error(`  ✗ ${k}: ${fails[k]} failure(s); first: ${firstFail[k]}`);
   process.exit(1);
 }
-console.log(`✓ mathexact: ${checks} checks over ${games} games (${mixed} mixed, ${continua} continua, ${boundary} boundary roots, ${wordHits} fraction words, ${payloadHits} payloads, E9 ${JSON.stringify(e9)}) agree with the exact rational oracle`);
+console.log(`✓ mathexact: ${checks} checks over ${games} games (${mixed} mixed, ${continua} continua, ${boundary} boundary roots, ${wordHits} fraction words, ${payloadHits} payloads, E9 ${JSON.stringify(e9)}, E11 ${JSON.stringify(e11)}) agree with the exact rational oracle`);
