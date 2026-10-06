@@ -254,7 +254,8 @@ for (const key of ['search', 'spy', 'penalty']) {
       // and/or a different ≈-vs-strict verdict), proving the caller-fix in
       // App.tsx (feeding resolveProfile's exact coordinates, not simState.cx/cy)
       // still matters.
-      const oldL = indifferenceLines(g, st.cx, st.cy);
+      // The pre-fix source was the r3-collapsed point; since S12 cx/cy hold the exact root at convergence, so model it.
+      const oldL = indifferenceLines(g, r3(st.exactX), r3(st.exactY));
       if (key === 'penalty' && mode === 'shrink') {
         const oldWrong = oldL.a.pStr !== L.a.pStr || oldL.a.qStr !== L.a.qStr
           || oldL.a.indifferent !== L.a.indifferent;
@@ -292,7 +293,7 @@ for (const SCALE of [10, 100]) {
         const res = resolveProfile(g, st);
         if (res.concept !== 'mixed') continue;
         const L = indifferenceLines(g, res.x, res.y);
-        const O = indifferenceLines(g, st.cx, st.cy);   // the pre-fix source
+        const O = indifferenceLines(g, r3(st.exactX), r3(st.exactY));   // the pre-fix (r3-collapsed) source
         for (const side of ['a', 'b'] as const) {
           lines++;
           if (L[side].indifferent && L[side].pStr !== L[side].qStr) mismatched++;

@@ -1901,7 +1901,7 @@ export default function App() {
       cancelAnimationFrame(raf);
       settleTimers.forEach(clearTimeout);
     };
-  }, [simState.converged, simState.cx, simState.cy, logEntries]);
+  }, [simState.converged, simState.exactX, simState.exactY, logEntries]);
 
   // ── Memoized Nash Equilibria ───────────────────────────────────────────────
   const allNE = useMemo<NashEquilibrium[]>(() => {
@@ -2412,11 +2412,11 @@ export default function App() {
   const nearestNE = useMemo<NashEquilibrium | null>(() => {
     if (allNE.length === 0) return null;
     return allNE.reduce((best, ne) => {
-      const d = Math.hypot(ne.x - simState.cx, ne.y - simState.cy);
-      const dBest = Math.hypot(best.x - simState.cx, best.y - simState.cy);
+      const d = Math.hypot(ne.x - simState.exactX, ne.y - simState.exactY);   // not the r3 cx/cy (S10/S12)
+      const dBest = Math.hypot(best.x - simState.exactX, best.y - simState.exactY);
       return d < dBest ? ne : best;
     }, allNE[0]);
-  }, [allNE, simState.cx, simState.cy]);
+  }, [allNE, simState.exactX, simState.exactY]);
 
   // The converged box's solution concept comes from the REALISED profile, never
   // from `nearestNE` — that is the *nearest* equilibrium and can be arbitrarily

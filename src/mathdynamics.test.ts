@@ -645,7 +645,7 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   // Shrink convergence: the green box stood at [0.467,0.467]² while the sphere sat at (0.467, 0.333).
   const fc = run({ a11: -0.001, a12: 2, a21: 5, a22: -0.5, b11: 2, b12: 0, b21: 0.25, b22: 2 }, 'shrink', 'A', 0.25, 0.217, 0.1, 65);
   const [lc, hc, mc, nc] = box(fc.T), [xc, yc] = sph(fc.T);
-  check('D15 conv verbatim: fixture converges on step 65 at (0.467, 0.333)', fc.s.converged && fc.s.stepCount === 65 && fc.s.cy === 0.333, `${fc.s.stepCount} (${fc.s.cx}, ${fc.s.cy})`);
+  check('D15 conv verbatim: fixture converges on step 65 at (0.467, 0.333)', fc.s.converged && fc.s.stepCount === 65 && r3(fc.s.exactY) === 0.333, `${fc.s.stepCount} (${fc.s.exactX}, ${fc.s.exactY})`);   // exact root since S12
   check('D15 conv verbatim: the closed box is the sphere\'s point', lc === xc && hc === xc && mc === yc && nc === yc, `box [${lc},${hc}]x[${mc},${nc}] sphere (${xc}, ${yc})`);
 
   // The pure-NE cycle branch never fires naturally (0 in 80,000 runs): force it by seeding the key the step lands on.
@@ -725,7 +725,8 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   check('D16 (a) verbatim: the panel says more than 0.999', fa.panel === '0.000 more than 0.999 2.999 less than 0.001', fa.panel);
   // (b) verbatim: panel "0.219" / E[A] "-0.025" under "━━ Mixed NE: x=0.8, y=0.22  E[A]=-0.024".
   const fb = run({ a11: -1, a12: 0.25, a21: 7, a22: -2, b11: 1, b12: 0.25, b21: -0.001, b22: 3 }, 'shrink', 'A', 0.05, 1, 0.1, 9999);
-  check('D16 (b) verbatim: fixture converges at r3 (0.8, 0.219) with the ━━ line', fb.s.converged && fb.s.cy === 0.219 && fb.logs.includes('━━ Mixed NE: x=0.8, y=0.22  E[A]=-0.024  E[B]=0.800'), fb.logs.join(' | '));
+  // Since S12 the run locks y* = 9/41 itself; it landed on 0.219 before.
+  check('D16 (b) verbatim: fixture converges at the root (0.8, 9/41) with the ━━ line', fb.s.converged && fb.s.exactY === 9 / 41 && fb.logs.includes('━━ Mixed NE: x=0.8, y=0.22  E[A]=-0.024  E[B]=0.800'), fb.logs.join(' | '));
   check('D16 (b) verbatim: the panel prints the ━━ line\'s point', fb.panel === '0.800 0.220 -0.024 0.800', fb.panel);
   // (c) verbatim: panel E[A] "0.332" beside the sphere's and ━━ line's 0.333.
   const fc = run({ a11: 3, a12: -1, a21: 5, a22: -2, b11: -1, b12: -2, b21: -3, b22: 0.25 }, 'shrink', 'A', 0.007, 0, 1, 9999);
@@ -850,6 +851,83 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D17 reach: runs, frames, frames starting sub-resolution, committed-follower runs', reach17.runs >= 5000 && reach17.frames >= 15000 && reach17.subres >= 4500 && reach17.committed >= 1200, JSON.stringify(reach17));
+}
+
+// ── D18 (sweep 12 HIT): a discovery locks the solver root it announces, not the 3dp landing that tripped it ────
+// Unfixed: "✓ x-coordinate discovered: more than 0.999" and then "Step 1 (A): x=1.000, y=1.000" (a vertex) in every
+// later Step line, panel and sphere: the locked value was the grid/corridor landing within |D|·0.00065 of x*.
+// Fixtures are verbatim; the fuzz checks every locked frame (Step line, panel, sphere) against the solver root.
+{
+  const run = (g: GamePayoffs, mode: 'shrink' | 'regret', step: number, x: number, y: number) => {
+    const s = makeState(x, y, g), all = computeAllNE(g); let disc = '', after = '', last = '';
+    for (let k = 0; k < 6000 && !s.converged; k++) {
+      const logs: string[] = []; doStep(g, s, 'A', step, all, null, (l) => logs.push(l), () => {}, () => {}, mode);
+      for (const l of logs) { last = l; if (/discovered/.test(l)) disc += l + ' ; '; if (disc && /^Step /.test(l) && !after) after = l; }
+    }
+    const m = computeMixedNE(g)!;
+    return { s, disc, after, last, locked: s.discoveredMixedX === m.x && s.discoveredMixedY === m.y };
+  };
+  const F: [string, GamePayoffs, 'shrink' | 'regret', number, number, number, string, string, number][] = [
+    ['s1', { a11: 0, a12: 0, a21: -0.999, a22: 1.001, b11: 0, b12: 0.001, b21: 0, b22: -1.999 }, 'shrink', 0.25, 1, 0.9996,
+      'Step 1 (A): x=more than 0.999, y=more than 0.999  E[A]=greater than -0.001  E[B]=0', '━━ Mixed NE: x=more than 0.999, y=0.5  E[A]=0  E[B]=0', 14],
+    ['s2', { a11: 0, a12: 0, a21: -9.996, a22: 0.004, b11: 0, b12: 5.005, b21: 0, b22: -4.995 }, 'shrink', 0.1, 0.9996, 0,
+      'Step 4 (B): x=1.000, y=less than 0.001  E[A]=0  E[B]=5.003', '━━ Mixed NE: x=0.5, y=less than 0.001  E[A]=0  E[B]=0', 27],
+    ['r1', { a11: 0, a12: 0, a21: -1.333, a22: 0.667, b11: 0, b12: 1.565, b21: 0, b22: -0.435 }, 'regret', 0.05, 1, 0.0004,
+      'Step 145 (A): x=0.169, y=0.334  E[A]=0  E[B]=-0.065', '━━ Mixed NE: x=0.218, y=0.334  E[A]=0  E[B]=0', 166],
+    ['r2', { a11: 0, a12: 0, a21: -9.994, a22: 0.006, b11: 0, b12: 0.004, b21: 0, b22: -9.996 }, 'regret', 0.007, 0.9996, 0,
+      'Step 705 (A): x=more than 0.999, y=0.001  E[A]=greater than -0.001  E[B]=0', '━━ Mixed NE: x=more than 0.999, y=0.001  E[A]=0  E[B]=0', 709],
+    ['r3', { a11: 0, a12: 0, a21: -0.04, a22: 99.96, b11: 0, b12: 99.93, b21: 0, b22: -0.07 }, 'regret', 0.007, 0.5, 1,
+      'Step 704 (B): x=0.001, y=more than 0.999  E[A]=0  E[B]=less than 0.001', '━━ Mixed NE: x=0.001, y=more than 0.999  E[A]=0  E[B]=0', 708],
+  ];
+  for (const [id, g, mode, step, x, y, after, last, steps] of F) {
+    const r = run(g, mode, step, x, y);
+    check(`D18 (${id}) verbatim: the first Step line after the discovery prints the discovered root`, r.after === after, r.after);
+    check(`D18 (${id}) verbatim: the ━━ line, NE flag and step count`, r.last === last && r.s.converged && r.s.convergedIsNE === true && r.s.stepCount === steps, `${r.last} steps ${r.s.stepCount}`);
+    check(`D18 (${id}) both locked coordinates are the computeMixedNE root`, r.locked, `${r.s.discoveredMixedX}, ${r.s.discoveredMixedY}`);
+  }
+  // App: no render path reads the r3 cx/cy (the nearest-NE pick moved to the exact position with this fix).
+  const appCode = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\{?\/\*)/.test(l)).join('\n');
+  check('D18 App.tsx reads no simState.cx/cy outside comments', !/simState\.c[xy]\b/.test(appCode), (appCode.match(/.*simState\.c[xy]\b.*/) ?? [''])[0]);
+
+  const r18 = mulberry32(0xd18), pk = <T,>(a: T[]) => a[Math.floor(r18() * a.length)];
+  const V = [-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 0.001, -0.001, 7, 9.996, -0.004, 0.3, -0.7, 1.5, 4, -4];
+  const num = (t: string) => (/^-?[\d.]+$/.test(t) ? String(+t) : t);
+  const reach18 = { runs: 0, locked: 0, edge: 0, regret: 0, shrink: 0 };
+  for (let i = 0; i < 700; i++) {
+    let g: GamePayoffs;
+    if (r18() < 0.5) g = commitPayoffs({ a11: pk(V), a12: pk(V), a21: pk(V), a22: pk(V), b11: pk(V), b12: pk(V), b21: pk(V), b22: pk(V) });
+    else {   // roots at chosen exact 4dp values: next to a 3dp grid point or an edge, where the landing is a vertex
+      const ys = pk([0.0004, 0.9996, 0.2174, 0.5006, 0.0006, 0.3335, 0.7]), xs = pk([0.0004, 0.9996, 0.2176, 0.0007, 0.4995, 0.3]), sc = pk([1, 2, 10, 100]);
+      g = commitPayoffs({ a11: 0, a21: -sc * (1 - ys), a12: 0, a22: sc * ys, b11: 0, b12: sc * (1 - xs), b21: 0, b22: -sc * xs });
+    }
+    const all = computeAllNE(g), m = computeMixedNE(g);
+    if (all.some((n) => n.type === 'pure') || !m) continue;
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const s = makeState(pk([0.217, 0.0004, 0.9996, 0.5, 1, 0]), pk([0.217, 0.0004, 0.9996, 0.5, 1, 0]), g), step = pk([0.1, 0.333, 0.05, 0.25, 0.007]);
+      reach18.runs++; reach18[mode]++;
+      const said: Record<string, string> = {};
+      for (let k = 0; k < 6000 && !s.converged; k++) {
+        const logs: string[] = [];
+        doStep(g, s, mover, step, all, null, (l) => logs.push(l), () => {}, () => {}, mode);
+        for (const l of logs) { const d = /^✓ ([xy])-coordinate discovered: (.+)$/.exec(l); if (d) said[d[1]] = d[2]; }
+        if (s.converged) continue;
+        const pos = [...logs].reverse().find((l) => /^Step /.test(l)); if (!pos) continue;
+        const xm = /x=([^,]+), y=([^\s,:]+(?: than [^\s,:]+)?)/.exec(pos)!;
+        const p = shownPoint(g, s), sph = (makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[]).find((t) => t.name === 'Current position (A)');
+        const tag = `${mode} ${mover} step ${step} start (${s.startX},${s.startY}) ${JSON.stringify(g)} k ${k + 1} | ${pos}`;
+        for (const [ax, i2, root, locked] of [['x', 1, m.x, s.discoveredMixedX], ['y', 2, m.y, s.discoveredMixedY]] as const) {
+          if (locked === null || !(ax in said)) continue;
+          reach18.locked++; if (r3(root) === 0 || r3(root) === 1) reach18.edge++;
+          const v = ax === 'x' ? p.x : p.y, sv = ax === 'x' ? sph.x[0] : sph.y[0];
+          check('D18 the locked coordinate is the solver root', locked === root, `${tag} locked ${locked} root ${root}`);
+          check('D18 a Step line prints the locked coordinate as the discovery line did', num(xm[i2]) === num(said[ax]), `${tag} | discovered ${said[ax]}`);
+          check('D18 the panel prints the solver root while it is locked', fmtProbFixed(v) === fmtProbFixed(root), `${tag} | panel ${fmtProbFixed(v)}`);
+          check('D18 the sphere hover reads the solver root while it is locked', fmtProb(sv) === fmtProb(root), `${tag} | sphere ${sv}`);
+        }
+      }
+    }
+  }
+  check('D18 reach: runs (both modes), locked frames, locked roots that r3 rounds to a vertex', reach18.runs >= 1200 && reach18.shrink >= 600 && reach18.regret >= 600 && reach18.locked >= 40000 && reach18.edge >= 8000, JSON.stringify(reach18));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────

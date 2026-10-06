@@ -1637,6 +1637,14 @@ export function pushToSegs(
 // - If foundAxis === 'y': x is unfound axis (controlled by A).
 //   - When A moves: A flips x to the opposite corridor boundary (lo <-> hi).
 //   - When B moves: B best-responds with y to the current x boundary.
+// A discovery LOCKS the solver root it announces, not the 3dp landing that tripped the tolerance: the landing put
+// "x=1.000" (a vertex) in every later Step line, panel and sphere under "✓ discovered: more than 0.999" (S12).
+// The tour (App.tsx) already locks mixedNE.x/y. The landing is the fallback when the closed form is unavailable.
+function lockedRoot(g: GamePayoffs, axis: 'x' | 'y', landing: number): number {
+  const m = computeMixedNE(g);
+  return m ? m[axis] : landing;
+}
+
 export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
   const lo = state.domainLo;
   const hi = state.domainHi;
@@ -1658,7 +1666,7 @@ export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
       // Check discovery of y*: does newY make Player A indifferent?
       const sAcheck = newY * (g.a11 - g.a21) + (1 - newY) * (g.a12 - g.a22);
       if (Math.abs(sAcheck) < EPS_A && state.discoveredMixedY === null) {
-        state.discoveredMixedY = newY;
+        state.discoveredMixedY = lockedRoot(g, 'y', newY);
       }
     } else {
       // Player A moves and reacts on x-axis by best-responding to current y
@@ -1678,7 +1686,7 @@ export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
 // rounding it here put the sphere ~5e-4 from the NE diamond at convergence
 // (visibly off-centre, and depth-flickering because the two no longer shared
 // a depth). Rounding for READOUT happens where displayX is written.
-        state.discoveredMixedX = newX;
+        state.discoveredMixedX = lockedRoot(g, 'x', newX);
       }
     } else {
       // Player B moves and reacts on y-axis by best-responding to current x
@@ -1890,9 +1898,12 @@ export function doStep(
         // dead no matter the game. The ghost renderer (the reason for the old
         // caution) is shrink-phase furniture and is now gated off in regret.
         if (xDone) {
-          s.stratX = landOnIndifference(s.stratX, sBfn, Dx); s.domXLo = s.stratX; s.domXHi = s.stratX;
-          if (s.discoveredMixedX === null) {
-            s.discoveredMixedX = s.stratX;
+          s.stratX = landOnIndifference(s.stratX, sBfn, Dx);
+          // The box closes on the LOCKED root, so the position clamped into it below is the discovered value (S12).
+          const firstX = s.discoveredMixedX === null;
+          if (firstX) s.discoveredMixedX = lockedRoot(g, 'x', s.stratX);
+          s.domXLo = s.discoveredMixedX!; s.domXHi = s.discoveredMixedX!;
+          if (firstX) {
             if (s.foundAxis === null) s.foundAxis = 'x';
             // The Newton landing can sit exactly ON a grid endpoint (0) while
             // the coordinate it discovered is 0.0004 — state the exact root,
@@ -1902,9 +1913,11 @@ export function doStep(
           }
         }
         if (yDone) {
-          s.stratY = landOnIndifference(s.stratY, sAfn, Dy); s.domYLo = s.stratY; s.domYHi = s.stratY;
-          if (s.discoveredMixedY === null) {
-            s.discoveredMixedY = s.stratY;
+          s.stratY = landOnIndifference(s.stratY, sAfn, Dy);
+          const firstY = s.discoveredMixedY === null;
+          if (firstY) s.discoveredMixedY = lockedRoot(g, 'y', s.stratY);
+          s.domYLo = s.discoveredMixedY!; s.domYHi = s.discoveredMixedY!;
+          if (firstY) {
             if (s.foundAxis === null) s.foundAxis = 'y';
             const _ry = computeMixedNE(g);
             addLog('✓ y-coordinate discovered: ' + fmtProb(_ry ? _ry.y : s.stratY));
@@ -1934,7 +1947,7 @@ export function doStep(
         nx = sA3 > 0 ? s.domainHi : s.domainLo;
         const sB3 = nx * (g.b11 - g.b12) + (1 - nx) * (g.b21 - g.b22);
         if (Math.abs(sB3) < EPS_B && s.discoveredMixedX === null) {
-          s.discoveredMixedX = nx;   // exact — see the note above
+          s.discoveredMixedX = lockedRoot(g, 'x', nx);   // the root it announces, not the landing (S12)
           // Speak from the EXACT solver root, not the grid landing: discovery
           // fires when the landing is within tolerance of the root, so nx can
           // BE 0.000 (a grid point) while the coordinate it discovered is
@@ -1947,7 +1960,7 @@ export function doStep(
         ny = sB3 > 0 ? s.domainHi : s.domainLo;
         const sA3 = ny * (g.a11 - g.a21) + (1 - ny) * (g.a12 - g.a22);
         if (Math.abs(sA3) < EPS_A && s.discoveredMixedY === null) {
-          s.discoveredMixedY = ny;   // exact — see the note above
+          s.discoveredMixedY = lockedRoot(g, 'y', ny);   // the root it announces, not the landing (S12)
           const _p1y = computeMixedNE(g);
           addLog('✓ y-coordinate discovered: ' + fmtProb(_p1y ? _p1y.y : ny));
         }

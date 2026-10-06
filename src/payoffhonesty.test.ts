@@ -209,8 +209,8 @@ function parsePayoffTokens(line: string): { eaTok: string; ebTok: string } | nul
  * same root through `fmtProb` (3dp); reconstructing the root from the 3dp
  * string loses precision the branch's own computation never had. So this
  * checks against BOTH candidate ground-truth points the shipped code can
- * legitimately have evaluated at for a given line: the live (st.cx, st.cy)
- * (per-step and pure/settled convergence lines) and the exact mixed-NE root
+ * legitimately have evaluated at for a given line: the live (st.exactX, st.exactY)
+ * (per-step and pure/settled convergence lines; the r3 cx/cy since S10/S12 is a dynamics input only) and the exact mixed-NE root
  * when one exists (mixed-continuum convergence lines) — never against a
  * value reconstructed from the rendered text.
  */
@@ -223,11 +223,13 @@ function testSimLogAgreesWithGroundTruth() {
     const g: GamePayoffs = { a11: 8, a12: -2, a21: 2, a22: 0, b11: -8, b12: 2, b21: 4, b22: -1 };
     captured = [];
     const st = createInitialState(0.5, 0.5, g);
-    const addLog = (m: string) => captured.push({ line: m, cx: st.cx, cy: st.cy });
+    const addLog = (m: string) => captured.push({ line: m, cx: st.exactX, cy: st.exactY });
     const all = computeAllNE(g);
     const pure = all.filter((n) => n.type === 'pure');
     const committed = pure.length ? pure.reduce((b, n) => ((n.eB) > (b.eB) ? n : b)) : null;
-    for (let i = 0; i < 200 && !st.converged; i++) doStep(g, st, 'B', 0.1, all, committed, addLog, () => {}, () => {}, 'shrink');
+    // Step 0.5, not 0.1: since S12 the 0.1 run locks x at the exact root 1/3 (E[B] = 0 there, honestly "0")
+    // and never prints a Step line at the 3dp point; 0.5 reaches (0.333, 0.25) before discovery (Step 21).
+    for (let i = 0; i < 200 && !st.converged; i++) doStep(g, st, 'B', 0.5, all, committed, addLog, () => {}, () => {}, 'shrink');
     ok(st.converged, 'Repro B fixture must converge within 200 steps');
     const headline = captured.map((c) => c.line).filter((l) => l.startsWith('━━')).pop();
     ok(!!headline, `Repro B fixture: no convergence headline in log: ${JSON.stringify(captured.map((c) => c.line))}`);
@@ -257,7 +259,7 @@ function testSimLogAgreesWithGroundTruth() {
       for (const [sx0, sy0] of [[0.217, 0.217], [0.5, 0.5]] as [number, number][]) {
         captured = [];
         const st = createInitialState(sx0, sy0, g);
-        const addLog = (m: string) => captured.push({ line: m, cx: st.cx, cy: st.cy });
+        const addLog = (m: string) => captured.push({ line: m, cx: st.exactX, cy: st.exactY });   // the point the line reports (S10, S12)
         const all = computeAllNE(g);
         const pure = all.filter((n) => n.type === 'pure');
         const committed = pure.length

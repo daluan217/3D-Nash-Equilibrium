@@ -1550,7 +1550,9 @@ function testRedTeamFindings9() {
   const g20: GamePayoffs = { a11: 20, a12: 0, a21: -20, a22: 0.025, b11: 0, b12: 0.025, b21: 20, b22: -20 };
   const s20 = simulate(g20, { firstMover: 'A', stepMode: 'shrink', shrinkStep: 0.1 });
   assert(computeAllNE(g20).filter((n) => n.type === 'pure').length === 0, 'fixture g20 has no pure NE');
-  assert(r3(s20.cx) === 1 && r3(s20.cy) === 0, 'fixture: the run really locks on the (1,0) boundary');
+  // Since S12 the run locks the solver root (0.99937, 0.00062), not the 3dp landing (1, 0); still within 1e-3 of it.
+  assert(Math.abs(s20.exactX - 1) < 1e-3 && Math.abs(s20.exactY) < 1e-3 && s20.exactX < 1 && s20.exactY > 0,
+    'fixture: the run converges within 1e-3 of the (1,0) boundary, at the interior root');
   const r20 = resolveProfile(g20, s20);
   assert(r20.concept === 'mixed',
     'the box must not say PURE on a game whose own report says "No pure strategy NE coordinates exist"');
