@@ -439,6 +439,25 @@ const e12 = { typed: 0, preFix: 0, zero: 0 };
   check('E10 reach: exact zeros under dust and nonzero payoffs below the 1e-9 band both occurred',
     reach.dustZero >= 1000 && reach.tinyNonzero >= 200, JSON.stringify(reach));
 }
+// E10b snap width (sweep 7): EA reads a float as the rational p/d (d <= 1e6) within 2^-50 and no wider.
+// Cells -(d-p)/1000, p/1000 make the payoff (p - d x)/1000, zero only at p/d, so at a float x offset
+// from p/d, EA is 0 iff |x - p/d| <= 2^-50 (exact BigInt distance); offsets 2^-53..2^-40 straddle it.
+{
+  const rb = mulberry(0xe10b), reach = { snapped: 0, keptNear: 0 };
+  const bin = (v: number): Q => { let d = 1n; while (!Number.isInteger(v)) { v *= 2; d *= 2n; } return [BigInt(v), d]; };
+  for (let i = 0; i < 20000; i++) {
+    const d = 1000 + Math.floor(rb() * 199000), p = 1 + Math.floor(rb() * (d - 1));
+    if (d - p > 100000 || p > 100000) continue;
+    const g = { a11: -(d - p) / 1000, a12: -(d - p) / 1000, a21: p / 1000, a22: p / 1000, b11: 0, b12: 0, b21: 0, b22: 0 }, y = Math.round(rb() * 1000) / 1000;
+    for (const e of [53, 52, 51, 50, 49, 48, 46, 44, 40]) for (const sg of [1, -1]) {
+      const x = p / d + sg * 2 ** -e, [xn, xd] = bin(x), dist = xn * BigInt(d) - BigInt(p) * xd, near = (dist < 0n ? -dist : dist) * 2n ** 50n <= xd * BigInt(d);
+      if (!(x > 0 && x < 1)) continue;
+      if (near && dist !== 0n) reach.snapped++; if (!near && (dist < 0n ? -dist : dist) * 2n ** 44n <= xd * BigInt(d)) reach.keptNear++;
+      check('E10b a float reads as p/d only within 2^-50 of it: EA is 0 iff |x - p/d| <= 2^-50', (EA(x, y, g) === 0) === near, `${p}/${d} ${sg}2^-${e} x=${x}: ${EA(x, y, g)}`);
+    }
+  }
+  check('E10b reach: off-rational floats inside the snap and nonzero payoffs just outside it both occurred', reach.snapped >= 5000 && reach.keptNear >= 5000, JSON.stringify(reach));
+}
 
 // ── sweep ─────────────────────────────────────────────────────────────────────
 const N = Number(process.env.MATHEXACT_N ?? 6000);   // per kind
