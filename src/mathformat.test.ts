@@ -10,7 +10,8 @@
 import { readFileSync } from 'node:fs';
 import { geometryBriefing, describeGeometry } from './utils/geometry';
 import { buildGroundingPayload } from './utils/report';
-import { fmtProb, fmtPayoffProse, commitPayoffs, PRESETS } from './utils/gameEngine';
+import { fmtProb, fmtPayoffProse, commitPayoffs, PRESETS, hasEquilibriumContinuum } from './utils/gameEngine';
+import { tieProse } from './utils/tieProse';
 import type { GamePayoffs } from './types';
 
 let checks = 0;
@@ -137,6 +138,21 @@ for (const [id, p] of Object.entries(PRESETS)) {
   if (id === 'custom') continue;
   checkGame(Object.fromEntries(K.map((k) => [k, (p as any)[k]])) as unknown as GamePayoffs, `preset ${id}`);
 }
+// T1 (BLUE-LOOP-MATH-22 sweep 7): the tie paragraph, briefing and payload over a range-edge / near-zero /
+// repeating-decimal alphabet with forced ties (continua by construction): no raw float, no NaN, no "-0".
+const EDGE = [-100, -99.999, -50.001, -1, -0.002, -0.001, 0, 0.001, 0.002, 1, 3, 7.5, 33.333, 99.998, 99.999, 100];
+const NEG0 = /(^|[^\d.])-0(?![.\d])|-0\.0+(?![\d])/;
+let tieN = 0;
+for (let i = 0; i < 6000; i++) {
+  const g = cells(() => EDGE[Math.floor(rnd() * EDGE.length)]), t = i % 4;
+  if (t & 1) g.a21 = g.a11; if (t & 2) g.b12 = g.b11;
+  const tag = `T1 ${JSON.stringify(g)}`, texts = [buildGroundingPayload(g), ...(hasEquilibriumContinuum(g) ? (tieN++, [tieProse(g)]) : [])];
+  for (const s of texts) {
+    check('T1 no number in the tie paragraph or payload has more than 3 decimals', !/\d\.\d{4,}/.test(s), `${tag} ${s.match(/.{0,60}\d\.\d{4,}/)?.[0]}`);
+    check('T1 no NaN/undefined/Infinity and no negative zero in the tie paragraph or payload', !/\b(?:NaN|undefined|Infinity)\b/.test(s) && !NEG0.test(s), `${tag} ${s.match(/.{0,40}(?:NaN|undefined|Infinity|-0).{0,20}/)?.[0]}`);
+  }
+}
+check('reach: T1 tie paragraphs over the edge alphabet', tieN >= 3000, `${tieN}`);
 // Reach: the sweep must contain the shapes the defect lives in, or P1-P6 pass by not looking.
 check('reach: interior roots that are sub-resolution', reach.subIn > 50, JSON.stringify(reach));
 check('reach: outside roots within 5e-4 of an edge', reach.outNear > 50, JSON.stringify(reach));
