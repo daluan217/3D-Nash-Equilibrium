@@ -540,6 +540,49 @@ for (const [kind, cell] of Object.entries(KINDS)) {
   check('D12 reach: frames and cycle frames over every mode/mover', reach12.frames >= 25000 && reach12.cycles >= 5000, JSON.stringify(reach12));
 }
 
+// ── D13 (sweep 9, empty probe checked in): every drawn point lies on its own surface, inside the square ──
+// D7 reads hoverable markers only; path and ghost-path lines, strategy lines and indifference lines carry
+// their z in state or in the trace with no hover. A path point retro-snapped on x but not re-z'd, or a
+// ghost segment written from the other player's payoff, would float off the surface it is drawn on.
+{
+  const r13 = mulberry32(0xd13), V = [-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 0.001, -0.001], pk = <T,>(a: T[]) => a[Math.floor(r13() * a.length)];
+  const onA = /^(Current position \(A\)|Search position \(Ghost A\)|A strategy line .*|A indifferent .*)$/, onB = /^(Current position \(B\)|Search position \(Ghost B\)|B strategy line .*|B indifferent .*)$/;
+  const reach13: Record<string, number> = { frames: 0, pathPts: 0, ghostPts: 0, tracePts: 0, lines: 0 };
+  for (let i = 0; i < 300; i++) {
+    const g = commitPayoffs(Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, pk(V)])) as unknown as GamePayoffs);
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const step = pk([0.1, 0.333, 0.05, 0.25]), s = makeState(pk([0.217, 0, 1, 0.9]), pk([0.217, 0, 1, 0.1]), g);
+      for (let k = 0; k < 400 && !s.converged; k++) {
+        doStep(g, s, mover, step, all, committed, () => {}, () => {}, () => {}, mode);
+        if (k % 3 && !s.converged) continue;
+        reach13.frames++;
+        const at = `${mode} ${mover} step ${step} k ${k + 1} ${JSON.stringify(g)}`;
+        for (const [arr, P, key] of [[s.pathSegmentsA, EA, 'pathPts'], [s.pathSegmentsB, EB, 'pathPts'], [s.ghostPathSegmentsA, EA, 'ghostPts'], [s.ghostPathSegmentsB, EB, 'ghostPts']] as const)
+          for (const seg of arr) seg.xs.forEach((x, j) => {
+            const y = seg.ys[j], z = seg.zs[j]; reach13[key]++;
+            check('D13 every recorded path point is in the unit square', x >= 0 && x <= 1 && y >= 0 && y <= 1, `${at} ${key} (${x}, ${y})`);
+            check('D13 every recorded path point is r3 of its own surface at its own (x, y)', z === r3(P(x, y, g)), `${at} ${key} (${x}, ${y}, ${z}) want ${r3(P(x, y, g))}`);
+          });
+        for (const t of makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[]) {
+          if (t.type !== 'scatter3d' || !Array.isArray(t.x)) continue;
+          const P = onA.test(t.name) ? EA : onB.test(t.name) ? EB : null;
+          if (P && t.mode === 'lines') reach13.lines++;
+          t.x.forEach((x: number, j: number) => {
+            const y = t.y[j], z = t.z[j];
+            if ([x, y, z].every(Number.isNaN)) return;   // a legend stub or a line break, not a point
+            reach13.tracePts++;
+            check('D13 every drawn point is in the unit square with a finite z', x >= -1e-9 && x <= 1 + 1e-9 && y >= -1e-9 && y <= 1 + 1e-9 && Number.isFinite(z), `${at} "${t.name}" (${x}, ${y}, ${z})`);
+            if (P) check('D13 a point drawn on a player\'s surface has that player\'s payoff as z', Math.abs(z - P(x, y, g)) <= 5e-4 + 1e-12, `${at} "${t.name}" (${x}, ${y}, ${z}) want ${P(x, y, g)}`);
+          });
+        }
+      }
+    }
+  }
+  check('D13 reach: path, ghost-path and on-surface line points all drawn', reach13.frames >= 4000 && reach13.ghostPts >= 2000 && reach13.lines >= 2000 && reach13.tracePts >= 500000, JSON.stringify(reach13));
+}
+
 // ── Final reporting ───────────────────────────────────────────────────────────
 const failCount = Object.keys(fails).length;
 if (failCount > 0) {
