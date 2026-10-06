@@ -346,6 +346,61 @@ for (const [kind, cell] of Object.entries(KINDS)) {
       'Search position (Ghost A)', 'ghostB'].every((k) => (reach[k] ?? 0) >= 50), JSON.stringify(reach));
 }
 
+// ── D8 / F15: every run terminates, and none settles off the equilibrium set (sweep 5) ──
+// F15: y* = 0.6 landed ON the ghost corridor's bound with fn(0.6) = 2.2e-16 (float residue, not 0), read
+// as "bracket lost", collapsed to the 0.5 midpoint and never converged. RED-APP-6/001's fixture settled
+// at (0,1) (A's regret 18) when B, indifferent at x = 0, broke the tie away from the committed NE.
+{
+  const F15: GamePayoffs = { a11: -9, a12: -3, a21: -7, a22: -6, b11: 4, b12: -2, b21: -4, b22: 5 };
+  const run = (g: GamePayoffs, mover: 'A' | 'B', mode: 'shrink' | 'regret', x0: number, y0: number, cap: number) => {
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+    const s = makeState(x0, y0, g), logs: string[] = [], m = computeMixedNE(g);
+    let onBound = false;   // the F15 condition: a corridor bound IS the root, yet both bounds read one sign
+    for (let k = 0; k < cap && !s.converged; k++) {
+      doStep(g, s, mover, 0.1, all, committed, (l) => logs.push(l), () => {}, () => {}, mode);
+      const r = s.foundAxis === 'x' ? m?.y : s.foundAxis === 'y' ? m?.x : undefined;
+      const f = s.foundAxis === 'x' ? (v: number) => v * (g.a11 - g.a21) + (1 - v) * (g.a12 - g.a22) : (v: number) => v * (g.b11 - g.b12) + (1 - v) * (g.b21 - g.b22);
+      onBound ||= r !== undefined && s.domainLo !== s.domainHi && (s.domainLo === r || s.domainHi === r) && f(s.domainLo) * f(s.domainHi) > 0;
+    }
+    return { s, logs, onBound };
+  };
+  check('F15 precondition: y* = 0.6 and A\'s indifference signal there is a nonzero float residue',
+    computeMixedNE(F15)?.y === 0.6 && 0.6 * (F15.a11 - F15.a21) + 0.4 * (F15.a12 - F15.a22) !== 0);
+  const f15 = run(F15, 'A', 'shrink', 0.217, 0.217, 200);
+  check('F15 verbatim: the app\'s default run converges on the mixed NE (it stalled at y = 0.5 for 20000 steps)',
+    f15.s.converged && f15.logs.at(-1) === '━━ Mixed NE: x=0.6, y=0.6  E[A]=-6.600  E[B]=0.800', `${f15.logs.at(-1)}`);
+  const R6: GamePayoffs = { a11: 9, a12: -1, a21: -9, a22: 9, b11: -4, b12: -7, b21: -2, b22: -2 };
+  const r6 = run(R6, 'A', 'shrink', 0.217, 0.217, 200);
+  check('RED-APP-6/001 fixture: B is indifferent at x = 0, and the run converges on the committed NE (0, 0), not (0, 1)',
+    R6.b21 === R6.b22 && r6.s.converged && r6.s.convergedIsNE === true && r6.s.exactX === 0 && r6.s.exactY === 0,
+    `(${r6.s.exactX},${r6.s.exactY}) isNE=${r6.s.convergedIsNE}`);
+  const keys = ['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const;
+  const reach = { runs: 0, residueRoot: 0, followerTie: 0 };
+  const r8 = mulberry32(0xf15);
+  const games: GamePayoffs[] = [];
+  for (let code = 0; code < 6561; code++) games.push(Object.fromEntries(keys.map((k, i) => [k, [-1, 0, 1][Math.floor(code / 3 ** i) % 3]])) as unknown as GamePayoffs);
+  for (let i = 0; i < 1500; i++) games.push(Object.fromEntries(keys.map((k) => [k, Math.floor(r8() * 19) - 9])) as unknown as GamePayoffs);
+  // The F15 family: x* = q/10, y* = p/10 (where the 0.1-step corridor's bounds land), mixed-only.
+  for (let p = 1; p <= 9; p++) for (let q = 1; q <= 9; q++) for (const sa of [1, -1]) for (const sb of [1, -1]) for (const k of [1, 2, 3]) {
+    const h = (n: number) => k / (n % 2 ? 1 : 2), d1 = -sa * (10 - p) * h(p), d2 = sa * p * h(p), e1 = -sb * (10 - q) * h(q), e2 = sb * q * h(q);
+    games.push({ a11: d1 - p, a12: d2 + q - 5, a21: -p, a22: q - 5, b11: e1 + k, b12: k, b21: e2 - q, b22: -q });
+  }
+  for (const g of games) {
+    const pure = computeAllNE(g).filter((n) => n.type === 'pure');
+    if (pure.length > 1 && (g.b11 === g.b12 || g.b21 === g.b22 || g.a11 === g.a21 || g.a12 === g.a22)) reach.followerTie++;
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) for (const [x0, y0] of [[0.217, 0.217], [0.9, 0.1]]) {
+      const { s, onBound } = run(g, mover, mode, x0, y0, 3000);
+      reach.runs++; if (onBound) reach.residueRoot++;
+      check('D8 every run converges within 3000 steps (no stalled corridor)', s.converged, `${mode} ${mover} (${x0},${y0}) ${JSON.stringify(g)} at (${s.exactX},${s.exactY})`);
+      check('D8 no run settles off the equilibrium set ("Settled (not an NE)")', !s.converged || s.convergedIsNE !== false,
+        `${mode} ${mover} ${JSON.stringify(g)} at (${s.exactX},${s.exactY})`);
+    }
+  }
+  check('D8 reach: a corridor bound sat on the root with both bounds one sign (F15), and follower ties between pure NEs occurred',
+    reach.residueRoot >= 100 && reach.followerTie >= 500, JSON.stringify(reach));
+}
+
 // ── Final reporting ───────────────────────────────────────────────────────────
 const failCount = Object.keys(fails).length;
 if (failCount > 0) {

@@ -416,7 +416,10 @@ export function commitPayoffs(g: Partial<Record<keyof GamePayoffs, unknown>> | n
  * back — 0 is a legal start point, not a missing one.
  */
 export function commitStartCoordinate(raw: string | null | undefined, fallback = 0.217): number {
-  return commitNumericField(raw, START_RANGE, { fallback }).value;
+  // Held on the 1e-6 grid, which ratOf reads exactly: EA/EB read a coordinate as the rational
+  // (denominator ≤ 1e6) within 2^-50, so a typed "0.3333333333333333" printed E[A] = 0 for a
+  // nonzero payoff (BLUE-LOOP-MATH-22 F14). 0.0004 stays 0.0004 (R5b).
+  return Math.round(commitNumericField(raw, START_RANGE, { fallback }).value * 1e6) / 1e6;
 }
 
 /**
@@ -1478,8 +1481,13 @@ function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: num
     newHi = advance(hi, lo, Math.sign(sHi));
     if (newLo > newHi) { const m = r3((newLo + newHi) / 2); newLo = m; newHi = m; }
   } else {
-    // Bracket lost (same sign at both ends): collapse to the midpoint.
-    newLo = newHi = r3((lo + hi) / 2);
+    // Same sign at both ends. A root ON a bound is a same-signed float residue there (fn(0.6) =
+    // 2.2e-16 for A=[[-9,-3],[-7,-6]]): that bound is the root by ghostStep's own discovery
+    // tolerance, and the midpoint stalled the run forever (F15). Else the bracket is lost.
+    const d = Math.abs(fn(1) - fn(0));
+    const eps = d > 1e-9 ? d * 0.00065 : 0.00065;
+    const near = Math.abs(sLo) <= Math.abs(sHi) ? lo : hi;
+    newLo = newHi = r3(Math.abs(fn(near)) < eps ? near : (lo + hi) / 2);
   }
 
   s.domainLo = newLo;

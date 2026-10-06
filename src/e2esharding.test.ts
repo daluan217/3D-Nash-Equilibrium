@@ -64,14 +64,14 @@ const expectedIds = [
   '51', '52', '53', '54', '56', '57', '60', '61', '62', '66', '66b', '67', '68', '69', '70', '71', '74',
   '75', '76', '78', '80', '83', '84', '85', '85b', '86', '87', '88', '89', '90', '91', '91b', '91c', '92', '93', '94', '95', '96',
   '100a', '100b', '100c', '100d', '102a', '102b', '102c', '102d', '102e', '102f',
-  '101a', '101b', '101c', '101d', '101e', '101f', '101g', '103a', '103b', '103c', '105', '108', '104', '97', '109', '110', '111',
+  '101a', '101b', '101c', '101d', '101e', '101f', '101g', '103a', '103b', '103c', '105', '108', '104', '97', '109', '110', '111', '111b', '112',
 ];
 
 assert.deepStrictEqual(definitions.map(({ id }) => id), expectedIds,
   'every historical smoke section must be registered exactly once and in order');
 assert.strictEqual(new Set(definitions.map(({ name }) => name)).size, definitions.length,
   'section names must be unique so retry output identifies one unit unambiguously');
-assert.strictEqual(SHARD_COUNT, 38, 'the smoke suite is split into 38 CI shards (test.yml matrix must match) '
+assert.strictEqual(SHARD_COUNT, 39, 'the smoke suite is split into 39 CI shards (test.yml matrix must match) '
   + '-- raised from 28, in two steps, by two branches independently: #164/#165/#166 landed a heavily '
   + 'rewritten §71 (77507ms measured vs the stale 17072ms) plus this branch\'s own §85/85b/86; #168 '
   + '(OPUS-REVIEW-WEBKIT N1) found §70/§75/§83\'s timings had been measured while WebKit was silently '
@@ -93,7 +93,8 @@ assert.strictEqual(SHARD_COUNT, 38, 'the smoke suite is split into 38 CI shards 
   + '\u00a7100-\u00a7103 split along their viewport lists. 35 stays: every run already peaked at 40 concurrent jobs. '
   + 'TASK-18 sweeps 11-13 (CI 36774742769, 36778548533, 36781207202): with the browser packages cached, a slow runner disk '
   + 'still measured 145 s of overhead (smoke 19: dpkg unpacked the local WebKit set in 58.8 s), so the budget is 275 s and '
-  + 'the line 247.5 s. 35 packs 261 s and 37 leaves 0.7 s under the line; 38 packs every shard at 222-235 s.');
+  + 'the line 247.5 s. 35 packs 261 s and 37 leaves 0.7 s under the line; 38 packs every shard at 222-235 s. '
+  + 'math-loop-22 2026-10-05: \u00a7111 measured 264.6 s on CI and split as \u00a7111/\u00a7111b (105.1 s + 159.5 s); 38 then packs five multi-section shards at 249-252 s, 39 the worst at 241 s.');
 
 // ── §100-§103 split (TASK-18): the parts cover the pre-split loops exactly ──
 // The lists below are the pre-split sections' own literals, verbatim. Each family's parts must

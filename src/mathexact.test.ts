@@ -7,7 +7,7 @@
  *   npx tsx src/mathexact.test.ts
  */
 import { computeAllNE, computeMixedNE, equilibriumSet, pointInRect, kindOf, fmtProb, indifferenceRoot,
-  EA, EB, fmtPayoff, payoffTexRhs, formatConvergenceLogLine } from './utils/gameEngine';
+  EA, EB, fmtPayoff, payoffTexRhs, formatConvergenceLogLine, commitStartCoordinate, parseNumericInput } from './utils/gameEngine';
 import { neValues, indifferenceLines } from './components/equilibriumPanel';
 import { tieProse } from './utils/tieProse';
 import { describeGeometry, geometryBriefing } from './utils/geometry';
@@ -344,6 +344,44 @@ check('F13 verbatim: the payload splits A as 0.063 / 0.937, never 0.063 / 0.938'
   buildGroundingPayload(F13).includes('A plays Row 1 with probability 0.063 and Row 2 with probability 0.937;')
   && !buildGroundingPayload(F13).includes('0.938'), buildGroundingPayload(F13));
 for (const g of [F1, F2a, F2b, F3, F10, F10b, F10c, F13]) checkGame(g, true);
+// F14: E[A] = 1 - 3x for any y. The float of a typed "0.3333333333333333" is within 2^-50 of 1/3, so EA
+// read it as 1/3 and the readout printed "0" for a payoff that is not zero.
+const F14: GamePayoffs = { a11: -2, a12: -2, a21: 1, a22: 1, b11: 0, b12: 0, b21: 0, b22: 0 };
+check('fixture F14: the unquantised typed float is the one EA reads as exactly 1/3',
+  EA(parseNumericInput('0.3333333333333333')!, 0.5, F14) === 0);
+check('F14 verbatim: typed x0 "0.3333333333333333" reads E[A] = less than 0.001, never 0',
+  fmtPayoff(EA(commitStartCoordinate('0.3333333333333333'), 0.5, F14)) === 'less than 0.001',
+  fmtPayoff(EA(commitStartCoordinate('0.3333333333333333'), 0.5, F14)));
+const e12 = { typed: 0, preFix: 0, zero: 0 };
+// E12 typed-start: whatever is typed, the start coordinate held is a plain decimal of at most 6 places
+// (what the box shows after blur), and EA/EB at it are 0 iff the payoff at THAT decimal is exactly 0.
+{
+  const r12 = mulberry(0xe12);
+  const decQ = (s: string): Q => { const [i, f = ''] = s.split('.'); return [BigInt(i + f), 10n ** BigInt(f.length)]; };
+  const QS = [2, 3, 7, 9, 11, 13, 16, 64, 125, 625, 999, 1000, 1024, 3125, 4096, 99999, 100000];
+  for (let i = 0; i < 6000; i++) {
+    const q = i % 3 ? QS[i % QS.length] : 2 + Math.floor(r12() * 99999), p = 1 + Math.floor(r12() * (q - 1));
+    const lo = (p - q) / 1000, hi = p / 1000;   // E_A(x) = (p - xq)/1000 and E_B(y) = (p - yq)/1000: zero at p/q
+    const g: GamePayoffs = { a11: lo, a12: lo, a21: hi, a22: hi, b11: lo, b12: hi, b21: lo, b22: hi };
+    const mm = rootsOf(g).m, other = BigInt(Math.floor(r12() * 1001));
+    for (const S of [String(p / q), ...[3, 4, 5, 6, 7, 9, 12, 15].map((k) => (p / q).toFixed(k))]) {
+      const c = commitStartCoordinate(S), box = String(c), t = parseNumericInput(S)!;
+      e12.typed++;
+      if (EA(t, 0.5, g) === 0 && exactPay(mm, 'a', decQ(S), [1n, 2n])[0].n !== 0n) e12.preFix++;
+      check('E12 typed-start: the held coordinate is a plain decimal of at most 6 places', /^(0|1|0\.\d{1,6})$/.test(box), `${S} -> ${box}`);
+      if (!/^\d\.?\d*$/.test(box)) { check('E12 typed-start: the held coordinate prints as a plain decimal', false, box); continue; }
+      for (const p2 of ['a', 'b'] as const) {
+        const [ex, shown] = p2 === 'a' ? exactPay(mm, 'a', decQ(box), [other, 1000n]) : exactPay(mm, 'b', [other, 1000n], decQ(box));
+        const v = p2 === 'a' ? EA(c, Number(other) / 1000, g) : EB(Number(other) / 1000, c, g);
+        if (ex.n === 0n) e12.zero++;
+        check('E12 typed-start: EA/EB at a typed start are 0 iff the payoff at the held decimal is exactly 0',
+          (v === 0) === (ex.n === 0n) && shown.includes(fmtPayoff(v)), `${p}/${q} typed ${S} held ${box} ${p2}: ${v} "${fmtPayoff(v)}" want ${shown}`);
+      }
+    }
+  }
+  check('E12 reach: typed floats the unquantised door read as an exact root (the F14 class), and exact roots typed',
+    e12.preFix >= 1000 && e12.zero >= 500, JSON.stringify(e12));
+}
 // E10 zero-iff-exact: at every coordinate the app holds (0, 1, the 3dp grid, the game's own roots and
 // their midpoints), EA/EB are 0 exactly when the exact payoff is 0, and a genuinely nonzero payoff below
 // the 1e-9 dust band (±0.001 cells at roots near 5e-6) is never zeroed.
@@ -421,4 +459,4 @@ if (failed.length) {
   for (const k of failed) console.error(`  ✗ ${k}: ${fails[k]} failure(s); first: ${firstFail[k]}`);
   process.exit(1);
 }
-console.log(`✓ mathexact: ${checks} checks over ${games} games (${mixed} mixed, ${continua} continua, ${boundary} boundary roots, ${wordHits} fraction words, ${payloadHits} payloads, E9 ${JSON.stringify(e9)}, E11 ${JSON.stringify(e11)}) agree with the exact rational oracle`);
+console.log(`✓ mathexact: ${checks} checks over ${games} games (${mixed} mixed, ${continua} continua, ${boundary} boundary roots, ${wordHits} fraction words, ${payloadHits} payloads, E9 ${JSON.stringify(e9)}, E11 ${JSON.stringify(e11)}, E12 ${JSON.stringify(e12)}) agree with the exact rational oracle`);

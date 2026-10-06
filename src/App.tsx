@@ -1579,7 +1579,9 @@ export default function App() {
     if (parseNumericInput(raw) !== committed) {
       // not-a-rendering: rewriting the INPUT FIELD when it misrepresents the
       // committed value; the readout beside it formats through fmtProbFixed.
-      (axis === 'x' ? setX0 : setY0)(committed.toFixed(3));
+      // Off the 3-dp grid the box states the committed 6-dp value itself: "0.123" for
+      // "0.12345678" would move the run 4.6e-4 off what was typed (F14).
+      (axis === 'x' ? setX0 : setY0)(committed === r3(committed) ? committed.toFixed(3) : String(committed));
     }
     // RED-APP-21/001: blur has made the box agree with what the run will use,
     // so this axis's range hint has nothing left to warn about.

@@ -770,7 +770,7 @@ jobs:
           COLORTERMS_RACE_PORT: '3182'
 
   e2e_smoke:
-    name: e2e smoke (${{ matrix.shard }}/38)
+    name: e2e smoke (${{ matrix.shard }}/39)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: [build, browser_deps]
@@ -779,7 +779,7 @@ jobs:
       # GitHub's "Re-run failed jobs" then re-runs only the failed matrix child.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
     steps:
       # First step: shard-cases.mjs clocks the job's wall from here against _ceiling_ms (sweep 3 F6).
       - name: Start the job clock
@@ -864,7 +864,7 @@ jobs:
             echo "smoke_outcome=pass" >> "$GITHUB_OUTPUT"
           fi
         env:
-          E2E_SHARD: ${{ matrix.shard }}/38
+          E2E_SHARD: ${{ matrix.shard }}/39
           E2E_PORT: 309${{ matrix.shard }}
           E2E_BASE: http://localhost:309${{ matrix.shard }}
 
@@ -879,7 +879,7 @@ jobs:
           node src/e2e/smoke.mjs 2>&1 | tee "$RUNNER_TEMP/e2e-smoke-47.log"
           node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-47.log"
           # Shard 24's section budget, charged this step's measured time, not its table entry.
-          env -u E2E_SECTION E2E_SHARD=24/38 node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-24.log" "$RUNNER_TEMP/e2e-smoke-47.log"
+          env -u E2E_SECTION E2E_SHARD=24/39 node src/e2e/shard-cases.mjs smoke "$RUNNER_TEMP/e2e-smoke-24.log" "$RUNNER_TEMP/e2e-smoke-47.log"
         env:
           E2E_SECTION: '47'
           E2E_SECTION47_NATURAL_STOP: '1'
@@ -894,8 +894,8 @@ jobs:
         with:
           name: e2e-failure-evidence-shard-${{ matrix.shard }}
           path: |
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-38_section-*-attempt-*.png
-            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-38_section-*-attempt-*.html
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-39_section-*-attempt-*.png
+            /tmp/e2e_smoke_failure_shard-${{ matrix.shard }}-of-39_section-*-attempt-*.html
             /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.png
             /tmp/e2e_smoke_failure_sections-47_section-47-attempt-*.html
             ${{ runner.temp }}/e2e-smoke-${{ matrix.shard }}.log

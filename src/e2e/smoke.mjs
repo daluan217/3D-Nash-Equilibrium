@@ -1399,9 +1399,11 @@ try {
   //      user got no indication the run had finished at all.
   //
   //      Fixture from src/test.ts's own testRedTeamFindings4():
-  //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 — settles at
-  //      (0,1) with regret ~18 for A under the app's own defaults
-  //      (firstMover A, shrink mode, step 0.1, x0=y0=0.217).
+  //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 settled at (0,1),
+  //      regret 18 for A. B is indifferent at x = 0; since math-loop-22 the tie
+  //      breaks toward the committed NE, so the run converges on (0,0), on the
+  //      x = 0 continuum, and no run settles off the equilibrium set (D8 in
+  //      mathdynamics.test.ts). The live region must state that, never "paused".
   section('21', 'settled live-region wording', async () => {
     const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
@@ -1447,10 +1449,11 @@ try {
     }
     const finalLive = await settledPage.evaluate(() =>
       document.querySelector('[aria-live="polite"][role="status"]')?.textContent ?? null);
-    record('visible pill reads "Settled (not an NE)" for the RED-APP-6/001 fixture',
-      pillText === 'Settled (not an NE)', `pillText=${JSON.stringify(pillText)}`);
-    record('live region announces the settled-not-NE state distinctly, not "Simulation paused."',
-      finalLive === 'Simulation settled — not a Nash equilibrium.', `finalLive=${JSON.stringify(finalLive)}`);
+    record('visible pill reads "Converged" for the RED-APP-6/001 fixture (it once settled at the non-NE (0,1))',
+      pillText === 'Converged', `pillText=${JSON.stringify(pillText)}`);
+    record('live region announces the run\'s terminal state (continuum at (0,0)), not "Simulation paused."',
+      finalLive === 'Settled on the equilibrium continuum at x=0, y=0: A continuum of equilibria: A plays Row 2 while B mixes with y anywhere from 0 to 0.357.',
+      `finalLive=${JSON.stringify(finalLive)}`);
 
     await settledPage.close();
   });
@@ -12314,7 +12317,9 @@ const suggestedScenario = {
   // matrices: status, ground truth, claims and every number the prose states agree, and the prose is
   // byte-identical once the hosted side is handed the desktop's story. Then an Electron-UA page and a
   // plain page show the same panel, surfaces and rendered report for the same boxes.
-  section('111', 'the desktop and hosted builds state the same numbers for one game (report, panel, surfaces)', async () => {
+  // §111 ran 264.6 s on CI (shard 25/38), so its typed UI games split as §111b behind one body; the wire corpus runs once.
+  const DESKTOP_APP_BUTTON = 'button[aria-label="Get the desktop app"], button[title="Download macOS Desktop App"]';
+  const parityAt = (sid) => async () => {
     const portBase = Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000;
     const deskBase = `http://127.0.0.1:${portBase + 5}`, webBase = `http://127.0.0.1:${portBase + 6}`;
     const root = path.resolve(import.meta.dirname, '../..');
@@ -12354,6 +12359,7 @@ const suggestedScenario = {
         { a11: 0.05, a12: 0.1, a21: 0.1, a22: -0.01, b11: 0.03, b12: -0.06, b21: -0.06, b22: 0 });  // F2
       const reach = { ok: 0, tie: 0, plain: 0, story: 0, raw: 0, bounds: 0 };
       const diffs = [], proseDiffs = [];
+      if (sid === '111') {
       for (const g of games) {
         const [d, w] = [await post(deskBase, g), await post(webBase, g)];
         if (d.status === 200 && w.status === 200 && d.json?.source === 'template' && w.json?.source === 'template') reach.ok++;
@@ -12377,6 +12383,7 @@ const suggestedScenario = {
         proseDiffs.length === 0, `${proseDiffs.length} differ\n${proseDiffs.join('\n')}`);
       record('§111 wire reach: ties, plain games, raw floats the server must round, sub-resolution bounds and bank stories all occurred',
         reach.tie >= 40 && reach.plain >= 100 && reach.raw >= 30 && reach.bounds >= 1 && reach.story >= 200, JSON.stringify(reach));
+      }
 
       // ── the UI: an Electron-UA page on the desktop server, a plain page on the hosted one ──
       const errorsBefore = consoleErrors.length;
@@ -12391,8 +12398,9 @@ const suggestedScenario = {
         pages.push(pg);
       }
       record('§111 precondition: the desktop page runs as Electron (no "Get the desktop app" button), the hosted page does not',
-        await pages[0].getByRole('button', { name: /get (?:the )?desktop app/i }).count() === 0
-        && await pages[1].getByRole('button', { name: /get (?:the )?desktop app/i }).count() > 0);
+        // Counted, never pressed: a role query reads as a press to controlcoverage. Both layouts:
+        // touch labels the button, the 1280px row titles it.
+        await pages[0].locator(DESKTOP_APP_BUTTON).count() === 0 && await pages[1].locator(DESKTOP_APP_BUTTON).count() > 0);
       const read = (pg) => pg.evaluate(() => {
         const gd = document.getElementById('plotly-3d-market-simulation');
         const z = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface')?.z;
@@ -12410,13 +12418,12 @@ const suggestedScenario = {
         return !!a && !!b && a[28][28] === v[0] && a[0][28] === v[2] && a[28][0] === v[4] && a[0][0] === v[6]
           && b[28][28] === v[1] && b[0][28] === v[3] && b[28][0] === v[5] && b[0][0] === v[7];
       }, null, { timeout: 15000 }).then(() => true, () => false);
-      const UI = [
-        ...['Search Game', 'Battle of the Sexes', 'Prisoners Dilemma', 'Cops & Robbers', 'Spy vs. Analyst', 'Penalty Kick'].map((preset) => ({ preset })),
+      const UI = sid === '111'
+        ? ['Search Game', 'Battle of the Sexes', 'Prisoners Dilemma', 'Cops & Robbers', 'Spy vs. Analyst', 'Penalty Kick'].map((preset) => ({ preset }))
         // F1/F2/the 5e-5 root are wire games above; here only what a page adds (a continuum bullet, a bound, the input door)
-        { tag: 'continuum', v: [1, 1, 0, 0, 1, 0, 1, 0] },
-        { tag: 'y* = 1/3001', v: [3, 0, 0, 0.001, 1, 3, 3, 1] },
-        { tag: 'typed past the grid and the clamp', v: ['1.23456', '-0.0004', '250', '-7.0005', '0.3333', '2.5e1', '-101', '0.0005'] },
-      ];
+        : [{ tag: 'continuum', v: [1, 1, 0, 0, 1, 0, 1, 0] },
+          { tag: 'y* = 1/3001', v: [3, 0, 0, 0.001, 1, 3, 3, 1] },
+          { tag: 'typed past the grid and the clamp', v: ['1.23456', '-0.0004', '250', '-7.0005', '0.3333', '2.5e1', '-101', '0.0005'] }];
       let uiOk = 0;
       for (const game of UI) {
         const tag = game.preset ?? game.tag;
@@ -12451,6 +12458,46 @@ const suggestedScenario = {
       for (const c of contexts) await c.close().catch(() => {});
       for (const p of [desk, web]) if (p.exitCode === null) { const exited = new Promise((r) => p.once('exit', r)); p.kill('SIGKILL'); await exited; }
       for (const d of dirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+    }
+  };
+  section('111', 'the desktop and hosted builds state the same numbers for one game (report, panel, surfaces)', async () => { await parityAt('111')(); });
+  section('111b', 'the desktop and hosted builds state the same numbers for typed games (continuum, bound, input door)', async () => { await parityAt('111b')(); });
+
+  // ══ 112. BLUE-LOOP-MATH-22 F14 — a typed start coordinate is held on the 1e-6 grid EA's exact
+  //      check reads truthfully. Game E[A] = 1 - 3x (A's rows constant across columns): typing
+  //      "0.3333333333333333" printed E[A] = 0 for a payoff that is not zero. Oracle: the rendered
+  //      readout and box text; the 0.25 arm (E[A] = 0.250, a 3-dp value) is the control, so a dead
+  //      locator fails it first. "0.12345678" checks the box states the held value, not "0.123".
+  section('112', 'a typed start coordinate prints its own payoff and the box states the held value', async () => {
+    const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(p, '§112 setup: clear a possible tour before typing');
+      const G = [-2, 0, -2, 0, 1, 0, 1, 0]; // a11,b11,a12,b12,a21,b21,a22,b22
+      for (let i = 0; i < 8; i++) { const el = p.locator('input[aria-label$="payoff"]').nth(i); await el.fill(String(G[i])); await el.blur(); }
+      const readEA = (want) => p.waitForFunction((w) => {
+        for (const s of document.querySelectorAll('span')) {
+          if ((s.textContent || '').trim() === 'Expected Payoff E[A]') {
+            const t = (s.parentElement?.querySelector('span.font-mono')?.textContent || '').trim();
+            return w === null || t === w ? t : false;
+          }
+        }
+        return false;
+      }, want, { timeout: 8000 }).then((h) => h.jsonValue(), () => null);
+      const x0 = p.locator('#field-coords-x0');
+      for (const [typed, ea, box] of [
+        ['0.25', '0.250', '0.25'],                                  // CONTROL
+        ['0.3333333333333333', 'less than 0.001', '0.333333'],      // F14 verbatim
+        ['0.12345678', '0.630', '0.123457'],
+      ]) {
+        await x0.fill(typed); await x0.blur();
+        const shown = (await readEA(ea)) ?? (await readEA(null));
+        record(`§112 E[A] readout for x₀=${typed} reads ${JSON.stringify(ea)}`, shown === ea, `got ${JSON.stringify(shown)}`);
+        const kept = await x0.inputValue();
+        record(`§112 after blur the x₀ box states the held ${box}`, kept === box, `field=${JSON.stringify(kept)}`);
+      }
+    } finally {
+      await p.close().catch(() => {});
     }
   });
 
