@@ -16,6 +16,7 @@ import {
   doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
   EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtPayoff, commitPayoffs,
+  precomputeThinHistory, replayToStep,
 } from './utils/gameEngine';
 import { makeTraces, buildSurfaces } from './utils/plotting';
 import type { GamePayoffs, NashEquilibrium, SimState } from './types';
@@ -581,6 +582,33 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D13 reach: path, ghost-path and on-surface line points all drawn', reach13.frames >= 4000 && reach13.ghostPts >= 2000 && reach13.lines >= 2000 && reach13.tracePts >= 500000, JSON.stringify(reach13));
+}
+
+// ── D14 (sweep 9, empty probe checked in): "1st NE Coord" lands on the frame "Go to step N" shows ──
+// The button restores precomputeThinHistory's neState copy; Go-to-step replays. A copy that aliased the live
+// path arrays (later steps write into it) or a snapshot taken a step late would show a frame the run never had.
+{
+  const r14 = mulberry32(0xd14), V = [-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25], pk = <T,>(a: T[]) => a[Math.floor(r14() * a.length)];
+  let snaps = 0;
+  for (let i = 0; i < 1200; i++) {
+    const g = commitPayoffs(Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, pk(V)])) as unknown as GamePayoffs);
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const step = pk([0.1, 0.333, 0.05, 0.25]), init = makeState(pk([0.217, 0, 1, 0.9]), pk([0.217, 0, 1, 0.1]), g);
+      const { neState } = precomputeThinHistory(init, g, mover, step, all, committed, mode);
+      if (!neState) continue;
+      snaps++;
+      const at = `${mode} ${mover} step ${step} @${neState.stepCount} ${JSON.stringify(g)}`;
+      const rep = replayToStep(init, neState.stepCount, g, mover, step, all, committed, mode), before = replayToStep(init, neState.stepCount - 1, g, mover, step, all, committed, mode);
+      const bad = (Object.keys({ ...rep, ...neState }) as (keyof SimState)[]).filter((k) => k !== 'running' && JSON.stringify(rep[k]) !== JSON.stringify(neState[k]));
+      check('D14 the 1st-NE-coordinate snapshot is the replayed state at its step', bad.length === 0, `${at} fields ${bad}`);
+      check('D14 the snapshot is the FIRST step with a coordinate found', before.discoveredMixedX === null && before.discoveredMixedY === null, at);
+      const tr = (s: SimState) => JSON.stringify((makeTraces(dummySurf, g, { ...s, running: false }, 'both', all, false, mode) as any[]).map((t) => [t.name, t.x, t.y, t.z]));
+      check('D14 the snapshot draws the replayed frame', tr(rep) === tr(neState), at);
+    }
+  }
+  check('D14 reach: first-coordinate snapshots occurred', snaps >= 250, `${snaps}`);   // measured 292
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
