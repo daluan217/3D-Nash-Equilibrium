@@ -1632,16 +1632,16 @@ export default function App() {
     converged: false,
     stepCount: 0,
     pathSegmentsA: [{
-      xs: [0.217], ys: [0.217], zs: [r3(EA(0.217, 0.217, {
+      xs: [0.217], ys: [0.217], zs: [EA(0.217, 0.217, {
         a11: 2, b11: 1, a12: 0, b12: 0,
         a21: 0, b21: 0, a22: 1, b22: 2,
-      }))], mover: 'A'
+      })], mover: 'A'
     }],
     pathSegmentsB: [{
-      xs: [0.217], ys: [0.217], zs: [r3(EB(0.217, 0.217, {
+      xs: [0.217], ys: [0.217], zs: [EB(0.217, 0.217, {
         a11: 2, b11: 1, a12: 0, b12: 0,
         a21: 0, b21: 0, a22: 1, b22: 2,
-      }))], mover: 'A'
+      })], mover: 'A'
     }],
     phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [],
@@ -2544,8 +2544,8 @@ export default function App() {
       const startValX = commitStartCoordinate(rp.x0);
       const startValY = commitStartCoordinate(rp.y0);
 
-      const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, payoffs))], mover: 'A' as const };
-      const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, payoffs))], mover: 'A' as const };
+      const initSegA = { xs: [startValX], ys: [startValY], zs: [EA(startValX, startValY, payoffs)], mover: 'A' as const };
+      const initSegB = { xs: [startValX], ys: [startValY], zs: [EB(startValX, startValY, payoffs)], mover: 'A' as const };
 
       const initState: SimState = {
         ...simState,

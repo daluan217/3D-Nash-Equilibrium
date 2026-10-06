@@ -4,7 +4,7 @@
  */
 
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
-import { EA, EB, r3, equilibriumSet, kindOf, pointInRect, fmtProb, fmtPayoff, shownPoint } from './gameEngine';
+import { EA, EB, equilibriumSet, kindOf, pointInRect, fmtProb, fmtPayoff, shownPoint } from './gameEngine';
 
 export interface SurfaceData {
   xs: number[];
@@ -427,7 +427,7 @@ export function makeTraces(
     const fXa: number[] = [], fYa: number[] = [], fZa: number[] = [];
     for (let i = 0; i <= FLAT_STEPS; i++) {
       const xi = i / FLAT_STEPS;
-      fXa.push(xi); fYa.push(yStar); fZa.push(r3(EA(xi, yStar, g)));
+      fXa.push(xi); fYa.push(yStar); fZa.push(EA(xi, yStar, g));   // exact: an r3 z stepped the flat line (S13)
     }
     // White casing under the indifference/strategy lines. They lie on top of
     // the A-Moves/B-Moves path stripes and were getting lost in them; a halo
@@ -456,7 +456,7 @@ export function makeTraces(
     const fXb: number[] = [], fYb: number[] = [], fZb: number[] = [];
     for (let i = 0; i <= FLAT_STEPS; i++) {
       const yi = i / FLAT_STEPS;
-      fXb.push(xStar); fYb.push(yi); fZb.push(r3(EB(xStar, yi, g)));
+      fXb.push(xStar); fYb.push(yi); fZb.push(EB(xStar, yi, g));
     }
     traces.push({
       type: 'scatter3d', mode: 'lines', name: 'B indifferent (x = x*)', showlegend: false,
@@ -491,8 +491,10 @@ export function makeTraces(
     // Representative mix = each player's domain midpoint (hi+lo)/2, which eases
     // toward its own NE coordinate as that domain contracts — so each line
     // flattens gradually, one cycle at a time, instead of snapping.
-    const xRep = s.discoveredMixedX ?? r3((s.domXLo + s.domXHi) / 2);
-    const yRep = s.discoveredMixedY ?? r3((s.domYLo + s.domYHi) / 2);
+    // The legend names this "mid-domain": the sphere does best-response cycling at the box corners, so
+    // "at current y" named a y the sphere was not at (S13).
+    const xRep = s.discoveredMixedX ?? (s.domXLo + s.domXHi) / 2;
+    const yRep = s.discoveredMixedY ?? (s.domYLo + s.domYHi) / 2;
     // "indifferent (y = y*)" is a claim about y*: make it only once the run has declared that
     // coordinate. A 1% flatness band named the reset midpoint 0.5 "y = y*" for y* = 0.497 (F8).
     const aFlat = s.discoveredMixedY !== null;
@@ -502,18 +504,18 @@ export function makeTraces(
       const xs: number[] = [], ys: number[] = [], zs: number[] = [];
       for (let i = 0; i <= FLAT_STEPS; i++) {
         const xi = i / FLAT_STEPS;
-        xs.push(xi); ys.push(yRep); zs.push(r3(EA(xi, yRep, g)));
+        xs.push(xi); ys.push(yRep); zs.push(EA(xi, yRep, g));
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at current y)',
+        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at mid-domain y)',
         showlegend: false,
         hoverinfo: 'skip', x: xs, y: ys, z: zs,
         line: { color: 'rgba(255,255,255,0.9)', width: aFlat ? 16 : 13 }
       });
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at current y)',
+        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at mid-domain y)',
         showlegend: true,
         x: xs, y: ys, z: zs,
         line: { color: '#7B241C', width: aFlat ? 10 : 8 }
@@ -523,18 +525,18 @@ export function makeTraces(
       const xs: number[] = [], ys: number[] = [], zs: number[] = [];
       for (let i = 0; i <= FLAT_STEPS; i++) {
         const yi = i / FLAT_STEPS;
-        xs.push(xRep); ys.push(yi); zs.push(r3(EB(xRep, yi, g)));
+        xs.push(xRep); ys.push(yi); zs.push(EB(xRep, yi, g));
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at current x)',
+        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at mid-domain x)',
         showlegend: false,
         hoverinfo: 'skip', x: xs, y: ys, z: zs,
         line: { color: 'rgba(255,255,255,0.9)', width: bFlat ? 16 : 13 }
       });
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at current x)',
+        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at mid-domain x)',
         showlegend: true,
         x: xs, y: ys, z: zs,
         line: { color: '#2563eb', width: bFlat ? 10 : 8 }

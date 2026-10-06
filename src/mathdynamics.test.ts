@@ -42,8 +42,8 @@ function makeState(x: number, y: number, g: GamePayoffs): SimState {
     visitedPositions: [], ghostVisitedPositions: [],
     discoveredMixedX: null, discoveredMixedY: null, foundAxis: null,
     running: false, converged: false, stepCount: 0,
-    pathSegmentsA: [{ xs: [x], ys: [y], zs: [r3(EA(x, y, g))], mover: 'A' }],
-    pathSegmentsB: [{ xs: [x], ys: [y], zs: [r3(EB(x, y, g))], mover: 'A' }],
+    pathSegmentsA: [{ xs: [x], ys: [y], zs: [EA(x, y, g)], mover: 'A' }],   // as App's reset (S13)
+    pathSegmentsB: [{ xs: [x], ys: [y], zs: [EB(x, y, g)], mover: 'A' }],
     phase1PtsA: null, phase1PtsB: null, ghostPathSegmentsA: [], ghostPathSegmentsB: [],
     cyclePattern: null, bisecting: false,
     bisectGoodLo: 0, bisectGoodHi: 1, bisectBadLo: 0, bisectBadHi: 1,
@@ -565,7 +565,7 @@ for (const [kind, cell] of Object.entries(KINDS)) {
           for (const seg of arr) seg.xs.forEach((x, j) => {
             const y = seg.ys[j], z = seg.zs[j]; reach13[key]++;
             check('D13 every recorded path point is in the unit square', x >= 0 && x <= 1 && y >= 0 && y <= 1, `${at} ${key} (${x}, ${y})`);
-            check('D13 every recorded path point is r3 of its own surface at its own (x, y)', z === r3(P(x, y, g)), `${at} ${key} (${x}, ${y}, ${z}) want ${r3(P(x, y, g))}`);
+            // r3 path z retired by D19 (sweep 13): the path carries the exact payoff now.
           });
         for (const t of makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[]) {
           if (t.type !== 'scatter3d' || !Array.isArray(t.x)) continue;
@@ -928,6 +928,80 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D18 reach: runs (both modes), locked frames, locked roots that r3 rounds to a vertex', reach18.runs >= 1200 && reach18.shrink >= 600 && reach18.regret >= 600 && reach18.locked >= 40000 && reach18.edge >= 8000, JSON.stringify(reach18));
+}
+
+// ── D19 (sweep 13): every line drawn ON a surface lies on it exactly, and the strategy line's legend says where ──
+// Visible: the regret strategy line sits at the domain midpoint, but its legend said "at current y". Data-level
+// (sub-pixel: the domain box pads z by 0.3): an r3 z put path points off their surface and stepped the
+// declared-flat "A indifferent" line (-0.238/-0.237).
+{
+  // Ghost line names are the MOVER, drawn on both surfaces: either surface may own one (state z is pinned below).
+  const lineOn = (t: any): 'A' | 'B' | 'AB' | null => /^(A strategy line|A indifferent)/.test(t.name) ? 'A'
+    : /^(B strategy line|B indifferent)/.test(t.name) ? 'B' : /^[AB] moves \(Ghost\)$/.test(t.name) ? 'AB' : null;
+  const spread = (z: number[]) => Math.max(...z) - Math.min(...z);
+  const offBy = (t: any, g: GamePayoffs, P: typeof EA) => Math.max(0, ...t.z.map((z: number, j: number) => Number.isFinite(z) ? Math.abs(z - P(t.x[j], t.y[j], g)) : 0));
+  const tilt = (t: any, g: GamePayoffs) => lineOn(t) === 'A' ? EA(1, t.y[0], g) - EA(0, t.y[0], g) : EB(t.x[0], 1, g) - EB(t.x[0], 0, g);
+  // Verbatim: the sweep-13 flat-line fixture, regret mover A step 0.05 start (0.9, 0.1), frame 6 declares y* = 0.5375.
+  const f1: GamePayoffs = { a11: -0.7, a12: 0.3, a21: 3, a22: -4, b11: -2, b12: -3, b21: 0.3, b22: 1 };
+  const s1 = makeState(0.9, 0.1, f1), all1 = computeAllNE(f1);
+  for (let k = 0; k < 6; k++) doStep(f1, s1, 'A', 0.05, all1, null, () => {}, () => {}, () => {}, 'regret');
+  const ai = (makeTraces(dummySurf, f1, s1, 'both', all1, false, 'regret') as any[]).find((t) => t.showlegend && t.name === 'A indifferent (y = y*)');
+  check('D19 precondition: the fixture declares y* = 0.5375 at frame 6, a half-way thousandth (cannot pass by an exact r3)',
+    s1.discoveredMixedY === 0.5375 && computeMixedNE(f1)!.y === 0.5375 && !!ai, JSON.stringify({ y: s1.discoveredMixedY }));
+  check('D19 verbatim: the declared-flat "A indifferent (y = y*)" line is level to 1e-12 (was -0.238 and -0.237)',
+    !!ai && spread(ai.z) <= 1e-12, JSON.stringify(ai && [...new Set(ai.z)]));
+  // Verbatim: a game whose whole z range is 0.002; r3 drew the first A move at z 0.002 -> 0.003.
+  const f2: GamePayoffs = { a11: 0.002, a12: 0.003, a21: 0.002, a22: 0.002, b11: 0.001, b12: 0.002, b21: 0.002, b22: 0.002 };
+  const s2 = makeState(0.217, 0.217, f2);
+  doStep(f2, s2, 'A', 0.25, computeAllNE(f2), null, () => {}, () => {}, () => {}, 'shrink');
+  check('D19 verbatim: the first A move on a 0.002-range game is drawn at its exact payoffs, not r3 0.002/0.003',
+    JSON.stringify(s2.pathSegmentsA.at(-1)!.zs) === JSON.stringify([EA(0.217, 0.217, f2), EA(1, 0.217, f2)]), JSON.stringify(s2.pathSegmentsA));
+  const src = readFileSync(new URL('./utils/plotting.ts', import.meta.url), 'utf8') + readFileSync(new URL('./components/PlotlyView.tsx', import.meta.url), 'utf8');
+  check('D19 no legend calls the regret strategy line "at current y/x" (it is drawn at the domain midpoint)',
+    !/at current [xy]\)/.test(src) && (src.match(/strategy line \(E\[[AB]\] at mid-domain [xy]\)/g) ?? []).length === 6);
+  const r19 = mulberry32(0xd19), pk = <T,>(a: T[]) => a[Math.floor(r19() * a.length)];
+  const SC = [[-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 7, -4], [0.001, -0.001, 0, 0.002, -0.002, 0.003, -0.004], [0.01, -0.01, 0.02, 0, -0.03, 0.007], [100, -100, 50, 0, -37.5, 99.999]];
+  const reach19 = { frames: 0, pathPts: 0, lines: 0, flat: 0, strat: 0, tiny: 0 };
+  for (let i = 0; i < 700; i++) {
+    const V = SC[i % 4], g = commitPayoffs(Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, pk(V)])) as unknown as GamePayoffs);
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    if (!all.length) continue;
+    const zR = Math.max(...[0, 1].flatMap((x) => [0, 1].flatMap((y) => [EA(x, y, g), EB(x, y, g)]))) - Math.min(...[0, 1].flatMap((x) => [0, 1].flatMap((y) => [EA(x, y, g), EB(x, y, g)])));
+    const eps = 1e-12 * Math.max(1, zR);
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const s = makeState(pk([0.217, 0, 1, 0.9, 0.5]), pk([0.217, 0, 1, 0.1, 0.5]), g), step = pk([0.1, 0.333, 0.05, 0.25]);
+      for (let k = 0; k < 600 && !s.converged; k++) {
+        doStep(g, s, mover, step, all, committed, () => {}, () => {}, () => {}, mode);
+        if (k % 3 && !s.converged) continue;
+        reach19.frames++; if (zR < 0.01) reach19.tiny++;
+        const at = `${mode} ${mover} step ${step} start (${s.startX},${s.startY}) ${JSON.stringify(g)} k ${k + 1} zRange ${zR}`;
+        for (const [arr, P] of [[s.pathSegmentsA, EA], [s.pathSegmentsB, EB], [s.ghostPathSegmentsA, EA], [s.ghostPathSegmentsB, EB]] as const)
+          for (const seg of arr) seg.xs.forEach((x, j) => {
+            reach19.pathPts++;
+            check('D19 every recorded path point is its own surface\'s exact payoff (no r3 z)', Math.abs(seg.zs[j] - P(x, seg.ys[j], g)) <= eps, `${at} (${x}, ${seg.ys[j]}, ${seg.zs[j]}) want ${P(x, seg.ys[j], g)}`);
+          });
+        for (const t of makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[]) {
+          const p = t.type === 'scatter3d' && t.mode === 'lines' ? lineOn(t) : null;
+          if (!p) continue;
+          reach19.lines++;
+          const off = p === 'AB' ? Math.min(offBy(t, g, EA), offBy(t, g, EB)) : offBy(t, g, p === 'A' ? EA : EB);
+          check('D19 a line drawn on a surface carries that surface\'s exact z at every point', off <= eps, `${at} "${t.name}" off ${off}`);
+          if (/indifferent/.test(t.name)) {
+            reach19.flat++;
+            check('D19 a line named "indifferent" is drawn level where the surface is level', spread(t.z) <= eps && Math.abs(tilt(t, g)) <= eps, `${at} "${t.name}" z {${[...new Set(t.z)].join(',')}} tilt ${tilt(t, g)}`);
+          }
+          if (/strategy line/.test(t.name)) {
+            reach19.strat++;
+            const mid = p === 'A' ? (s.domYLo + s.domYHi) / 2 : (s.domXLo + s.domXHi) / 2, at0 = p === 'A' ? t.y[0] : t.x[0];
+            check('D19 the "mid-domain" strategy line is drawn at the domain midpoint', at0 === mid, `${at} "${t.name}" at ${at0} mid ${mid}`);
+          }
+        }
+      }
+    }
+  }
+  check('D19 reach: frames, path points, lines, flat lines, strategy lines, tiny-range frames',
+    reach19.frames >= 7000 && reach19.pathPts >= 550000 && reach19.lines >= 6500 && reach19.flat >= 1100 && reach19.strat >= 4000 && reach19.tiny >= 1500, JSON.stringify(reach19));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────

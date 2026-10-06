@@ -127,8 +127,8 @@ export const TRACE = {
   startPoint: 'Starting Point',
   posA: 'Current position (A)',
   posB: 'Current position (B)',
-  strategyA: 'A strategy line (E[A] at current y)',
-  strategyB: 'B strategy line (E[B] at current x)',
+  strategyA: 'A strategy line (E[A] at mid-domain y)',
+  strategyB: 'B strategy line (E[B] at mid-domain x)',
 } as const;
 
 const DEFAULT_CAMERA = { eye: { x: 1.6, y: -1.6, z: 1.1 } };

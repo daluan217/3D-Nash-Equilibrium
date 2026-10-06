@@ -1427,7 +1427,7 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
     if (nA >= 0) {
       if (mover === 'A') lastA.xs[nA] = s.cx;
       else lastA.ys[nA] = s.cy;
-      lastA.zs[nA] = r3(EA(lastA.xs[nA], lastA.ys[nA], g));
+      lastA.zs[nA] = EA(lastA.xs[nA], lastA.ys[nA], g);
     }
   }
   if (s.pathSegmentsB.length > 0) {
@@ -1436,7 +1436,7 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
     if (nB >= 0) {
       if (mover === 'A') lastB.xs[nB] = s.cx;
       else lastB.ys[nB] = s.cy;
-      lastB.zs[nB] = r3(EB(lastB.xs[nB], lastB.ys[nB], g));
+      lastB.zs[nB] = EB(lastB.xs[nB], lastB.ys[nB], g);
     }
   }
 }
@@ -1573,7 +1573,8 @@ export function pickShrinkStep(
 function drawMoveTo(s: SimState, g: GamePayoffs, x: number, y: number, mover: 'A' | 'B') {
   const seg = s.pathSegmentsA[s.pathSegmentsA.length - 1], n = seg ? seg.xs.length - 1 : -1;
   const tx = n >= 0 ? seg.xs[n] : x, ty = n >= 0 ? seg.ys[n] : y;
-  const at = (px: number, py: number, who: 'A' | 'B') => pushToSegs(s, px, py, r3(EA(px, py, g)), r3(EB(px, py, g)), who);
+  // Exact z: a path point lies on its surface (an r3 z did not; S13).
+  const at = (px: number, py: number, who: 'A' | 'B') => pushToSegs(s, px, py, EA(px, py, g), EB(px, py, g), who);
   if (mover === 'A' ? y === ty : x === tx) return at(x, y, mover);
   if (mover === 'A' ? x !== tx : y !== ty) at(mover === 'A' ? x : tx, mover === 'A' ? ty : y, mover);
   at(x, y, mover === 'A' ? 'B' : 'A');
@@ -2053,10 +2054,10 @@ export function doStep(
       const isBMove = Math.abs(prevGY - nextGY) > 1e-7;
       if (isAMove || isBMove) {
         const ghMover = isAMove ? 'A' : 'B';
-        const ea1 = r3(EA(prevGX, prevGY, g));
-        const ea2 = r3(EA(nextGX, nextGY, g));
-        const eb1 = r3(EB(prevGX, prevGY, g));
-        const eb2 = r3(EB(nextGX, nextGY, g));
+        const ea1 = EA(prevGX, prevGY, g);
+        const ea2 = EA(nextGX, nextGY, g);
+        const eb1 = EB(prevGX, prevGY, g);
+        const eb2 = EB(nextGX, nextGY, g);
 
         s.ghostPathSegmentsA.push({
           xs: [prevGX, nextGX],
