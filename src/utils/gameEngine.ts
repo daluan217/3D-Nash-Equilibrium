@@ -1026,6 +1026,9 @@ function brB(g: GamePayoffs): Rect[] {
   return out;
 }
 
+/** Each player's best-reply set (A: x given y; B: y given x) — what a drawing of the replies must show. */
+export const bestReplySets = (g: GamePayoffs): { A: Rect[]; B: Rect[] } => ({ A: brA(g), B: brB(g) });
+
 const intersect = (p: Rect, q: Rect): Rect | null => {
   const x0 = Math.max(p.x0, q.x0), x1 = Math.min(p.x1, q.x1);
   const y0 = Math.max(p.y0, q.y0), y1 = Math.min(p.y1, q.y1);

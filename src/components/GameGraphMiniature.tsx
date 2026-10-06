@@ -5,7 +5,7 @@
 
 import React, { useMemo } from 'react';
 import { GamePayoffs } from '../types';
-import { computeAllNE } from '../utils/gameEngine';
+import { bestReplySets, computeAllNE, kindOf } from '../utils/gameEngine';
 
 interface GameGraphMiniatureProps {
   payoffs: GamePayoffs;
@@ -21,24 +21,9 @@ export const GameGraphMiniature: React.FC<GameGraphMiniatureProps> = ({ payoffs,
     }
   }, [payoffs]);
 
-  // Compute indifference thresholds for the stylized best response lines
-  // Player A is indifferent at y_indiff
-  const yIndiff = useMemo(() => {
-    const num = payoffs.a22 - payoffs.a12;
-    const den = payoffs.a11 - payoffs.a21 - payoffs.a12 + payoffs.a22;
-    if (Math.abs(den) < 1e-5) return null;
-    const val = num / den;
-    return val >= 0 && val <= 1 ? val : null;
-  }, [payoffs]);
-
-  // Player B is indifferent at x_indiff
-  const xIndiff = useMemo(() => {
-    const num = payoffs.b22 - payoffs.b21;
-    const den = payoffs.b11 - payoffs.b12 - payoffs.b21 + payoffs.b22;
-    if (Math.abs(den) < 1e-5) return null;
-    const val = num / den;
-    return val >= 0 && val <= 1 ? val : null;
-  }, [payoffs]);
+  // The solver's best-reply sets, not a quotient of our own: that one drew a player indifferent
+  // everywhere as "always Row 2" and dropped an indifference at an edge (BLUE-LOOP-MATH-22 F7).
+  const replies = useMemo(() => bestReplySets(payoffs), [payoffs]);
 
   // Coordinates mapping: Grid is 0..1 in x, 0..1 in y
   // SVG viewport size: 120x120. Boundary padding is 15px.
@@ -103,51 +88,17 @@ export const GameGraphMiniature: React.FC<GameGraphMiniatureProps> = ({ payoffs,
         />
 
         {/* Stylized Best-Response Curves */}
-        {/* Player A (Row): controls x (Row 1 is x=1, Row 2 is x=0) */}
-        {yIndiff !== null ? (
-          // Under indifferent threshold: one side x=0, other side x=1
-          <path
-            d={`M ${mapX(payoffs.a12 > payoffs.a22 ? 1 : 0)} 105 L ${mapX(payoffs.a12 > payoffs.a22 ? 1 : 0)} ${mapY(yIndiff)} L ${mapX(payoffs.a11 > payoffs.a21 ? 1 : 0)} ${mapY(yIndiff)} L ${mapX(payoffs.a11 > payoffs.a21 ? 1 : 0)} 15`}
-            fill="none"
-            stroke="#f43f5e"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ) : (
-          // Dominant strategy or flat
-          <line
-            x1={mapX(payoffs.a11 + payoffs.a12 > payoffs.a21 + payoffs.a22 ? 1 : 0)}
-            y1="15"
-            x2={mapX(payoffs.a11 + payoffs.a12 > payoffs.a21 + payoffs.a22 ? 1 : 0)}
-            y2="105"
-            stroke="#f43f5e"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-          />
-        )}
-
-        {/* Player B (Col): controls y (Col 1 is y=1, Col 2 is y=0) */}
-        {xIndiff !== null ? (
-          <path
-            d={`M 15 ${mapY(payoffs.b21 > payoffs.b22 ? 1 : 0)} L ${mapX(xIndiff)} ${mapY(payoffs.b21 > payoffs.b22 ? 1 : 0)} L ${mapX(xIndiff)} ${mapY(payoffs.b11 > payoffs.b12 ? 1 : 0)} L 105 ${mapY(payoffs.b11 > payoffs.b12 ? 1 : 0)}`}
-            fill="none"
-            stroke="#3b82f6"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ) : (
-          <line
-            x1="15"
-            y1={mapY(payoffs.b11 + payoffs.b21 > payoffs.b12 + payoffs.b22 ? 1 : 0)}
-            x2="105"
-            y2={mapY(payoffs.b11 + payoffs.b21 > payoffs.b12 + payoffs.b22 ? 1 : 0)}
-            stroke="#3b82f6"
-            strokeWidth="1.75"
-            strokeLinecap="round"
-          />
-        )}
+        {/* Player A (Row, rose) picks x; Player B (Col, blue) picks y. An area = indifferent everywhere. */}
+        {(['A', 'B'] as const).map((p) => replies[p].map((r, i) => {
+          const colour = p === 'A' ? '#f43f5e' : '#3b82f6';
+          return kindOf(r) === 'area' ? (
+            <rect key={p + i} x={mapX(r.x0)} y={mapY(r.y1)} width={(r.x1 - r.x0) * 90} height={(r.y1 - r.y0) * 90}
+              fill={colour} fillOpacity="0.18" rx="6" />
+          ) : (
+            <line key={p + i} x1={mapX(r.x0)} y1={mapY(r.y0)} x2={mapX(r.x1)} y2={mapY(r.y1)}
+              stroke={colour} strokeWidth="1.75" strokeLinecap="round" />
+          );
+        }))}
 
         {/* Draw plotted Nash Equilibria */}
         {allNE.map((ne, idx) => {
