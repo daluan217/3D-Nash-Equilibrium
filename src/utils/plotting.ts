@@ -319,7 +319,8 @@ export function makeTraces(
 
       // --- Rendering on surface A ---
       if (trackingMode === 'A' || trackingMode === 'both') {
-        const zCurrentA = r3(EA(gx, gy, g));
+        // Unrounded: this z is the sphere's hover payoff, and r3 printed 0.000466 as "0" (F11).
+        const zCurrentA = EA(gx, gy, g);
 
         // Connecting lines for Ghost path segments on surface A
         s.ghostPathSegmentsA.forEach(seg => {
@@ -366,7 +367,7 @@ export function makeTraces(
 
       // --- Rendering on surface B ---
       if (trackingMode === 'B' || trackingMode === 'both') {
-        const zCurrentB = r3(EB(gx, gy, g));
+        const zCurrentB = EB(gx, gy, g);
 
         // Connecting lines for Ghost path segments on surface B
         s.ghostPathSegmentsB.forEach(seg => {

@@ -141,12 +141,54 @@ export const PRESETS: Record<string, PresetGame> = {
 };
 
 // ── Payoff functions ─────────────────────────────────────────────────────────
+// A payoff EXACTLY 0 at a point the app holds exactly returns 0, not float dust: a mixed NE's
+// exact zero printed "E[A]=less than 0.001" (BLUE-LOOP-MATH-22 F10). Dust is < 1e-12, so the
+// exact check only runs below 1e-9 and a nonzero value is never touched.
 export function EA(x: number, y: number, g: GamePayoffs): number {
-  return x * y * g.a11 + x * (1 - y) * g.a12 + (1 - x) * y * g.a21 + (1 - x) * (1 - y) * g.a22;
+  const v = x * y * g.a11 + x * (1 - y) * g.a12 + (1 - x) * y * g.a21 + (1 - x) * (1 - y) * g.a22;
+  return v !== 0 && Math.abs(v) < 1e-9 && exactlyZero(x, y, g, [g.a11, g.a12, g.a21, g.a22]) ? 0 : v;
 }
 
 export function EB(x: number, y: number, g: GamePayoffs): number {
-  return x * y * g.b11 + x * (1 - y) * g.b12 + (1 - x) * y * g.b21 + (1 - x) * (1 - y) * g.b22;
+  const v = x * y * g.b11 + x * (1 - y) * g.b12 + (1 - x) * y * g.b21 + (1 - x) * (1 - y) * g.b22;
+  return v !== 0 && Math.abs(v) < 1e-9 && exactlyZero(x, y, g, [g.b11, g.b12, g.b21, g.b22]) ? 0 : v;
+}
+
+const milli = (v: number): number | null => { const m = Math.round(v * 1000); return Math.abs(v * 1000 - m) < 1e-6 ? m : null; };
+/** The rational a value stands for: its 3dp decimal when it is one, else the float's own exact binary value. */
+function exactOf(v: number): [bigint, bigint] {
+  const m = milli(v);
+  if (m !== null && m / 1000 === v) return [BigInt(m), 1000n];
+  let d = 1n;
+  while (!Number.isInteger(v)) { v *= 2; d *= 2n; }
+  return [BigInt(v), d];
+}
+/**
+ * A probability as the rational the app means by it: the one with denominator ≤ 1e6 within 2^-50
+ * (roots have denominators ≤ 4e5, continuum midpoints ≤ 8e5, grid 1000; two such rationals are
+ * ≥ 1e-12 apart, so the match is unique), found among the continued-fraction convergents.
+ * ponytail: a float that is not such a rational but lies within 2^-50 of one reads as it.
+ */
+function ratOf(v: number): [bigint, bigint] {
+  const [n, d] = exactOf(v);
+  if (v < 0 || v > 1) return [n, d];
+  let a = n, b = d, h0 = 0n, h = 1n, k0 = 1n, k = 0n;
+  while (b !== 0n) {
+    const q = a / b;
+    [h0, h, k0, k] = [h, q * h + h0, k, q * k + k0];
+    if (k > 1000000n) break;
+    const err = h * d - n * k;
+    if ((err < 0n ? -err : err) * 2n ** 50n <= d * k) return [h, k];
+    [a, b] = [b, a - q * b];
+  }
+  return [n, d];
+}
+/** Exact (BigInt) test that the payoff with cells c is 0 at (x, y). */
+function exactlyZero(x: number, y: number, g: GamePayoffs, c: number[]): boolean {
+  const [xn, xd] = ratOf(x), [yn, yd] = ratOf(y);
+  const k = c.map(exactOf), D = k.reduce((a, [, d]) => a * d, 1n);   // a common denominator
+  const [k11, k12, k21, k22] = k.map(([n, d]) => n * (D / d));
+  return xn * (yn * k11 + (yd - yn) * k12) + (xd - xn) * (yn * k21 + (yd - yn) * k22) === 0n;
 }
 
 // ── Regret (independent NE oracle) ────────────────────────────────────────────

@@ -231,10 +231,16 @@ function testSimLogAgreesWithGroundTruth() {
     ok(st.converged, 'Repro B fixture must converge within 200 steps');
     const headline = captured.map((c) => c.line).filter((l) => l.startsWith('━━')).pop();
     ok(!!headline, `Repro B fixture: no convergence headline in log: ${JSON.stringify(captured.map((c) => c.line))}`);
-    ok(headline!.includes('E[B]=less than 0.001'),
-      `Repro B fixture: convergence headline must state "E[B]=less than 0.001" (true E[B]=0.00025, nonzero); got "${headline}"`);
-    ok(!headline!.includes('E[B]=0.000'),
-      `Repro B fixture: convergence headline must NOT claim E[B]=0.000 — that is false; got "${headline}"`);
+    // The headline is evaluated at the exact NE (1/3, 1/4), where E[B] = (−8 + 6 + 8 − 6)/12 = 0
+    // exactly, so "0" is honest there (it printed "less than 0.001", BLUE-LOOP-MATH-22 F10). The
+    // RED-MATH-6/001 false-zero lives on the step line at the 3dp point (0.333, 0.25): E[B]=0.00025.
+    ok(headline!.includes('E[B]=0') && !headline!.includes('E[B]=0.000') && !headline!.includes('less than'),
+      `Repro B fixture: convergence headline at the exact NE (true E[B]=0) must state "E[B]=0"; got "${headline}"`);
+    const stepLine = captured.find((c) => c.cx === 0.333 && c.cy === 0.25 && c.line.startsWith('Step '));
+    ok(!!stepLine && EB(0.333, 0.25, g) > 0 && EB(0.333, 0.25, g) < 0.0005,
+      `Repro B fixture precondition: a step line at (0.333, 0.25), where true E[B]=0.00025 is nonzero; got ${JSON.stringify(stepLine)}`);
+    ok(stepLine!.line.includes('E[B]=less than 0.001') && !stepLine!.line.includes('E[B]=0.000'),
+      `Repro B fixture: step line must state "E[B]=less than 0.001" (true 0.00025), never 0.000; got "${stepLine!.line}"`);
   }
 
   // Corpus sweep, exhaustively checking EVERY payoff-bearing log line against

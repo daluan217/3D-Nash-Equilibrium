@@ -319,11 +319,28 @@ for (const [kind, cell] of Object.entries(KINDS)) {
               `${mode} tm=${tm} ${t.name}[${j}] p=${p} "${txt}" (${x},${y},${z}) EA=${EA(x, y, g)} EB=${EB(x, y, g)} ${JSON.stringify(g)}`);
             check('D7 hover text prints the marker\'s own x, y and payoff', !!m && m[1] === fmtProb(x) && m[2] === fmtProb(y) && m[3] === fmtPayoff(z),
               `"${txt}" vs (${x},${y},${z})`);
+            // F11: the printed payoff is the UNROUNDED payoff's display — an r3'd z printed 0.000466 as "0".
+            check('D7 hover payoff is fmtPayoff of the true payoff, not of a rounded z', !!m && (p ? m[3] === fmtPayoff(want)
+              : m[3] === fmtPayoff(EA(x, y, g)) || m[3] === fmtPayoff(EB(x, y, g))), `${t.name}[${j}] "${txt}" true ${want} ${JSON.stringify(g)}`);
+            if (m && p && want !== 0 && Math.abs(want) < 5e-4) reach.subres = (reach.subres ?? 0) + 1;
           });
         }
       }
     }
   }
+  // F11 verbatim: ghost A at (0.466, 1) on game H; true E_A = 0.000466, the r3'd z printed "payoff: 0".
+  const H: GamePayoffs = { a11: 0.001, a12: 0, a21: 0, a22: 99.999, b11: -99.999, b12: -0.003, b21: 99.999, b22: -0.003 };
+  const sH = Object.assign(makeState(0.466, 1, H), { discoveredMixedX: 0.5, foundAxis: 'x', stepCount: 3 }) as SimState;
+  const ghostA = (makeTraces(dummySurf, H, sH, 'both', computeAllNE(H), false, 'shrink') as any[]).find((t) => t.name === 'Search position (Ghost A)');
+  check('F11 precondition: ghost A at (0.466, 1) with a nonzero sub-resolution payoff', !!ghostA && Math.abs(EA(0.466, 1, H) - 0.000466) < 1e-12);
+  check('F11 verbatim: ghost hover never prints "payoff: 0" for 0.000466',
+    ghostA?.text?.[0] === 'Search position (Ghost A)<br>x: 0.466<br>y: 1<br>payoff: less than 0.001', JSON.stringify(ghostA?.text));
+  // ...and ghost B (game H2, where E_B(0.466, 1) = 0.000466 too).
+  const H2: GamePayoffs = { ...H, b11: 0.001, b12: -0.003, b21: 0, b22: -0.003 };
+  const ghostB = (makeTraces(dummySurf, H2, sH, 'both', computeAllNE(H2), false, 'shrink') as any[]).find((t) => t.legendgroup === 'ghostB');
+  check('F11 verbatim: ghost B hover never prints "payoff: 0" for 0.000466', Math.abs(EB(0.466, 1, H2) - 0.000466) < 1e-12
+    && ghostB?.text?.[0] === 'Search position (Ghost B)<br>x: 0.466<br>y: 1<br>payoff: less than 0.001', JSON.stringify(ghostB?.text));
+  check('D7 reach: sub-resolution nonzero hover payoffs occurred (the F11 class)', (reach.subres ?? 0) >= 200, JSON.stringify(reach));
   check('D7 reach: every marker family (start, pure/mixed/continuum NE, both spheres, both ghosts) was hovered',
     reach.pts >= 10000 && ['Starting Point', 'pureNE', 'mixedNE', 'continuumNE', 'Current position (A)', 'Current position (B)',
       'Search position (Ghost A)', 'ghostB'].every((k) => (reach[k] ?? 0) >= 50), JSON.stringify(reach));
