@@ -13,7 +13,7 @@
  *   npx tsx src/mathdynamics.test.ts
  */
 import {
-  doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
+  doStep, computeAllNE, resolveProfile, formatConvergenceLogLine, equilibriumSet, regretA, regretB,
   continuumSettledDescription, equilibriumSet, pointInRect,
   EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtPayoff, commitPayoffs,
 } from './utils/gameEngine';
@@ -459,6 +459,29 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D9b reach: 150 mixed-only games with a determinant at the 3-dp floor', reach9b.mixedOnly >= 150, JSON.stringify(reach9b));
+}
+
+// ── D10 (sweep 8, empty probe checked in): resolveProfile at ANY point a run can stop at ──
+// The reported point is an equilibrium (regret ≤ 1e-9·span), inside [0,1]², no listed equilibrium is
+// nearer the run, and it is "pure" iff it is a vertex. Ties and range-edge alphabets force continua.
+{
+  const r10 = mulberry32(0xd10), K8 = ['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const;
+  const gens = [() => Math.floor(r10() * 5) - 2, () => [-100, -0.001, 0, 0.001, 100, 1, -1][Math.floor(r10() * 7)], () => Math.round((r10() * 200 - 100) * 1000) / 1000];
+  let cont = 0;
+  for (let i = 0; i < 12000; i++) {
+    const g = Object.fromEntries(K8.map((k) => [k, gens[i % 3]()])) as unknown as GamePayoffs;
+    if (i % 5 === 0) g.a21 = g.a11; if (i % 7 === 0) g.b12 = g.b11;
+    const all = computeAllNE(g), span = Math.max(1e-9, ...K8.map((k) => Math.abs(g[k])));
+    if (equilibriumSet(g).some((q) => q.x0 !== q.x1 || q.y0 !== q.y1)) cont++;
+    for (let j = 0; j < 4; j++) {
+      const px = j === 0 ? r10() : j === 1 ? Math.round(r10() * 1000) / 1000 : j === 2 ? (r10() < 0.5 ? 0 : 1) : Math.round(r10() * 1e6) / 1e6, py = j === 2 ? (r10() < 0.5 ? 0 : 1) : r10();
+      const p = resolveProfile(g, { exactX: px, exactY: py }), at = `${JSON.stringify(g)} (${px},${py}) -> ${JSON.stringify(p)}`, d = Math.hypot(p.x - px, p.y - py);
+      check('D10 resolveProfile reports an equilibrium inside the square', p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1 && Math.max(regretA(p.x, p.y, g), regretB(p.x, p.y, g)) <= 1e-9 * span, at);
+      check('D10 no listed equilibrium is nearer the run than the one reported', all.every((e) => Math.hypot(e.x - px, e.y - py) >= d - 1e-12), at);
+      check('D10 the concept is "pure" iff the reported point is a vertex', (p.concept === 'pure') === ((p.x === 0 || p.x === 1) && (p.y === 0 || p.y === 1)), at);
+    }
+  }
+  check('D10 reach: continua among the resolved games', cont >= 4000, `${cont}`);
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────
