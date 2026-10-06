@@ -12468,7 +12468,7 @@ const suggestedScenario = {
   //      "0.3333333333333333" printed E[A] = 0 for a payoff that is not zero. Oracle: the rendered
   //      readout and box text; the 0.25 arm (E[A] = 0.250, a 3-dp value) is the control, so a dead
   //      locator fails it first. "0.12345678" checks the box states the held value, not "0.123".
-  section('112', 'a typed start coordinate prints its own payoff and the box states the held value', async () => {
+  section('112', 'a typed start coordinate prints its own payoff, the box states the held value, and the readout boxes print the point the log names', async () => {
     const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     try {
       await p.goto(BASE, { waitUntil: 'networkidle' });
@@ -12495,6 +12495,33 @@ const suggestedScenario = {
         record(`§112 E[A] readout for x₀=${typed} reads ${JSON.stringify(ea)}`, shown === ea, `got ${JSON.stringify(shown)}`);
         const kept = await x0.inputValue();
         record(`§112 after blur the x₀ box states the held ${box}`, kept === box, `field=${JSON.stringify(kept)}`);
+      }
+      // S10: the readout boxes print the point the Step/━━ lines name. Unfixed, Step 1 from (0.0004, 0.9996) read
+      // y "1.000" / E[B] "0.001" and the converged boxes E[A] "1.616" under "━━ Mixed NE: ... E[A]=1.615". Oracle:
+      // box text vs the rendered log (innerText collapses its double spaces); the x box ("0.000", then "0.417")
+      // reads the same before and after the fix, so a dead locator fails that CONTROL first.
+      const boxes = () => p.evaluate(() => ['x: P(A playing Row 1)', 'y: P(B playing Col 1)', 'Expected Payoff E[A]', 'Expected Payoff E[B]'].map((l) => {
+        const sp = [...document.querySelectorAll('span')].find((e) => (e.textContent || '').trim() === l);
+        return (sp?.parentElement?.querySelector('span.font-mono')?.textContent || '').trim();
+      }));
+      const logText = async () => (await p.locator('div.overflow-y-auto.font-mono p').allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
+      const G2 = [-0.5, 7, 5, 0, 2, 0.001, 1, 5];
+      for (let i = 0; i < 8; i++) { const el = p.locator('input[aria-label$="payoff"]').nth(i); await el.fill(String(G2[i])); await el.blur(); }
+      await p.getByRole('button', { name: 'Opponent Regret', exact: true }).click();
+      await p.getByLabel('Who moves first?').getByRole('button', { name: 'Player A', exact: true }).click();
+      const lam = p.getByLabel('Regret Step Weight (lambda)', { exact: true }); await lam.fill('0.25'); await lam.blur();
+      for (const [id, v] of [['#field-coords-x0', '0.0004'], ['#field-coords-y0', '0.9996']]) { const el = p.locator(id); await el.fill(v); await el.blur(); }
+      await p.waitForTimeout(500);
+      const stepBtn = p.getByRole('button', { name: /^Step$/ });
+      for (const [k, line, want] of [
+        [1, 'Step 1 (A): x=0.000, y=more than 0.999 E[A]=2.000 E[B]=0.003', ['0.000', 'more than 0.999', '2.000', '0.003']],
+        [60, '━━ Mixed NE: x=0.417, y=0.615 E[A]=1.615 E[B]=2.917', ['0.417', '0.615', '1.615', '2.917']],
+      ]) {
+        for (let n = 0; n < k && !(await logText()).includes(line) && !(await stepBtn.isDisabled()); n++) { await stepBtn.click(); await p.waitForTimeout(60); }
+        const logs = await logText(), got = await boxes();
+        record(`§112 S10 the log prints ${JSON.stringify(line)}`, logs.includes(line), JSON.stringify(logs.slice(-2)));
+        record(`§112 S10 CONTROL the x box reads ${want[0]}`, got[0] === want[0], JSON.stringify(got));
+        record(`§112 S10 the readout boxes read ${want.slice(1).join(' / ')}`, got.slice(1).join() === want.slice(1).join(), JSON.stringify(got));
       }
     } finally {
       await p.close().catch(() => {});

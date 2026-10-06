@@ -560,6 +560,17 @@ export function resolveProfile(g: GamePayoffs, s: Pick<SimState, 'exactX' | 'exa
   return { x: best.x, y: best.y, concept: profileConcept(best.x, best.y) };
 }
 
+/** The ONE point every rendering shows (panel, Step/━━ lines, sphere, hover): the exact position, or, once
+ *  converged on an equilibrium, the member resolveProfile names (the banner's). cx/cy are r3-collapsed inputs to
+ *  the dynamics: formatting them printed "0.000" for 0.0004 and 0.219 beside a banner's 0.22 (S10). The 1e-3 bound
+ *  (measured runs settle <= 6.5e-4 away) keeps a run left over from an edited game where it stopped. */
+export function shownPoint(g: GamePayoffs, s: Pick<SimState, 'exactX' | 'exactY' | 'converged' | 'convergedIsNE'>): { x: number; y: number } {
+  const at = { x: s.exactX, y: s.exactY };
+  if (!s.converged || s.convergedIsNE === false) return at;
+  const r = resolveProfile(g, s);
+  return Math.abs(r.x - at.x) < 1e-3 && Math.abs(r.y - at.y) < 1e-3 ? { x: r.x, y: r.y } : at;
+}
+
 
 
 export function profileConcept(x: number, y: number): 'pure' | 'mixed' {
@@ -2129,7 +2140,8 @@ export function doStep(
   // (STRUCT-MATH-19 _gen/probe_stepline_subres). Routing it through the shared
   // formatter is what keeps it honest if that assignment ever changes, and is
   // the same contract the E[A]/E[B] halves of this very line already use.
-  addLog(`Step ${s.stepCount} (${mover})${domStr}: x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}  E[A]=${fmtPayoff(EA(s.cx, s.cy, g))}  E[B]=${fmtPayoff(EB(s.cx, s.cy, g))}`);
+  // From the EXACT position (S10): s.cx is r3-collapsed, so 0.0004 printed "x=0.000" beside a sphere at 0.0004.
+  addLog(`Step ${s.stepCount} (${mover})${domStr}: x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}  E[A]=${fmtPayoff(EA(s.exactX, s.exactY, g))}  E[B]=${fmtPayoff(EB(s.exactX, s.exactY, g))}`);
 
   // Check convergence conditions
   if (pureNEs.length > 0) {
@@ -2162,8 +2174,9 @@ export function doStep(
       // `resolveProfile`/the mixed branch below already follow.
       // fmtPayoff, not `.toFixed(3)` on an r3-pre-rounded value — see
       // RED-MATH-6/001 and the identical fix in the per-step line above.
-      const finalEA = EA(s.exactX, s.exactY, g);
-      const finalEB = EB(s.exactX, s.exactY, g);
+      const sp = shownPoint(g, s);   // the banner's point, so the ━━ line names the same equilibrium (S10)
+      const finalEA = EA(sp.x, sp.y, g);
+      const finalEB = EB(sp.x, sp.y, g);
       // The noun comes from WHERE IT LANDED, not from the fact that this is the
       // pure/shrink branch. This path can converge onto a continuum at a
       // strictly interior probability, where "Pure NE" is simply false —
@@ -2171,7 +2184,7 @@ export function doStep(
       // that is one of infinitely many on a continuum component (very often
       // nothing but the run's own arbitrary start value). Shared formatter
       // so this line can never disagree with the panel's own continuum text.
-      addLog(formatConvergenceLogLine(g, s.exactX, s.exactY, s.convergedIsNE, finalEA, finalEB, rq));
+      addLog(formatConvergenceLogLine(g, sp.x, sp.y, s.convergedIsNE, finalEA, finalEB, rq));
       onConverged();
       return;
     }
@@ -2192,9 +2205,7 @@ export function doStep(
       // resolution x printed as "0", reading as a pure strategy. And the log
       // must fork on the flag exactly as the pure branch does; it previously
       // always said "Mixed NE" regardless.
-      const exact = computeMixedNE(g);
-      const exX = exact ? exact.x : s.cx;
-      const exY = exact ? exact.y : s.cy;
+      const { x: exX, y: exY } = shownPoint(g, s);   // = the exact mixed NE; same point as the banner (S10)
       // fmtPayoff/fmtProb applied INSIDE formatConvergenceLogLine, on the SAME
       // exact point (RED-MATH-6/001): a value that merely rounds to zero must
       // say so, and evaluating at exX/exY rather than s.cx/s.cy keeps the
@@ -2222,7 +2233,7 @@ export function doStep(
       s.visitedPositions = [];
       applyBisectCycleStep(s, g, defaultShrinkStep, mover);
       drawMoveTo(s, g, r3(s.exactX), r3(s.exactY), mover);   // the clamp is drawn: tip = sphere (F20)
-      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}`);
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}`);
       onCycleDetected();
       return;
     }
@@ -2242,7 +2253,7 @@ export function doStep(
       s.cx = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
       s.cy = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
       drawMoveTo(s, g, r3(s.exactX), r3(s.exactY), mover);   // the clamp is drawn: tip = sphere (F20)
-      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}`);
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}`);
       onCycleDetected();
       return;
     }

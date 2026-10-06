@@ -22,6 +22,7 @@ import {
   fmtProb,
   fmtProbFixed,
   resolveProfile,
+  shownPoint,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
   // call parseFloat / parseInt / Number / valueAsNumber on user-supplied text:
@@ -2431,6 +2432,8 @@ export default function App() {
     () => resolveProfile(payoffs, simState),
     [payoffs, simState]
   );
+  // The realtime readout boxes print this point: the same one the sphere, the Step/━━ lines and x* show (S10).
+  const shown = useMemo(() => shownPoint(payoffs, simState), [payoffs, simState]);
   const realisedConcept = resolved.concept;
 
   // RED-MATH-9/001/CodeRabbit: whether the settled point (resolved.x/y) lies
@@ -6284,8 +6287,9 @@ export default function App() {
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
                   {/* STRUCT-MATH-19/001: the shared probability formatter, the same
                       contract the E[A]/E[B] boxes beside this one already use. A bare
-                      `.toFixed(3)` printed "0.000" for a start point of 0.0004. */}
-                  {fmtProbFixed(simState.cx)}
+                      `.toFixed(3)` printed "0.000" for a start point of 0.0004. S10: `shown`, not the
+                      r3-collapsed cx/cy, which still printed it after the first step and 0.219 beside x*=0.22. */}
+                  {fmtProbFixed(shown.x)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -6293,7 +6297,7 @@ export default function App() {
                   y: P(B playing Col 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
-                  {fmtProbFixed(simState.cy)}
+                  {fmtProbFixed(shown.y)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -6301,7 +6305,7 @@ export default function App() {
                   Expected Payoff E[A]
                 </span>
                 <span className="text-sm font-bold text-player-a-500 font-mono">
-                  {fmtPayoff(EA(simState.cx, simState.cy, payoffs))}
+                  {fmtPayoff(EA(shown.x, shown.y, payoffs))}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -6309,7 +6313,7 @@ export default function App() {
                   Expected Payoff E[B]
                 </span>
                 <span className="text-sm font-bold text-player-b-600 dark:text-player-b-400 font-mono">
-                  {fmtPayoff(EB(simState.cx, simState.cy, payoffs))}
+                  {fmtPayoff(EB(shown.x, shown.y, payoffs))}
                 </span>
               </div>
             </div>

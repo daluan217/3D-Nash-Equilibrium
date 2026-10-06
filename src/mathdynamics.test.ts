@@ -16,8 +16,9 @@ import {
   doStep, computeAllNE, resolveProfile, formatConvergenceLogLine,
   continuumSettledDescription, equilibriumSet, pointInRect,
   EA, EB, r3, regretA, regretB, neTolerancePlayer, computeMixedNE, fmtProb, fmtProbFixed, fmtPayoff, commitPayoffs,
-  precomputeThinHistory, replayToStep,
+  precomputeThinHistory, replayToStep, shownPoint,
 } from './utils/gameEngine';
+import { readFileSync } from 'node:fs';
 import { makeTraces, buildSurfaces } from './utils/plotting';
 import type { GamePayoffs, NashEquilibrium, SimState } from './types';
 
@@ -686,7 +687,7 @@ for (const [kind, cell] of Object.entries(KINDS)) {
         for (const sg of s.pathSegmentsA) for (let j = 1; j < sg.xs.length; j++)
           check('D15 a recorded A move changes only x, a B move only y', (sg.mover === 'A' ? sg.ys : sg.xs)[j] === (sg.mover === 'A' ? sg.ys : sg.xs)[j - 1], `${at} ${sg.mover} (${sg.xs[j - 1]},${sg.ys[j - 1]})->(${sg.xs[j]},${sg.ys[j]})`);
         const now = logs.find((l) => /^↺ Cycle \d+ → domain/.test(l));
-        if (now) check('D15 a shrink cycle line states the clamped position', now.endsWith(`now x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}`), `${at} ${now} cx (${s.cx}, ${s.cy})`);
+        if (now) check('D15 a shrink cycle line states the clamped position', now.endsWith(`now x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}`), `${at} ${now} cx (${s.cx}, ${s.cy})`);
         if (k % 3 && !cyc && !s.converged) continue;
         reach15.drawn++;
         const T = makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[], [lo, hi, ylo, yhi] = box(T), [px, py] = sph(T);
@@ -702,6 +703,94 @@ for (const [kind, cell] of Object.entries(KINDS)) {
     }
   }
   check('D15 reach: cycle, regret-clamp, split-move and shrink-convergence frames drawn', reach15.frames >= 10000 && reach15.cycles >= 1800 && reach15.regretClamps >= 800 && reach15.splits >= 900 && reach15.shrinkConv >= 35, JSON.stringify(reach15));   // measured 12321/2183/1042/1126/45
+}
+
+// ── D16 (sweep 10 HIT): the panel, the Step/cycle/━━ lines, the sphere and the banner print ONE point ─────────────
+// The panel and Step line formatted r3-collapsed cx/cy: "y=1.000" for 0.9996 (sub-resolution rule), and at
+// convergence 0.219 / E[A] 0.332 beside the banner's and ━━ line's 0.22 / 0.333. The panel's source is pinned
+// below so the fuzz, which models it through shownPoint, models what App.tsx renders.
+{
+  const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+  check('D16 the App readout boxes render shownPoint', ['{fmtProbFixed(shown.x)}', '{fmtProbFixed(shown.y)}', '{fmtPayoff(EA(shown.x, shown.y, payoffs))}', '{fmtPayoff(EB(shown.x, shown.y, payoffs))}'].every((t) => app.includes(t)) && app.includes('shownPoint(payoffs, simState)'));
+  const run = (g: GamePayoffs, mode: 'shrink' | 'regret', mover: 'A' | 'B', step: number, x: number, y: number, k: number) => {
+    const s = makeState(x, y, g), all = computeAllNE(g); let logs: string[] = [];
+    for (let i = 0; i < k && !s.converged; i++) { logs = []; doStep(g, s, mover, step, all, null, (m) => logs.push(m), () => {}, () => {}, mode); }
+    const p = shownPoint(g, s), a = (makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[]).find((t) => t.name === 'Current position (A)');
+    return { s, logs, panel: [fmtProbFixed(p.x), fmtProbFixed(p.y), fmtPayoff(EA(p.x, p.y, g)), fmtPayoff(EB(p.x, p.y, g))].join(' '), sphere: [a.x[0], a.y[0]] };
+  };
+  // (a) verbatim: "Step 1 (A): x=0.000, y=1.000  E[A]=3.000" for exact (0, 0.9996).
+  const fa = run({ a11: -0.001, a12: 0.25, a21: 3, a22: 0, b11: -3, b12: 0.001, b21: -0.001, b22: 3 }, 'regret', 'A', 0.05, 0.0004, 0.9996, 1);
+  check('D16 (a) verbatim: fixture is at exact (0, 0.9996), r3 (0, 1)', fa.s.exactY === 0.9996 && fa.s.cy === 1, `${fa.s.exactY} ${fa.s.cy}`);
+  check('D16 (a) verbatim: the Step line says more than 0.999', fa.logs[0] === 'Step 1 (A): x=0.000, y=more than 0.999  E[A]=2.999  E[B]=less than 0.001', fa.logs[0]);
+  check('D16 (a) verbatim: the panel says more than 0.999', fa.panel === '0.000 more than 0.999 2.999 less than 0.001', fa.panel);
+  // (b) verbatim: panel "0.219" / E[A] "-0.025" under "━━ Mixed NE: x=0.8, y=0.22  E[A]=-0.024".
+  const fb = run({ a11: -1, a12: 0.25, a21: 7, a22: -2, b11: 1, b12: 0.25, b21: -0.001, b22: 3 }, 'shrink', 'A', 0.05, 1, 0.1, 9999);
+  check('D16 (b) verbatim: fixture converges at r3 (0.8, 0.219) with the ━━ line', fb.s.converged && fb.s.cy === 0.219 && fb.logs.includes('━━ Mixed NE: x=0.8, y=0.22  E[A]=-0.024  E[B]=0.800'), fb.logs.join(' | '));
+  check('D16 (b) verbatim: the panel prints the ━━ line\'s point', fb.panel === '0.800 0.220 -0.024 0.800', fb.panel);
+  // (c) verbatim: panel E[A] "0.332" beside the sphere's and ━━ line's 0.333.
+  const fc = run({ a11: 3, a12: -1, a21: 5, a22: -2, b11: -1, b12: -2, b21: -3, b22: 0.25 }, 'shrink', 'A', 0.007, 0, 1, 9999);
+  check('D16 (c) verbatim: fixture converges with ━━ E[A]=0.333', fc.s.converged && fc.logs.includes('━━ Mixed NE: x=0.765, y=0.333  E[A]=0.333  E[B]=-1.471'), fc.logs.join(' | '));
+  check('D16 (c) verbatim: the panel prints E[A] 0.333', fc.panel === '0.765 0.333 0.333 -1.471', fc.panel);
+  // A finished run from an edited game (stale) is not moved onto the new game's equilibria.
+  const sd = makeState(0.5, 0.5, { a11: 0, a12: 0, a21: 0, a22: 0, b11: 0, b12: 0, b21: 0, b22: 0 });
+  Object.assign(sd, { exactX: 0.1, exactY: 0.1, converged: true, convergedIsNE: true });
+  const pd = shownPoint({ a11: -1, a12: 0.25, a21: 7, a22: -2, b11: 1, b12: 0.25, b21: -0.001, b22: 3 }, sd);
+  check('D16 a converged point more than 1e-3 from every equilibrium is shown where it stopped', pd.x === 0.1 && pd.y === 0.1, `${pd.x} ${pd.y}`);
+  // Contract (state built directly; 0 reached in ~1M fuzz frames, probes/s10-survivors.log): a stop at the vertex
+  // (0, 0) is tested exactly (1e-9), so B's regret 0.001 makes it NOT-NE, 4e-4 from the continuum end (0.0004, 0).
+  // Snapping would print an equilibrium's digits under "NOT an equilibrium"; rn proves the member is within 1e-3.
+  const gn = { a11: 1, a12: 0, a21: 0, a22: 0, b11: -2.499, b12: 0, b21: 0.001, b22: 0 }, rn = resolveProfile(gn, { exactX: 0, exactY: 0 } as SimState);
+  const pn = shownPoint(gn, { exactX: 0, exactY: 0, converged: true, convergedIsNE: false });
+  check('D16 a NOT-NE stop is shown where it stopped, not on the equilibrium 4e-4 away', rn.x > 0 && rn.x < 1e-3 && pn.x === 0 && pn.y === 0, `${rn.x} ${pn.x}`);
+  // Contract (state built directly): a mixed-branch stop on a discovered NOT-NE point used to print the solver's NE
+  // (0.5, 0.5) beside "NOT an equilibrium"; the line names where it stopped, as the panel does.
+  for (const mode of ['shrink', 'regret'] as const) {
+    const gm = { a11: 1, a12: -1, a21: -1, a22: 1, b11: -1, b12: 1, b21: 1, b22: -1 }, sm = makeState(0.1, 0.1, gm), lm: string[] = [];
+    Object.assign(sm, { discoveredMixedX: 0.1, discoveredMixedY: 0.1, foundAxis: 'x' });
+    doStep(gm, sm, 'A', 0.1, computeAllNE(gm), null, (m) => lm.push(m), () => {}, () => {}, mode);
+    check(`D16 ${mode}: a NOT-NE mixed-branch stop names where it stopped`, lm.at(-1) === '━━ Settled at x=0.1, y=0.1 — NOT an equilibrium (a player still gains 1.440 by switching)  E[A]=0.640  E[B]=-0.640', lm.join(' | '));
+  }
+  // (e) verbatim, seed-2606 fuzz: ━━ printed the exact "y=more than 0.999  E[A]=6.999" beside the banner's (0.5, 1).
+  const fe = run({ a11: 7, a12: 5, a21: 7, a22: 2, b11: 3, b12: -1, b21: -3, b22: 1 }, 'regret', 'B', 0.25, 0.5, 0.9996, 9999);
+  check('D16 (e) verbatim: the ━━ line names the banner\'s point (0.5, 1)', fe.s.exactY === 0.9996 && fe.logs.at(-1) === '━━ Settled on the equilibrium continuum at x=0.5, y=1: A continuum of equilibria: B plays Col 1 while A mixes with x anywhere from 0.5 to 1.  E[A]=7.000  E[B]=0', fe.logs.join(' | '));
+  check('D16 (e) verbatim: the panel prints that point', fe.panel === '0.500 1.000 7.000 0', fe.panel);
+  // No rendering formats the r3-collapsed dynamics inputs (cycle "now" lines included: equal digits on every reached
+  // frame today, 0 of ~160k, so only this pin keeps them on the exact point).
+  const eng = readFileSync(new URL('./utils/gameEngine.ts', import.meta.url), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+  check('D16 no engine rendering formats s.cx/s.cy', !/fmt\w*\(\s*(s|state)\.c[xy]\b|E[AB]\(\s*(s|state)\.cx\b/.test(eng), (/.*fmt\w*\(\s*(s|state)\.c[xy]\b.*|.*E[AB]\(\s*(s|state)\.cx\b.*/.exec(eng) ?? [''])[0].trim());
+
+  const num = (t: string) => (/^-?[\d.]+$/.test(t) ? String(+t) : t);
+  const r16 = mulberry32(0xd16), V = [-3, -2, -1, 0, 1, 2, 3, 5, -0.5, 0.25, 0.001, -0.001, 7, 0.0004, -0.0004], pk = <T,>(a: T[]) => a[Math.floor(r16() * a.length)];
+  const reach16 = { frames: 0, cxDiffers: 0, cycleNow: 0, conv: 0, subres: 0 };
+  for (let i = 0; i < 400; i++) {
+    const g = commitPayoffs(Object.fromEntries((['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'] as const).map((k) => [k, pk(V)])) as unknown as GamePayoffs);
+    const all = computeAllNE(g), pure = all.filter((n) => n.type === 'pure');
+    for (const mover of ['A', 'B'] as const) for (const mode of ['shrink', 'regret'] as const) {
+      const committed = pure.length === 0 ? null : pure.reduce((b, n) => ((mover === 'A' ? n.eA > b.eA : n.eB > b.eB) ? n : b));
+      const step = pk([0.1, 0.333, 0.05, 0.25, 0.007, 0.5]), s = makeState(pk([0.217, 0, 1, 0.9, 0.5, 0.0004]), pk([0.217, 0, 1, 0.1, 0.5, 0.9996]), g);
+      for (let k = 0; k < 3000 && !s.converged; k++) {
+        const logs: string[] = [];
+        doStep(g, s, mover, step, all, committed, (m) => logs.push(m), () => {}, () => {}, mode);
+        const p = shownPoint(g, s), pos = [...logs].reverse().find((l) => /^(Step |↺ Cycle .* now x=|━━)/.test(l)) ?? '';
+        const xm = /x=([^,]+), y=([^\s,:]+(?: than [^\s,:]+)?)/.exec(pos), pm = /E\[A\]=(.+?) {2}E\[B\]=(.+)$/.exec(pos);
+        const at = `${mode} ${mover} step ${step} k ${k + 1} start (${s.startX},${s.startY}) ${JSON.stringify(g)} exact (${s.exactX}, ${s.exactY}) shown (${p.x}, ${p.y}) | ${pos}`;
+        reach16.frames++; if (p.x !== s.cx || p.y !== s.cy) reach16.cxDiffers++; if (/now x=/.test(pos)) reach16.cycleNow++; if (s.converged) reach16.conv++;
+        if ([s.exactX, s.exactY].some((v) => v !== 0 && v !== 1 && (r3(v) === 0 || r3(v) === 1))) reach16.subres++;
+        check('D16 every frame logs a positional line', !!xm, at);
+        if (!xm) continue;
+        check('D16 the panel x/y read as the last positional line', [fmtProbFixed(p.x), fmtProbFixed(p.y)].map(num).join() === [xm[1], xm[2]].map(num).join(), at);
+        if (pm && !/NOT an/.test(pos)) check('D16 the panel E[A]/E[B] read as the last positional line', fmtPayoff(EA(p.x, p.y, g)) === pm[1] && fmtPayoff(EB(p.x, p.y, g)) === pm[2], at);
+        for (const v of [p.x, p.y]) check('D16 the panel never prints a vertex for a non-vertex', !((fmtProbFixed(v) === '0.000' || fmtProbFixed(v) === '1.000') && v !== 0 && v !== 1), at);
+        if (s.converged && s.convergedIsNE !== false) {
+          const r = resolveProfile(g, s);
+          check('D16 at convergence the panel shows the banner\'s point', p.x === r.x && p.y === r.y, at);
+          const a = (makeTraces(dummySurf, g, s, 'both', all, false, mode) as any[]).find((t) => t.name === 'Current position (A)');
+          check('D16 at convergence the sphere is the panel\'s point', a.x[0] === p.x && a.y[0] === p.y, `${at} sphere (${a.x[0]}, ${a.y[0]})`);
+        }
+      }
+    }
+  }
+  check('D16 reach: frames where cx differs from the shown point, cycle "now" lines, convergences, sub-resolution frames', reach16.frames >= 16000 && reach16.cxDiffers >= 280 && reach16.cycleNow >= 300 && reach16.conv >= 1300 && reach16.subres >= 220, JSON.stringify(reach16));
 }
 
 // ── Final reporting ───────────────────────────────────────────────────────────

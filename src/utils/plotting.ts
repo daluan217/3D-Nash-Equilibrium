@@ -4,7 +4,7 @@
  */
 
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
-import { EA, EB, r3, equilibriumSet, kindOf, pointInRect, fmtProb, fmtPayoff } from './gameEngine';
+import { EA, EB, r3, equilibriumSet, kindOf, pointInRect, fmtProb, fmtPayoff, shownPoint } from './gameEngine';
 
 export interface SurfaceData {
   xs: number[];
@@ -200,10 +200,8 @@ export function makeTraces(
   // gap between where the run stopped and where the equilibrium is. The run
   // has already declared it converged on this equilibrium; at a distance the
   // readout cannot express, drawing them as one point is what that means.
-  if (s.converged) {
-    const settled = allNE.find((n) => Math.abs(n.x - px) < 1e-3 && Math.abs(n.y - py) < 1e-3);
-    if (settled) { px = settled.x; py = settled.y; }
-  }
+  // shownPoint: the same point (and 1e-3 bound) the panel, the log and the banner print (S10).
+  if (s.converged && s.exactX !== undefined) ({ x: px, y: py } = shownPoint(g, s));
   // Current-position sphere z: use the SAME unrounded EA/EB the NE diamond uses
   // (not r3-rounded). At convergence the sphere and diamond share coordinates, so
   // matching the z computation makes their depths bit-identical — then draw order
