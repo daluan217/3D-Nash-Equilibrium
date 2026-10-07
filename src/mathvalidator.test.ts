@@ -149,10 +149,76 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
     check(`S16 a label digit is not a range end (${truth ? 'true stands' : 'false flags'})`, (validateProseDirections(s, LD, MIX).length > 0) !== truth, s);
 }
 
+// ── S17 verbatim: decimals, a/b, idioms and pairs are judged; shelf clauses locate the LEVEL value ──────────
+// Before S17 every "with probability 0.733" passed unread, "x = 2/3" was read as x = 2, and "A's surface has a level
+// shelf when B uses Advance with probability 0.375" was skipped as a hypothetical. MIX is hand-solved (x* = 0.4,
+// y* = 0.75); A is level only at y = 0.75 and B only at x = 0.4, so no verdict can come from the code under test.
+{
+  const MIX = commitPayoffs({ a11: 1, a12: 0, a21: 0, a22: 3, b11: 0, b12: 3, b21: 2, b22: 0 });
+  const dir = (s: string, g: GamePayoffs, l = L) => validateProseDirections(s, l, g).length > 0;
+  const S17: [string, boolean][] = [
+    ['A uses Cooperate with probability 0.4 and Defect with probability 0.6.', true], ['A uses Cooperate with probability 0.7 and Defect with probability 0.3.', false],
+    ['A plays Cooperate with probability 0.733.', false], ['B uses Advance with probability 0.75.', true], ['B uses Advance with probability 0.25.', false],
+    ['A assigns 0.4 probability to Cooperate.', true], ['A assigns 0.9 probability to Cooperate.', false],
+    ['A puts probability 0.4 on Cooperate.', true], ['A puts probability 0.8 on Cooperate.', false],
+    ['A plays Cooperate with probability 2/5.', true], ['A plays Cooperate with probability 4/5.', false],
+    ['A uses Cooperate with probability 0.4 and Defect with 0.6.', true], ['A uses Cooperate with probability 0.4 and Defect with 0.9.', false],
+    ['B splits fifty-fifty between Advance and Retreat.', false], ['A mixes evenly between Cooperate and Defect.', false], ['A splits equally between Cooperate and Defect.', false],
+    ['B uses Advance and Retreat fifty-fifty.', false], ['B mixes evenly.', false], ["B's even split creates A's flat shelf.", false],
+    // A pair names no option, so its order is not fixed by the words: either order stands, a wrong pair flags.
+    ["A's 0.4/0.6 mix levels B's surface.", true], ["A's 0.6/0.4 mix levels B's surface.", true], ["A's 0.7/0.3 mix levels B's surface.", false], ["A's 40–60 mix levels B.", true], ["A's 70–30 mix levels B.", false],
+    // S17c/d: a decimal point is not a clause stop; a shelf clause is judged against where the opponent is level.
+    ['When B uses Advance with probability 0.5 and Retreat 50% of the time, A prefers Defect.', true],
+    ["A's surface has a level shelf when B uses Advance with probability 0.75.", true], ["A's surface has a level shelf when B uses Advance with probability 0.375.", false],
+    ["A's surface has a level shelf when B uses Advance three-quarters of the time.", true], ["A's surface has a level shelf when B uses Advance a quarter of the time.", false],
+    ["B's surface is level when A plays Cooperate with probability 0.4.", true], ["B's surface is level when A plays Cooperate with probability 0.6.", false],
+    ["When A plays Cooperate with probability 0.6, B's surface is not level.", true],
+    ['A has a level shelf when B mixes fifty-fifty.', false], ['B has a level shelf when A mixes fifty-fifty.', false],
+  ];
+  for (const [s, truth] of S17) check(`S17 a decimal/idiom/shelf figure is judged as stated (${truth ? 'true stands' : 'false flags'})`, dir(s, MIX) !== truth, s);
+  // The mixer in "X has a shelf when Y mixes" is X's opponent. H is asymmetric: A is level at y = 0.5, B at x = 0.4.
+  const H = commitPayoffs({ a11: 1, a12: 0, a21: 0, a22: 1, b11: 0, b12: 3, b21: 2, b22: 0 });
+  // A named mixer ("the retailer") is resolved only through the shelf owner (gold: "A has a level shelf when the retailer mixes fifty-fifty").
+  for (const [s, truth] of [['A has a level shelf when B mixes fifty-fifty.', true], ['B has a level shelf when A mixes fifty-fifty.', false],
+    ['A has a level shelf when the retailer mixes fifty-fifty.', true], ['B has a level shelf when the retailer mixes fifty-fifty.', false]] as const)
+    check(`S17 a shelf owner's opponent is the mixer (${truth ? 'true stands' : 'false flags'})`, dir(s, H) !== truth, s);
+  // DPO verbatim, true (pure NE, so only the level value can bear it out): "no interior joint flat spot" in the same
+  // clause denies the joint point, not the shelf. B's mix levels A at 3/7.
+  const CS = { name: 'X', row1: 'Fast Route', row2: 'Safe Route', col1: 'Early Shift', col2: 'Late Shift', description: '' };
+  const CSG = commitPayoffs({ a11: -7, a12: 5, a21: 1, a22: -1, b11: 7, b12: 0, b21: 4, b22: 0 });
+  const cs = 'Geometrically, the payoff surfaces interact rather than mirror each other, and while the courier has a level shelf at an Early Shift probability of 0.4286, there is no interior joint flat spot, so the equilibrium lies at a corner.';
+  check('S17 dpo: a true shelf beside "no interior joint flat spot" stands', !dir(cs, CSG, CS), cs);
+  check('S17 control: the same shelf at a false value flags', dir(cs.replace('0.4286', '0.2'), CSG, CS));
+  // Gold verbatim, true: a shelf at the level value with a pure NE (dataset gen:pure) and shared words across players
+  // (preset:penalty: "the interceptor covers the Mountain Pass" is B's figure in A's words). Each flagged mid-S17.
+  const SU = { name: 'X', row1: 'Full launch', row2: 'Pilot launch', col1: 'Support', col2: 'Withhold', description: '' };
+  const PURE = commitPayoffs({ a11: -3, a12: 9, a21: 0, a22: 5, b11: -1, b12: -7, b21: 1, b22: -7 });
+  const shelf = 'Geometrically, A’s warped payoff surface has an indifference shelf at support probability 0.5714, but there is no interior joint flat spot, so the equilibrium lies at a corner.';
+  check('S17 gold: a true shelf beside a pure NE stands', !dir(shelf, PURE, SU), shelf);
+  check('S17 control: the same shelf at a false value flags', dir(shelf.replace('0.5714', '0.3'), PURE, SU));
+  const CI = { name: 'X', row1: 'Mountain Pass', row2: 'River Road', col1: 'Cover Mountain', col2: 'Cover River', description: '' };
+  const PEN = commitPayoffs({ a11: -12, a12: 8, a21: 2, a22: 0, b11: 12, b12: -8, b21: -2, b22: 0 });
+  const pen = 'In the sole equilibrium, the courier uses the Mountain Pass with probability 0.091 and the River Road with probability 0.909, while the interceptor covers the Mountain Pass with probability 0.364 and the River Road with probability 0.636.';
+  check('S17 gold: a figure for the other actor in shared words stands', !dir(pen, PEN, CI), pen);
+  check('S17 control: a swapped courier mix still flags', dir(pen.replace('0.091', '0.5').replace('0.909', '0.5'), PEN, CI));
+  // DPO verbatim, true: "settles" is B's Settle in A's list ("A audits with probability 0.762 and settles with 0.238").
+  const AU = { name: 'X', row1: 'Audit', row2: 'Negotiate', col1: 'Contest', col2: 'Settle', description: '' };
+  const AUG = commitPayoffs({ a11: 2, a12: 5, a21: -7, a22: 9, b11: -6, b12: -1, b21: 7, b22: -9 });
+  const au = 'At the sole equilibrium, A audits with probability 0.762 and settles with 0.238, while B contests with probability 0.308.';
+  check('S17 dpo: a list continuing its own player in shared words stands', !dir(au, AUG, AU), au);
+  check('S17 control: the same list at a false value flags', dir(au.replace('0.762', '0.5').replace('0.238', '0.5'), AUG, AU));
+  // S17b: checkProse reads a/b, percent and tuple citations (x = 2/3 was x = 2; (x, y) = (…) was unread).
+  const G23 = commitPayoffs({ a11: 1, a12: 0, a21: 0, a22: 2, b11: 0, b12: 1, b21: 2, b22: 0 });   // x* = y* = 2/3
+  for (const [s, truth] of [['A mixes at x = 2/3 and B at y = 2/3.', true], ['A mixes at x = 1/3.', false], ['B mixes at y = 3/4.', false], ['A mixes at x = 0.667.', true], ['A mixes at x = 0.4.', false],
+    ['The equilibrium is (x, y) = (2/3, 2/3).', true], ['The equilibrium is (x, y) = (0.25, 0.9).', false], ['A mixes at x = 66.7%.', true], ['A mixes at x = 25%.', false],
+    ['Both surfaces are level at the interior point (0.667, 0.667).', true], ['Both surfaces are level at the interior point (0.4, 0.75).', false]] as const)
+    check(`S17b a coordinate citation is judged (${truth ? 'true stands' : 'false flags'})`, validateReport({ claimedEquilibria: [{ type: 'mixed', x: 2 / 3, y: 2 / 3 }], prose: s } as never, G23).ok === truth, s);
+}
+
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────
-const rnd = seededRandom(0x5715), rnd6 = seededRandom(0x5716);   // F6 draws apart: the F1-F5 games stay as measured
+const rnd = seededRandom(0x5715), rnd6 = seededRandom(0x5716), rnd7 = seededRandom(0x5717);   // F6/F7 draw apart: earlier fuzz stays as measured
 const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
-const reach = { nearCorner: 0, subMix: 0, partialTie: 0, pctTrue: 0, pctFalse: 0, rendered: 0, qualified: 0 };
+const reach = { nearCorner: 0, subMix: 0, partialTie: 0, pctTrue: 0, pctFalse: 0, rendered: 0, qualified: 0, decimal: 0 };
 for (const [sc, V] of Object.entries(SC)) for (let i = 0; i < 4000; i++) {
   const g = commitPayoffs({ a11: pick(V), a12: pick(V), a21: pick(V), a22: pick(V), b11: pick(V), b12: pick(V), b21: pick(V), b22: pick(V) });
   const o = oracle(g), all = computeAllNE(g), comps = continuumComponents(g), deg = hasEquilibriumContinuum(g);
@@ -204,6 +270,12 @@ for (const [sc, V] of Object.entries(SC)) for (let i = 0; i < 4000; i++) {
         reach.qualified++;
         check(`F6 a ${k} figure is judged against the oracle`, truth !== (validateProseDirections(s, L, g).length > 0), `${s} ${t}`);
       }
+      // F7 (S17) decimals at 1-3 places: true at the oracle value rounded, false at a draw the oracle refutes.
+      for (const d of [1, 2, 3]) {
+        const q = ps[Math.floor(rnd7() * ps.length)], f = q.toFixed(d), u = 0.5 * 10 ** -d, v = Math.floor(rnd7() * 10 ** d) / 10 ** d;
+        if (q > 0 && q < 1 && Number(f) !== 0 && Number(f) !== 1) { reach.decimal++; check('F7 a true decimal stands', !validateProseDirections(`${P} plays ${X} with probability ${f}.`, L, g).length, `${f} ${t}`); }
+        if (v > 0 && !ps.some((p) => Math.abs(p - v) <= u + 1e-6)) { reach.decimal++; check('F7 a false decimal flags', validateProseDirections(`${P} plays ${X} with probability ${v.toFixed(d)}.`, L, g).length > 0, `${v} ${t}`); }
+      }
     }
   }
   // F5 the shipping renderer's own prose passes every check it is screened by.
@@ -217,6 +289,7 @@ check('reach: sub-resolution mixes (S15b/c)', reach.subMix >= 50, JSON.stringify
 check('reach: partial-tie continua (S15b)', reach.partialTie >= 300, JSON.stringify(reach));
 check('reach: true and false percent claims (S15d)', reach.pctTrue >= 20000 && reach.pctFalse >= 20000, JSON.stringify(reach));
 check('reach: qualified figures (S16)', reach.qualified >= 50000, JSON.stringify(reach));
+check('reach: true and false decimals (S17)', reach.decimal >= 20000, JSON.stringify(reach));
 
 const failed = Object.keys(fails);
 if (failed.length) {

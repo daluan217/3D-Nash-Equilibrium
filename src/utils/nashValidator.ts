@@ -206,22 +206,31 @@ function checkProse(
     // the letter means the citation is about 1−x/1−y, which the equilibrium
     // coordinate allowlist must not judge; a bare wrong "x=0.833" still
     // flags exactly as before.
-    for (const m of prose.matchAll(/(?<![−-]\s?)\b([xy])\s*\*?\s*([=≈≃~])\s*(-?\d+(?:\.\d+)?)/gi)) {
-      const axis = m[1].toLowerCase() as 'x' | 'y';
-      const value = Number(m[3]);
+    // A coordinate may be written 2/3 or 66.7% (S17b: "x = 2/3" was read as x=2, "x = 1/3" passed unread).
+    const NUMX = String.raw`-?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?!\d|\.\d))?(?:\s*%)?`;
+    const val = (t: string) => { const [n, d] = t.replace(/%$/, '').split('/').map(Number); return t.endsWith('%') ? n / 100 : d === undefined ? n : n / d; };
+    const cites: { axis: 'x' | 'y'; op: string; text: string; end: number }[] = [];
+    for (const m of prose.matchAll(new RegExp(String.raw`(?<![−-]\s?)\b([xy])\s*\*?\s*([=≈≃~])\s*(${NUMX})`, 'gi')))
+      cites.push({ axis: m[1].toLowerCase() as 'x' | 'y', op: m[2], text: m[3], end: (m.index ?? 0) + m[0].length });
+    // "(x, y) = (0.25, 0.9)" and "the interior point (0.462, 0.875)" cite both coordinates at once.
+    for (const m of prose.matchAll(new RegExp(String.raw`(?:\(\s*x\s*\*?\s*,\s*y\s*\*?\s*\)\s*([=≈≃~])|\b(?:interior\s+(?:joint\s+)?(?:flat\s+spot|point)|joint\s+(?:interior\s+)?flat\s+spot)\s+(?:is\s+|lies\s+)?(?:at\s+)?)\s*\(\s*(${NUMX})\s*,\s*(${NUMX})\s*\)`, 'gi')))
+      for (const [axis, t] of [['x', m[2]], ['y', m[3]]] as const) cites.push({ axis, op: m[1] ?? '=', text: t, end: (m.index ?? 0) + m[0].length });
+    for (const c of cites) {
+      const { axis } = c;
+      const value = val(c.text);
       if (!Number.isFinite(value)) continue;
       // "x=0.333 on Row 2" / "y=0.667 for Col 2": the letter is being used for
       // the SECOND option's share — judge it as the complement (C10 draw 7).
-      const tail = prose.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 16);
+      const tail = prose.slice(c.end, c.end + 16);
       const onSecond = /^\s*(?:on|for|to|at)\s+(?:Row|Col|Column)\s*2\b/i.test(tail);
       const allowed = axis === 'x' ? allowedX : allowedY;
       const v = onSecond ? 1 - value : value;
-      if (near(v, allowed, m[2] !== '=') || inContinuumRange(axis, v)) continue;
+      if (near(v, allowed, c.op !== '=') || inContinuumRange(axis, v)) continue;
       out.push({
         kind: 'prose-bad-coordinate',
         claimed: null,
         expected: null,
-        detail: `prose cites ${axis}=${m[3]}, which is not an equilibrium coordinate`,
+        detail: `prose cites ${axis}=${c.text}, which is not an equilibrium coordinate`,
       });
     }
 
@@ -2894,6 +2903,18 @@ function labelPattern(label: string): string {
 
 interface LabelHit { player: 'A' | 'B'; option: 1 | 2; index: number; length: number }
 
+/** Index after the last clause stop before `at`; a decimal point ("probability 0.5") is not a stop (S17c). */
+const clauseStart = (t: string, at: number, stops = '.;'): number => {
+  for (let i = at - 1; i >= 0; i--) if (stops.includes(t[i]) && !(t[i] === '.' && /\d/.test(t[i + 1] ?? ''))) return i + 1;
+  return 0;
+};
+const clauseEnd = (t: string, at: number, stops = '.;'): number => {
+  for (let i = at; i < t.length; i++) if (stops.includes(t[i]) && !(t[i] === '.' && /\d/.test(t[i + 1] ?? ''))) return i;
+  return t.length;
+};
+// A shelf/level/indifference clause locates the OPPONENT's flat shelf at this player's mix (S17d), not an equilibrium.
+const SHELF_WORD = /\b(?:shel(?:f|ves)|level\w*|flat|indifferen\w*)\b/i;
+
 function findLabels(clause: string, sets: { player: 'A' | 'B'; option: 1 | 2; re: RegExp }[]): LabelHit[] {
   const hits: LabelHit[] = [];
   for (const s of sets) {
@@ -3027,7 +3048,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const at = (m.index ?? 0) + m[0].length;
       const opp = allHitsC.find((h) => h.index >= at && h.index <= at + 2);
       if (!opp || opp.player === player || !Number.isFinite(v)) continue;
-      const sentStart = Math.max(text.lastIndexOf('.', m.index ?? 0), text.lastIndexOf(';', m.index ?? 0)) + 1;
+      const sentStart = clauseStart(text, m.index ?? 0);
       const own = allHitsC.filter((h) => h.player === player && h.index >= sentStart && h.index < (m.index ?? 0)).pop();
       const cellsInOpp = [1, 2].map((o) => (player === 'A' ? cellAOf(g, o as 1 | 2, opp.option) : cellBOf(g, opp.option, o as 1 | 2)));
       const ok = own ? Math.abs((player === 'A' ? cellAOf(g, own.option, opp.option) : cellBOf(g, opp.option, own.option)) - v) < 1e-9
@@ -3048,19 +3069,43 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     const FW = '(?:(?:one|two|three|four|five|six|seven|eight|nine)[-\\s])?(?:half|third|quarter|fifth|sixth|eighth|tenth)s?';
     const FIG = `(?:an?\\s+)?${FW}|\\d{1,3}(?:\\.\\d+)?\\s*(?:%|per\\s?cent)?`;
     const figure = (f: string) => { const d = /^\d/.test(f), w = /([a-z]+)[-\s]+([a-z]+?)s?$/i.exec(f), u = (/(half|third|quarter|fifth|sixth|eighth|tenth)/i.exec(f) ?? [''])[0].toLowerCase(); return d ? parseFloat(f) / 100 : (w && NUM[w[1].toLowerCase()] ? NUM[w[1].toLowerCase()] : 1) * WORD[u]; };
+    // S17a: a decimal or a/b is a probability only beside the word: "with probability 0.4", "probability of 2/5",
+    // "0.9 probability to X", "probabilities 0.4 and 0.6", and "Y with 0.6" later in a clause that said "probability".
+    // Bare decimals stay unread (payoffs, values, "interior point (0.4, 0.75)" which checkProse judges).
+    const DN = String.raw`(?<![\d.,])(0?\.\d+|1\.0+|\d\s*\/\s*\d{1,2})(?![\d%]|\.\d|\s*\/)`;
+    const DEC = String.raw`(?<=\bprobabilit(?:y|ies)\s+(?:of\s+)?(?:[a-z]+\s+){0,3}(?:0?\.\d+\s*(?:-|–|—|to|or)\s*)?|\bprobabilities\s+(?:of\s+)?0?\.\d+\s*,?\s*(?:and\s+)?|\bprobabilit(?:y|ies)\b(?:[^.;]|\.\d){0,100}?\bwith\s+(?:(?:about|roughly|around|approximately|nearly)\s+)?)${DN}|${DN.replace('(0?', '(?<d5>0?')}(?=\s+probability\s+(?:to|on|for)\b)`;
     // `%\b` never matched "60% of" or "60%." (no word boundary after %); the lookbehind keeps "2.5%" whole.
     // "a third" carries its article (else "more than a third" bound as the point 1/3); "a third time" is an ordinal.
-    const fracRe = new RegExp(`\\b(?:an?\\s+)?(?:(one|two|three|four|five|six|seven|eight|nine)[-\\s])?(half|third|quarter|fifth|sixth|eighth|tenth)s?\\b(?!\\s+(?:time|round|turn|straight|consecutive|day|week|month|year|place|period|move|game|attempt|try|stage|phase|step)s?\\b)|(?<![\\d.,])(\\d{1,3}(?:\\.\\d+)?)\\s*(?:%|per\\s?cent\\b)`, 'gi');
+    const fracRe = new RegExp(`\\b(?:an?\\s+)?(?:(one|two|three|four|five|six|seven|eight|nine)[-\\s])?(half|third|quarter|fifth|sixth|eighth|tenth)s?\\b(?!\\s+(?:time|round|turn|straight|consecutive|day|week|month|year|place|period|move|game|attempt|try|stage|phase|step)s?\\b)|(?<![\\d.,])(\\d{1,3}(?:\\.\\d+)?)\\s*(?:%|per\\s?cent\\b)|${DEC}`, 'gi');
     // A figure is a POINT only when nothing qualifies it. Bounds ("more than 60%", "60% or more") are judged as
     // inequalities, ranges ("20-30%", "between a third and half") as intervals, denials as complements: read as a
     // point, ~96% of TRUE qualified sentences were flagged once percents parsed (sweep 16).
     const PRE = new RegExp(`(?:\\b(?<le>(?:no|not)\\s+more\\s+than|at\\s+most|up\\s+to)|\\b(?<ge>(?:no|not)\\s+(?:less|fewer)\\s+than|at\\s+least)|\\b(?<lt>(?:less|fewer)\\s+than|under|below)|\\b(?<gt>(?:more|greater)\\s+than|over|above|exceeding|in\\s+excess\\s+of)|\\b(?<hedge>about|roughly|around|nearly|almost|approximately|virtually|essentially|practically|close\\s+to)|(?:\\bfrom\\s+)?(?<![\\d.,\\w])(?<lo>${FIG})\\s*(?:-|–|—|to|or)|\\bbetween\\s+(?<lo2>${FIG})\\s*and)\\s*$`, 'i');
     const POST = /^(?:\s*(?:of\s+(?:the|its|his|her|their)\s+(?:time|turns|rounds|plays|moves)\s+)?(?:or\s+(?:(more|above|over|higher|greater)|less|fewer|below|under|lower)|at\s+(?:(least)|most))\b|(\+))/i;
+    // The opponent is level where this player's mix zeroes its payoff difference: [0,1], one root, or nowhere.
+    const levelSet = (pl: 'A' | 'B'): [number, number][] => {
+      const [c1, c0] = pl === 'B' ? [g.a11 - g.a21, g.a12 - g.a22] : [g.b11 - g.b12, g.b21 - g.b22];
+      if (c1 === 0 && c0 === 0) return [[0, 1]];
+      const r = c0 === c1 ? NaN : c0 / (c0 - c1);
+      return r >= 0 && r <= 1 ? [[r, r]] : [];
+    };
+    // A shelf clause locates where the OPPONENT is level (S17d): judged against that value, framed or not. Its scope
+    // is the sub-clause ("…shelf at 0.57, but there is NO interior flat spot" does not deny it); "equilibrium" in that
+    // sub-clause before the figure keeps the equilibrium reading (`level` false).
+    const shelfAt = (at: number, end: number) => {
+      const cs = clauseStart(text, at); let s0 = cs, e0 = clauseEnd(text, end);
+      for (const c of text.slice(cs, e0).matchAll(/,\s*(?:but|while|whereas|yet|so|although|though)\b/gi)) { const i = cs + (c.index ?? 0); if (i < at) s0 = i; else { e0 = i; break; } }
+      const ct = text.slice(s0, e0).replace(/\b(?:interior|joint)\s+(?:\w+\s+){0,2}flat\s+spots?\b/gi, ''); // denies the joint point, not this shelf
+      const shelf = SHELF_WORD.test(ct) && !/\b(?:not|no|never|nor|without)\s+(?:\w+\s+){0,3}(?:shel(?:f|ves)|level\w*|flat|indifferen\w*)\b|n['’]t\s+(?:\w+\s+){0,3}(?:level|flat|indifferent)\b/i.test(ct);
+      return { shelf, framed: /\b(?:if|when|whenever|suppose|whether|should|were)\b/i.test(text.slice(cs, at)), level: shelf && !/\bequilibri/i.test(text.slice(s0, at).split(/\b(?:because|since)\b/i).pop()!) };
+    };
+    const boundIn = new Map<string, number>();
     for (const m of text.matchAll(fracRe)) {
       const at = m.index ?? 0, end = at + m[0].length;
       // "twenty-fifth", "one-and-a-half": a fraction word glued to a number the prefix does not parse is not a mix.
       if (!m[3] && !m[1] && /-$/.test(text.slice(0, at))) continue;
-      const p = m[3] ? Number(m[3]) / 100 : (m[1] ? NUM[m[1].toLowerCase()] : 1) * WORD[m[2].toLowerCase()];
+      const dec = m[4] ?? m[5], num = (t: string) => { const [n, d] = t.split('/').map(Number); return d === undefined ? n : n / d; };
+      const p = dec ? num(dec) : m[3] ? Number(m[3]) / 100 : (m[1] ? NUM[m[1].toLowerCase()] : 1) * WORD[m[2].toLowerCase()];
       const after = text.slice(end, end + 40), before = text.slice(Math.max(0, at - 60), at);
       // The low end of a range ("20% to 30%", "a third or half") is judged with its high end. After "between" it
       // binds no label (backward stops at "between", forward at "and"), so it needs no skip.
@@ -3071,7 +3116,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const G = pm?.groups ?? {}, post = pm ? null : POST.exec(after), at0 = pm ? at - pm[0].length : at;
       // Forward binding first, and a bare adjacency counts: "two-thirds Lenient
       // inspection" names its own label with no connector at all.
-      let lab = allHitsW.find((h) => h.index >= end && h.index <= end + 12 && /^\s*(?:on|to|for|at|toward|towards)?\s*(?:the\s+|an?\s+)?$/i.test(text.slice(end, h.index)))
+      let lab = allHitsW.find((h) => h.index >= end && h.index <= end + 24 && /^\s*(?:probability\s+)?(?:on|to|for|at|toward|towards)?\s*(?:the\s+|an?\s+)?$/i.test(text.slice(end, h.index)))
         // Backward binding must NOT cross a comma ("(one-third Strict inspection, two-thirds Lenient inspection)":
         // round C19 draw 55, the campaign's only correct-withheld). A bound or range may carry a modifier.
         ?? allHitsW.filter((h) => h.index + h.length <= at0 && h.index + h.length >= at0 - 30 && /^\s*(?:with|at|about|roughly|around)?\s*(?:probability\s+|weight\s+|frequency\s+)?(?:of\s+)?(?:(?:only|just|slightly|well|somewhere|anywhere|a\s+(?:bit|little))\s+)*$/i.test(text.slice(h.index + h.length, at0))).pop();
@@ -3084,9 +3129,15 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const prior = (re: RegExp) => allHitsW.find((h) => h !== lab && h.player === lab!.player && h.index < lab!.index && h.index >= lab!.index - 40 && re.test(text.slice(h.index + h.length, lab!.index)));
       if (lab.index < at) {
         const over = prior(/^\s*(?:over|rather\s+than|instead\s+of|in\s+preference\s+to)\s*(?:the\s+)?$/i);
-        if (over) lab = over; else if (prior(/^\s*(?:and|or|\/|,|versus|vs\.?)\s*(?:the\s+)?$/i)) continue;
+        if (over) lab = over; else if (prior(/^\s*(?:and|or|\/|,|versus|vs\.?|with)\s*(?:the\s+)?$/i)) continue;
       }
-      if (/\b(?:of\s+the\s+(?:payoff|score|gain|value)|payoff|less|more|higher|lower)\b/i.test(after.slice(post?.[0].length ?? 0).slice(0, 20)) || /\b(?:if|when|whenever|suppose|whether|should|were)\b/i.test(text.slice(Math.max(text.lastIndexOf('.', at), text.lastIndexOf(';', at)) + 1, at))) continue;
+      // A second figure on an option already given one in this sentence may be the OTHER actor in shared words
+      // ("A uses the air route with probability 0.414, while the inspector inspects the air route with probability
+      // 0.167"): it stands if it is true of the other player's option at that index, and is judged as usual if not.
+      const key = `${lab.player}${lab.option}`, sent = clauseStart(text, at, '.!?'), dup = boundIn.get(key) === sent;
+      boundIn.set(key, sent);
+      const { shelf, framed, level } = shelfAt(at, end);
+      if (/\b(?:of\s+the\s+(?:payoff|score|gain|value)|payoff|less|more|higher|lower)\b/i.test(after.slice(post?.[0].length ?? 0).slice(0, 20)) || (framed && (!shelf || pm || post))) continue;
       // A negation on the verb ("does not play Row 1 40%", "doesn't commit to 10% on Row 1") makes it a denial. One
       // further off ("no equilibrium has Row 1 at 40%") has no known scope: judged as a claim, as before (no loosening).
       const head = Math.min(lab.index, at0);
@@ -3097,17 +3148,72 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // A stated figure is rounded: 0.02 either way (RED-MATH-8/002; continuum ranges count too). A bare "0%"/"100%"
       // point is exact, like "with probability 0/1" below (x* = 2e-5 is not 0%); a range end is not.
       // A denial is false only at the figure's own precision: "doesn't put half on X" is true at 0.495.
-      const lo = G.lo ?? G.lo2, lp = lo === undefined ? p : figure(lo.replace(/^an?\s+/i, ''));
-      const tol = (/^(?:0|100)$/.test(m[3] ?? '') && !G.hedge && lo === undefined) || ((negated || none) && !m[3]) ? 1e-9
-        : negated || none ? 0.005 * 10 ** -(m[3].split('.')[1]?.length ?? 0) : 0.02 - 1e-9;
+      // A decimal is rounded at its own last digit (0.7 covers 0.65..0.75); 0.0 and 1.0 are exact, like 0 and 1.
+      const lo = G.lo ?? G.lo2, lp = lo === undefined ? p : dec ? num(lo) : figure(lo.replace(/^an?\s+/i, ''));
+      const unit = dec?.includes('.') ? 0.5 * 10 ** -dec.split('.')[1].length : 0;
+      const tol = ((/^(?:0|100)$/.test(m[3] ?? '') || (dec && (p === 0 || p === 1))) && !G.hedge && lo === undefined) || ((negated || none) && !m[3] && !unit) ? 1e-9
+        : negated || none ? unit || 0.005 * 10 ** -(m[3].split('.')[1]?.length ?? 0) : unit ? Math.max(unit, G.hedge ? 0.02 : 0) + 1e-9 : 0.02 - 1e-9;
       const ge = G.ge || G.gt || post?.[1] || post?.[2] || post?.[3], le = G.le || G.lt || (post && !ge);
       const [cLo, cHi] = le ? [-1, p + (G.lt ? -1e-9 : 1e-9)] : ge ? [p + (G.gt ? 1e-9 : -1e-9), 2] : [Math.min(p, lp) - tol, Math.max(p, lp) + tol];
-      const sp = (a: number, b: number) => (lab.option === 1 ? [a, b] : [1 - b, 1 - a]);
-      const R = [...continuumComponents(g).map((r) => (lab.player === 'A' ? sp(r.x0, r.x1) : sp(r.y0, r.y1))), ...truthW.map((t) => (lab.player === 'A' ? sp(t.x, t.x) : sp(t.y, t.y)))];
+      const sp = (a: number, b: number, o = lab.option) => (o === 1 ? [a, b] : [1 - b, 1 - a]);
+      const rangesOf = (pl: 'A' | 'B', o: 1 | 2) => [...continuumComponents(g).map((r) => (pl === 'A' ? sp(r.x0, r.x1, o) : sp(r.y0, r.y1, o))), ...truthW.map((t) => (pl === 'A' ? sp(t.x, t.x, o) : sp(t.y, t.y, o)))];
+      const R = rangesOf(lab.player, lab.option);
+      if (level && !negated && !none) R.push(...levelSet(lab.player).map(([a, b]) => sp(a, b)));
+      if (dup && !negated && !none) R.push(...rangesOf(lab.player === 'A' ? 'B' : 'A', lab.option));
+      // "A audits with probability 0.762 and settles with 0.238": a list continues its own player, so the other
+      // player's label there may be a shared word; the figure also stands if true of the listed player's other option.
+      const cont = lab.index < at ? /(?:\bwith|\bprobability(?:\s+of)?)\s+(?:0?\.\d+|\d{1,3}(?:\.\d+)?\s*%)\s*,?\s*and\s+(?:the\s+|an?\s+)?$/i.exec(text.slice(Math.max(0, lab.index - 60), lab.index)) : null;
+      const prev = cont ? allHitsW.filter((h) => h.index + h.length <= lab!.index - cont[0].length && h.index + h.length >= lab!.index - cont[0].length - 40).pop() : undefined;
+      if (prev && prev.player !== lab.player && !negated && !none) R.push(...rangesOf(prev.player, (3 - prev.option) as 1 | 2));
       // Claims hold if SOME equilibrium bears them out; a denial is false only if EVERY equilibrium contradicts it.
       const meets = R.some(([a, b]) => a <= cHi && b >= cLo);
       const bad = negated ? R.length > 0 && R.every(([a, b]) => a >= cLo && b <= cHi) : none ? meets : truthW.length > 0 && !meets;
       if (bad) issues.push(`prose ${negated || none ? 'denies' : 'puts'} ${lab.player}'s option ${lab.option} at probability ${p.toFixed(3)}, but ${negated ? 'every equilibrium does' : none ? 'an equilibrium does' : 'no equilibrium does'}`);
+    }
+    // S17a idioms and pairs: "splits fifty-fifty/evenly/equally between X and Y", "uses X and Y fifty-fifty", "B mixes
+    // evenly", "B's even split" put 0.5 on each option; "A's 0.7/0.3 mix" and "A's 70–30 split" name both, in either
+    // order. Only A/B or a label pair resolves the player: "the ring's fifty-fifty mix" stays unread.
+    const ID = String.raw`(?:fifty[-\s]fifty|evenly|equally|half[-\s]and[-\s]half|50\s*[-–\/]\s*50)`, MV = String.raw`\b(?:split|mix|divid|randomi[sz]|alternat|choos|chose|play|us)\w*\s+`;
+    const claims: { pl: 'A' | 'B'; u: number; w: number; tol: number; at: number; end: number }[] = [];
+    const half = (pl: 'A' | 'B', at: number, end: number) => claims.push({ pl, u: 0.5, w: 0.5, tol: 0.02, at, end });
+    const pairAfter = (h: LabelHit | undefined) => h && allHitsW.find((k) => k.player === h.player && k.option !== h.option && k.index > h.index && /^\s*(?:and|or|&)\s+$/i.test(text.slice(h.index + h.length, k.index)));
+    for (const m of text.matchAll(new RegExp(String.raw`${MV}(?:(?:its|his|her|their)\s+\w+\s+)?${ID}\s+between\s+`, 'gi'))) {
+      const e = (m.index ?? 0) + m[0].length, h = allHitsW.find((x) => x.index === e), k = pairAfter(h);
+      if (k) half(k.player, m.index ?? 0, k.index + k.length);
+    }
+    for (const m of text.matchAll(new RegExp(ID, 'gi'))) {
+      const k = allHitsW.find((x) => x.index + x.length <= (m.index ?? 0) && /^\s+$/.test(text.slice(x.index + x.length, m.index))), h = k && allHitsW.find((x) => pairAfter(x) === k);
+      if (h && new RegExp(String.raw`${MV}(?:between\s+)?$`, 'i').test(text.slice(Math.max(0, h.index - 40), h.index))) half(h.player, h.index, (m.index ?? 0) + m[0].length);
+    }
+    // "B mixes evenly", "A chooses North and South fifty-fifty" (the pair may be shortened, so A/B names the player).
+    const NAB = String.raw`(?:(?!\b[AB]\b)[^.;:,])`;
+    for (const m of text.matchAll(new RegExp(String.raw`\b(?:[Pp]layer\s+)?([AB])\s+(?:(?:split|mix|divid|randomi[sz])\w*\s+(?:(?:its|his|her|their)\s+\w+\s+)?|${MV}(?:between\s+)?${NAB}{1,40}?\s(?:and|or)\s${NAB}{1,40}?\s)${ID}(?![\w-])`, 'g'))) half(m[1] as 'A' | 'B', m.index ?? 0, (m.index ?? 0) + m[0].length);
+    // "A has a level shelf when the retailer mixes fifty-fifty": the mixer is the shelf owner's opponent.
+    for (const m of text.matchAll(new RegExp(String.raw`\b([AB])(?:['’]s)?\b${NAB}{0,80}?\b(?:shel(?:f|ves)|level|flat)\b${NAB}{0,30}?\bwhen\s+(?:the\s+)?[\w-]+(?:\s+[\w-]+)?\s+(?:split|mix|divid|randomi[sz])\w*\s+${ID}(?![\w-])`, 'g')))
+      if (!/\bwhen\s+(?:[Pp]layer\s+)?[AB]\s/.test(m[0])) half(m[1] === 'A' ? 'B' : 'A', m.index ?? 0, (m.index ?? 0) + m[0].length);
+    for (const m of text.matchAll(/\b(?:[Pp]layer\s+)?([AB])['’]s\s+(?:(fifty[-\s]fifty|half[-\s]and[-\s]half|even|equal|50\s*[-–/]\s*50)|(0?\.\d+|\d{1,2})\s*(?:\/|[-–—:])\s*(0?\.\d+|\d{1,2}))\s+(?:mix\w*|split|odds|randomi\w+|strateg\w+|choice|schedule)\b/g)) {
+      const pl = m[1] as 'A' | 'B', at = m.index ?? 0, end = at + m[0].length;
+      if (m[2]) { half(pl, at, end); continue; }
+      const pc = !m[3].includes('.') && !m[4].includes('.'), [u, w] = [m[3], m[4]].map((t) => Number(t) / (pc ? 100 : 1));
+      if (pc && Number(m[3]) + Number(m[4]) !== 100) continue; // "A's 3-2 split" is a count, not a mix
+      const tol = pc ? 0.02 : 0.5 * 10 ** -Math.min(...[m[3], m[4]].map((t) => t.split('.')[1].length)) + 1e-9;
+      claims.push({ pl, u, w, tol, at, end }, { pl, u: w, w: u, tol, at, end });
+    }
+    const said = new Map<string, boolean>();
+    for (const c of claims) {
+      const { shelf, framed, level } = shelfAt(c.at, c.end);
+      if (framed && !shelf) continue;
+      const head = text.slice(Math.max(0, c.at - 80), c.at).split(/[;:!?,()—–]|\.(?!\d)|\b(?:and|but|while|whereas|yet|so|then|although|though|because|since)\b/i).pop() ?? '';
+      const negated = /(?:\b(?:not|never|cannot|no\s+longer)|n['’]t)\s+(?:\w+\s+){0,2}$/i.test(head);
+      const R = [...continuumComponents(g).map((r) => (c.pl === 'A' ? [r.x0, r.x1] : [r.y0, r.y1])), ...truthW.map((t) => (c.pl === 'A' ? [t.x, t.x] : [t.y, t.y]))];
+      if (level && !negated) R.push(...levelSet(c.pl));
+      // Option 1 near u and option 2 near w; a denial ("does not split evenly") is false only at exactly one half.
+      const ok = negated ? !(R.length > 0 && R.every(([a, b]) => a === 0.5 && b === 0.5)) : truthW.length === 0 || R.some(([a, b]) => Math.max(a, c.u - c.tol, 1 - c.w - c.tol) <= Math.min(b, c.u + c.tol, 1 - c.w + c.tol));
+      const k = `${c.at}`; said.set(k, (said.get(k) ?? false) || ok);
+    }
+    for (const c of claims) {
+      const msg = `prose puts ${c.pl}'s mix at ${c.u === c.w ? 'one half each' : `${c.u}/${c.w}`}, but no equilibrium does`;
+      if (said.get(`${c.at}`) === false && !issues.includes(msg)) issues.push(msg); // "A mixes evenly between X and Y" matches twice
     }
   }
 
@@ -3135,8 +3241,8 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
 
   // "<label> with probability 0 / 1" (or "one"/"zero"): the label's equilibrium
   // probability must actually be that (C1 draw 13: "A plays Silence with
-  // probability 0" when Silence IS the equilibrium row). Only extreme
-  // probabilities are judged — interior values belong to checkProse.
+  // probability 0" when Silence IS the equilibrium row). Interior decimals are
+  // judged in the mix block above (S17a); x=/y= citations in checkProse.
   {
     const truthLocal = computeAllNE(g);
     const allHits = findLabels(text, sets);
@@ -3155,7 +3261,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       if (!lab) continue;
       if (/\b(?:not|never|no)\b/i.test(before)) continue;
       // Hypotheticals ("if B uses Relay with probability 1, A prefers …") are frames, not claims.
-      const segStart = Math.max(text.lastIndexOf('.', lab.index), text.lastIndexOf(';', lab.index), text.lastIndexOf(':', lab.index)) + 1;
+      const segStart = clauseStart(text, lab.index, '.;:');
       if (/\b(?:if|when|whenever|suppose|supposing|whether|should|were)\b/i.test(text.slice(segStart, lab.index))) continue;
       const ok = truthLocal.some((t) => {
         const p1 = lab.player === 'A' ? t.x : t.y;
@@ -3184,7 +3290,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       if (!lab) continue;
       const before = text.slice(Math.max(0, (m.index ?? 0) - 40), m.index);
       if (/\b(?:not|never|no|isn['’]t|aren['’]t|rather\s+than|instead\s+of)\b/i.test(before)) continue;
-      const segStart = Math.max(text.lastIndexOf('.', lab.index), text.lastIndexOf(';', lab.index), text.lastIndexOf(':', lab.index)) + 1;
+      const segStart = clauseStart(text, lab.index, '.;:');
       if (/\b(?:if|when|whenever|suppose|supposing|whether|should|were|would|could|might)\b/i.test(text.slice(segStart, lab.index))) continue;
       const major = !/^(?:rarely|seldom)$/i.test(m[1]);
       claimCount++;
