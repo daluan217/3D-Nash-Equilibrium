@@ -571,6 +571,76 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   for (const [s, l] of [['Once B heads south, A does better with the Flexible plan.', Lb('Standard plan', 'Flexible plan', 'North route', 'South route')],
     ['Against Go North, A does better with South.', Lb('North route', 'South route', 'Stay South', 'Go North')]] as [string, typeof L][])
     check('S20c a head word that is a direction or another label is no alias', dir(s, RT, l).length === 0, `${s} :: ${dir(s, RT, l).join(' | ')}`);
+
+  // S21: every other way to word a preference on MIX — would rather, best reply/response, the best P can do, switching to X,
+  // avoid / never chooses, superior/inferior, leaves P better/worse off, doesn't give, incentive/reason to choose. Twins differ
+  // in one option or frame, so only the vocabulary (and its polarity) decides; 41 of the 50 false twins passed before S21.
+  for (const [s, t] of [
+    ['Against Retreat, A would rather play Defect.', true], ['Against Retreat, A would rather play Cooperate.', false],
+    ['Against Advance, A would much rather play Cooperate.', true], ['Against Retreat, A would much rather play Cooperate.', false],
+    ['A would rather play Defect than Cooperate when B plays Retreat.', true], ['A would rather play Cooperate than Defect when B plays Retreat.', false],
+    ['Against Advance, A would rather not play Defect.', true], ['Against Retreat, A would rather not play Defect.', false],
+    ['Against Retreat, A would rather go with Defect.', true], ['Against Retreat, A would rather go with Cooperate.', false],
+    ['A would rather Cooperate against Advance and Defect against Retreat.', true], ['A would rather Cooperate against Retreat and Defect against Advance.', false],
+    ['A\'s best reply to Advance is Cooperate.', true], ['A\'s best reply to Advance is Defect.', false],
+    ['B\'s best response to Defect is Advance.', true], ['B\'s best response to Defect is Retreat.', false],
+    ['B\'s best reply to the Defect is Advance.', true], ['B\'s best reply to the Defect is Retreat.', false],
+    ['A\'s best response to Retreat would be to play Defect.', true], ['A\'s best response to Retreat would be to play Cooperate.', false],
+    ['B\'s best response to Defect is not Retreat.', true], ['B\'s best response to Defect is not Advance.', false],
+    ['Defect is A\'s best reply to Retreat.', true], ['Defect is A\'s best reply to Advance.', false],
+    ['Cooperate is not A\'s best reply to Retreat.', true], ['Cooperate is not A\'s best reply to Advance.', false],
+    ['The best B can do against Cooperate is Retreat.', true], ['The best B can do against Cooperate is Advance.', false],
+    ['Against Retreat, the best A can do is Defect.', true], ['Against Retreat, the best A can do is Cooperate.', false],
+    ['Against Advance, A gains by switching to Cooperate.', true], ['Against Advance, A gains by switching to Defect.', false],
+    ['Against Retreat, A benefits by switching to Defect.', true], ['Against Advance, A benefits by switching to Defect.', false],
+    ['Against Retreat, A does better by switching to Defect.', true], ['Against Advance, A does better by switching to Defect.', false],
+    ['Against Advance, A has an incentive to switch to Cooperate.', true], ['Against Advance, A has an incentive to switch to Defect.', false],
+    ['Against Retreat, A would want to switch to Defect.', true], ['Against Retreat, A would want to switch to Cooperate.', false],
+    ['Against Retreat, A is tempted to switch to Defect.', true], ['Against Retreat, A is tempted to switch to Cooperate.', false],
+    ['Against Retreat, A would not switch to Cooperate.', true], ['Against Retreat, A would not switch to Defect.', false],
+    ['At Cooperate with Retreat, A would switch to Defect.', true], ['At Cooperate with Advance, A would switch to Defect.', false],
+    ['Against Retreat, A would move to Defect.', true], ['Against Retreat, A would move to Cooperate.', false],
+    ['Against Retreat, switching to Defect helps A.', true], ['Against Retreat, switching to Cooperate helps A.', false],
+    ['Against Retreat, switching to Cooperate hurts A.', true], ['Against Advance, switching to Cooperate hurts A.', false],
+    ['Against Advance, switching to Defect does not help A.', true], ['Against Retreat, switching to Defect does not help A.', false],
+    ['Against Advance, A should avoid Defect.', true], ['Against Advance, A should avoid Cooperate.', false],
+    ['Against Advance, A avoids Defect.', true], ['Against Advance, A avoids Cooperate.', false],
+    ['Against Retreat, A never plays Cooperate.', true], ['Against Retreat, A never plays Defect.', false],
+    ['Against Retreat, A won\'t choose Cooperate.', true], ['Against Retreat, A won\'t choose Defect.', false],
+    ['Against Cooperate, B does not choose Advance.', true], ['Against Cooperate, B does not choose Retreat.', false],
+    ['Against Advance, Cooperate is superior for A.', true], ['Against Advance, Defect is superior for A.', false],
+    ['Against Advance, Defect is inferior for A.', true], ['Against Advance, Cooperate is inferior for A.', false],
+    ['Against Advance, Defect is not superior for A.', true], ['Against Retreat, Defect is not superior for A.', false],
+    ['Against Retreat, Cooperate is the worse option for A.', true], ['Against Retreat, Defect is the worse option for A.', false],
+    ['When A plays Defect, Retreat leaves B worse off.', true], ['When A plays Defect, Advance leaves B worse off.', false],
+    ['Against Advance, Cooperate leaves A better off.', true], ['Against Retreat, Cooperate leaves A better off.', false],
+    ['Against Retreat, Cooperate does not leave A better off.', true], ['Against Advance, Cooperate does not leave A better off.', false],
+    ['Against Advance, Defect does not give A a higher payoff.', true], ['Against Retreat, Defect does not give A a higher payoff.', false],
+    ['Against Retreat, Cooperate does not pay A more.', true], ['Against Advance, Cooperate does not pay A more.', false],
+    ['Against Advance, A has an incentive to choose Cooperate.', true], ['Against Advance, A has an incentive to choose Defect.', false],
+    ['Against Advance, A has every reason to choose Cooperate.', true], ['Against Retreat, A has every reason to choose Cooperate.', false],
+    // a wish about the OTHER player's move, or a non-payoff "leaves", is no preference claim (each read as one is false)
+    ['When A plays Cooperate, A would rather face Advance.', true], ['When A plays Cooperate, A would rather see Advance.', true],
+    ['Against Retreat, A would rather B choose Advance.', true], ['When A plays Cooperate, A prefers Advance.', true],
+    ['When B plays Advance, B gains by switching to Defect.', true], ['When A plays Cooperate, A should avoid Retreat.', true],
+    ['When A plays Cooperate, A never chooses Retreat.', true], ['Against Retreat, Cooperate leaves A more exposed.', true],
+    ['Against Retreat, switching to Defect helps B.', true], ['A plays Cooperate to avoid Defect\'s zero against Advance.', true],
+    ['Against Retreat, switching to Cooperate helps B.', true], ['When A plays Cooperate, the attacker would rather face Advance.', true],
+    ['The firm’s best reply to Retreat is Defect.', true], ['The firm’s best reply to Retreat is Cooperate.', false],
+  ] as [string, boolean][]) check(`S21 ${t ? 'a true' : 'a false'} preference in other words is judged`, (dir(s).length === 0) === t, `${s} :: ${dir(s).join(' | ')}`);
+  // "would rather not X" names X the worse option (a strict claim), so on TIE (A: 1 = 1 against Advance) it is false;
+  // read as a mere denial it would pass there.
+  for (const [s, t] of [['Against Advance, A would rather not play Defect.', false], ['Against Retreat, A would rather not play Cooperate.', true]] as [string, boolean][])
+    check(`S21 ${t ? 'a true' : 'a false'} "rather not" on a tie is judged`, (dir(s, TIE).length === 0) === t, `${s} :: ${dir(s, TIE).join(' | ')}`);
+  // S21: real report sentences (verbatim), each passed before S21. Worked by hand: B ties -1/-1 against the North Route;
+  // B ties 7/7 and A ties 5/5 against the first option; B ties -2/-2 against Standard.
+  for (const [s, t, g, l] of [
+    ['B, however, gains by switching to the South Depot whether A takes the North or South Route.', false, G(8, -9, -7, -9, -1, -1, 5, 6), Lb('North Route', 'South Route', 'North Depot', 'South Depot')],
+    ['B, however, gains by switching to the South Depot whether A takes the North or South Route.', true, G(8, -9, -7, -9, -1, 0, 5, 6), Lb('North Route', 'South Route', 'North Depot', 'South Depot')],
+    ['At either equilibrium, A’s payoffs are 5, while B’s are 2 or 7; B would rather Integrate than Stay Separate when A pilots, but A would rather Full Rollout than Pilot when B integrates.', false, G(5, 4, 5, 5, 7, 7, 2, -8), Lb('Pilot', 'Full Rollout', 'Integrate', 'Stay Separate')],
+    ['Against Support, Standard does better for the studio than Rapid, while against Rapid the distributor does better with Support than Cut support; Support is thus the distributor’s best response to Standard, so it pins the equilibrium rather than balancing either player.', false, G(-7, 3, -8, 4, -2, -2, 9, -4), Lb('Standard', 'Rapid', 'Support', 'Cut support')],
+    ['B\'s best response to Open Plaza is Evening Shift, but A\'s dominant choice eliminates that balancing scenario.', true, G(7, -4, -9, -9, -9, -7, 2, -9), Lb('Open Plaza', 'Private Tent', 'Morning Shift', 'Evening Shift')],
+  ] as [string, boolean, GamePayoffs, typeof L][]) check(`S21 ${t ? 'a true' : 'a false'} real report sentence is judged`, (dir(s, g, l).length === 0) === t, `${s} :: ${dir(s, g, l).join(' | ')}`);
 }
 
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────
