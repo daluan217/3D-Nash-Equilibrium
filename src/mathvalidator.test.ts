@@ -256,7 +256,11 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
     ['At the equilibrium A earns 0.75 and B earns 1.2 on average.', 'At the equilibrium A earns 2 and B earns 1.2 on average.', MIX],
     ['At the equilibrium A earns 3/4 on average.', 'At the equilibrium A earns 2/3 on average.', MIX],
     ['When B plays Advance, A receives 4 from either option.', 'When B plays Advance, A receives 1 from either option.', CA],
+    ['B earns 3 against Cooperate.', 'When B plays Retreat, A receives 3 from either option.', MIX], // MIX: 3 is ONE of 0 / 3
     ['A always receives 2 and B always receives -1.', 'A always receives 2 and B always receives 1.', CON],
+    ['A always receives 2.', 'A always receives 3 and B always receives 0.', CON], ['B earns 3 against Cooperate.', 'A always receives 3.', MIX], // 3 is ONE of A's cells
+    ['Once B plays Retreat, A gets 3, leaving Cooperate behind.', 'Once B plays Retreat, A gets 1, leaving Cooperate behind.', MIX], // only the comma ends the clause
+    ['Against Retreat, Plan B earns 3.', 'Against Retreat, Plan B earns 2.', MIX, { name: 'X', row1: 'Plan A', row2: 'Plan B', col1: 'Advance', col2: 'Retreat', description: '' }],
     ['A Big launch with Stay quiet gives A a payoff of -4 and B a payoff of 9.', 'A Big launch with Stay quiet gives A a payoff of -1 and B a payoff of 3.', H2, LH],
     ['At one equilibrium, A uses the Helicopter while B runs the Inland depot: A gets -5 rather than -6 by staying with the Helicopter, while B scores 6 at either depot and gains nothing by switching.', // gold verbatim
       'At one equilibrium, A uses the Helicopter while B runs the Inland depot: A gets -5 rather than -7 by staying with the Helicopter.', HL, LHL],
@@ -270,6 +274,30 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   for (const [s, l] of [['A gets 2 more from Defect than from Cooperate when B plays Retreat.', L], ['A makes 2 moves.', L], ['B mixes, so A earns 0.9 in expectation.', L],
     ['Plan B earns A 3 against Retreat.', { name: 'X', row1: 'Plan A', row2: 'Plan B', col1: 'Advance', col2: 'Retreat', description: '' }]] as [string, typeof L][])
     check('S18c a figure that is no payoff claim stands', validateProseDirections(s, l, MIX).length === 0, s);
+  // S18d: an OPTION as subject pays its own player (78 real sentences: "Launch pays 9 rather than -1 against Fund"), a list
+  // goes on with the same subject, and "3 points less" / "2 over Cooperate" are differences, never levels.
+  const FL = commitPayoffs({ a11: -4, a12: -4, a21: 7, a22: -1, b11: 5, b12: 4, b21: 9, b22: -8 });   // gold dataset row
+  const LFL = { name: 'X', row1: 'Pilot Launch', row2: 'Full Launch', col1: 'National Campaign', col2: 'Local Campaign', description: '' };
+  const PB = { name: 'X', row1: 'Plan A', row2: 'Plan B', col1: 'Advance', col2: 'Retreat', description: '' };
+  for (const [t, f, g, l] of [
+    ['Against Retreat, Defect earns 3.', 'Against Retreat, Defect earns 2.', MIX], ['Retreat earns 3 when A plays Cooperate.', 'Retreat earns 2 when A plays Cooperate.', MIX],
+    ['Defect earns B 2 against Advance.', 'Defect earns B 3 against Advance.', MIX], ['Against Retreat, Plan B earns 3.', 'Against Retreat, Plan B earns 2.', MIX, PB],
+    ['The Convoy pays 3 against Coastal depot.', 'The Convoy pays 4 against Coastal depot.', HL, LHL],
+    ['With Defect, A gets 3 against Retreat and 0 against Advance.', 'With Defect, A gets 3 against Retreat and 1 against Advance.', MIX],
+    ['Defect earns 0 against Advance and 3 against Retreat.', 'Defect earns 0 against Advance and 2 against Retreat.', MIX],
+    ['For A, Full Launch pays 7 against National Campaign and -1 against Local Campaign.', 'For A, Full Launch pays 7 against National Campaign and -4 against Local Campaign.', FL, LFL],
+    ['For B, Full Launch pays 9 against National Campaign.', 'For B, Full Launch pays 7 against National Campaign.', FL, LFL],   // 7 is A's, 9 is B's
+    ["A's Full Launch pays 7 against National Campaign.", "A's Full Launch pays 9 against National Campaign.", FL, LFL],
+    ['Full Launch pays 7 rather than -4 against National Campaign and -1 against Local Campaign.', 'Full Launch pays 7 rather than -4 against National Campaign and -4 against Local Campaign.', FL, LFL],
+  ] as [string, string, GamePayoffs, typeof L?][]) {
+    const is = validateProseDirections(t, l ?? L, g);
+    check('S18d an option or list payoff figure stands', is.length === 0, `${t} :: ${is.join(' | ')}`);
+    check('S18d its false twin flags', validateProseDirections(f, l ?? L, g).length > 0, f);
+  }
+  // Each would flag if read as a level: (C,R) pays A 0, and 2 is no cell of Retreat's column; a second subject ends a list.
+  for (const s of ['Against Retreat, A gets 2 points less from Cooperate.', 'Against Retreat, Cooperate earns A 3 points less than Defect.',
+    'Against Retreat, A gets 2 over Cooperate by playing Defect.', 'A gets 3 against Retreat and B gets 0 and 2 against Advance.', 'Retreat against Defect earns 2.'])
+    check('S18d a difference or foreign figure stands', validateProseDirections(s, L, MIX).length === 0, s);
 }
 
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────

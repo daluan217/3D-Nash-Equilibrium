@@ -3858,11 +3858,12 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     const WHOLE = /\b(?:whether|regardless|whatever|no\s+matter|either\s+way|in\s+(?:both|every|each)\s+cases?)\b/i;
     const V = String.raw`(?:gets?|receives?|earns?|scores?|collects?|nets?|makes?|takes?)`;
     const LEAD = String.raw`(?:only\s+|just\s+|exactly\s+|a\s+payoff\s+of\s+|an?\s+(?:expected\s+|average\s+)?payoff\s+of\s+)?`;
-    // A figure is read only where a payoff word may follow it ("gets 2 more" is a difference, "makes 2 moves" no payoff).
+    // A figure is read only where a payoff word may follow it ("gets 2 more", "2 points less", "3 over Cooperate" are
+    // differences, "makes 2 moves" no payoff).
     const WN = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
     const NT = String.raw`-?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?!\d|\.\d))?|${WN.join('|')}`;
     const val = (t: string) => { const [n, d] = t.split('/').map(Number); return WN.includes(t.toLowerCase()) ? WN.indexOf(t.toLowerCase()) : d === undefined ? n : n / d; };
-    const NUM = String.raw`(${NT})(?!\d|\.\d)(?=\s*$|\s*[,;:)!?]|\s*\.(?!\d)|\s+(?:from|by|against|at|and|while|whereas|but|if|when|whenever|under|facing|in|on|rather|instead|over|versus|vs|regardless|whatever|no|either|points?|units?|apiece|there|here|then|too|as|so|because|since|each|both|for|with)\b)`;
+    const NUM = String.raw`(${NT})(?!\d|\.\d)(?=\s*$|\s*[,;:)!?]|\s*\.(?!\d)|\s+(?:from|by|against|at|and|while|whereas|but|if|when|whenever|under|facing|in|on|rather|instead|over(?=\s+-?\d)|versus|vs|regardless|whatever|no|either|(?:points?|units?)(?!\s+(?:more|less|fewer|higher|lower|better|worse|extra|above|below|ahead|over|up|down)\b)|apiece|there|here|then|too|as|so|because|since|each|both|for|with)\b)`;
     const BY = String.raw`(?:from|with|by\s+(?:choosing|playing|using|picking|taking))\s+`;
     for (const sentence of text.split(/(?<=[.!?])\s+/)) {
       const hits = findLabels(sentence, sets);
@@ -3928,13 +3929,34 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const LET = String.raw`(?<![\w'’-])(?:[Pp]layer\s+)?([AB])\s+(${ADV})${V}\s+${LEAD}${NUM}`;
       const GIVE = String.raw`\b(?:giv(?:e|es|ing)|pay(?:s|ing)?|award(?:s|ing)?|leav(?:e|es|ing))\s+(?:[Pp]layer\s+)?([AB])\s+()${LEAD}${NUM}`;
       const POSS = String.raw`(?<![\w'’-])(?:[Pp]layer\s+)?([AB])['’]s\s+(?:(?:expected|average|equilibrium|own|final)\s+)?(?:payoff|score|return|earnings?)\s+(?:is|of|would\s+be|equals|becomes|stays|remains|falls\s+to|rises\s+to)\s+()${LEAD}${NUM}`;
+      const figs: { i: number; e: number; p: 'A' | 'B'; adv: string; N: number }[] = [];
       for (const m of sentence.matchAll(new RegExp(`${LET}|${GIVE}|${POSS}`, 'g'))) {
-        const p = (m[1] ?? m[4] ?? m[7]) as 'A' | 'B', adv = m[2] ?? m[5] ?? m[8] ?? '', N = val(m[3] ?? m[6] ?? m[9]);
         if (inLabel((m.index ?? 0) + m[0].search(/[AB]\s/))) continue;   // "Plan B earns" is an option, not player B
-        const after = sentence.slice((m.index ?? 0) + m[0].length);
+        figs.push({ i: m.index ?? 0, e: (m.index ?? 0) + m[0].length, p: (m[1] ?? m[4] ?? m[7]) as 'A' | 'B', adv: m[2] ?? m[5] ?? m[8] ?? '', N: val(m[3] ?? m[6] ?? m[9]) });
+      }
+      // (2b) "Against Retreat, Defect earns 2": an option as subject pays its own player, or the one named after it.
+      for (const h of hits) {
+        const tail = sentence.slice(h.index + h.length);
+        const o = new RegExp(String.raw`^\s+(${ADV})(earns?|pays?|gives?|yields?|nets?|brings?|returns?|delivers?|scores?)\s+(?:(?:[Pp]layer\s+)?([AB])\s+)?${LEAD}${NUM}`).exec(tail);
+        if (!o || (o[3] && /^(?:giv|pay)/.test(o[2]))) continue;   // "Defect gives B 2" is GIVE's
+        // The player is named after ("earns B 2", "2 for B") or before ("For B, Defect pays 2", "A's Defect pays 3").
+        const pre = /(?:(?:^|[,;:])\s*[Ff]or\s+(?:[Pp]layer\s+)?([AB])\s*,\s*|(?<![\w'’-])([AB])['’]s\s+)$/.exec(sentence.slice(0, h.index));
+        const p = (o[3] ?? /^\s+for\s+(?:[Pp]layer\s+)?([AB])\b(?!['’])/.exec(tail.slice(o[0].length))?.[1] ?? pre?.[1] ?? pre?.[2]) as 'A' | 'B' | undefined;
+        // Without a letter only a clause-initial option is the subject ("Retreat against Defect earns 0" is not Defect's).
+        if (!p && !/(?:^|[,;:]|\b(?:then|but|while|whereas|yet|so|thus|hence))\s*(?:(?:playing|choosing|picking|taking|using)\s+)?$/i.test(sentence.slice(0, h.index))) continue;
+        figs.push({ i: h.index + h.length, e: h.index + h.length + o[0].length, p: p ?? h.player, adv: o[1], N: val(o[4]) });
+      }
+      // A list goes on with the same subject ("pays -1 against Detailed and -5 against Quick"): the next figure keeps the
+      // clause before the first and takes the frame after itself; a new subject or figure (not its contrast) ends the list.
+      for (const f of [...figs]) {
+        const k = new RegExp(String.raw`^(?:(?:rather\s+than|instead\s+of|versus|vs\.?)\s+(?:(?:its|the)\s+)?(?:${NT})\b|(?!\b(?:[Pp]layer\s+)?[AB]\b|\d)[^,;:.])*?,?\s*\band\s+${LEAD}(${NT})(?!\d|\.\d|\s*%)(?=\s+(?:rather|instead|against|when|whenever|if|with|from|at|under|facing|versus|vs|once|given)\b)`, 'i').exec(sentence.slice(f.e));
+        if (k) figs.push({ ...f, e: f.e + k[0].length, adv: '', N: val(k[1]) });
+      }
+      for (const { i, e, p, adv, N } of figs) {
+        const after = sentence.slice(e);
         const always = !prob && /\balways\b/i.test(adv) && !/^\s+(?:from|by|against|at|if|when|whenever|under|facing|with|in|on|for)\b/i.test(after);
         const both = /^\s+(?:from|with|under|at|by|for|across)\s+(?:either|both|each)\b/i.test(after);
-        const at = cellsAt(m.index ?? 0, (m.index ?? 0) + m[0].length, p), pay = ([r, c]: [number, number]) => (p === 'A' ? cellAOf(g, r, c) : cellBOf(g, r, c));
+        const at = cellsAt(i, e, p), pay = ([r, c]: [number, number]) => (p === 'A' ? cellAOf(g, r, c) : cellBOf(g, r, c));
         const cell = at.n && (at.n2 ? [...at.n, ...at.n2] : at.n).map(pay);
         const vs = new RegExp(String.raw`^\s*,?\s*(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to))\s+(?:(?:its|the|their|his|her)\s+)?(${NT})(?!\d|\.\d|\s*%)`, 'i').exec(after);
         const mc = at.m && [...at.m, ...(at.m2 ?? [])].map(pay);
