@@ -111,10 +111,48 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   check('S15d control: "2.5%" is read whole, not as 5%', !dir('A plays Cooperate 2.5% of the time.', X025) && dir('A plays Cooperate 5.5% of the time.', X025));
 }
 
+// ── S16 verbatim: a QUALIFIED figure is not a point (bounds, ranges, denials, "no equilibrium") ─────────────
+// Once percents parsed (S15d) every bound read as its point: TRUE "puts more than 93% on X" at p = 0.98 flagged,
+// FALSE "more than a third" at 0.09 passed. MIX is hand-solved (x* = 0.4, y* = 0.75), so no truth comes from the code.
+{
+  const dir = (s: string, g: GamePayoffs) => validateProseDirections(s, L, g).length > 0;
+  const MIX = commitPayoffs({ a11: 1, a12: 0, a21: 0, a22: 3, b11: 0, b12: 3, b21: 2, b22: 0 });
+  const PURE = commitPayoffs({ a11: 4, a12: -7, a21: 7, a22: -1, b11: 3, b12: -8, b21: -5, b22: -4 });   // (Defect, Retreat)
+  const ne = computeAllNE(MIX);
+  check('S16 fixture shape: MIX has one NE at (0.4, 0.75)', ne.length === 1 && Math.abs(ne[0].x - 0.4) < 1e-12 && Math.abs(ne[0].y - 0.75) < 1e-12, JSON.stringify(ne));
+  const S16: [string, boolean, GamePayoffs][] = [
+    ['A puts more than 30% on Cooperate.', true, MIX], ['A puts more than 50% on Cooperate.', false, MIX],
+    ['A plays Cooperate at most 40% of the time.', true, MIX], ['A plays Cooperate at most 30% of the time.', false, MIX],
+    ['A plays Cooperate less than 45% of the time.', true, MIX], ['A plays Cooperate less than 40% of the time.', false, MIX],
+    ['A plays Cooperate 40% or more of the time.', true, MIX], ['A plays Cooperate 50% or more of the time.', false, MIX],
+    ['A plays Cooperate 35%+ of the time.', true, MIX], ['A plays Cooperate 45%+ of the time.', false, MIX],
+    ['A plays Cooperate between 35% and 45% of the time.', true, MIX], ['A plays Cooperate between 50% and 70% of the time.', false, MIX],
+    ['A plays Cooperate 35-45% of the time.', true, MIX], ['A plays Cooperate 50-70% of the time.', false, MIX],
+    ['A plays Cooperate 35% to 45% of the time.', true, MIX], ['A plays Cooperate 50% – 70% of the time.', false, MIX],
+    ['A plays Cooperate from 30 to 45 percent of the time.', true, MIX], ['A plays Cooperate from 50 to 70 percent of the time.', false, MIX],
+    ['B plays Advance more than half the time.', true, MIX], ['B plays Advance less than half the time.', false, MIX],
+    ['B plays Retreat less than a third of the time.', true, MIX], ['B plays Retreat more than a third of the time.', false, MIX],
+    ['B plays Advance between two-thirds and three-quarters of the time.', true, MIX], ['B plays Advance between a fifth and a quarter of the time.', false, MIX],
+    ['A does not play Cooperate 60% of the time.', true, MIX], ['A does not play Cooperate 40% of the time.', false, MIX],
+    ['A never plays Cooperate more than half the time.', true, MIX], ['A never plays Cooperate less than half the time.', false, MIX],
+    ['A never plays Cooperate two-fifths of the time.', false, MIX], ["B doesn't put half on Retreat.", true, MIX],
+    ['There is no equilibrium in which A plays Cooperate 70% of the time.', true, MIX], ['No equilibrium has A playing Cooperate 40% of the time.', false, MIX],
+    ['A favours Defect over Cooperate 60% of the time.', true, MIX], ['A favours Defect over Cooperate 40% of the time.', false, MIX],
+    ['A plays Cooperate a third time after losing.', true, MIX], ['A plays Cooperate in the twenty-fifth round.', true, MIX],
+    ['A plays Cooperate 0-10% of the time.', true, PURE], ['A plays Defect 0-10% of the time.', false, PURE],
+    ['A does not play Cooperate 100% of the time.', true, PURE], ['A does not play Defect 100% of the time.', false, PURE],
+  ];
+  for (const [s, truth, g] of S16) check(`S16 a qualified figure is judged as stated (${truth ? 'true stands' : 'false flags'})`, dir(s, g) !== truth, s);
+  // A label's own digit is not a range's low end: "from Plan 1 to 90%" read as 1-90% passed the false 0.9.
+  const LD = { name: 'X', row1: 'Plan 1', row2: 'Plan 2', col1: 'Route 1', col2: 'Route 2', description: '' };
+  for (const [s, truth] of [['A moves from Plan 1 to 90% on Plan 2.', false], ['A moves from Plan 1 to 60% on Plan 2.', true], ['B shifts from Route 2 to 95% on Route 1.', false], ['B shifts from Route 2 to 75% on Route 1.', true]] as const)
+    check(`S16 a label digit is not a range end (${truth ? 'true stands' : 'false flags'})`, (validateProseDirections(s, LD, MIX).length > 0) !== truth, s);
+}
+
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────
-const rnd = seededRandom(0x5715);
+const rnd = seededRandom(0x5715), rnd6 = seededRandom(0x5716);   // F6 draws apart: the F1-F5 games stay as measured
 const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
-const reach = { nearCorner: 0, subMix: 0, partialTie: 0, pctTrue: 0, pctFalse: 0, rendered: 0 };
+const reach = { nearCorner: 0, subMix: 0, partialTie: 0, pctTrue: 0, pctFalse: 0, rendered: 0, qualified: 0 };
 for (const [sc, V] of Object.entries(SC)) for (let i = 0; i < 4000; i++) {
   const g = commitPayoffs({ a11: pick(V), a12: pick(V), a21: pick(V), a22: pick(V), b11: pick(V), b12: pick(V), b21: pick(V), b22: pick(V) });
   const o = oracle(g), all = computeAllNE(g), comps = continuumComponents(g), deg = hasEquilibriumContinuum(g);
@@ -147,6 +185,26 @@ for (const [sc, V] of Object.entries(SC)) for (let i = 0; i < 4000; i++) {
     const truth37 = within(0.37, 0.02 - 1e-9);
     if (!truth37) reach.pctFalse++;
     check('F4 "37% of its turns" is judged against the oracle', truth37 === (validateProseDirections(`${P} plays ${X} 37% of its turns.`, L, g).length === 0), t);
+    // F6 (S16) bounds, ranges and denials, true and false, on games whose equilibria are isolated points.
+    if (!deg) {
+      const a = Math.floor(rnd6() * 101), b = Math.min(100, a + 1 + Math.floor(rnd6() * 40)), A = a / 100, B = b / 100, tl = 0.02 - 1e-9;
+      const some = (f: (q: number) => boolean) => ps.some(f);
+      const F6: [string, string, boolean, number[]][] = [
+        ['more than', `${P} plays ${X} more than ${a}% of the time.`, some((q) => q > A), [A]],
+        ['at most', `${P} puts at most ${a}% on ${X}.`, some((q) => q <= A), [A]],
+        ['or more', `${P} plays ${X} ${a}% or more of the time.`, some((q) => q >= A), [A]],
+        ['range', `${P} plays ${X} between ${a}% and ${b}% of the time.`, some((q) => q > A - tl && q < B + tl), [A - tl, B + tl]],
+        ['dash', `${P} plays ${X} ${a}-${b}% of the time.`, some((q) => q > A - tl && q < B + tl), [A - tl, B + tl]],
+        ['to', `${P} plays ${X} ${a}% to ${b}% of the time.`, some((q) => q > A - tl && q < B + tl), [A - tl, B + tl]],
+        ['denial', `${P} does not play ${X} ${a}% of the time.`, !ps.every((q) => (a % 100 ? Math.abs(q - A) < 0.005 : q === A)), [A - 0.005, A + 0.005]],
+        ['none', `No equilibrium has ${P} playing ${X} more than ${a}% of the time.`, !some((q) => q > A), [A]],
+      ];
+      for (const [k, s, truth, cuts] of F6) {
+        if (ps.some((q) => cuts.some((c) => Math.abs(q - c) < 1e-6))) continue;   // at a cut either verdict is defensible
+        reach.qualified++;
+        check(`F6 a ${k} figure is judged against the oracle`, truth !== (validateProseDirections(s, L, g).length > 0), `${s} ${t}`);
+      }
+    }
   }
   // F5 the shipping renderer's own prose passes every check it is screened by.
   const r = tieProseFull(g, L); reach.rendered++;
@@ -158,6 +216,7 @@ check('reach: near-corner mixed NE games (S15a)', reach.nearCorner >= 5, JSON.st
 check('reach: sub-resolution mixes (S15b/c)', reach.subMix >= 50, JSON.stringify(reach));
 check('reach: partial-tie continua (S15b)', reach.partialTie >= 300, JSON.stringify(reach));
 check('reach: true and false percent claims (S15d)', reach.pctTrue >= 20000 && reach.pctFalse >= 20000, JSON.stringify(reach));
+check('reach: qualified figures (S16)', reach.qualified >= 50000, JSON.stringify(reach));
 
 const failed = Object.keys(fails);
 if (failed.length) {

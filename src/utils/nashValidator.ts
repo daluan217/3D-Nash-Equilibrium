@@ -3044,57 +3044,70 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     const truthW = computeAllNE(g);
     const allHitsW = findLabels(text, sets);
     const WORD: Record<string, number> = { half: 0.5, third: 1 / 3, quarter: 0.25, fifth: 0.2, sixth: 1 / 6, eighth: 0.125, tenth: 0.1 };
-    const NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, nine: 9 };
-    // `%\b` never matched "60% of" or "60%." (no word boundary after %), so every percent claim went unchecked.
-    // The lookbehind keeps "2.5%" from parsing as 5%; decimals parse whole.
-    const fracRe = /\b(?:(one|two|three|four|five|six|seven|nine)[-\s])?(half|third|quarter|fifth|sixth|eighth|tenth)s?\b|(?<![\d.,])(\d{1,3}(?:\.\d+)?)\s*(?:%|percent\b)/gi;
+    const NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
+    const FW = '(?:(?:one|two|three|four|five|six|seven|eight|nine)[-\\s])?(?:half|third|quarter|fifth|sixth|eighth|tenth)s?';
+    const FIG = `(?:an?\\s+)?${FW}|\\d{1,3}(?:\\.\\d+)?\\s*(?:%|per\\s?cent)?`;
+    const figure = (f: string) => { const d = /^\d/.test(f), w = /([a-z]+)[-\s]+([a-z]+?)s?$/i.exec(f), u = (/(half|third|quarter|fifth|sixth|eighth|tenth)/i.exec(f) ?? [''])[0].toLowerCase(); return d ? parseFloat(f) / 100 : (w && NUM[w[1].toLowerCase()] ? NUM[w[1].toLowerCase()] : 1) * WORD[u]; };
+    // `%\b` never matched "60% of" or "60%." (no word boundary after %); the lookbehind keeps "2.5%" whole.
+    // "a third" carries its article (else "more than a third" bound as the point 1/3); "a third time" is an ordinal.
+    const fracRe = new RegExp(`\\b(?:an?\\s+)?(?:(one|two|three|four|five|six|seven|eight|nine)[-\\s])?(half|third|quarter|fifth|sixth|eighth|tenth)s?\\b(?!\\s+(?:time|round|turn|straight|consecutive|day|week|month|year|place|period|move|game|attempt|try|stage|phase|step)s?\\b)|(?<![\\d.,])(\\d{1,3}(?:\\.\\d+)?)\\s*(?:%|per\\s?cent\\b)`, 'gi');
+    // A figure is a POINT only when nothing qualifies it. Bounds ("more than 60%", "60% or more") are judged as
+    // inequalities, ranges ("20-30%", "between a third and half") as intervals, denials as complements: read as a
+    // point, ~96% of TRUE qualified sentences were flagged once percents parsed (sweep 16).
+    const PRE = new RegExp(`(?:\\b(?<le>(?:no|not)\\s+more\\s+than|at\\s+most|up\\s+to)|\\b(?<ge>(?:no|not)\\s+(?:less|fewer)\\s+than|at\\s+least)|\\b(?<lt>(?:less|fewer)\\s+than|under|below)|\\b(?<gt>(?:more|greater)\\s+than|over|above|exceeding|in\\s+excess\\s+of)|\\b(?<hedge>about|roughly|around|nearly|almost|approximately|virtually|essentially|practically|close\\s+to)|(?:\\bfrom\\s+)?(?<![\\d.,\\w])(?<lo>${FIG})\\s*(?:-|–|—|to|or)|\\bbetween\\s+(?<lo2>${FIG})\\s*and)\\s*$`, 'i');
+    const POST = /^(?:\s*(?:of\s+(?:the|its|his|her|their)\s+(?:time|turns|rounds|plays|moves)\s+)?(?:or\s+(?:(more|above|over|higher|greater)|less|fewer|below|under|lower)|at\s+(?:(least)|most))\b|(\+))/i;
     for (const m of text.matchAll(fracRe)) {
-      let p: number;
-      if (m[3]) p = Number(m[3]) / 100; else p = (m[1] ? NUM[m[1].toLowerCase()] : 1) * WORD[m[2].toLowerCase()];
       const at = m.index ?? 0, end = at + m[0].length;
-      // Skip "with probability one quarter" already-checked forms? No — same rule applies. Skip time fractions ("of the time" is fine) but skip "half of the payoff" etc.
-      const after = text.slice(end, end + 40), before = text.slice(Math.max(0, at - 40), at);
+      // "twenty-fifth", "one-and-a-half": a fraction word glued to a number the prefix does not parse is not a mix.
+      if (!m[3] && !m[1] && /-$/.test(text.slice(0, at))) continue;
+      const p = m[3] ? Number(m[3]) / 100 : (m[1] ? NUM[m[1].toLowerCase()] : 1) * WORD[m[2].toLowerCase()];
+      const after = text.slice(end, end + 40), before = text.slice(Math.max(0, at - 60), at);
+      // The low end of a range ("20% to 30%", "a third or half") is judged with its high end. After "between" it
+      // binds no label (backward stops at "between", forward at "and"), so it needs no skip.
+      if (new RegExp(`^\\s*(?:-|–|—|to|or)\\s*(?:${FIG})(?![a-z])`, 'i').test(after)) continue;
+      const pm0 = PRE.exec(before), lo0 = pm0?.groups?.lo ?? pm0?.groups?.lo2, li = lo0 === undefined ? -1 : at - pm0![0].length + pm0![0].indexOf(lo0);
+      // A range's low end inside a label ("Row 1 – 60%") is the label's digit, not a figure.
+      const pm = li >= 0 && allHitsW.some((h) => h.index <= li && li < h.index + h.length) ? null : pm0;
+      const G = pm?.groups ?? {}, post = pm ? null : POST.exec(after), at0 = pm ? at - pm[0].length : at;
       // Forward binding first, and a bare adjacency counts: "two-thirds Lenient
       // inspection" names its own label with no connector at all.
-      const lab = allHitsW.find((h) => h.index >= end && h.index <= end + 12 && /^\s*(?:on|to|for|at|toward|towards)?\s*(?:the\s+|an?\s+)?$/i.test(text.slice(end, h.index)))
-        // Backward binding must NOT cross a comma. In "(one-third Strict
-        // inspection, two-thirds Lenient inspection)" the comma separates two
-        // list items, so a fraction after it belongs to what FOLLOWS; letting a
-        // bare comma bind backwards attached "two-thirds" to Strict inspection
-        // and withheld a wholly correct paragraph (round C19 draw 55 — the
-        // campaign's only correct-withheld).
-        ?? allHitsW.filter((h) => h.index + h.length <= at && h.index + h.length >= at - 30 && /^\s*(?:with|at|about|roughly|around)?\s*(?:probability\s+|weight\s+|frequency\s+)?(?:of\s+)?$/i.test(text.slice(h.index + h.length, at))).pop();
+      let lab = allHitsW.find((h) => h.index >= end && h.index <= end + 12 && /^\s*(?:on|to|for|at|toward|towards)?\s*(?:the\s+|an?\s+)?$/i.test(text.slice(end, h.index)))
+        // Backward binding must NOT cross a comma ("(one-third Strict inspection, two-thirds Lenient inspection)":
+        // round C19 draw 55, the campaign's only correct-withheld). A bound or range may carry a modifier.
+        ?? allHitsW.filter((h) => h.index + h.length <= at0 && h.index + h.length >= at0 - 30 && /^\s*(?:with|at|about|roughly|around)?\s*(?:probability\s+|weight\s+|frequency\s+)?(?:of\s+)?(?:(?:only|just|slightly|well|somewhere|anywhere|a\s+(?:bit|little))\s+)*$/i.test(text.slice(h.index + h.length, at0))).pop();
       if (!lab) continue;
       // Bound BACKWARD, a price word right after the figure makes it a price, not a mix: "Cooperate at 20% off",
       // "Cooperate at half price" (the fraction form was flagged on true prose before percents parsed at all).
       if (lab.index < at && /^\s*(?:off|discount\w*|price\w*|cheaper|dearer|interest|mark-?ups?|tax\w*|fees?|surcharges?|rebates?|refunds?|commissions?|returns?|bonus\w*|savings?|cuts?|raises?)\b/i.test(after)) continue;
-      // "Row 1 and Row 2 with two-thirds/one-third odds": a list of same-side labels before the fraction is ambiguous — skip.
-      if (lab.index < at && allHitsW.some((h) => h !== lab && h.player === lab.player && h.index < lab.index && h.index >= lab.index - 40 && /^\s*(?:and|or|\/|,)\s*(?:the\s+)?$/i.test(text.slice(h.index + h.length, lab.index)))) continue;
-      if (/\b(?:of\s+the\s+(?:payoff|score|gain|value)|payoff|less|more|higher|lower)\b/i.test(after.slice(0, 20)) || /\b(?:if|when|whenever|suppose|whether|should|were)\b/i.test(text.slice(Math.max(text.lastIndexOf('.', at), text.lastIndexOf(';', at)) + 1, at))) continue;
-      // RED-MATH-8/002: a player on a CONTINUUM component covering this exact
-      // probability is a legitimate mix even when they are not FULLY
-      // indifferent (`computeIndifference` only catches full indifference,
-      // missing the same partial-tie class RED-MATH-7/001 found in
-      // report.ts's payload) — check the claimed probability against every
-      // continuum component's range on this player's axis, not just the
-      // all-or-nothing indifference flags.
-      // Same CodeRabbit-flagged class as `claimOnContinuum` above: `p` here
-      // is a FRACTION/PERCENTAGE parsed from prose ("three-fifths", "62%"),
-      // never an exact float — a 1e-9 tolerance would reject a legitimate
-      // near-boundary probability. Matched to the sibling `truthW` check's
-      // own 0.02 tolerance two lines below, for the same coarse-precision
-      // reason.
-      // A bare "0%"/"100%" is a pure-strategy claim: exact, like "with probability 0/1" below (x* = 2e-5 is not 0%).
-      // Hedged ("almost 100%") or decimal ("0.0%") figures keep the coarse tolerance.
-      const hedged = /\b(?:about|roughly|around|nearly|almost|approximately|virtually|essentially|practically|close\s+to)\s*$/i.test(before);
-      // ONE distance rule for points and continua: the continuum branch was inclusive (0.02 off passed) and the
-      // point branch strict on floats (|0.48 - 0.5| = 0.020000000000000018 failed). Now strict in both, 1e-9 slack.
-      const exact = /^(?:0|100)$/.test(m[3] ?? '') && !hedged;
-      const near = (lo: number, hi: number, v: number) => { const d = Math.max(lo - v, v - hi, 0); return exact ? d < 1e-9 : d < 0.02 - 1e-9; };
-      const pl = lab.option === 1 ? p : 1 - p;
-      if (continuumComponents(g).some((r) => (lab.player === 'A' ? near(r.x0, r.x1, pl) : near(r.y0, r.y1, pl)))) continue;
-      const ok = truthW.some((t) => { const p1 = lab.player === 'A' ? t.x : t.y; return near(p1, p1, pl); });
-      if (!ok && truthW.length) issues.push(`prose puts ${lab.player}'s option ${lab.option} at probability ${p.toFixed(3)}, but no equilibrium does`);
+      // A same-side label joined just before the bound one: "Row 1 over Row 2 60% of the time" is Row 1's figure
+      // (rebind); "Row 1 and Row 2 with two-thirds/one-third odds" is ambiguous (skip).
+      const prior = (re: RegExp) => allHitsW.find((h) => h !== lab && h.player === lab!.player && h.index < lab!.index && h.index >= lab!.index - 40 && re.test(text.slice(h.index + h.length, lab!.index)));
+      if (lab.index < at) {
+        const over = prior(/^\s*(?:over|rather\s+than|instead\s+of|in\s+preference\s+to)\s*(?:the\s+)?$/i);
+        if (over) lab = over; else if (prior(/^\s*(?:and|or|\/|,|versus|vs\.?)\s*(?:the\s+)?$/i)) continue;
+      }
+      if (/\b(?:of\s+the\s+(?:payoff|score|gain|value)|payoff|less|more|higher|lower)\b/i.test(after.slice(post?.[0].length ?? 0).slice(0, 20)) || /\b(?:if|when|whenever|suppose|whether|should|were)\b/i.test(text.slice(Math.max(text.lastIndexOf('.', at), text.lastIndexOf(';', at)) + 1, at))) continue;
+      // A negation on the verb ("does not play Row 1 40%", "doesn't commit to 10% on Row 1") makes it a denial. One
+      // further off ("no equilibrium has Row 1 at 40%") has no known scope: judged as a claim, as before (no loosening).
+      const head = Math.min(lab.index, at0);
+      const clause = text.slice(Math.max(0, head - 80), head).split(/[;:!?,()—–]|\.(?!\d)|\b(?:and|but|while|whereas|yet|so|then|although|though|because|since)\b/i).pop() ?? '';
+      const negated = /(?:\b(?:not|never|cannot|no\s+longer)|n['’]t)\s+(?:\w+\s+){0,2}$/i.test(clause);
+      // "No equilibrium has Row 1 at 40%" denies EVERY equilibrium: false if any one bears the figure out.
+      const none = !negated && /\b(?:no|none\s+of\s+the)\s+(?:\w+\s+){0,2}(?:equilibri(?:um|a)|outcomes?|profiles?)\b/i.test(clause);
+      // A stated figure is rounded: 0.02 either way (RED-MATH-8/002; continuum ranges count too). A bare "0%"/"100%"
+      // point is exact, like "with probability 0/1" below (x* = 2e-5 is not 0%); a range end is not.
+      // A denial is false only at the figure's own precision: "doesn't put half on X" is true at 0.495.
+      const lo = G.lo ?? G.lo2, lp = lo === undefined ? p : figure(lo.replace(/^an?\s+/i, ''));
+      const tol = (/^(?:0|100)$/.test(m[3] ?? '') && !G.hedge && lo === undefined) || ((negated || none) && !m[3]) ? 1e-9
+        : negated || none ? 0.005 * 10 ** -(m[3].split('.')[1]?.length ?? 0) : 0.02 - 1e-9;
+      const ge = G.ge || G.gt || post?.[1] || post?.[2] || post?.[3], le = G.le || G.lt || (post && !ge);
+      const [cLo, cHi] = le ? [-1, p + (G.lt ? -1e-9 : 1e-9)] : ge ? [p + (G.gt ? 1e-9 : -1e-9), 2] : [Math.min(p, lp) - tol, Math.max(p, lp) + tol];
+      const sp = (a: number, b: number) => (lab.option === 1 ? [a, b] : [1 - b, 1 - a]);
+      const R = [...continuumComponents(g).map((r) => (lab.player === 'A' ? sp(r.x0, r.x1) : sp(r.y0, r.y1))), ...truthW.map((t) => (lab.player === 'A' ? sp(t.x, t.x) : sp(t.y, t.y)))];
+      // Claims hold if SOME equilibrium bears them out; a denial is false only if EVERY equilibrium contradicts it.
+      const meets = R.some(([a, b]) => a <= cHi && b >= cLo);
+      const bad = negated ? R.length > 0 && R.every(([a, b]) => a >= cLo && b <= cHi) : none ? meets : truthW.length > 0 && !meets;
+      if (bad) issues.push(`prose ${negated || none ? 'denies' : 'puts'} ${lab.player}'s option ${lab.option} at probability ${p.toFixed(3)}, but ${negated ? 'every equilibrium does' : none ? 'an equilibrium does' : 'no equilibrium does'}`);
     }
   }
 
