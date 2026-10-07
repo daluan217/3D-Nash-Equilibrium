@@ -3173,20 +3173,29 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     // S17a idioms and pairs: "splits fifty-fifty/evenly/equally between X and Y", "uses X and Y fifty-fifty", "B mixes
     // evenly", "B's even split" put 0.5 on each option; "A's 0.7/0.3 mix" and "A's 70–30 split" name both, in either
     // order. Only A/B or a label pair resolves the player: "the ring's fifty-fifty mix" stays unread.
-    const ID = String.raw`(?:fifty[-\s]fifty|evenly|equally|half[-\s]and[-\s]half|50\s*[-–\/]\s*50)`, MV = String.raw`\b(?:split|mix|divid|randomi[sz]|alternat|choos|chose|play|us)\w*\s+`;
+    // S18b: IDU names a mix whatever the verb ("A schedules X and Y fifty-fifty", "with equal probability"); bare
+    // evenly/equally also describe payoffs ("values X and Y equally"), so they still need a mixing verb.
+    const IDU = String.raw`(?:fifty[-\s]fifty|half[-\s]and[-\s]half|50\s*[-–\/]\s*50|with\s+(?:an?\s+)?equal\s+(?:probabilit(?:y|ies)|odds|chances?|frequency|weights?)|in\s+equal\s+(?:proportions?|measure|shares?)|equally\s+(?:often|frequently))`;
+    const ID = String.raw`(?:${IDU}|evenly|equally)`, MV = String.raw`\b(?:split|mix|divid|randomi[sz]|alternat|choos|chose|play|us)\w*\s+`;
     const claims: { pl: 'A' | 'B'; u: number; w: number; tol: number; at: number; end: number }[] = [];
     const half = (pl: 'A' | 'B', at: number, end: number) => claims.push({ pl, u: 0.5, w: 0.5, tol: 0.02, at, end });
     const pairAfter = (h: LabelHit | undefined) => h && allHitsW.find((k) => k.player === h.player && k.option !== h.option && k.index > h.index && /^\s*(?:and|or|&)\s+$/i.test(text.slice(h.index + h.length, k.index)));
-    for (const m of text.matchAll(new RegExp(String.raw`${MV}(?:(?:its|his|her|their)\s+\w+\s+)?${ID}\s+between\s+`, 'gi'))) {
+    for (const m of text.matchAll(new RegExp(String.raw`(?:${MV}(?:(?:its|his|her|their)\s+\w+\s+)?${ID}\s+(?:between|over|across)|\bequally\s+likely\s+to\s+\w+(?:\s+either)?|\b(?:flip|toss)\w*\s+a\s+(?:fair\s+)?coin\s+(?:between|over))\s+`, 'gi'))) {
       const e = (m.index ?? 0) + m[0].length, h = allHitsW.find((x) => x.index === e), k = pairAfter(h);
       if (k) half(k.player, m.index ?? 0, k.index + k.length);
     }
     for (const m of text.matchAll(new RegExp(ID, 'gi'))) {
       const k = allHitsW.find((x) => x.index + x.length <= (m.index ?? 0) && /^\s+$/.test(text.slice(x.index + x.length, m.index))), h = k && allHitsW.find((x) => pairAfter(x) === k);
-      if (h && new RegExp(String.raw`${MV}(?:between\s+)?$`, 'i').test(text.slice(Math.max(0, h.index - 40), h.index))) half(h.player, h.index, (m.index ?? 0) + m[0].length);
+      if (h && (new RegExp(`^${IDU}$`, 'i').test(m[0]) || new RegExp(String.raw`${MV}(?:between\s+)?$`, 'i').test(text.slice(Math.max(0, h.index - 40), h.index)))) half(h.player, h.index, (m.index ?? 0) + m[0].length);
+    }
+    for (const h of allHitsW) { // "B chooses Day as often as Night"
+      const k = allHitsW.find((x) => x.player === h.player && x.option !== h.option && x.index > h.index && /^\s+(?:exactly\s+)?as\s+(?:often|frequently)\s+as\s+$/i.test(text.slice(h.index + h.length, x.index)));
+      if (k && new RegExp(`${MV}$`, 'i').test(text.slice(Math.max(0, h.index - 40), h.index))) half(h.player, h.index, k.index + k.length);
     }
     // "B mixes evenly", "A chooses North and South fifty-fifty" (the pair may be shortened, so A/B names the player).
     const NAB = String.raw`(?:(?!\b[AB]\b)[^.;:,])`;
+    // "Both players split evenly", "A and B each use X or Y fifty-fifty": one half for each player.
+    for (const m of text.matchAll(new RegExp(String.raw`\b(?:[Bb]oth\s+players|[Ee]ach\s+player|(?:[Pp]layer\s+)?[AB]\s+and\s+(?:[Pp]layer\s+)?[AB])\s+(?:each\s+|both\s+)?(?:(?:split|mix|divid|randomi[sz])\w*\s+(?:(?:its|his|her|their)\s+\w+\s+)?|${MV}(?:between\s+)?${NAB}{1,40}?\s(?:and|or)\s${NAB}{1,40}?\s)${ID}(?![\w-])`, 'g'))) { half('A', m.index ?? 0, (m.index ?? 0) + m[0].length); half('B', m.index ?? 0, (m.index ?? 0) + m[0].length); }
     for (const m of text.matchAll(new RegExp(String.raw`\b(?:[Pp]layer\s+)?([AB])\s+(?:(?:split|mix|divid|randomi[sz])\w*\s+(?:(?:its|his|her|their)\s+\w+\s+)?|${MV}(?:between\s+)?${NAB}{1,40}?\s(?:and|or)\s${NAB}{1,40}?\s)${ID}(?![\w-])`, 'g'))) half(m[1] as 'A' | 'B', m.index ?? 0, (m.index ?? 0) + m[0].length);
     // "A has a level shelf when the retailer mixes fifty-fifty": the mixer is the shelf owner's opponent.
     for (const m of text.matchAll(new RegExp(String.raw`\b([AB])(?:['’]s)?\b${NAB}{0,80}?\b(?:shel(?:f|ves)|level|flat)\b${NAB}{0,30}?\bwhen\s+(?:the\s+)?[\w-]+(?:\s+[\w-]+)?\s+(?:split|mix|divid|randomi[sz])\w*\s+${ID}(?![\w-])`, 'g')))
@@ -3246,7 +3255,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   {
     const truthLocal = computeAllNE(g);
     const allHits = findLabels(text, sets);
-    for (const m of text.matchAll(/\bwith\s+(?:a\s+)?probability\s+(?:of\s+)?(0|1|one|zero)\b(?!\.\d)(?!\s*[-–%])(?!\s+(?:quarter|third|fifth|sixth|eighth|tenth|half|in|out|minus|plus))/gi)) {
+    for (const m of text.matchAll(/\bwith\s+(?:a\s+)?probability\s+(?:of\s+)?(0|1|one|zero)\b(?!\.\d)(?!\s*[-–%/])(?!\s+(?:quarter|third|fifth|sixth|eighth|tenth|half|in|out|minus|plus))/gi)) {
       const p = /^(?:1|one)$/i.test(m[1]) ? 1 : 0;
       const mEnd = (m.index ?? 0) + m[0].length;
       const before = text.slice(Math.max(0, (m.index ?? 0) - 40), m.index);
@@ -3827,6 +3836,121 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         if (Math.abs(mine - better) > 1e-9 || Math.abs(alt - worse) > 1e-9) {
           issues.push(`prose says ${own.player}'s option ${own.option} earns ${better} rather than ${worse} against opponent option ${opp.option}, but those cells pay ${mine} and ${alt}`);
         }
+      }
+    }
+  }
+
+  // S18c: payoff FIGURES. Only "N against X" and "N rather than M against X" were read, so "A gets 5 from Defect", "B earns
+  // 9" and "Defect and Retreat yields payoffs 7 and 8" passed. A figure is held to the cell its sentence names when it
+  // names one, else to what that player can be paid (a cell, an equilibrium payoff). A stated mix makes any blend true,
+  // so such a sentence is judged only when anchored at the equilibrium, and then only against that set.
+  {
+    const truthP = computeAllNE(g), cont = hasEquilibriumContinuum(g);
+    const close = (v: number, a: number) => Math.abs(a - v) <= Math.max(0.01, Math.abs(a) * 0.005);
+    // A pure equilibrium's payoff is a cell, so only a mixed one may stand in for the cell a sentence names.
+    const eqPay = (p: 'A' | 'B', v: number, mixedOnly = false) => truthP.some((t) => (!mixedOnly || t.type !== 'pure') && close(v, p === 'A' ? t.eA : t.eB));
+    const cellsOf = (p: 'A' | 'B') => [1, 2].flatMap((o) => [1, 2].map((q) => payoff(p, o as 1 | 2, q as 1 | 2)));
+    const canPay = (p: 'A' | 'B', v: number) => cellsOf(p).some((c) => close(v, c)) || eqPay(p, v);
+    const pairs = [...[1, 2].flatMap((r) => [1, 2].map((c) => [cellAOf(g, r, c), cellBOf(g, r, c)])), ...truthP.map((t) => [t.eA, t.eB])];
+    const PROB = /\b(?:probabilit\w*|mix\w*|expect\w*|average\w*|percent|odds|random\w*|split\w*|even(?:ly)?|equal(?:ly)?|fifty|coin|blend\w*|lotter\w*|frequen\w*|often|sometimes|fraction\w*|proportion\w*|shares?|weight\w*|half|halves|thirds?|quarters?|fifths?|sixths?|eighths?|tenths?)\b|%|\b[xy]\s*\*?\s*[=≈]/i;
+    const EQ = /\b(?:at|in)\s+(?:the|this|that|its)\s+(?:\w+\s+)?equilibri(?:um|a)\b/i;
+    const HYP = /\b(?:if|would|could|might|deviat\w*|switch\w*|instead|otherwise|unilateral\w*|were|alternative\w*)\b/i;
+    const WHOLE = /\b(?:whether|regardless|whatever|no\s+matter|either\s+way|in\s+(?:both|every|each)\s+cases?)\b/i;
+    const V = String.raw`(?:gets?|receives?|earns?|scores?|collects?|nets?|makes?|takes?)`;
+    const LEAD = String.raw`(?:only\s+|just\s+|exactly\s+|a\s+payoff\s+of\s+|an?\s+(?:expected\s+|average\s+)?payoff\s+of\s+)?`;
+    // A figure is read only where a payoff word may follow it ("gets 2 more" is a difference, "makes 2 moves" no payoff).
+    const WN = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+    const NT = String.raw`-?\d+(?:\.\d+)?(?:\s*\/\s*\d+(?!\d|\.\d))?|${WN.join('|')}`;
+    const val = (t: string) => { const [n, d] = t.split('/').map(Number); return WN.includes(t.toLowerCase()) ? WN.indexOf(t.toLowerCase()) : d === undefined ? n : n / d; };
+    const NUM = String.raw`(${NT})(?!\d|\.\d)(?=\s*$|\s*[,;:)!?]|\s*\.(?!\d)|\s+(?:from|by|against|at|and|while|whereas|but|if|when|whenever|under|facing|in|on|rather|instead|over|versus|vs|regardless|whatever|no|either|points?|units?|apiece|there|here|then|too|as|so|because|since|each|both|for|with)\b)`;
+    const BY = String.raw`(?:from|with|by\s+(?:choosing|playing|using|picking|taking))\s+`;
+    for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+      const hits = findLabels(sentence, sets);
+      const optsOf = (p: 'A' | 'B') => [...new Set(hits.filter((h) => h.player === p).map((h) => h.option))];
+      const ra = optsOf('A'), cb = optsOf('B');
+      const prob = PROB.test(sentence), eqAnch = EQ.test(sentence) && !HYP.test(sentence) && !cont;
+      if (prob && !eqAnch) continue;
+      // The cell a figure names: labels in its clause before it, and after it up to the next clause or claim, minus a
+      // contrast's own label ("2 rather than its 0 with Retreat"). "from either X" names both own cells of the column.
+      // A bare deviation ("if B switched") also admits that player's flipped cell.
+      const BEFORE = /[;:]|,\s+(?:and|but|while|whereas)\s|\b(?:while|whereas|but)\b|\band\s+(?=(?:[Pp]layer\s+)?[AB]\b)/g;
+      const AFTER = /[,;:]|\b(?:so|which|because|since|while|whereas|but|though|although|whether|regardless)\b|\band\s+-?\d|\b(?:[Pp]layer\s+)?[AB](?:['’]s)?\s+(?:\w+\s+)?(?:gets?|receives?|earns?|scores?|payoffs?)\b/;
+      type Cells = [number, number][] | undefined;
+      const grid = (r: number[], c: number[]): Cells => (r.length > 1 || c.length > 1 || (!r.length && !c.length) ? undefined
+        : (r.length ? r : [1, 2]).flatMap((x) => (c.length ? c : [1, 2]).map((y) => [x, y] as [number, number])));
+      // A label inside the contrast is read both ways ("2 rather than its 0 with Retreat" vs "-5 rather than -6 by staying
+      // with the Helicopter"): as the alternative's, or as the figure's own with the contrast its own-option flip.
+      const cellsAt = (i: number, e: number, p?: 'A' | 'B'): { n: Cells; m: Cells; n2?: Cells; m2?: Cells } => {
+        let s0 = 0; for (const b of sentence.slice(0, i).matchAll(BEFORE)) s0 = (b.index ?? 0) + b[0].length;
+        const stop = sentence.slice(e).search(AFTER), t1 = stop < 0 ? sentence.length : e + stop;
+        const ct = /\b(?:rather\s+than|instead\s+of|over|versus|vs\.?|compared\s+(?:with|to)|than)\b/i.exec(sentence.slice(e, t1)), c0 = ct ? e + ct.index : t1;
+        const fr = /\b(?:when|whenever|if|once|against|facing|under|given)\b/i.exec(sentence.slice(c0, t1)), c1 = fr ? c0 + fr.index : t1;
+        const opts = (hs: LabelHit[], pl: 'A' | 'B') => [...new Set(hs.filter((h) => h.player === pl).map((h) => h.option))];
+        const own = hits.filter((h) => (h.index >= s0 && h.index < i) || (h.index >= e && h.index < t1 && !(h.index >= c0 && h.index < c1)));
+        const con = hits.filter((h) => h.index >= c0 && h.index < c1);
+        let r = opts(own, 'A'), c = opts(own, 'B');
+        const cr = opts(con, 'A'), cc = opts(con, 'B');
+        if (prob) return { n: undefined, m: undefined };
+        // The contrast's label is the alternative ("2 rather than its 0 with Retreat"): the figure's own is the other one.
+        const m = cr.length + cc.length ? grid(cr.length ? cr : r, cc.length ? cc : c) : undefined;
+        const n2 = m && p ? grid([...new Set([...r, ...cr])], [...new Set([...c, ...cc])]) : undefined;
+        const m2 = n2?.map(([x, y]) => (p === 'A' ? [3 - x, y] : [x, 3 - y]) as [number, number]);
+        if (!r.length && cr.length === 1 && !cc.length) r = [(3 - cr[0]) as 1 | 2];
+        if (!c.length && cc.length === 1 && !cr.length) c = [(3 - cc[0]) as 1 | 2];
+        if (p && /^\s+(?:from|with|under|at|by|for|across)\s+(?:either|both|each)\b/i.test(sentence.slice(e))) {
+          const opp = p === 'A' ? c : r;   // "A receives -6 from either crew plan": every own option in that column
+          return { n: opp.length === 1 ? [1, 2].map((o) => (p === 'A' ? [o, opp[0]] : [opp[0], o]) as [number, number]) : undefined, m, n2, m2 };
+        }
+        const n = grid(r, c);
+        if (n && n.length === 1) for (const d of sentence.slice(s0, t1).matchAll(/\b([AB])\s+(?:\w+\s+)?(?:switch|deviat|mov|chang|swapp?|turn)\w*\b(?!\s+(?:over\s+)?to\b)/g)) n.push(d[1] === 'A' ? [3 - r[0], c[0]] : [r[0], 3 - c[0]]);
+        return { n, m, n2, m2 };
+      };
+      const inLabel = (i: number) => hits.some((h) => i >= h.index && i < h.index + h.length);
+      // (1) "[Against X,] P gets N from Y [rather than M from Z]": the frame's column, every column under "whether/regardless", else some column.
+      if (!prob) for (const m of sentence.matchAll(new RegExp(String.raw`\b${V}\s+${LEAD}${NUM}\s+${BY}`, 'gi'))) {
+        const at = (m.index ?? 0) + m[0].length;
+        const own = hits.find((h) => h.index >= at && h.index <= at + 2);
+        if (!own) continue;
+        const subj = /(?<![\w'’-])([AB])\s+(?:\w+\s+)?$/.exec(sentence.slice(Math.max(0, (m.index ?? 0) - 20), m.index));
+        if (subj && subj[1] !== own.player) continue;
+        const rest = new RegExp(String.raw`^\s*,?\s*(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to)|over|and)\s+(?:only\s+|just\s+)?(${NT})\s+${BY}`, 'i').exec(sentence.slice(own.index + own.length));
+        const altAt = rest ? own.index + own.length + rest[0].length : -1;
+        const alt = rest ? hits.find((h) => h.player === own.player && h.option !== own.option && h.index >= altAt && h.index <= altAt + 2) : undefined;
+        const N = val(m[1]), M = alt ? val(rest![1]) : undefined, other = own.player === 'A' ? cb : ra;
+        const cols: (1 | 2)[] = other.length === 1 ? other : [1, 2];
+        const fits = (c: 1 | 2) => close(N, payoff(own.player, own.option, c)) && (M === undefined || close(M, payoff(own.player, (3 - own.option) as 1 | 2, c)));
+        claimCount++;
+        if (!(other.length !== 1 && WHOLE.test(sentence) ? cols.every(fits) : cols.some(fits)))
+          issues.push(`prose says ${own.player} gets ${N} from option ${own.option}${M === undefined ? '' : ` rather than ${M} from option ${3 - own.option}`} against opponent option ${cols.join(' or ')}, but ${cols.map((c) => `option ${c} pays ${payoff(own.player, own.option, c)} vs ${payoff(own.player, (3 - own.option) as 1 | 2, c)}`).join('; ')}`);
+      }
+      // (2) "A earns N", "gives B N", "A always receives N": the named cell, the whole matrix, or anything that player is paid.
+      const ADV = String.raw`(?:(?:always|still|only|then|now|thus|therefore|hence|so|also|just|again|clearly|in\s+turn|would|will|could|can|might|should|does|do)\s+)*`;
+      const LET = String.raw`(?<![\w'’-])(?:[Pp]layer\s+)?([AB])\s+(${ADV})${V}\s+${LEAD}${NUM}`;
+      const GIVE = String.raw`\b(?:giv(?:e|es|ing)|pay(?:s|ing)?|award(?:s|ing)?|leav(?:e|es|ing))\s+(?:[Pp]layer\s+)?([AB])\s+()${LEAD}${NUM}`;
+      const POSS = String.raw`(?<![\w'’-])(?:[Pp]layer\s+)?([AB])['’]s\s+(?:(?:expected|average|equilibrium|own|final)\s+)?(?:payoff|score|return|earnings?)\s+(?:is|of|would\s+be|equals|becomes|stays|remains|falls\s+to|rises\s+to)\s+()${LEAD}${NUM}`;
+      for (const m of sentence.matchAll(new RegExp(`${LET}|${GIVE}|${POSS}`, 'g'))) {
+        const p = (m[1] ?? m[4] ?? m[7]) as 'A' | 'B', adv = m[2] ?? m[5] ?? m[8] ?? '', N = val(m[3] ?? m[6] ?? m[9]);
+        if (inLabel((m.index ?? 0) + m[0].search(/[AB]\s/))) continue;   // "Plan B earns" is an option, not player B
+        const after = sentence.slice((m.index ?? 0) + m[0].length);
+        const always = !prob && /\balways\b/i.test(adv) && !/^\s+(?:from|by|against|at|if|when|whenever|under|facing|with|in|on|for)\b/i.test(after);
+        const both = /^\s+(?:from|with|under|at|by|for|across)\s+(?:either|both|each)\b/i.test(after);
+        const at = cellsAt(m.index ?? 0, (m.index ?? 0) + m[0].length, p), pay = ([r, c]: [number, number]) => (p === 'A' ? cellAOf(g, r, c) : cellBOf(g, r, c));
+        const cell = at.n && (at.n2 ? [...at.n, ...at.n2] : at.n).map(pay);
+        const vs = new RegExp(String.raw`^\s*,?\s*(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to))\s+(?:(?:its|the|their|his|her)\s+)?(${NT})(?!\d|\.\d|\s*%)`, 'i').exec(after);
+        const mc = at.m && [...at.m, ...(at.m2 ?? [])].map(pay);
+        if (vs && !prob && (mc ? !mc.some((c) => close(val(vs[1]), c)) : !canPay(p, val(vs[1]))))
+          issues.push(`prose contrasts ${p}'s ${N} with ${val(vs[1])}, but ${mc ? `the cell it names pays ${p} ${mc.join(' or ')}` : `no cell or equilibrium pays ${p} that`}`);
+        claimCount++;
+        if (always ? !cellsOf(p).every((c) => close(N, c)) : cell ? !(both ? cell.every((c) => close(N, c)) : cell.some((c) => close(N, c)) || eqPay(p, N, true)) : !canPay(p, N))
+          issues.push(`prose says ${p} ${always ? 'always ' : ''}gets ${N}, but ${always ? `${p}'s cells pay ${cellsOf(p).join(' / ')}` : cell ? `the cell it names pays ${p} ${cell.join(' or ')}` : `no cell or equilibrium pays ${p} that`}`);
+      }
+      // (3) "Defect and Retreat, yielding payoffs 3 and 0": A's then B's, from the one cell named, else from some cell or equilibrium.
+      for (const m of sentence.matchAll(new RegExp(String.raw`\b(?:(?:yield|giv|produc|earn|pay|leav|result)\w*\s+(?:in\s+)?|with\s+|for\s+|the\s+)(?:the\s+)?(?:resulting\s+|final\s+|equilibrium\s+|expected\s+)?(?:payoffs|scores|returns|earnings)\s+(?:of\s+|are\s+|were\s+|would\s+be\s+)?(${NT})\s+and\s+(${NT})(?!\d|\.\d|\s*\/|\s*,?\s*(?:for|to|respectively|against|from|when|if|across|under|facing|versus|vs)\b)`, 'gi'))) {
+        const N = val(m[1]), M = val(m[2]);
+        const at = cellsAt(m.index ?? 0, (m.index ?? 0) + m[0].length).n, named = at ? [...at.map(([r, c]) => [cellAOf(g, r, c), cellBOf(g, r, c)]), ...truthP.filter((t) => t.type !== 'pure').map((t) => [t.eA, t.eB])] : pairs;
+        claimCount++;
+        if (!named.some(([a, b]) => close(N, a) && close(M, b)))
+          issues.push(`prose gives the payoffs ${N} and ${M}, but ${at ? `the cell it names pays ${named[0].join(' and ')}` : 'no cell or equilibrium pays that pair'}`);
       }
     }
   }

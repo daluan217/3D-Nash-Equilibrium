@@ -213,6 +213,63 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
     ['The equilibrium is (x, y) = (2/3, 2/3).', true], ['The equilibrium is (x, y) = (0.25, 0.9).', false], ['A mixes at x = 66.7%.', true], ['A mixes at x = 25%.', false],
     ['Both surfaces are level at the interior point (0.667, 0.667).', true], ['Both surfaces are level at the interior point (0.4, 0.75).', false]] as const)
     check(`S17b a coordinate citation is judged (${truth ? 'true stands' : 'false flags'})`, validateReport({ claimedEquilibria: [{ type: 'mixed', x: 2 / 3, y: 2 / 3 }], prose: s } as never, G23).ok === truth, s);
+  // S18: each sentence must stand on HALF (x* = y* = 1/2, hand-solved) and flag on MIX (nothing at 1/2), so neither
+  // verdict can come from an unread sentence. S18a: "probability 1/2" was read as probability 1 (TRUE flagged).
+  const HALF = commitPayoffs({ a11: 1, a12: 0, a21: 0, a22: 1, b11: 0, b12: 1, b21: 1, b22: 0 });
+  const IO = { name: 'X', row1: 'Indoor', row2: 'Outdoor', col1: 'Day', col2: 'Night', description: '' };
+  for (const s of ['At equilibrium B chooses Day with probability 1/2.', 'At equilibrium B chooses Day with probability 1 / 2.',
+    'The sole equilibrium is therefore mixed: A schedules Indoor and Outdoor fifty-fifty, while B schedules Day and Night fifty-fifty.', // gold verbatim
+    'At equilibrium B plays Day and Night with equal probability.', 'At equilibrium B flips a fair coin between Day and Night.', 'At equilibrium B is equally likely to choose Day or Night.',
+    'Both players split evenly at the equilibrium: A between Indoor and Outdoor, B between Day and Night.', 'At equilibrium B chooses Day and Night in equal proportions.', 'At equilibrium B chooses Day as often as Night.']) {
+    check('S18 a one-half claim stands where the equilibrium is one half', !dir(s, HALF, IO), s);
+    check('S18 the same one-half claim flags where no equilibrium is', dir(s, MIX, IO), s);
+  }
+}
+
+// ── S18c: payoff FIGURES in prose are held to the cell the sentence names ──────────────────────────────────────
+// Before S18c only "N against X" and "N rather than M against X" were read: "A gets 5 from Defect", "B earns 9" and
+// "Defect and Retreat yields payoffs 7 and 8" passed. Each true sentence has a false twin that differs only in a figure,
+// and each figure was read off the hand-written matrix (MIX cells: A 1 0 / 0 3, B 0 3 / 2 0), never off the code.
+{
+  const MIX = commitPayoffs({ a11: 1, a12: 0, a21: 0, a22: 3, b11: 0, b12: 3, b21: 2, b22: 0 });
+  const CA = commitPayoffs({ a11: 4, a12: 1, a21: 4, a22: 1, b11: 0, b12: 3, b21: 2, b22: 0 });     // A ties in each column
+  const CON = commitPayoffs({ a11: 2, a12: 2, a21: 2, a22: 2, b11: -1, b12: -1, b21: -1, b22: -1 });
+  const HL = commitPayoffs({ a11: -8, a12: -5, a21: 3, a22: -6, b11: 6, b12: 6, b21: 4, b22: 0 });  // gold dataset_ties row
+  const LHL = { name: 'X', row1: 'Helicopter', row2: 'Convoy', col1: 'Coastal depot', col2: 'Inland depot', description: '' };
+  const LH = { name: 'X', row1: 'Big launch', row2: 'Small launch', col1: 'Advertise', col2: 'Stay quiet', description: '' };
+  const H2 = commitPayoffs({ a11: 3, a12: -4, a21: 0, a22: -1, b11: 9, b12: 9, b21: -1, b22: 3 });   // pure NE pay 3,9 and -1,3
+  const T: [string, string, GamePayoffs, typeof L?][] = [   // [true, false twin, game, labels]
+    ['Against Retreat, A gets 3 from Defect rather than 0 from Cooperate.', 'Against Retreat, A gets 5 from Defect rather than 0 from Cooperate.', MIX],
+    ['Once B chooses Retreat, A gets 3 from Defect rather than 0 from Cooperate.', 'Once B chooses Retreat, A gets 3 from Defect rather than 2 from Cooperate.', MIX],
+    ['Against Cooperate, B earns 3 from Retreat rather than 0 from Advance.', 'Against Cooperate, B earns 2 from Retreat rather than 0 from Advance.', MIX],
+    ['When B plays Retreat, A earns 3 with Defect rather than 0 with Cooperate.', 'When B plays Retreat, A earns 3 with Defect rather than 2 with Cooperate.', MIX],
+    ['Against Retreat, A gets three from Defect rather than zero from Cooperate.', 'Against Retreat, A gets five from Defect rather than zero from Cooperate.', MIX],
+    ['At Cooperate with Retreat, A receives 0 and B receives 3.', 'At Cooperate with Retreat, A receives 1 and B receives 3.', MIX],
+    ['At Cooperate and Advance, A receives 1; at Defect and Retreat, A receives 3.', 'At Cooperate and Advance, A receives 1; at Defect and Retreat, A receives 1.', MIX],
+    ["At Defect and Retreat, B's payoff is 0.", "At Defect and Retreat, B's payoff is 3.", MIX],
+    ["At Defect, B's payoff is 2 rather than its 0 with Retreat.", "At Defect, B's payoff is 2 rather than its 3 with Retreat.", MIX],
+    ['When B plays Retreat, A gets 3, so Cooperate is worse.', 'When B plays Retreat, A gets 1, so Cooperate is worse.', MIX],
+    ['If A deviated to Cooperate against Retreat, A would get 0.', 'If A deviated to Cooperate against Retreat, A would get 3.', MIX],
+    ['A gets 3 with Defect and Retreat.', 'A gets 7 at Defect and Retreat.', MIX], ['B earns 3 against Cooperate.', 'B earns 9.', MIX],
+    ['If both pick Defect and Retreat, the payoffs are 3 and 0.', 'If both pick Defect and Retreat, the payoffs are 3 and 2.', MIX],
+    ['The outcome Defect and Retreat yields payoffs 3 and 0.', 'The outcome Defect and Retreat yields payoffs 0 and 3.', MIX],
+    ['At the equilibrium A earns 0.75 and B earns 1.2 on average.', 'At the equilibrium A earns 2 and B earns 1.2 on average.', MIX],
+    ['At the equilibrium A earns 3/4 on average.', 'At the equilibrium A earns 2/3 on average.', MIX],
+    ['When B plays Advance, A receives 4 from either option.', 'When B plays Advance, A receives 1 from either option.', CA],
+    ['A always receives 2 and B always receives -1.', 'A always receives 2 and B always receives 1.', CON],
+    ['A Big launch with Stay quiet gives A a payoff of -4 and B a payoff of 9.', 'A Big launch with Stay quiet gives A a payoff of -1 and B a payoff of 3.', H2, LH],
+    ['At one equilibrium, A uses the Helicopter while B runs the Inland depot: A gets -5 rather than -6 by staying with the Helicopter, while B scores 6 at either depot and gains nothing by switching.', // gold verbatim
+      'At one equilibrium, A uses the Helicopter while B runs the Inland depot: A gets -5 rather than -7 by staying with the Helicopter.', HL, LHL],
+  ];
+  for (const [t, f, g, l] of T) {
+    const is = validateProseDirections(t, l ?? L, g);
+    check('S18c a true payoff figure stands', is.length === 0, `${t} :: ${is.join(' | ')}`);
+    check('S18c its false twin flags', validateProseDirections(f, l ?? L, g).length > 0, f);
+  }
+  // Not payoff claims: a difference, a count, a stated mix (any blend is reachable), an option named "Plan B".
+  for (const [s, l] of [['A gets 2 more from Defect than from Cooperate when B plays Retreat.', L], ['A makes 2 moves.', L], ['B mixes, so A earns 0.9 in expectation.', L],
+    ['Plan B earns A 3 against Retreat.', { name: 'X', row1: 'Plan A', row2: 'Plan B', col1: 'Advance', col2: 'Retreat', description: '' }]] as [string, typeof L][])
+    check('S18c a figure that is no payoff claim stands', validateProseDirections(s, l, MIX).length === 0, s);
 }
 
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────
