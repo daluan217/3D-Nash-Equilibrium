@@ -2912,6 +2912,88 @@ const clauseEnd = (t: string, at: number, stops = '.;'): number => {
   for (let i = at; i < t.length; i++) if (stops.includes(t[i]) && !(t[i] === '.' && /\d/.test(t[i + 1] ?? ''))) return i;
   return t.length;
 };
+/** S19a: a stated mix on a frame label ("Advance 50% of the time", "puts 90% on Advance", "Advance with probability 0.5",
+ *  "more than half the time"): [lo, hi] of that option's probability at its stated precision, whether it is a bound, and
+ *  the range a strict claim is held to (the figure itself unless hedged: at exactly 75% nobody strictly prefers). */
+// One qualifier vocabulary for stated mixes and equilibrium figures alike (S20a: "upwards of", "a maximum of", "some",
+// "60% and above", "75% or so" were each read as a point or not at all). qDir sorts a suffix: hedge, at most, at least.
+const Q_INT = String.raw`(?:(?:well|slightly|somewhat|far|much|a\s+(?:bit|little))\s+)?`;
+const Q_GT = String.raw`(?:more|greater|higher)\s+than|over|above|exceeding|in\s+excess\s+of|north\s+of|upwards?\s+of|beyond`;
+const Q_GE = String.raw`at\s+least|(?:no|not)\s+(?:less|fewer|lower)\s+than|a\s+minimum\s+of`;
+const Q_LT = String.raw`(?:less|fewer|lower)\s+than|under|below|south\s+of`;
+const Q_LE = String.raw`at\s+most|(?:no|not)\s+(?:more|greater|higher)\s+than|not\s+(?:over|above|exceeding)|(?:only\s+)?up\s+to|a\s+maximum\s+of`;
+const Q_HD = String.raw`an?\s+(?:rough|approximate)|barely|perhaps|maybe|possibly|probably|on\s+average|an?\s+average\s+of|about|roughly|around|nearly|almost|approximately|some|circa|close\s+to|near|virtually|essentially|practically|just\s+about|more\s+or\s+less|something\s+like|on\s+the\s+order\s+of|in\s+the\s+(?:region|neighbou?rhood|vicinity)\s+of|(?:an\s+)?estimated`;
+const Q_SFX = String.raw`(?:(?:or\s+(?:(?:more|less)(?:\s+(?:often|frequently))?|above|over|higher|greater|fewer|below|under|lower|so|thereabouts)|at\s+(?:the\s+(?:very\s+)?)?(?:least|most)|at\s+(?:a\s+)?(?:minimum|maximum)|give\s+or\s+take|more\s+or\s+less|-?ish)\b|(?:and\s+(?:above|up(?:wards?)?|over|higher|below|under|down|lower)|plus|tops)\b(?=\s*(?:[,.;:)!?]|$)|\s+of\s)|\+)`;
+const qDir = (s?: string) => (!s ? undefined : /^(?:or\s+(?:so|thereabouts)|give|more\s+or|-?ish)/i.test(s) ? 'hd' : /less|fewer|below|under|lower|down|most|max|tops/i.test(s) ? 'le' : 'ge');
+const MIX_B = String.raw`(?:(?:(?<gt>${Q_INT}(?:${Q_GT}))|(?<ge>${Q_GE})|(?<lt>${Q_INT}(?:${Q_LT}))|(?<le>${Q_LE}))(?:\s+(?<hb>${Q_HD}))?|(?<hd>(?:some(?:where|thing)\s+)?(?:${Q_HD})))\s+`;
+// S19e: also "fifty percent", "1/2", "1 time in 2", "one in two"; a decimal or a/b needs the word or "of the time".
+const MIX_N = '(?:\\d{1,2}|one|two|three|four|five|six|ten)', MIX_WN: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const MIX_F = String.raw`(?:(?<pc>\d{1,3}(?:\.\d+)?)\s*(?:%|per\s?cent\b)|(?<wp>(?:ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[-\s](?:one|two|three|four|five|six|seven|eight|nine))?)\s+per\s?cent\b|(?<fr>\d{1,2}\s*\/\s*\d{1,2})(?![\d.%\/])|(?<tn>${MIX_N})\s+(?:times?\s+)?(?:in|out\s+of)\s+(?:every\s+)?(?<td>${MIX_N})\b|(?<d>0?\.\d+|1(?:\.0+)?|0)(?![\d.%\/])|(?:(?<fn>an?|one|two|three|four)[-\s]+)?(?<fw>half|third|quarter|fifth)s?\b)`;
+const MIX_X = String.raw`(?:(?:exactly|precisely|just|only|merely|fully|a\s+(?:mere|full))\s+)?`;
+const MIX_PW = String.raw`(?:probability|chance|odds|likelihood|rate|frequency|weight)`;
+const MIX_TM = String.raw`(?<tm>\s+(?:of\s+)?(?:the\s+|all\s+|(?:all\s+)?(?:its|their|his|her)\s+)?(?:time|rounds|games|plays|cases|turns|periods|encounters|trials|matches|occasions)\b)?`;
+const MIX_AFTER = new RegExp(String.raw`^\s+(?:(?:is\s+|being\s+)?(?:played|chosen|used|picked|selected)\s+)?(?:in\s+)?(?:(?<pr>(?:(?:with|at)\s+(?:an?\s+)?)?${MIX_PW}\s+(?:of\s+)?)|(?<wa>(?:with|at)\s+(?:an?\s+)?)(?=[\d.]|[a-z]+(?:[-\s][a-z]+)?\s+per\s?cent))?(?<bw>(?:between|(?:anywhere\s+)?from)\s+)?${MIX_X}(?:${MIX_B})?(?:(?<lo>\d{1,3}(?:\.\d+)?)\s*(?:-|–|—|to)\s*(?=\d{1,3}(?:\.\d+)?\s*(?:%|per\s?cent)|\d{1,2}\s+times?\s+(?:in|out\s+of)\b))?${MIX_F}(?:\s*(?<sf1>${Q_SFX}))?(?<pr2>\s+(?:probability|chance|likelihood))?${MIX_TM}(?:\s*(?<sf2>${Q_SFX}))?`, 'i');
+// A figure of the time a few words on that no form parses ("Advance as little as 70% of the time") is still a mix:
+// judged only where every mix agrees, never as the pure option (S20a).
+const MIX_LOOSE = new RegExp(String.raw`^\s+(?:(?!(?:and|or|but|nor|while|whereas|if|when|so|then|than|which|who|that|this|the|its|their|his|her|it|they|he|she|there|where|each|every|both|against|versus|vs|facing|with|without|to|on|in|into|by|for|from|at|of|over|under|toward|towards|after|before|while|plays?|chooses?|picks?|uses?)\b)[a-z’'-]+\s+){1,3}(?:\d{1,3}(?:\.\d+)?\s*(?:%|per\s?cent)|(?:(?:an?|one|two|three|four)[-\s]+)?(?:half|third|quarter|fifth)s?)\s+(?:of\s+(?:the|its|their|all)\s+)?(?:time|rounds|games|plays)\b`);
+// The high end of a range ("50% to 60% of the time", "between a third and a half of the time").
+const MIX_RANGE = new RegExp(String.raw`^\s*(?:-|–|—|to|or|and)\s*(?:(?:about|roughly|around|nearly|approximately)\s+)?${MIX_F}${MIX_TM}`, 'i');
+const MIX_BEFORE = new RegExp(String.raw`${MIX_X}(?:${MIX_B})?(?<pr>(?:probability|weight|chance)\s+(?:of\s+)?)?${MIX_F}(?<pr2>\s+(?:probability|weight|chance))?\s+(?:of\s+(?:its|their|the)\s+(?:weight|time|play)\s+)?(?:on|to)\s+(?:the\s+)?$`, 'i');
+// "a 50% chance that B plays X"; "the probability that B plays X is 0.5" (the word before, the figure after).
+const MIX_THAT = new RegExp(String.raw`${MIX_X}(?:${MIX_B}(?:an?\s+)?)?${MIX_F}\s+(?<pr2>chance|probability|likelihood)\s+(?:that|of)\s+(?:(?:(?:[Pp]layer\s+)?[AB]\s+|the\s+\w+\s+)?(?:will\s+|would\s+)?(?:play|choos|pick|us|select|go|opt)\w*\s+(?:(?:with|for)\s+)?)?(?:the\s+)?$`, 'i');
+const MIX_OF = /\b(?:probability|chance|likelihood|frequency|share|rate|weight|odds|proportion|fraction)\s+(?:of|that|for|on)\b[^,;.]{0,30}$/i;
+const MIX_IS = new RegExp(String.raw`^\s+(?:is|equals|=|stands\s+at|comes\s+to|would\s+be|will\s+be|was)\s+${MIX_X}(?:${MIX_B})?${MIX_F}`, 'i');
+// An even split names both options at one half ("evenly between X and Y", "X as often as Y", "an even mix of X and Y").
+const EVEN = String.raw`(?:fifty[-\s]fifty|half[-\s]and[-\s]half|50\s*[-–\/]\s*50|with\s+(?:an?\s+)?equal\s+(?:probabilit(?:y|ies)|odds|chances?|frequency|weights?)|in\s+equal\s+(?:proportions?|measure|shares?)|equally\s+(?:often|frequently|likely))`;
+const HALF_AFTER = new RegExp(String.raw`^\s+(?:(?:exactly\s+)?as\s+(?:often|frequently)\s+as\b|(?:and|or)\s+(?:the\s+)?[^,;.]{1,40}?\s+${EVEN}(?![\w-]))`, 'i');
+const HALF_BEFORE = new RegExp(String.raw`(?:(?:${EVEN}|\bevenly|\bequally|\b(?:fair\s+)?coin)\s+(?:between|over|across)|\b(?:even|equal|fifty[-\s]fifty|half[-\s]and[-\s]half|50\s*[-–\/]\s*50)\s+(?:mix|split|blend|randomi[sz]ation|lottery)\s+(?:of|between|over))\s+(?:the\s+)?(?:[^,;.]{1,40}?\s+(?:and|or)\s+(?:the\s+)?)?$`, 'i');
+// "unless / except / other than / away from X" names everything BUT X (as "when B does not play X" does): a claim framed
+// so is never judged at X or its mix (S19j; "A is never indifferent unless B plays X 75% of the time" is true).
+const COMPL = /\b(?:unless|except|excluding|other\s+than|apart\s+from|aside\s+from|anything\s+but|besides|save\s+for|avoid(?:s|ed|ing)?|away\s+from|elsewhere|otherwise|(?:any|every|all)\s+other)\b/i;
+// A vague frequency ("rarely", "most of the time") is a range read existentially: a claim fails only if false across it.
+const MIX_END = /^(?:\s*(?:[,.;:)!?—–-]|$)|\s+(?:and|or|but|while|whereas|yet|so|then|each|apiece|respectively|occurs|when|whenever|if|once|until|because|since|though|although|against|versus|vs|instead|rather|in|at|on|over|across|throughout|overall|only|the|its|his|her|their|this|that|which|who|it|he|she|they|is|are|was|were|would|will|can|could|might|may|does|do|leaves?|makes?|keeps?|holds?|gives?|means?)\b)/i;
+const VAGUE = String.raw`(?<hi>mostly|usually|mainly|largely|predominantly|generally|typically|chiefly|primarily|(?:almost|nearly)\s+always|more\s+often\s+than\s+not|most\s+of\s+the\s+time|(?:a|the)\s+majority\s+of\s+the\s+time|with\s+(?:a\s+)?high\s+probability)|(?<lo>rarely|seldom|hardly\s+ever|(?:almost|nearly)\s+never|occasionally|(?:a|the)\s+minority\s+of\s+the\s+time|with\s+(?:a\s+)?(?:low|small)\s+probability)|(?<any>sometimes|often|frequently|at\s+times|now\s+and\s+then|(?:some|part)\s+of\s+the\s+time|with\s+(?:some|(?:a\s+)?(?:positive|nonzero|non-zero))\s+probability)`;
+const VAGUE_AFTER = new RegExp(String.raw`^\s+(?:only\s+)?(?:${VAGUE})\b`, 'i');
+// Not "tilts/leans toward": in real prose that is a surface's slope or a deviation's direction, never a stated mix.
+const VAGUE_BEFORE = new RegExp(String.raw`\b(?:${VAGUE})\s+(?:\w+\s+)?(?:play|pick|choos|us|select|go|opt)\w*(?:\s+(?:with|for))?\s+(?:the\s+)?$`, 'i');
+const frameMix = (t: string, h: { index: number; length: number }): [number, number, boolean, number, number] | undefined => {
+  const after = t.slice(h.index + h.length), before = t.slice(Math.max(0, h.index - 60), h.index);
+  if (HALF_AFTER.test(after) || HALF_BEFORE.test(before)) return [0.5, 0.5, false, 0.5, 0.5];
+  const v = (VAGUE_AFTER.exec(after) ?? VAGUE_BEFORE.exec(before.slice(-50)))?.groups;
+  if (v) { const r = v.hi ? [0.5 + 1e-6, 1] : v.lo ? [0, 0.5 - 1e-6] : [1e-6, 1 - 1e-6]; return [r[0], r[1], false, r[0], r[1]]; }
+  let m = MIX_AFTER.exec(after), word = false, onAfter = !!m;
+  m ??= MIX_BEFORE.exec(before) ?? MIX_THAT.exec(before);
+  if (!m && MIX_OF.test(before)) { m = MIX_IS.exec(after); word = onAfter = true; }
+  const G = m?.groups, some: [number, number, boolean, number, number] = [1e-6, 1 - 1e-6, false, 1e-6, 1 - 1e-6];
+  if (!G) return MIX_LOOSE.test(after) ? some : undefined;
+  const sd = qDir(G.sf1 ?? G.sf2), hd = !!(G.hd || G.hb) || sd === 'hd';
+  const rg = onAfter && !G.tm && !sd ? MIX_RANGE.exec(after.slice(m!.index + m![0].length)) : null, rest = after.slice(m!.index + m![0].length + (rg?.[0].length ?? 0));
+  // ponytail: a range whose far end does not parse ("from 60% of the time down to 50%") is any mix; judging its near
+  // end needs a denial slot of its own (a strict claim must hold there, a denial need not). Zero real instances.
+  if (G.bw && !rg) return some;
+  word ||= !!(G.pr || G.pr2 || G.tm || rg?.groups?.tm);
+  // A bare figure after the label ends the phrase: "Advance with 50% more effort", "at 50% higher cost", "50% of the
+  // payoff" qualify something else (18 497 real reads go on only with and , . ; each while occurs).
+  if (onAfter && !word && !MIX_END.test(rest) && !/^\s+(?:[AB]|[Pp]layer)\b/.test(rest)) return;
+  // A decimal or a/b is a probability only beside the word; a fraction word after the label only as "(of) the time".
+  // "Steady with 0.167" is a probability (302 of 302 real reads); a bare "Retreat 0.1 is …" is not.
+  if (((G.d !== undefined || G.fr) && !word && !(G.wa && /^0?\.\d+$/.test(G.d ?? ''))) || (G.fw && m!.index === 0 && /^\s/.test(m![0]) && !word && !/(?:on|to)\s+(?:the\s+)?$/i.test(m![0]))) return;
+  const n = (s: string) => (/^\d/.test(s) ? Number(s) : MIX_WN[s.toLowerCase()]);
+  const val = (G: Record<string, string | undefined>) => G.pc ? Number(G.pc) / 100 : G.wp ? G.wp.split(/[-\s]/).reduce((a, w) => a + n(w), 0) / 100 : G.fr ? n(G.fr.split('/')[0].trim()) / n(G.fr.split('/')[1].trim())
+    : G.tn ? n(G.tn) / n(G.td) : G.d !== undefined ? Number(G.d)
+    : ({ one: 1, two: 2, three: 3, four: 4 }[(G.fn ?? '').toLowerCase()] ?? 1) * ({ half: 0.5, third: 1 / 3, quarter: 0.25, fifth: 0.2 }[G.fw!.toLowerCase()] ?? NaN);
+  const p = val(G), p2 = rg ? val(rg.groups!) : p;
+  if (!(p >= 0 && p <= 1 && p2 >= 0 && p2 <= 1)) return;
+  // A range is a bound over both ends: the claim must hold throughout (linear in q, so the ends decide).
+  const lo = G.lo === undefined ? undefined : Number(G.lo) / (G.tn ? n(G.td!) : 100);
+  if (rg || lo !== undefined) { const [a, b] = [Math.min(p, p2, lo ?? p), Math.max(p, p2, lo ?? p)]; return [a, b, true, a, b]; }
+  const tol = (G.pc ? 0.005 * 10 ** -(G.pc.split('.')[1]?.length ?? 0) : G.wp ? 0.005 : G.d?.includes('.') ? 0.5 * 10 ** -G.d.split('.')[1].length : 0) + (hd ? 0.02 : 0);
+  const s = hd ? 0.02 : 0;
+  // A hedged bound is read at its most favourable end: it must hold throughout, so that is the narrower one.
+  const gb = Math.min(1, p + s + (G.gt ? 1e-6 : 0)), lb = Math.max(0, p - s - (G.lt ? 1e-6 : 0));
+  return G.gt || G.ge || sd === 'ge' ? [gb, 1, true, gb, 1] : G.lt || G.le || sd === 'le' ? [0, lb, true, 0, lb]
+    : [Math.max(0, p - tol), Math.min(1, p + tol), false, Math.max(0, p - s), Math.min(1, p + s)];
+};
 // A shelf/level/indifference clause locates the OPPONENT's flat shelf at this player's mix (S17d), not an equilibrium.
 const SHELF_WORD = /\b(?:shel(?:f|ves)|level\w*|flat|indifferen\w*)\b/i;
 
@@ -2930,6 +3012,9 @@ function findLabels(clause: string, sets: { player: 'A' | 'B'; option: 1 | 2; re
   const overlaps = (a: LabelHit, b: LabelHit) => a.index < b.index + b.length && b.index < a.index + a.length;
   return kept.filter((h) => !kept.some((o) => o !== h && o.player !== h.player && overlaps(h, o)));
 }
+
+/** Test seam: the stated-mix reader, for its reach probe and its unit checks. */
+export const __frameMixForTest = (t: string, h: { index: number; length: number }) => frameMix(t, h);
 
 export function validateProseDirections(text: string, labels: OptionLabels | null | undefined, g: GamePayoffs): string[] {
   return validateProseDirectionsDetailed(text, labels, g).issues;
@@ -2953,7 +3038,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // claim parser measures ("If B chooses Col 2 for sure, A's best response is
   // Row 1 for sure" parsed as a claim about the wrong column — C17 draw 4).
   // Deleting them can only remove text, never invent an anchor.
-  text = text.replace(/\s+for\s+(?:sure|certain)\b/gi, '');
+  text = text.replace(/\s+for\s+(?:sure|certain)\b/gi, '').replace(/\bapprox\.(?=\s*\d)/gi, 'approximately');
   const named = [
     { player: 'A' as const, option: 1 as const, names: [labels?.row1, 'Row 1'] },
     { player: 'A' as const, option: 2 as const, names: [labels?.row2, 'Row 2'] },
@@ -3002,10 +3087,20 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // guards did not clear both. The class stays open rather than ship a rule that
   // suppresses correct prose; the explicit-player parse below already covers the
   // same sentences whenever the labels are written out in full.
+  // S20c: a pair sharing its last word ("North route"/"South route") is also read by its capitalised head ("South"),
+  // case-sensitively, unless that word occurs in any other label (the collision that sank the tail alias above).
+  const words = (s?: string) => (s ?? '').trim().split(/\s+/);
+  const head = (p: 'A' | 'B', o: 1 | 2): string | undefined => {
+    const [x, y] = labelOf[p].map(words), w = (o === 1 ? x : y)[0];
+    const others = [...labelOf[p === 'A' ? 'B' : 'A'], labelOf[p][2 - o]].flatMap(words).map((t) => t.toLowerCase());
+    return x.length === 2 && y.length === 2 && x[1].toLowerCase() === y[1].toLowerCase() && /^[A-Z][a-z]{2,}$/.test(w)
+      && !others.includes(w.toLowerCase()) ? w : undefined;
+  };
   const sets = named.flatMap((n) => {
-    const scenarioName = ambiguous(n.player, n.names[0]) ? undefined : n.names[0];
+    const scenarioName = ambiguous(n.player, n.names[0]) ? undefined : n.names[0], hd = scenarioName && head(n.player, n.option);
     return [scenarioName, ...n.names.slice(1)].filter((x): x is string => !!x && x.trim().length > 0)
-      .map((x) => ({ player: n.player, option: n.option, re: new RegExp(labelPattern(x), 'gi') }));
+      .map((x) => ({ player: n.player, option: n.option, re: new RegExp(labelPattern(x), 'gi') }))
+      .concat(hd ? [{ player: n.player, option: n.option, re: new RegExp(`\\b${hd}\\b`, 'g') }] : []);
   });
 
   const payoff = (player: 'A' | 'B', own: 1 | 2, opp: 1 | 2) =>
@@ -3026,11 +3121,20 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // which was written in generic Row/Col names the screen always keeps).
   const STRICT_BEST = /\b(?:player\s+)?[AB]['’]s\s+(?:unique\s+|only\s+|single\s+)?best\s+(?:response|reply|choice|move|option|action)\s+(?:here\s+|then\s+)?(?:is|becomes|remains|would\s+be)\s+(?:to\s+(?:choose|play|pick|use)\s+)?$/i;
   const STRICT_BEFORE = /\b(?:prefers?|favou?rs?|wants?|opts?\s+for|should\s+(?:choose|pick|play)|pinned\s+to|locked\s+into|settles?\s+on|commits?\s+to|(?:does|do)\s+(?:\w+\s+)?(?:better|best)\s+(?:off\s+)?(?:with|by\s+choosing|by\s+playing)|(?:is|are)\s+(?:\w+\s+)?(?:better|best)\s+off\s+(?:with|choosing|playing))\s+(?:to\s+)?$/i;
+  // S20b: comparative wording ("X gives A a higher payoff", "A gets more from X", "A does worse with X") and denials
+  // ("A does not favor X", "X is no better for A") are preference claims too. inv: the named option is the worse one;
+  // neg: the preference is denied. GIVES is case-sensitive so the article "a" is never read as player A.
+  const GETS = /\b(?:(?:gets?|earns?|receives?|makes?|nets?|collects?|scores?|obtains?)\s+(?:(?:strictly|clearly|always|even|much|far|slightly)\s+)?(?:(?:a|an|the|its|their|his|her)\s+)?(?:higher|greater|larger|bigger|better|more|lower|smaller|worse|less)\b(?:\s+(?!(?:from|with|by)\b)[\w’'-]+){0,4}?|(?:does|do|did|fares?|is|are)\s+(?:\w+\s+)?worse(?:\s+off)?|loses?(?:\s+out)?)\s+(?:from|with|by\s+(?:choosing|playing|picking|using|taking|offering|selecting|switching\s+to|going\s+with))\s+(?:the\s+|an?\s+|its\s+|their\s+)?$|\b(?:no\s+(?:reason|incentive|need)\s+to\s+(?:choose|pick|play|use)|(?:gains?\s+nothing|no\s+(?:reason|incentive|need)\s+to\s+(?:switch|move|deviate))\s+(?:by\s+(?:switching|moving|deviating)\s+)?to)\s+(?:the\s+|an?\s+|its\s+|their\s+)?$/i;
+  const GIVES = /^\s*(?:(?:always|also|still|strictly|clearly|then|thus|therefore|likewise|now|instead)\s+)?(?:gives|yields|pays|earns|nets|brings|returns|offers|provides|secures|delivers)\s+(?:(?<rcp>(?:[Pp]layer\s+)?[AB]|it|them|him|her|(?:the|its|their|this|that|each)\s+[\w’'-]+(?:\s+[\w’'-]+)?|[A-Z][\w’'-]+(?:\s+[A-Z][\w’'-]+)?)\s+)?(?:(?:a|an|the|its|their|his|her)\s+)?(?:(?:strictly|clearly|much|far|slightly)\s+)?(?:higher|greater|larger|bigger|better|more|lower|smaller|worse|less)\b/;
+  const AFTER_CMP = /^\s*(?:(?:is|are|does|do|fares?|performs?)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?worse|(?:is|are)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?(?:more|less)\s+(?:profitable|lucrative|rewarding|valuable|costly)|(?:is|are|does|do)(?:n['’]t|\s+(?:not|no|never))\s+(?:(?:a|the|any)\s+)?(?:better|best|preferable))\b/i;
+  const NEG_GAP = /(?:\b(?:not|never|no\s+longer|cannot)|n['’]t|\bneither\s+\w+|\bno\s+(?:reason|incentive|need)\s+to)\s+(?:(?:always|really|necessarily|strictly|actually|then|also|even|clearly)\s+)?$/i;
+  const polar = (v: string, gap: string) => ({ neg: /\b(?:not|no|never|nothing)\b|n['’]t\b/i.test(v) || NEG_GAP.test(gap),
+    inv: /\b(?:worse|lower|smaller|loses?)\b/i.test(v) || /\bless\b/i.test(v) !== /\bcostly\b/i.test(v) });
   const BOTH_WAYS = /\b(?:whether|regardless|no\s+matter|either|dominant|in\s+both|both\s+(?:columns|rows|cases)|always|whatever)\b/i;
   const INDIFF = /\bindifferent\s+between\b/i;
   const SEP = /,|;|\bbut\b|\band\b|\bwhile\b|\bwhereas\b/i;
 
-  interface Claim { own: LabelHit; start: number; end: number; kind: 'strict' | 'indiff' }
+  interface Claim { own: LabelHit; start: number; end: number; kind: 'strict' | 'indiff'; neg?: boolean; inv?: boolean }
 
   const isPureNE = (r: 1 | 2, c: 1 | 2) =>
     cellAOf(g, r, c) >= cellAOf(g, (3 - r) as 1 | 2, c) - 1e-9 && cellBOf(g, r, c) >= cellBOf(g, r, (3 - c) as 1 | 2) - 1e-9;
@@ -3080,8 +3184,8 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     // A figure is a POINT only when nothing qualifies it. Bounds ("more than 60%", "60% or more") are judged as
     // inequalities, ranges ("20-30%", "between a third and half") as intervals, denials as complements: read as a
     // point, ~96% of TRUE qualified sentences were flagged once percents parsed (sweep 16).
-    const PRE = new RegExp(`(?:\\b(?<le>(?:no|not)\\s+more\\s+than|at\\s+most|up\\s+to)|\\b(?<ge>(?:no|not)\\s+(?:less|fewer)\\s+than|at\\s+least)|\\b(?<lt>(?:less|fewer)\\s+than|under|below)|\\b(?<gt>(?:more|greater)\\s+than|over|above|exceeding|in\\s+excess\\s+of)|\\b(?<hedge>about|roughly|around|nearly|almost|approximately|virtually|essentially|practically|close\\s+to)|(?:\\bfrom\\s+)?(?<![\\d.,\\w])(?<lo>${FIG})\\s*(?:-|–|—|to|or)|\\bbetween\\s+(?<lo2>${FIG})\\s*and)\\s*$`, 'i');
-    const POST = /^(?:\s*(?:of\s+(?:the|its|his|her|their)\s+(?:time|turns|rounds|plays|moves)\s+)?(?:or\s+(?:(more|above|over|higher|greater)|less|fewer|below|under|lower)|at\s+(?:(least)|most))\b|(\+))/i;
+    const PRE = new RegExp(`(?:\\b(?:(?<gt>${Q_INT}(?:${Q_GT}))|(?<ge>${Q_GE})|(?<lt>${Q_INT}(?:${Q_LT}))|(?<le>${Q_LE}))(?:\\s+(?<hb>${Q_HD}))?|\\b(?<hedge>${Q_HD})|(?:\\bfrom\\s+)?(?<![\\d.,\\w])(?<lo>${FIG})\\s*(?:-|–|—|to|or)|\\bbetween\\s+(?<lo2>${FIG})\\s*and)\\s*$`, 'i');
+    const POST = new RegExp(String.raw`^\s*(?:of\s+(?:the|its|his|her|their)\s+(?:time|turns|rounds|plays|moves)\s*)?(?<sf>${Q_SFX})`, 'i');
     // The opponent is level where this player's mix zeroes its payoff difference: [0,1], one root, or nowhere.
     const levelSet = (pl: 'A' | 'B'): [number, number][] => {
       const [c1, c0] = pl === 'B' ? [g.a11 - g.a21, g.a12 - g.a22] : [g.b11 - g.b12, g.b21 - g.b22];
@@ -3095,9 +3199,13 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     const shelfAt = (at: number, end: number) => {
       const cs = clauseStart(text, at); let s0 = cs, e0 = clauseEnd(text, end);
       for (const c of text.slice(cs, e0).matchAll(/,\s*(?:but|while|whereas|yet|so|although|though)\b/gi)) { const i = cs + (c.index ?? 0); if (i < at) s0 = i; else { e0 = i; break; } }
-      const ct = text.slice(s0, e0).replace(/\b(?:interior|joint)\s+(?:\w+\s+){0,2}flat\s+spots?\b/gi, ''); // denies the joint point, not this shelf
+      // A ", and" sub-clause with a figure of its own keeps its shelf word for that figure: "If B plays X 50% of the time,
+      // A prefers D, and A is indifferent only when B plays X 75% of the time" says nothing level at 50% (S19i).
+      const figRe = new RegExp(fracRe.source, 'i'), cuts = [s0, ...[...text.slice(s0, e0).matchAll(/,\s*and\b/gi)].map((c) => s0 + (c.index ?? 0)), e0];
+      const ct = cuts.slice(1).map((e, k) => text.slice(cuts[k], e)).filter((p, k) => (cuts[k] <= at && at < cuts[k + 1]) || !figRe.test(p)).join(' ').replace(/\b(?:interior|joint)\s+(?:\w+\s+){0,2}flat\s+spots?\b/gi, ''); // denies the joint point, not this shelf
       const shelf = SHELF_WORD.test(ct) && !/\b(?:not|no|never|nor|without)\s+(?:\w+\s+){0,3}(?:shel(?:f|ves)|level\w*|flat|indifferen\w*)\b|n['’]t\s+(?:\w+\s+){0,3}(?:level|flat|indifferent)\b/i.test(ct);
-      return { shelf, framed: /\b(?:if|when|whenever|suppose|whether|should|were)\b/i.test(text.slice(cs, at)), level: shelf && !/\bequilibri/i.test(text.slice(s0, at).split(/\b(?:because|since)\b/i).pop()!) };
+      // "Facing a B who plays X half the time" is a frame too (S19e).
+      return { shelf, framed: /\b(?:if|when|whenever|suppose|whether|should|were)\b|\b(?:facing|against|versus)\s+(?:an?|the)\s+[\w-]+(?:\s+[\w-]+)?\s+(?:who|that|which)\b/i.test(text.slice(cs, at)), level: shelf && !/\bequilibri/i.test(text.slice(s0, at).split(/\b(?:because|since)\b/i).pop()!) };
     };
     const boundIn = new Map<string, number>();
     for (const m of text.matchAll(fracRe)) {
@@ -3113,7 +3221,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const pm0 = PRE.exec(before), lo0 = pm0?.groups?.lo ?? pm0?.groups?.lo2, li = lo0 === undefined ? -1 : at - pm0![0].length + pm0![0].indexOf(lo0);
       // A range's low end inside a label ("Row 1 – 60%") is the label's digit, not a figure.
       const pm = li >= 0 && allHitsW.some((h) => h.index <= li && li < h.index + h.length) ? null : pm0;
-      const G = pm?.groups ?? {}, post = pm ? null : POST.exec(after), at0 = pm ? at - pm[0].length : at;
+      const G = pm?.groups ?? {}, post = pm ? null : POST.exec(after), at0 = pm ? at - pm[0].length : at, pd = qDir(post?.groups?.sf), hedge = !!(G.hedge || G.hb) || pd === 'hd';
       // Forward binding first, and a bare adjacency counts: "two-thirds Lenient
       // inspection" names its own label with no connector at all.
       let lab = allHitsW.find((h) => h.index >= end && h.index <= end + 24 && /^\s*(?:probability\s+)?(?:on|to|for|at|toward|towards)?\s*(?:the\s+|an?\s+)?$/i.test(text.slice(end, h.index)))
@@ -3151,10 +3259,10 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // A decimal is rounded at its own last digit (0.7 covers 0.65..0.75); 0.0 and 1.0 are exact, like 0 and 1.
       const lo = G.lo ?? G.lo2, lp = lo === undefined ? p : dec ? num(lo) : figure(lo.replace(/^an?\s+/i, ''));
       const unit = dec?.includes('.') ? 0.5 * 10 ** -dec.split('.')[1].length : 0;
-      const tol = ((/^(?:0|100)$/.test(m[3] ?? '') || (dec && (p === 0 || p === 1))) && !G.hedge && lo === undefined) || ((negated || none) && !m[3] && !unit) ? 1e-9
-        : negated || none ? unit || 0.005 * 10 ** -(m[3].split('.')[1]?.length ?? 0) : unit ? Math.max(unit, G.hedge ? 0.02 : 0) + 1e-9 : 0.02 - 1e-9;
-      const ge = G.ge || G.gt || post?.[1] || post?.[2] || post?.[3], le = G.le || G.lt || (post && !ge);
-      const [cLo, cHi] = le ? [-1, p + (G.lt ? -1e-9 : 1e-9)] : ge ? [p + (G.gt ? 1e-9 : -1e-9), 2] : [Math.min(p, lp) - tol, Math.max(p, lp) + tol];
+      const tol = ((/^(?:0|100)$/.test(m[3] ?? '') || (dec && (p === 0 || p === 1))) && !hedge && lo === undefined) || ((negated || none) && !m[3] && !unit) ? 1e-9
+        : negated || none ? unit || 0.005 * 10 ** -(m[3].split('.')[1]?.length ?? 0) : unit ? Math.max(unit, hedge ? 0.02 : 0) + 1e-9 : 0.02 - 1e-9;
+      const ge = G.ge || G.gt || pd === 'ge', le = G.le || G.lt || pd === 'le', hs = G.hb ? 0.02 : 0;
+      const [cLo, cHi] = le ? [-1, p + (G.lt ? -1e-9 : 1e-9) + hs] : ge ? [p + (G.gt ? 1e-9 : -1e-9) - hs, 2] : [Math.min(p, lp) - tol, Math.max(p, lp) + tol];
       const sp = (a: number, b: number, o = lab.option) => (o === 1 ? [a, b] : [1 - b, 1 - a]);
       const rangesOf = (pl: 'A' | 'B', o: 1 | 2) => [...continuumComponents(g).map((r) => (pl === 'A' ? sp(r.x0, r.x1, o) : sp(r.y0, r.y1, o))), ...truthW.map((t) => (pl === 'A' ? sp(t.x, t.x, o) : sp(t.y, t.y, o)))];
       const R = rangesOf(lab.player, lab.option);
@@ -3745,14 +3853,17 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
     const CLAUSE = new RegExp(String.raw`\b(?:player\s+)?([AB])\b\s*(?:['’]s\s+${BEST}|${VERB})\s+(?:the\s+|an?\s+)?([\w' -]{2,40}?)\s*(?=,|;|\.|\band\b|\bwhile\b|\bthen\b|\bso\b|$)`, 'gi');
     for (const sentence of text.split(/(?<=[.!?])\s+/)) {
       if (/\b(?:probabilit\w*|mix\w*|randomi\w*|equilibri(?:um|a))\b/i.test(sentence)) continue;   // profiles and mixtures are other checks
-      const found: { player: 'A' | 'B'; option: 1 | 2; isBest: boolean; index: number }[] = [];
+      const found: { player: 'A' | 'B'; option: 1 | 2; isBest: boolean; index: number; end: number }[] = [];
       for (const m of sentence.matchAll(CLAUSE)) {
         const player = m[1].toUpperCase() as 'A' | 'B';
         const opt = optOf(player, m[2]);
+        // A stated mix on the option ("a 50% chance that B plays X", "X and Y equally often") is not that option: S19a judges it.
+        const end = (m.index ?? 0) + m[0].trimEnd().length;
+        if (opt && frameMix(sentence, { index: end - m[2].length, length: m[2].length })) continue;
         // "prefers" does not contain "preferred": the preference verbs added to
         // VERB were invisible to this test, so the claim was parsed and then
         // discarded for want of a subject.
-        if (opt) found.push({ player, option: opt, isBest: /best|better|optimal|prefer|favou?r/i.test(m[0]), index: m.index ?? 0 });
+        if (opt) found.push({ player, option: opt, isBest: /best|better|optimal|prefer|favou?r/i.test(m[0]), index: m.index ?? 0, end });
       }
       // EVERY best-reply clause in the sentence, not just the first: the local
       // model writes "A prefers launching A against B launching A and launching
@@ -3773,28 +3884,40 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // regex, is the fix; the reach gap is documented and left open.
       const best = found.find((f) => f.isBest);
       if (best) {
-      // The frame is the FIRST opponent clause in the sentence, not the nearest
-      // one after the claim: "if B takes Harbor, A prefers Upland, but if B
-      // takes Upland, A prefers Harbor" states the frame BEFORE its claim, and
-      // preferring a later frame pairs the first claim with the second frame
-      // (8 training golds).
-      let frame = found.find((f) => !f.isBest && f.player !== best.player);
+      // The frame is the one in the claim's own segment, nearest before it, else after (S19h; a later frame paired the first
+      // claim of "if B takes Harbor, A prefers Upland, but if B takes Upland, …" with Upland, 8 golds). "…against B’s
+      // Inspect, but against B’s Ignore A does better with Inspect" pairs with Ignore; "A prefers X; when B chooses Y, A is
+      // indifferent" gives the first claim no frame.
+      const segs = [...sentence.matchAll(/;|:|\b(?:but|while|whereas|yet)\b/gi)].map((s) => s.index ?? 0);
+      const s0 = Math.max(-1, ...segs.filter((i) => i < best.index)), s1 = Math.min(sentence.length, ...segs.filter((i) => i > best.index));
+      const inSeg = found.filter((f) => !f.isBest && f.player !== best.player && f.index > s0 && f.index < s1);
+      // Failing that, the nearest earlier frame ("Against Retreat, the payoffs are clear; A prefers Cooperate") — only when
+      // the claim's own segment has no frame word: "while against Restriction A does better with Open" may name an
+      // unresolved frame of its own, never the earlier one (two true golds, a10).
+      const ownSeg = sentence.slice(s0 + 1, best.index) + ' ' + sentence.slice(best.end, s1);
+      const canBack = !/\b(?:against|versus|vs|facing|when|whenever|if|with|under|at|once|after|given|whether|for)\b/i.test(ownSeg);
+      let frame = inSeg.filter((f) => f.index < best.index).pop() ?? inSeg[0];
       // The frame often names no player at all — "Against Hunt Hare, A prefers
       // Hunt Stag". In a game where both players share option words the OPTION
       // INDEX is still unambiguous (the same words in the same order for both),
       // so the opponent's option resolves even though the owner is unstated.
       if (!frame) {
-        const other = best.player === 'A' ? 'B' : 'A';
-        const m = new RegExp(String.raw`\b(?:against|versus|vs\.?|facing|when|if)\s+(?:the\s+|an?\s+)?([\w' -]{2,40}?)\s*(?=,|;|\.|\band\b|\bwhile\b|$)`, 'i').exec(sentence);
-        const opt = m ? optOf(other, m[1]) : null;
-        if (opt) frame = { player: other, option: opt, isBest: false, index: m?.index ?? 0 };
+        const other: 'A' | 'B' = best.player === 'A' ? 'B' : 'A';
+        // "Against A’s Plaza": the possessive names the opponent, so shared words resolve.
+        const fs = [...sentence.matchAll(new RegExp(String.raw`\b(?:against|versus|vs\.?|facing|when|if)\s+(?:(?:[Pp]layer\s+)?${other}['’]s\s+)?(?:the\s+|an?\s+)?([\w' -]{2,40}?)\s*(?=,|;|:|\.|\band\b|\bwhile\b|$)`, 'gi'))].filter((f) => (f.index ?? 0) < s1);
+        // A capture that ran on into the claim ("against A’s Full inspection B prefers Open doors") is cut at its subject.
+        const rs = fs.map((f) => ({ index: f.index ?? 0, option: optOf(other, f[1]) ?? optOf(other, f[1].replace(/\s+(?:[Pp]layer\s+)?[AB]\s+\w.*$/, '')) })).filter((r) => r.option);
+        const own = rs.filter((x) => x.index > s0), r = own.filter((x) => x.index < best.index).pop() ?? own[0];
+        if (r) frame = { player: other, option: r.option!, isBest: false, index: r.index, end: r.index };
+        else if (canBack) frame = [...found.filter((f) => !f.isBest && f.player !== best.player), ...rs.map((x) => ({ player: other, option: x.option!, isBest: false, index: x.index, end: x.index }))].filter((x) => x.index <= s0).sort((x, y) => x.index - y.index).pop();
       }
-      if (!frame) continue;
+      if (!frame || COMPL.test(sentence.slice(Math.min(frame.index, s0 + 1), s1))) continue;
       claimCount++;
       const own = best.option, opp = frame.option;
       const mine = best.player === 'A' ? cellAOf(g, own, opp) : cellBOf(g, opp, own);
       const alt = best.player === 'A' ? cellAOf(g, (3 - own) as 1 | 2, opp) : cellBOf(g, opp, (3 - own) as 1 | 2);
-      if (alt > mine) {
+      // A tie is a best reply, but not a preference ("B prefers the Station" where both pay 9).
+      if (alt > mine || (alt === mine && /prefer|favou?r|better/i.test(sentence.slice(best.index, best.index + 60).split(/[,;]/)[0]))) {
         issues.push(`prose says ${best.player}'s best reply to opponent option ${opp} is option ${own}, but that pays ${mine} against ${alt}`);
       }
       }
@@ -3869,8 +3992,18 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const hits = findLabels(sentence, sets);
       const optsOf = (p: 'A' | 'B') => [...new Set(hits.filter((h) => h.player === p).map((h) => h.option))];
       const ra = optsOf('A'), cb = optsOf('B');
-      const prob = PROB.test(sentence), eqAnch = EQ.test(sentence) && !HYP.test(sentence) && !cont;
-      if (prob && !eqAnch) continue;
+      let prob = PROB.test(sentence); const eqAnch = EQ.test(sentence) && !HYP.test(sentence) && !cont;
+      // S19b: one stated mix on one player's label ("if B plays Advance 50% of the time") makes the OTHER player's figures
+      // expected payoffs at that mix; any other probability sentence is judged only when anchored at the equilibrium.
+      // Only when that player's label is named once: "Against Advance, A gets 1, though B plays Advance 50% of the time" is not.
+      const mixes = hits.flatMap((h) => { const q = frameMix(sentence, h); return q && !q[2] ? [{ by: h.player, q: h.option === 1 ? [q[0], q[1]] : [1 - q[1], 1 - q[0]] }] : []; });
+      const mixQ = !eqAnch && mixes.length === 1 && hits.filter((h) => h.player === mixes[0].by).length === 1 ? mixes[0] : undefined;
+      if (mixes.length) prob = true;
+      if (prob && !eqAnch && !mixQ) continue;
+      const inMix = (p: 'A' | 'B', o: 1 | 2, v: number) => {
+        const [a, b] = mixQ!.q.map((q) => q * payoff(p, o, 1) + (1 - q) * payoff(p, o, 2));
+        return close(v, Math.min(a, b)) || close(v, Math.max(a, b)) || (v > Math.min(a, b) && v < Math.max(a, b));
+      };
       // The cell a figure names: labels in its clause before it, and after it up to the next clause or claim, minus a
       // contrast's own label ("2 rather than its 0 with Retreat"). "from either X" names both own cells of the column.
       // A bare deviation ("if B switched") also admits that player's flipped cell.
@@ -3908,18 +4041,26 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       };
       const inLabel = (i: number) => hits.some((h) => i >= h.index && i < h.index + h.length);
       // (1) "[Against X,] P gets N from Y [rather than M from Z]": the frame's column, every column under "whether/regardless", else some column.
-      if (!prob) for (const m of sentence.matchAll(new RegExp(String.raw`\b${V}\s+${LEAD}${NUM}\s+${BY}`, 'gi'))) {
+      if (!prob || mixQ) for (const m of sentence.matchAll(new RegExp(String.raw`\b${V}\s+${LEAD}${NUM}\s+${BY}`, 'gi'))) {
         const at = (m.index ?? 0) + m[0].length;
         const own = hits.find((h) => h.index >= at && h.index <= at + 2);
         if (!own) continue;
         const subj = /(?<![\w'’-])([AB])\s+(?:\w+\s+)?$/.exec(sentence.slice(Math.max(0, (m.index ?? 0) - 20), m.index));
         if (subj && subj[1] !== own.player) continue;
-        const rest = new RegExp(String.raw`^\s*,?\s*(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to)|over|and)\s+(?:only\s+|just\s+)?(${NT})\s+${BY}`, 'i').exec(sentence.slice(own.index + own.length));
-        const altAt = rest ? own.index + own.length + rest[0].length : -1;
-        const alt = rest ? hits.find((h) => h.player === own.player && h.option !== own.option && h.index >= altAt && h.index <= altAt + 2) : undefined;
-        const N = val(m[1]), M = alt ? val(rest![1]) : undefined, other = own.player === 'A' ? cb : ra;
+        // The contrast is the other option's, labelled ("rather than 0 from Cooperate") or not ("rather than 0").
+        const rest = new RegExp(String.raw`^\s*,?\s*(?:(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to)|over)\s+(?:only\s+|just\s+)?(${NT})(?!\d|\.\d|\s*%)(?=\s*$|\s*[,;:)]|\s*\.(?!\d)|\s+(?:against|when|whenever|if|once|under|facing|given|at|so|while|whereas|but|because|since)\b)|(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to)|over|and)\s+(?:only\s+|just\s+)?(${NT})\s+${BY})`, 'i').exec(sentence.slice(own.index + own.length));
+        const altAt = rest?.[2] ? own.index + own.length + rest[0].length : -1;
+        const alt = rest?.[2] ? hits.find((h) => h.player === own.player && h.option !== own.option && h.index >= altAt && h.index <= altAt + 2) : undefined;
+        const N = val(m[1]), M = alt ? val(rest![2]) : rest?.[1] ? val(rest[1]) : undefined, other = own.player === 'A' ? cb : ra;
         const cols: (1 | 2)[] = other.length === 1 ? other : [1, 2];
         const fits = (c: 1 | 2) => close(N, payoff(own.player, own.option, c)) && (M === undefined || close(M, payoff(own.player, (3 - own.option) as 1 | 2, c)));
+        if (mixQ) {
+          if (own.player === mixQ.by) continue;   // the mixer's own payoff turns on a mix the sentence does not state
+          claimCount++;
+          if (!inMix(own.player, own.option, N) || (M !== undefined && !inMix(own.player, (3 - own.option) as 1 | 2, M)))
+            issues.push(`prose says ${own.player} gets ${N} from option ${own.option}${M === undefined ? '' : ` rather than ${M} from option ${3 - own.option}`} when the opponent's option 1 has probability ${mixQ.q.map((q) => +q.toFixed(4)).join(' to ')}, but the expected payoffs there are ${[own.option, 3 - own.option].map((o) => mixQ.q.map((q) => +(q * payoff(own.player, o as 1 | 2, 1) + (1 - q) * payoff(own.player, o as 1 | 2, 2)).toFixed(3)).join(' to ')).join(' vs ')}`);
+          continue;
+        }
         claimCount++;
         if (!(other.length !== 1 && WHOLE.test(sentence) ? cols.every(fits) : cols.some(fits)))
           issues.push(`prose says ${own.player} gets ${N} from option ${own.option}${M === undefined ? '' : ` rather than ${M} from option ${3 - own.option}`} against opponent option ${cols.join(' or ')}, but ${cols.map((c) => `option ${c} pays ${payoff(own.player, own.option, c)} vs ${payoff(own.player, (3 - own.option) as 1 | 2, c)}`).join('; ')}`);
@@ -3937,14 +4078,32 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // (2b) "Against Retreat, Defect earns 2": an option as subject pays its own player, or the one named after it.
       for (const h of hits) {
         const tail = sentence.slice(h.index + h.length);
-        const o = new RegExp(String.raw`^\s+(${ADV})(earns?|pays?|gives?|yields?|nets?|brings?|returns?|delivers?|scores?)\s+(?:(?:[Pp]layer\s+)?([AB])\s+)?${LEAD}${NUM}`).exec(tail);
-        if (!o || (o[3] && /^(?:giv|pay)/.test(o[2]))) continue;   // "Defect gives B 2" is GIVE's
+        // "A prefers Defect, which pays 3 rather than 0": the relative clause's antecedent is the label, unless that label is a frame's.
+        // A pronoun or role in a relative clause is the chooser ("Back, which gives her 2", "Avoid, which gives the thief -2").
+        const o = new RegExp(String.raw`^(,\s+which)?\s+(${ADV})(earns?|pays?|gives?|yields?|nets?|brings?|returns?|delivers?|scores?)\s+(?:(?:[Pp]layer\s+)?([AB])\s+|(?<=,\s+which\s+\w+\s+)(?:her|him|them|it|the\s+[a-z]+)\s+)?${LEAD}${NUM}`).exec(tail);
+        if (!o || (o[4] && /^(?:giv|pay)/.test(o[3]))) continue;   // "Defect gives B 2" is GIVE's
+        // A role noun counts only as the clause's own subject ("the thief chooses Avoid, which gives the thief -2").
+        const role = o[1] && /\bthe\s+([a-z]+)\s+(?:-?\d|a\s+payoff)/.exec(o[0])?.[1];
+        if (role && !new RegExp(String.raw`\bthe\s+${role}\s+(?:\w+\s+){1,2}$`, 'i').test(sentence.slice(0, h.index))) continue;
+        // "does better with X, which" and "trades off X against Y, which" name the chooser's own option, not a frame.
+        const before = sentence.slice(0, h.index);
+        if (o[1] && /\b(?:against|versus|vs\.?|at|when|whenever|if|facing|under|given|once|after|with|from|to|than|over|and|or)\s+(?:the\s+|an?\s+)?$/i.test(before)
+          && !/\b(?:better|best|well)\s+with\s+(?:the\s+|an?\s+)?$|\btrad\w*\s+off\b[^.;:]*\b(?:against|and)\s+(?:the\s+|an?\s+)?$/i.test(before)) continue;
         // The player is named after ("earns B 2", "2 for B") or before ("For B, Defect pays 2", "A's Defect pays 3").
         const pre = /(?:(?:^|[,;:])\s*[Ff]or\s+(?:[Pp]layer\s+)?([AB])\s*,\s*|(?<![\w'’-])([AB])['’]s\s+)$/.exec(sentence.slice(0, h.index));
-        const p = (o[3] ?? /^\s+for\s+(?:[Pp]layer\s+)?([AB])\b(?!['’])/.exec(tail.slice(o[0].length))?.[1] ?? pre?.[1] ?? pre?.[2]) as 'A' | 'B' | undefined;
+        const p = (o[4] ?? /^\s+for\s+(?:[Pp]layer\s+)?([AB])\b(?!['’])/.exec(tail.slice(o[0].length))?.[1] ?? pre?.[1] ?? pre?.[2]) as 'A' | 'B' | undefined;
         // Without a letter only a clause-initial option is the subject ("Retreat against Defect earns 0" is not Defect's).
-        if (!p && !/(?:^|[,;:]|\b(?:then|but|while|whereas|yet|so|thus|hence))\s*(?:(?:playing|choosing|picking|taking|using)\s+)?$/i.test(sentence.slice(0, h.index))) continue;
-        figs.push({ i: h.index + h.length, e: h.index + h.length + o[0].length, p: p ?? h.player, adv: o[1], N: val(o[4]) });
+        if (!p && !o[1] && !/(?:^|[,;:]|\b(?:then|but|while|whereas|yet|so|thus|hence))\s*(?:(?:playing|choosing|picking|taking|using)\s+)?$/i.test(sentence.slice(0, h.index))) continue;
+        figs.push({ i: h.index + h.length, e: h.index + h.length + o[0].length, p: p ?? h.player, adv: o[2], N: val(o[5]) });
+      }
+      // A relative clause on a label the label sets cannot hold (both players' "Plaza") pays the clause's player letter.
+      for (const m of sentence.matchAll(new RegExp(String.raw`(?<![\w'’-])(?:[Pp]layer\s+)?([AB])\b(?!['’])[^,;:.]*,\s+which\s+(?:pays?|gives?|yields?|returns?|earns?)\s+(?:(?:[Pp]layer\s+)?\1\s+|her\s+|him\s+|it\s+)?${LEAD}${NUM}`, 'g'))) {
+        const e = (m.index ?? 0) + m[0].length, i = e - m[0].length + m[0].lastIndexOf(',');
+        if (figs.some((f) => f.e === e) || hits.some((h) => h.index < i && h.index > (m.index ?? 0))) continue;
+        figs.push({ i, e, p: m[1] as 'A' | 'B', adv: '', N: val(m[2]) });
+        // "A trades off X, which pays -9, against Y, which pays 7": the second option is the same player's.
+        const t = /\btrad\w*\s+off\b/i.test(m[0]) ? new RegExp(String.raw`^\s*,\s*(?:against|and)\s+[^,;:.]{1,40},\s+which\s+(?:pays?|gives?|yields?|returns?|earns?)\s+${LEAD}${NUM}`).exec(sentence.slice(e)) : null;
+        if (t) figs.push({ i: e + t[0].lastIndexOf(','), e: e + t[0].length, p: m[1] as 'A' | 'B', adv: '', N: val(t[1]) });
       }
       // A list goes on with the same subject ("pays -1 against Detailed and -5 against Quick"): the next figure keeps the
       // clause before the first and takes the frame after itself; a new subject or figure (not its contrast) ends the list.
@@ -3954,20 +4113,35 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       }
       for (const { i, e, p, adv, N } of figs) {
         const after = sentence.slice(e);
+        if (mixQ) {
+          // At a stated mix a figure is the expected payoff of an option this player's labels name (of either if none, of
+          // both under "from either"); its contrast, of the other option.
+          if (p === mixQ.by) continue;
+          const named = [...new Set(hits.filter((h) => h.player === p).map((h) => h.option))], cand = (named.length ? named : [1, 2]) as (1 | 2)[];
+          const vsM = new RegExp(String.raw`^\s*,?\s*(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to))\s+(?:(?:its|the|their|his|her)\s+)?(${NT})(?!\d|\.\d|\s*%)`, 'i').exec(after);
+          const ok = (o: 1 | 2) => inMix(p, o, N) && (!vsM || inMix(p, (3 - o) as 1 | 2, val(vsM[1])));
+          claimCount++;
+          if (!(/^\s+(?:from|with|under|at|by|for|across)\s+(?:either|both|each)\b/i.test(after) ? [1, 2].every((o) => inMix(p, o as 1 | 2, N)) : cand.some(ok)))
+            issues.push(`prose says ${p} gets ${N}${vsM ? ` rather than ${val(vsM[1])}` : ''} when the opponent's option 1 has probability ${mixQ.q.map((q) => +q.toFixed(4)).join(' to ')}, but no option ${cand.join(' or ')} has that expected payoff there`);
+          continue;
+        }
         const always = !prob && /\balways\b/i.test(adv) && !/^\s+(?:from|by|against|at|if|when|whenever|under|facing|with|in|on|for)\b/i.test(after);
         const both = /^\s+(?:from|with|under|at|by|for|across)\s+(?:either|both|each)\b/i.test(after);
         const at = cellsAt(i, e, p), pay = ([r, c]: [number, number]) => (p === 'A' ? cellAOf(g, r, c) : cellBOf(g, r, c));
         const cell = at.n && (at.n2 ? [...at.n, ...at.n2] : at.n).map(pay);
         const vs = new RegExp(String.raw`^\s*,?\s*(?:rather\s+than|instead\s+of|versus|vs\.?|compared\s+(?:with|to))\s+(?:(?:its|the|their|his|her)\s+)?(${NT})(?!\d|\.\d|\s*%)`, 'i').exec(after);
-        const mc = at.m && [...at.m, ...(at.m2 ?? [])].map(pay);
-        if (vs && !prob && (mc ? !mc.some((c) => close(val(vs[1]), c)) : !canPay(p, val(vs[1]))))
-          issues.push(`prose contrasts ${p}'s ${N} with ${val(vs[1])}, but ${mc ? `the cell it names pays ${p} ${mc.join(' or ')}` : `no cell or equilibrium pays ${p} that`}`);
+        // An unlabelled contrast of ONE named cell is that player's other option there ("Defect, which pays 3 rather than 0"),
+        // or an equilibrium payoff; a labelled one is the cell its label names.
+        const one = !both && at.n?.length === 1 && !at.n2 ? at.n[0] : undefined;
+        const mc = at.m ? [...at.m, ...(at.m2 ?? [])].map(pay) : one && [pay(p === 'A' ? [3 - one[0], one[1]] : [one[0], 3 - one[1]])];
+        if (vs && !prob && (mc ? !mc.some((c) => close(val(vs[1]), c)) && !(!at.m && eqPay(p, val(vs[1]))) : !canPay(p, val(vs[1]))))
+          issues.push(`prose contrasts ${p}'s ${N} with ${val(vs[1])}, but ${mc ? `the ${at.m ? 'cell it names' : 'other option there'} pays ${p} ${mc.join(' or ')}` : `no cell or equilibrium pays ${p} that`}`);
         claimCount++;
         if (always ? !cellsOf(p).every((c) => close(N, c)) : cell ? !(both ? cell.every((c) => close(N, c)) : cell.some((c) => close(N, c)) || eqPay(p, N, true)) : !canPay(p, N))
           issues.push(`prose says ${p} ${always ? 'always ' : ''}gets ${N}, but ${always ? `${p}'s cells pay ${cellsOf(p).join(' / ')}` : cell ? `the cell it names pays ${p} ${cell.join(' or ')}` : `no cell or equilibrium pays ${p} that`}`);
       }
       // (3) "Defect and Retreat, yielding payoffs 3 and 0": A's then B's, from the one cell named, else from some cell or equilibrium.
-      for (const m of sentence.matchAll(new RegExp(String.raw`\b(?:(?:yield|giv|produc|earn|pay|leav|result)\w*\s+(?:in\s+)?|with\s+|for\s+|the\s+)(?:the\s+)?(?:resulting\s+|final\s+|equilibrium\s+|expected\s+)?(?:payoffs|scores|returns|earnings)\s+(?:of\s+|are\s+|were\s+|would\s+be\s+)?(${NT})\s+and\s+(${NT})(?!\d|\.\d|\s*\/|\s*,?\s*(?:for|to|respectively|against|from|when|if|across|under|facing|versus|vs)\b)`, 'gi'))) {
+      if (!mixQ) for (const m of sentence.matchAll(new RegExp(String.raw`\b(?:(?:yield|giv|produc|earn|pay|leav|result)\w*\s+(?:in\s+)?|with\s+|for\s+|the\s+)(?:the\s+)?(?:resulting\s+|final\s+|equilibrium\s+|expected\s+)?(?:payoffs|scores|returns|earnings)\s+(?:of\s+|are\s+|were\s+|would\s+be\s+)?(${NT})\s+and\s+(${NT})(?!\d|\.\d|\s*\/|\s*,?\s*(?:for|to|respectively|against|from|when|if|across|under|facing|versus|vs)\b)`, 'gi'))) {
         const N = val(m[1]), M = val(m[2]);
         const at = cellsAt(m.index ?? 0, (m.index ?? 0) + m[0].length).n, named = at ? [...at.map(([r, c]) => [cellAOf(g, r, c), cellBOf(g, r, c)]), ...truthP.filter((t) => t.type !== 'pure').map((t) => [t.eA, t.eB])] : pairs;
         claimCount++;
@@ -4254,6 +4428,10 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       }
       if (!framed.length) continue;
       const tieAt = tie.index ?? 0;
+      // S20c: a frame in the tie's own conjunct wins ("does better with Deep against Open and ties … against Closed"
+      // frames the tie at Closed); "between X and Y" is not a conjunct boundary.
+      const own = framed.filter((f) => !/\band\b/i.test(clause.slice(Math.min(f.at, tieAt), Math.max(f.at, tieAt)).replace(/\bbetween\b[^,;]*?\band\b/gi, '')));
+      if (own.length) framed.splice(0, framed.length, ...own);
       framed.sort((x, y) => Math.abs(x.at - tieAt) - Math.abs(y.at - tieAt));
       const opp = framed[0].hit;
       // Who is tied: an explicit player letter next to the tie word wins, then
@@ -4335,6 +4513,27 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       // a statement about the equilibrium, not about a pure opponent option —
       // skipped, never judged against a single column/row.
       const MIXING = /\b(?:probabilit\w*|mix\w*|randomi\w*|odds|fraction\w*|percent\w*|half|third|quarter|so\s+that|makes?|leaves?|holds?|keeps?|renders?)\b|\d\.\d|%/i;
+      // S19e: indifference under a stated opponent mix ("A is indifferent when B plays X 1 time in 2") holds only where
+      // the player's options tie; its frame is the nearest mixed opponent label in its own segment, else the last before.
+      // A bound must hold throughout; a denial ("is not indifferent") is false only at a tie on the stated figure itself.
+      let segFrom = 0;
+      for (const ia of clause.matchAll(/\b(?:(?:[Pp]layer\s+)?(?<p1>[AB])\s+(?:is|becomes|would\s+be|will\s+be|stays|remains|was)(?<n1>n['’]t)?\s+(?<n2>(?:not|never|no\s+longer)\s+)?(?:\w+\s+)?|(?:makes?|leaves?|keeps?|renders?|making|leaving|keeping)\s+(?:[Pp]layer\s+)?(?<p2>[AB])\s+)indifferent\b/g)) {
+        const pl = (ia.groups!.p1 ?? ia.groups!.p2) as 'A' | 'B', at = ia.index ?? 0, iEnd = at + ia[0].length, segEnd = iEnd + (/[,;]|\b(?:but|and)\b/.exec(clause.slice(iEnd))?.index ?? clause.length - iEnd);
+        const lead = clause.slice(segFrom, at), cut = [...lead.matchAll(/;|\b(?:but|while|whereas|though|although|yet)\b|(?<!\bor\s+)\bso\b/gi)].pop(), leadFrom = segFrom + (cut ? (cut.index ?? 0) + cut[0].length : 0);
+        segFrom = segEnd;
+        const mixOf = (h: LabelHit) => { const q = frameMix(clause, h); return q && (h.option === 1 ? q : [1 - q[1], 1 - q[0], q[2], 1 - q[4], 1 - q[3]] as typeof q); };
+        const opp = hits.filter((h) => h.player !== pl), trail = opp.filter((h) => h.index >= iEnd && h.index < segEnd);
+        // The lead frames only after a frame word ("If B plays X 50% of the time, A is indifferent"), never a bare fact,
+        // unless it is the cause ("B playing X half the time leaves A indifferent").
+        const lead2 = opp.filter((h) => h.index >= leadFrom && h.index < at && (ia.groups!.p2 || /\b(?:if|when|whenever|suppose|supposing|given|once|facing|against|versus|should|were|at|under|with)\b/i.test(clause.slice(leadFrom, h.index))));
+        const fr = trail.length ? trail.map(mixOf).find(Boolean) : lead2.map(mixOf).filter(Boolean).pop();
+        if (!fr || COMPL.test(clause.slice(leadFrom, segEnd))) continue;
+        claimCount++;
+        const neg = !!(ia.groups?.n1 || ia.groups?.n2), [q0, q1] = neg ? [fr[3], fr[4]] : [fr[0], fr[1]];
+        const d = (q: number) => q * (payoff(pl, 1, 1) - payoff(pl, 2, 1)) + (1 - q) * (payoff(pl, 1, 2) - payoff(pl, 2, 2)), d0 = d(q0), d1 = d(q1), z = (v: number) => Math.abs(v) <= 1e-12;
+        if (neg ? z(d0) && z(d1) : fr[2] ? !(z(d0) && z(d1)) : (d0 > 1e-12 && d1 > 1e-12) || (d0 < -1e-12 && d1 < -1e-12))
+          issues.push(`prose says ${pl} is ${neg ? 'not ' : ''}indifferent when the opponent's option 1 has probability ${[q0, q1].map((q) => +q.toFixed(4)).join(' to ')}, but there ${pl}'s option 1 vs option 2 differ by ${+d0.toFixed(3)} to ${+d1.toFixed(3)}`);
+      }
       const ind = INDIFF.exec(clause);
       if (ind && MIXING.test(clause)) continue;
       if (ind) {
@@ -4392,11 +4591,15 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
             if (!labelBeforeVerb) verbBefore = m;
           }
         }
+        let vAt = verbBefore ? before.length - tail.length + verbBefore.index : -1;
+        if (!verbBefore) { const w = before.slice(-90); verbBefore = GETS.exec(w); if (verbBefore) vAt = before.length - w.length + verbBefore.index; }
         if (verbBefore && /\b(?:whether|depending\s+on|on\s+whether)\b[^,;]{0,40}$/i.test(before)) continue;   // "…depends on whether A favors X or Y"
-        if (verbBefore) { claims.push({ own: h, start: before.length - tail.length + verbBefore.index, end: h.index + h.length, kind: 'strict' }); continue; }
-        const verbAfter = STRICT_AFTER.exec(afterText) ?? STRICT_AFTER_DESIRE.exec(afterText);
+        if (verbBefore) { claims.push({ own: h, start: vAt, end: h.index + h.length, kind: 'strict', ...polar(verbBefore[0], before.slice(0, vAt)) }); continue; }
+        const gv = GIVES.exec(afterText), rcp = gv?.groups?.rcp?.replace(/^[Pp]layer\s+/, '');
+        // "Express gives B a better result" names the OTHER player's payoff: not a preference claim (two real, both garbled).
+        const verbAfter = STRICT_AFTER.exec(afterText) ?? STRICT_AFTER_DESIRE.exec(afterText) ?? (rcp && /^[AB]$/.test(rcp) && rcp !== h.player ? null : gv) ?? AFTER_CMP.exec(afterText);
         if (verbAfter && /^\s*(?:does|do)\b/i.test(verbAfter[0]) && /^\s*(?:with|by)\b/i.test(afterText.slice(verbAfter[0].length))) { /* "X does better with Y": Y is the claim, anchored via STRICT_BEFORE */ }
-        else if (verbAfter) { claims.push({ own: h, start: h.index, end: h.index + h.length + verbAfter[0].length, kind: 'strict' }); continue; }
+        else if (verbAfter) { claims.push({ own: h, start: h.index, end: h.index + h.length + verbAfter[0].length, kind: 'strict', ...polar(verbAfter[0], '') }); continue; }
         // Elliptical continuation of the previous claim: "… but Y against Q",
         // "…, against Q Y" — a same-side label after a separator, with no
         // other same-side label since that separator.
@@ -4413,8 +4616,12 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
             const frameFollows = /^\s*(?:against|versus|vs\.?|when|if|whether|with|no\s+matter|regardless|facing|toward|in\s+response|under|after|for|at|to|following|given|once)\b/i.test(afterLabel)
               || hits.some((o) => o.player !== h.player && o.index >= h.index + h.length && o.index <= h.index + h.length + 4);
             const bareSep = /^(?:,|;|\bbut\b|\band\b)\s*(?:then\s+)?(?:with\s+|by\s+choosing\s+)?(?:the\s+|an?\s+)?$/i.test(seg);
-            if (!otherOwn && (hasOpp || (bareSep && frameFollows))) {
-              claims.push({ own: h, start: segStart + (lastSep?.[0].length ?? 1), end: h.index + h.length, kind: 'strict' });
+            // S20b: the elided verb keeps its polarity ("does worse with X against P, and with Y against Q"); after a denial
+            // or inversion a contrast ("…, but Y against Q") may flip it, so that one is not judged. A segment stating an
+            // equilibrium or a consequence ("…, so the equilibria pair Audit with Inspect") is not an ellipsis.
+            const flip = (prev.neg || prev.inv) && /^(?:;|\bbut\b|\bwhile\b|\bwhereas\b)/i.test(seg);
+            if (!otherOwn && !flip && !/\b(?:equilibri\w*|so|thus|therefore|hence)\b/i.test(clause.slice(prev.end, h.index)) && (hasOpp || (bareSep && frameFollows))) {
+              claims.push({ own: h, start: segStart + (lastSep?.[0].length ?? 1), end: h.index + h.length, kind: 'strict', neg: prev.neg, inv: prev.inv });
             }
           }
         }
@@ -4431,8 +4638,15 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         const prevEnd = i === 0 ? 0 : claims[i - 1].end;
         const nextStart = i + 1 < claims.length ? claims[i + 1].start : clause.length;
         const leadRaw = clause.slice(prevEnd, c.start);
-        const leadSepRe = i === 0 ? /;|:|\bbut\b|\band\b|\bwhile\b|\bwhereas\b|\balthough\b|\bthough\b|\byet\b|\bso\b|\bbecause\b/gi : new RegExp(SEP.source, 'gi');
-        const leadSep = [...leadRaw.matchAll(leadSepRe)].map((m) => m.index ?? -1).pop() ?? -1;
+        const leadSepRe = i === 0 ? /;|:|\bbut\b|(?<!\bbetween\s+(?:about\s+)?(?:\d[\d.]*\s*(?:%|per\s?cent)?|(?:an?\s+|one\s+|two\s+)?(?:half|third|quarter|fifth)s?)\s+)\band\b(?!\s+(?:above|up|upwards?|over|higher|below|under|down|lower)\b)|\bwhile\b|\bwhereas\b|\balthough\b|\bthough\b|\byet\b|(?<!\bor\s+)\bso\b|\bbecause\b/gi : new RegExp(SEP.source, 'gi');
+        const STRONG = /;|:|\bbut\b|\band\b|\bwhile\b|\bwhereas\b|\balthough\b|\bthough\b|\byet\b/gi;
+        let leadSep = [...leadRaw.matchAll(leadSepRe)].map((m) => m.index ?? -1).pop() ?? -1;
+        // S20b: a later claim whose comma-cut lead names no opponent option takes its frame from the last clause
+        // ("…, but when the courier takes Express Route, the regulator prefers Waive Review to Audit").
+        if (i > 0 && leadSep >= 0 && !hits.some((o) => o.player !== c.own.player && o.index >= prevEnd + leadSep && o.index < c.start)) {
+          const st = [...leadRaw.slice(0, leadSep).matchAll(STRONG)].pop();
+          if (st && !hits.some((o) => o.player === c.own.player && o.index >= prevEnd + (st.index ?? 0) && o.index < c.start)) leadSep = st.index ?? leadSep;
+        }
         const lead = leadSep >= 0 ? leadRaw.slice(leadSep) : leadRaw;
         const trailRaw = clause.slice(c.end, nextStart);
         let trailSep = i + 1 < claims.length ? (SEP.exec(trailRaw)?.index ?? -1) : -1;
@@ -4455,7 +4669,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         const indiffForm = ownInWin.some((h) => {
           const lo = Math.min(c.own.index, h.index), hi = Math.max(c.own.index, h.index);
           const first = lo === c.own.index ? c.own : h;
-          return /^\s*,?\s*or\s+(?:the\s+|an?\s+)?$/i.test(clause.slice(first.index + first.length, hi));
+          return /^\s*,?\s*n?or\s+(?:the\s+|an?\s+)?$/i.test(clause.slice(first.index + first.length, hi));   // "neither X nor Y is better" = a tie
         });
         // A frame stated before the verb wins over trailing text ("against
         // Online, A prefers Discount, but B answers Discount with In-store").
@@ -4466,7 +4680,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         const frameAt = frameKw ? leadStart + (frameKw.index ?? 0) : leadStart;
         // A negated opponent label ("when B does NOT audit") names the OTHER option — never judged.
         const negated = (h: LabelHit) => /\b(?:not|never|no|n['’]t)\s+(?:\w+\s+){0,2}$/i.test(clause.slice(Math.max(0, h.index - 24), h.index));
-        if (winHits.some((h) => h.player !== player && negated(h))) continue;
+        if (winHits.some((h) => h.player !== player && negated(h)) || COMPL.test(clause.slice(leadStart, c.own.index) + ' ' + trail)) continue;
         // "whether B guards (then Deliver beats Hold)" names ONE opponent option —
         // a frame; "depending on whether B chooses Col 1 or Col 2: …" names both — not a frame.
         const leadRawOpps = [...new Set(winHits.filter((h) => h.player !== player && h.index < c.own.index && h.index >= frameAt).map((h) => h.option))];
@@ -4477,7 +4691,9 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         // An explicit frame right after the verb ("… is best against Col 1")
         // beats a lead frame ("depending on whether B chooses Col 1 or Col 2: …").
         const trailExplicit = /^\s*(?:against|versus|vs\.?|when|if|facing|after|given|once)\b/i.test(trail);
-        const opps = trailExplicit && trailOpps.length ? trailOpps : (leadOpps.length ? leadOpps : trailOpps);
+        // S20c: "whether B picks X or Ys" / "regardless of …" after the claim is both ways however many labels resolve.
+        const trailBoth = !leadOpps.length && /^\s*,?\s*(?:(?:both\s+|equally\s+)?whether|regardless|no\s+matter|whatever|either\s+way)\b/i.test(trail);
+        const opps = trailBoth ? [1, 2] as (1 | 2)[] : trailExplicit && trailOpps.length ? trailOpps : (leadOpps.length ? leadOpps : trailOpps);
         // "Against Steam Tug, Diesel Tug is better for the pilot" — the frame names
         // the SAME player's other option: the sentence attaches one player's labels
         // to the other player's choice (L3 draw 40). Malformed, never shown.
@@ -4488,6 +4704,12 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
           continue;
         }
         const targets: (1 | 2)[] = opps.length ? opps : (BOTH_WAYS.test((leadIsHypothetical ? '' : lead) + trail) ? [1, 2] : []);
+        // S19a: a MIXED frame ("if B plays Advance 50% of the time") is judged at that mix, never as the option it names:
+        // q is the opponent's option-1 probability, E(o, q) this player's expected payoff from its option o there.
+        const mixAt = winHits.filter((h) => h.player !== player && opps.includes(h.option)).map((h) => {
+          const q = frameMix(clause, h); return q && (h.option === 1 ? q : [1 - q[1], 1 - q[0], q[2], 1 - q[4], 1 - q[3]] as [number, number, boolean, number, number]);
+        }).find(Boolean);
+        const E = (o: 1 | 2, q: number) => q * payoff(player, o, 1) + (1 - q) * payoff(player, o, 2);
         // Quoted comparison numbers ("gives A 5 rather than 3", "7 instead of -9",
         // "8 vs 6") must be the two payoffs of ONE opponent option (C1 draw 31
         // welded a 5 from the tie column with a 3 from the other column).
@@ -4498,15 +4720,30 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
           const num = (t: string) => Number(t);   // already normalised at the entry point
           const hi = num(numM[1]), lo = num(numM[2]);
           const cols: (1 | 2)[] = [1, 2];
-          const consistent = cols.some((opp) => Math.abs(payoff(player, c.own.option, opp) - hi) < 1e-9 && Math.abs(payoff(player, (3 - c.own.option) as 1 | 2, opp) - lo) < 1e-9);
+          // Under a mixed frame the two figures are expected payoffs: some q in the stated range must give both (to 0.01).
+          const atMix = (m: [number, number, boolean, number, number]) => [[c.own.option, hi], [3 - c.own.option, lo]].reduce<[number, number] | null>((r, [o, v]) => {
+            if (!r) return r; const a = E(o as 1 | 2, 0), b = E(o as 1 | 2, 1) - a, t = Math.max(0.01, Math.abs(v) * 0.005);
+            if (Math.abs(b) < 1e-12) return Math.abs(a - v) <= t ? r : null;
+            const q = (v - a) / b, dq = t / Math.abs(b), lo2 = Math.max(r[0], q - dq), hi2 = Math.min(r[1], q + dq); return lo2 <= hi2 ? [lo2, hi2] : null;
+          }, [m[0], m[1]]) !== null;
+          const consistent = mixAt ? atMix(mixAt) : cols.some((opp) => Math.abs(payoff(player, c.own.option, opp) - hi) < 1e-9 && Math.abs(payoff(player, (3 - c.own.option) as 1 | 2, opp) - lo) < 1e-9);
           if (!consistent) issues.push(`prose compares ${hi} with ${lo} for ${player}'s option ${c.own.option}, but no single opponent option pays those two values`);
         }
-        for (const opp of targets) {
-          const mine = payoff(player, c.own.option, opp), alt = payoff(player, (3 - c.own.option) as 1 | 2, opp);
+        if (mixAt) {
+          // Linear in q, so the ends decide: a strict claim needs a gain at both (a bound: throughout), a tie none anywhere.
+          const [q0, q1, bound] = indiffForm ? mixAt : [mixAt[3], mixAt[4], mixAt[2]], own = (c.inv && !indiffForm ? 3 - c.own.option : c.own.option) as 1 | 2, d = (q: number) => E(own, q) - E((3 - own) as 1 | 2, q);
+          const s0 = d(q0) > 1e-12 ? 1 : d(q0) < -1e-12 ? -1 : 0, s1 = d(q1) > 1e-12 ? 1 : d(q1) < -1e-12 ? -1 : 0;
+          // A denial is false where the preference it denies holds: anywhere under a bound, at every mix of a point.
+          if (indiffForm ? (bound ? s0 !== 0 || s1 !== 0 : s0 === s1 && s0 !== 0) : c.neg ? (bound ? s0 > 0 || s1 > 0 : s0 > 0 && s1 > 0) : (s0 <= 0 && s1 <= 0) || (bound && (s0 <= 0 || s1 <= 0)))
+            issues.push(`prose says ${player} ${indiffForm ? 'is indifferent' : `${c.neg ? 'does not prefer' : 'prefers'} option ${own}`} when the opponent's option 1 has probability ${q0 === q1 ? q0.toFixed(3) : `${q0.toFixed(3)} to ${q1.toFixed(3)}`}, but there option ${own} pays ${+E(own, q0).toFixed(3)}${q0 === q1 ? '' : ` to ${+E(own, q1).toFixed(3)}`} vs ${+E((3 - own) as 1 | 2, q0).toFixed(3)}${q0 === q1 ? '' : ` to ${+E((3 - own) as 1 | 2, q1).toFixed(3)}`}`);
+        }
+        for (const opp of mixAt ? [] : targets) {
+          const own = (c.inv && !indiffForm ? 3 - c.own.option : c.own.option) as 1 | 2, mine = payoff(player, own, opp), alt = payoff(player, (3 - own) as 1 | 2, opp);
           if (indiffForm) {
             if (mine !== alt) issues.push(`prose says ${player} is indifferent against opponent option ${opp}, but ${describe(player, c.own.option, opp)} — a strict preference`);
-          } else if (mine === alt) issues.push(`prose words a payoff tie as a strict preference: ${describe(player, c.own.option, opp)}`);
-          else if (mine < alt) issues.push(`prose has the direction backwards: ${describe(player, c.own.option, opp)}`);
+          } else if (c.neg) { if (mine > alt) issues.push(`prose denies a strict preference that holds: ${describe(player, own, opp)}`); }
+          else if (mine === alt) issues.push(`prose words a payoff tie as a strict preference: ${describe(player, own, opp)}`);
+          else if (mine < alt) issues.push(`prose has the direction backwards: ${describe(player, own, opp)}`);
         }
       }
     }

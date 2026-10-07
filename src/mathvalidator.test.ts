@@ -300,6 +300,279 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
     check('S18d a difference or foreign figure stands', validateProseDirections(s, L, MIX).length === 0, s);
 }
 
+// ── S19: a stated opponent MIX is judged at that mix; a best reply pairs with the frame in its own segment ────────────
+// MIX: A's E[C]-E[D] = 4y-3 (ties only at y = 0.75), B's E[Ad]-E[R] = 2-5x (ties only at x = 0.4), worked by hand from the
+// cells, not the code. Twins differ only in the figure or the option, so neither side passes by the other's accident.
+{
+  const MIX = commitPayoffs({ a11: 1, a12: 0, a21: 0, a22: 3, b11: 0, b12: 3, b21: 2, b22: 0 });
+  const L = { name: 'X', row1: 'Cooperate', row2: 'Defect', col1: 'Advance', col2: 'Retreat', description: 'A and B choose.' };
+  const dir = (s: string, g = MIX, l: typeof L = L) => validateProseDirections(s, l, g);
+  const gate = (prose: string) => {   // server.ts assess + validateReport, as shipped
+    const rep: any = { claimedEquilibria: [{ type: 'mixed', x: 0.4, y: 0.75 }], prose, suggestedScenario: L, proseClaims: { equilibriumActions: [], bestReplies: [] } };
+    const v = validateReport(rep, MIX), pc = validateProseClaims(rep.proseClaims, prose, MIX, computeAllNE(MIX), hasEquilibriumContinuum(MIX), L);
+    return [...(v.ok ? [] : v.checks.filter((c: string) => /FAIL/.test(c))), ...pc.issues, ...dir(prose)];
+  };
+  // S19a: a preference under a mixed frame. [true, false twin].
+  for (const [t, f] of [
+    ['If B plays Advance 50% of the time, A prefers Defect.', 'If B plays Advance 50% of the time, A prefers Cooperate.'],
+    ['If B plays Advance 90% of the time, A prefers Cooperate.', 'If B plays Advance 90% of the time, A prefers Defect.'],
+    ['When B plays Advance with probability 0.5, Defect is better for A.', 'When B plays Advance with probability 0.5, Cooperate is better for A.'],
+    ['When B plays Retreat 80% of the time, A prefers Defect.', 'When B plays Retreat 80% of the time, A prefers Cooperate.'],
+    ['If A plays Cooperate 20% of the time, B prefers Advance.', 'If A plays Cooperate 20% of the time, B prefers Retreat.'],
+    ['If A plays Cooperate 60% of the time, B does better with Retreat.', 'If A plays Cooperate 60% of the time, B does better with Advance.'],
+    ['If B plays Advance half the time, A prefers Defect.', 'If B plays Advance half the time, A prefers Cooperate.'],
+    ['If B plays Advance more than 80% of the time, A prefers Cooperate.', 'If B plays Advance more than 60% of the time, A prefers Cooperate.'],
+    ['If B plays Advance less than 70% of the time, A prefers Defect.', 'If B plays Advance less than 70% of the time, A prefers Cooperate.'],
+    ['If B puts 90% on Advance, A prefers Cooperate.', 'If B puts 90% on Advance, A prefers Defect.'],
+    ['If B plays Advance three-quarters of the time, A is indifferent.', 'If B plays Advance two-thirds of the time, A is indifferent.'],
+    ['Against Advance played with probability 0.9, A prefers Cooperate.', 'Against Advance played with probability 0.9, A prefers Defect.'],
+    ['A prefers Defect when B plays Advance 50% of the time.', 'A prefers Cooperate when B plays Advance 50% of the time.'],
+    ['A prefers Cooperate when B plays Advance with probability 0.9.', 'A prefers Defect when B plays Advance with probability 0.9.'],
+  ]) {
+    check('S19a a true preference under a stated mix stands', dir(t).length === 0, `${t} :: ${dir(t).join(' | ')}`);
+    check('S19a its false twin flags', dir(f).length > 0, f);
+  }
+  // S19b: the same claims through the whole production gate, incl. expected-payoff figures and the boundary (y* = 0.75).
+  for (const [s, t] of [
+    ['If B plays Advance 75% of the time, A prefers Cooperate.', false], ['If B plays Advance 76% of the time, A prefers Cooperate.', true],
+    ['If B plays Advance 74% of the time, A prefers Cooperate.', false], ['If B plays Advance 74% of the time, A prefers Defect.', true],
+    ['If B plays Advance 75% of the time, A is indifferent.', true], ['If B plays Advance 70% of the time, A is indifferent.', false],
+    ['If B plays Advance 75% of the time, Cooperate or Defect suits A equally.', true],
+    ['If B plays Advance 50% of the time, A gets 1.5 rather than 0.5 by playing Defect.', true], ['If B plays Advance 50% of the time, A gets 2 rather than 0.5 by playing Defect.', false],
+    ['If B plays Advance 50% of the time, A prefers Defect, which pays 1.5 rather than 0.5.', true], ['If B plays Advance 50% of the time, A prefers Defect, which pays 3 rather than 0.', false],
+    ['If B plays Advance 50% of the time, A gets 1.5 from Defect.', true], ['If B plays Advance 50% of the time, A gets 0.5 from Cooperate.', true],
+    ['If B plays Advance 50% of the time, A gets 1 from Cooperate.', false], ['If A plays Cooperate 50% of the time, B gets 1.5 from Retreat.', true],
+    ['If A plays Cooperate 50% of the time, B prefers Retreat.', true], ['If A plays Cooperate 50% of the time, B prefers Advance.', false],
+    ['If A plays Cooperate at least 40% of the time, B prefers Retreat.', false], ['If A plays Cooperate more than 40% of the time, B prefers Retreat.', true],
+    ['If A plays Cooperate at most 40% of the time, B prefers Advance.', false], ['If A plays Cooperate less than 40% of the time, B prefers Advance.', true],
+    ['If A plays Defect 70% of the time, B prefers Advance.', true], ['If A plays Defect 70% of the time, B prefers Retreat.', false],
+    ['If B plays Retreat a quarter of the time, A is indifferent.', true], ['If B plays Retreat a third of the time, A is indifferent.', false],
+    ['If B plays Advance with probability 3/4, A is indifferent.', true], ['If B plays Advance with probability 0.75, A prefers Cooperate.', false],
+    ['If B plays Advance about 75% of the time, A is indifferent.', true], ['If B plays Advance 75.5% of the time, A prefers Cooperate.', true],
+    ['If B plays Advance 74.5% of the time, A prefers Cooperate.', false], ['If A plays Cooperate exactly 40% of the time, B prefers Retreat.', false],
+  ] as [string, boolean][]) check(`S19b the production gate ${t ? 'passes a true' : 'flags a false'} mixed-frame claim`, (gate(s).length === 0) === t, `${s} :: ${gate(s).join(' | ')}`);
+  // S19e: every way real and plausible prose states the frame q(Advance) = 0.5, where Defect is strictly better for A.
+  for (const fr of ['If B plays Advance 1 time in 2', 'If B plays Advance one time out of two', 'If B plays Advance in half of the rounds',
+    "If B's probability of Advance is 0.5", "If B's probability of playing Advance is 50%", 'If the probability that B plays Advance is 0.5',
+    'If B plays Advance with 50% probability', 'If B plays Advance with a probability of 0.5', 'If B chooses Advance with a 50% chance',
+    'If there is a 50% chance that B plays Advance', 'If B plays Advance at a rate of 0.5', 'If B puts weight 0.5 on Advance',
+    'If B puts probability 0.5 on Advance', 'If B randomizes evenly between Advance and Retreat', 'If B mixes 50-50 between Advance and Retreat',
+    'If B splits evenly between Advance and Retreat', 'If B plays Advance and Retreat equally often', 'If B flips a fair coin between Advance and Retreat',
+    'If B plays Advance as often as Retreat', 'If B plays Advance 50 percent of the time', 'If B plays Advance fifty percent of the time',
+    'If B plays Advance 1/2 of the time', 'If B plays Advance with probability 1/2', 'If B picks Advance in 50% of games',
+    'If B plays Retreat with probability 0.5', 'If B uses Advance with odds of one in two', 'If B leans 50/50 between Advance and Retreat',
+    'Facing a B who plays Advance half the time', 'Against a 50-50 mix of Advance and Retreat', 'Against an even mix of Advance and Retreat']) {
+    check('S19e a true preference under each mix wording stands', dir(`${fr}, A prefers Defect.`).length === 0, `${fr} :: ${dir(`${fr}, A prefers Defect.`).join(' | ')}`);
+    for (const tail of ['A prefers Cooperate.', 'A is indifferent.']) check('S19e a false claim under each mix wording flags', dir(`${fr}, ${tail}`).length > 0, `${fr}, ${tail}`);
+  }
+  // S19f: bare indifference under a mix (point, denial, hedge, bound, several claims, causal and facing-who frames).
+  for (const [s, t] of [
+    ['A is indifferent when B plays Advance 75% of the time.', true], ['A is indifferent when B plays Advance half the time.', false],
+    ['If B plays Advance 1 time in 4, A is not indifferent.', true], ['If B plays Advance 3 times in 4, A is not indifferent.', false],
+    ['If B plays Advance about 75% of the time, A is not indifferent.', true],
+    ['If B plays Advance more than 60% of the time, A is indifferent.', false], ['If B plays Advance at least 75% of the time, A prefers Cooperate.', false],
+    ['If A plays Cooperate 40% of the time, B is indifferent, and if B plays Advance 75% of the time, A is indifferent.', true],
+    ['If A plays Cooperate 40% of the time, B is indifferent, and if B plays Advance 50% of the time, A is indifferent.', false],
+    ['If A plays Cooperate 50% of the time, B is indifferent, and if B plays Advance 75% of the time, A is indifferent.', false],
+    ['B is indifferent when A plays Defect three-fifths of the time.', true], ['B is indifferent when A plays Defect two-fifths of the time.', false],
+    ['B’s mix of Advance three-quarters of the time leaves A indifferent.', true], ['B playing Advance one time in two leaves A indifferent.', false],
+    ['If the probability that B plays Retreat is 0.25, A is indifferent.', true], ['If the probability that B plays Retreat is 0.5, A is indifferent.', false],
+    ['Facing a B who plays Advance three times out of four, A is indifferent.', true], ['Facing a B who plays Advance one time in four, A is indifferent.', false],
+    ['A is indifferent between Cooperate and Defect when B plays Advance with probability 3/4.', true],
+    ['A is indifferent between Cooperate and Defect when B plays Advance with probability 1/2.', false],
+    // S19i: a ", and" sub-clause's shelf word belongs to its own figure; without one it still covers the first.
+    ['If B plays Advance 50% of the time, A prefers Defect, and A is indifferent only when B plays Advance 75% of the time.', true],
+    ['If B plays Advance 75% of the time, A prefers Defect, and if B plays Advance 50% of the time, A is indifferent.', false],
+    ['When B plays Advance half of the time, A gets the same from both options, and A’s surface is a level shelf.', false],
+  ] as [string, boolean][]) check(`S19f ${t ? 'a true' : 'a false'} indifference under a mix is judged`, (dir(s).length === 0) === t, `${s} :: ${dir(s).join(' | ')}`);
+  // S19j: ranges and "or more" are bounds held throughout; a bare figure qualifying something else ("50% more effort")
+  // is no mix; "with 0.9" is; a frame across a claim-free boundary still frames; "unless/except X" names all BUT X.
+  for (const [s, t] of [
+    ['If B plays Advance with probability 0.9, A prefers Cooperate.', true], ['If B plays Advance with probability 0.9, A prefers Defect.', false],
+    ['If B plays Advance with 0.5, A prefers Defect.', true], ['If B plays Advance with 0.5, A prefers Cooperate.', false],
+    ['If B plays Advance at 0.9, A prefers Cooperate.', true], ['If B plays Advance at 0.9, A prefers Defect.', false],
+    ['If B plays Advance with 0.5 seconds of delay, A prefers Cooperate.', true], ['Against Retreat 0.1 is the margin: A prefers Defect.', true],
+    ['If B plays Retreat 0, A prefers Defect.', true], ['When B plays Retreat 0, A prefers Defect.', true],   // a bare figure is no probability
+    // The nearest frame before the claim, not the segment's first: the Advance clause states a payoff, the Retreat one frames.
+    ['If B plays Advance, A gets 1 from Cooperate, and if B plays Retreat, A prefers Defect.', true],
+    ['If B plays Advance, A gets 1 from Cooperate, and if B plays Retreat, A prefers Cooperate.', false],
+    ['If B plays Advance with 50% more effort, A prefers Cooperate.', true], ['If B plays Advance at 50% higher cost, A prefers Cooperate.', true],
+    ['If B plays Advance for 50% of the payoff, A prefers Cooperate.', true], ['If B plays Advance 50% of the time, A prefers Cooperate.', false],
+    ['If B plays Advance 50-60% of the time, A prefers Defect.', true], ['If B plays Advance 50-80% of the time, A prefers Defect.', false],
+    ['If B plays Advance between 50% and 60% of the time, A prefers Defect.', true], ['If B plays Advance between 50% and 60% of the time, A prefers Cooperate.', false],
+    ['If B plays Advance between a third and a half of the time, A prefers Defect.', true], ['If B plays Advance between a third and a half of the time, A prefers Cooperate.', false],
+    ['If B plays Advance 50% to 60% of the time, A prefers Defect.', true], ['If B plays Advance 50% to 60% of the time, A prefers Cooperate.', false],
+    ['If B plays Advance 50 to 60% of the time, A prefers Defect.', true], ['If B plays Advance 50 to 60% of the time, A prefers Cooperate.', false],
+    ['If B plays Advance from 50% to 60% of the time, A prefers Defect.', true], ['If B plays Advance from 50% to 60% of the time, A prefers Cooperate.', false],
+    ['If B plays Advance between 50% and roughly 60% of the time, A prefers Defect.', true], ['If B plays Advance 50 to 60 percent of the time, A prefers Defect.', true],
+    ['If B plays Advance 5-6 times in 10, A prefers Defect.', true], ['If B plays Advance 5-9 times in 10, A prefers Defect.', false],
+    ['If B plays Advance between 70% and 80% of the time, A is not indifferent.', true], ['If B plays Advance 70-80% of the time, A is indifferent.', false],
+    ['If B plays Advance 80% or more of the time, A prefers Cooperate.', true], ['If B plays Advance 75% or more of the time, A is indifferent.', false],
+    ['If B plays Advance 70% or less of the time, A prefers Defect.', true], ['If B plays Advance 70% or less of the time, A prefers Cooperate.', false],
+    ['If B plays Advance 75% of the time, A prefers Cooperate or Defect.', true], ['If B plays Advance at least 75% of the time, A prefers Cooperate or Defect.', false],
+    ['Against Retreat, the payoffs are clear; A prefers Defect.', true], ['Against Retreat, the payoffs are clear; A prefers Cooperate.', false],
+    ['Against Retreat: A prefers Defect.', true], ['Against Retreat: A prefers Cooperate.', false],
+    ['A is never indifferent unless B plays Advance 75% of the time.', true], ['A is not indifferent except when B plays Advance 75% of the time.', true],
+    ['Except when B plays Advance 75% of the time, A is not indifferent.', true], ['Unless B plays Advance, A prefers Defect.', true],
+    ['Except against Advance, A prefers Defect.', true], ['A prefers Defect unless B plays Advance.', true], ['Against Advance, A prefers Defect.', false],
+    // A range crossing y* fails though its high end alone holds; "8-9 times in 10" is 0.8-0.9, not 0.08-0.9; a hedged
+    // high end is still a range end (read as "some mix", the false twin would pass); "with 0 in reserve" is no probability.
+    ['If B plays Advance 70-80% of the time, A prefers Cooperate.', false], ['If B plays Advance between 70% and 80% of the time, A prefers Cooperate.', false],
+    ['If B plays Advance 8-9 times in 10, A prefers Cooperate.', true], ['If B plays Advance between 50% and roughly 80% of the time, A prefers Defect.', false],
+    ['If B plays Retreat with 0 in reserve, A prefers Defect.', true],
+    // a change narrative ("from 50% … to 90%") whose far end the range form misses is no claim at its near end
+    ['If B shifts Advance from 50% of the time to 90%, A comes to prefer Cooperate.', true], ['If B raises Advance from 50% of the time to nearly always, A prefers Cooperate.', true],
+    // A hedged bound is read at its narrower end (0.77 here): the tie at 0.75 is not inside it.
+    ['If B plays Advance at least about 75% of the time, A prefers Cooperate.', true], ['If B plays Advance at least about 70% of the time, A prefers Cooperate.', false],
+  ] as [string, boolean][]) check(`S19j ${t ? 'a true' : 'a false'} range/bound/complement frame is judged`, (dir(s).length === 0) === t, `${s} :: ${dir(s).join(' | ')}`);
+  // A second indifference claim does not reuse the first claim's trailing frame (a pure choice is not 75%).
+  for (const s of ['A is indifferent when B plays Advance 75% of the time, and when B plays a pure option, A is not indifferent.',
+    'A is indifferent when B plays Advance 75% of the time, and at any pure choice by B, A is not indifferent.'])
+    check('S19f a second indifference claim takes no frame from the first', dir(s).length === 0, `${s} :: ${dir(s).join(' | ')}`);
+  // A bare fact before an indifference claim is no frame for it: here B's pure equilibrium, then A's mixed one (BoS, 3 NE).
+  const BOS = commitPayoffs({ a11: 2, a12: 0, a21: 0, a22: 1, b11: 1, b12: 0, b21: 0, b22: 2 }), LBOS = { name: 'X', row1: 'Opera', row2: 'Ballet', col1: 'Stadium', col2: 'Park', description: '' };
+  for (const s of ['In one equilibrium B plays Stadium with probability 1, and in the mixed one A is indifferent.', 'B plays Stadium with probability 1 in one equilibrium, and A is indifferent in the mixed one.'])
+    check('S19f a bare fact before an indifference claim does not frame it', dir(s, BOS, LBOS).length === 0, `${s} :: ${dir(s, BOS, LBOS).join(' | ')}`);
+  // S19h: real report sentences (verbatim) whose best reply pairs with the frame in its OWN segment. Each true one was
+  // flagged by first-frame pairing or by a frame from another segment; each false one is wrong in the matrix shown.
+  const G = (a11: number, a12: number, a21: number, a22: number, b11: number, b12: number, b21: number, b22: number) => commitPayoffs({ a11, a12, a21, a22, b11, b12, b21, b22 });
+  const Lb = (row1: string, row2: string, col1: string, col2: string) => ({ name: 'X', row1, row2, col1, col2, description: '' });
+  const SH: [string, boolean, GamePayoffs, typeof L][] = [
+    ["Factory A is trading off Inspect against Waive, but Inspect is better whether B Inspects or Waives; against A's Inspect, B does better with Waive.", true, G(2, 4, -8, -8, -4, 6, -2, -9), Lb('Inspect', 'Waive', 'Inspect', 'Waive')],
+    ['Against Open, B does better by choosing Close, and against Close, B does better by choosing Open; against B’s Open, A does better by choosing Close, while against B’s Close, A does better by choosing Close.', true, G(-8, -9, -3, -9, -8, -6, 6, -8), Lb('Open', 'Close', 'Open', 'Close')],
+    ['A, however, does better by launching early against Partner, while against Compete, A does better with Launch late.', true, G(6, 1, -9, 4, -1, -2, 8, 6), Lb('Launch early', 'Launch late', 'Partner', 'Compete')],
+    ['Against a Full rollout, B does better with Clear than Review, while against Pilot, B does better with Review.', true, G(-4, -3, -4, -3, -4, -9, -3, 5), Lb('Pilot', 'Full rollout', 'Review', 'Clear')],
+    ['If B instead runs a Counter-ad, A prefers an Early launch; when B chooses Ignore, however, A gets -9 from either launch date and is indifferent.', true, G(8, -9, 1, -9, -4, 9, -6, 9), Lb('Early launch', 'Late launch', 'Counter-ad', 'Ignore')],
+    ['If A chooses Riverside, B’s choice between Morning and Evening is tied; if A chooses Upland, B does better with Morning, while if A chooses Morning, B does better with Morning too.', true, G(4, -4, 4, 2, -8, -8, 1, -3), Lb('Riverside', 'Upland', 'Morning', 'Evening')],
+    ['Against Express, B does better with Early Shift, but once A uses Economy, B can use either shift and still receive 0.', true, G(-8, 0, -2, 8, -6, -7, 0, 0), Lb('Express', 'Economy', 'Early Shift', 'Late Shift')],
+    ['Firm A is indifferent between Inspect and Ignore against B’s Inspect, but against B’s Ignore A does better with Inspect.', true, G(2, 4, 2, -2, -9, -9, 6, -2), Lb('Inspect', 'Ignore', 'Inspect', 'Ignore')],
+    ['Firm A is indifferent between Inspect and Ignore against B’s Inspect, but against B’s Ignore A does better with Ignore.', false, G(2, 4, 2, -2, -9, -9, 6, -2), Lb('Inspect', 'Ignore', 'Inspect', 'Ignore')],
+    ['Against A’s Plaza, B prefers the Station, which pays 9 rather than 3 at the Plaza.', false, G(-2, 4, -2, -7, 9, 9, 3, 8), Lb('Plaza', 'Station', 'Plaza', 'Station')],   // 9 vs 9: a tie
+    ['Against A’s Station, B prefers the Station.', true, G(-2, 4, -2, -7, 9, 9, 3, 8), Lb('Plaza', 'Station', 'Plaza', 'Station')],
+    ['Against A’s Station, B prefers the Plaza.', false, G(-2, 4, -2, -7, 9, 9, 3, 8), Lb('Plaza', 'Station', 'Plaza', 'Station')],
+    ['Against A’s Economy Plan, B prefers Premium Plan, while against A’s Premium Plan, B prefers Economy Plan, so each firm’s preferred plan changes with its rival’s choice.', false, G(-3, -4, -3, 6, 3, -8, 5, 9), Lb('Premium Plan', 'Economy Plan', 'Premium Plan', 'Economy Plan')],
+    ['Against A’s Economy Plan, B prefers Economy Plan, while against A’s Premium Plan, B prefers Premium Plan.', true, G(-3, -4, -3, 6, 3, -8, 5, 9), Lb('Premium Plan', 'Economy Plan', 'Premium Plan', 'Economy Plan')],
+    ['Facing the Rival app, A prefers the Closed suite, which pays 9 rather than 2 for the Open platform.', true, G(9, 2, 0, 9, 0, 2, -2, 9), Lb('Open platform', 'Closed suite', 'Build plugin', 'Rival app')],
+    ['Against Pilot, Leo prefers Back, which gives her 2 rather than 1, while against Full Launch he prefers Wait, receiving -6 rather than -9.', true, G(8, 6, 8, -8, 2, 1, -9, -6), Lb('Pilot', 'Full Launch', 'Back', 'Wait')],
+    // A frame word in the claim's own segment blocks the earlier frame (verbatim golds; the earlier one pays the other way).
+    ['Against Open, A does better with Restriction, while against Restriction A does better with Open; against Open B does better with Restriction, while against Restriction B does better with Open.', true, G(0, 0, 2, -7, 5, 9, 9, -8), Lb('Open', 'Restricted', 'Open', 'Restricted')],
+    // A claim-free "while" segment borrows the earlier frame: against A's Bold, B's two campaigns both pay -4 (only this catches it).
+    ['Against the Bold campaign, A is indifferent between its campaigns, while B does better by choosing the Bold campaign; against the Conservative campaign, A does better by choosing the Conservative campaign, while B does better by choosing the Conservative campaign.', false, G(-8, 8, -8, 9, -4, -4, 0, 7), Lb('Bold campaign', 'Conservative campaign', 'Bold campaign', 'Conservative campaign')],
+  ];
+  for (const [s, t, g, l] of SH) check(`S19h ${t ? 'a true' : 'a false'} best reply is judged in its own segment`, (dir(s, g, l).length === 0) === t, `${s} :: ${dir(s, g, l).join(' | ')}`);
+  // The frame capture runs on into the claim ("against A’s Full inspection B prefers Open doors"): cut at the subject.
+  const DR = G(4, -7, 4, -7, -8, 3, 4, -4), LDR = Lb('Full inspection', 'Light inspection', 'Open doors', 'Close doors');
+  for (const [s, t] of [['So against A’s Full inspection B prefers Open doors.', false], ['So against A’s Full inspection B prefers Close doors.', true]] as [string, boolean][])
+    check(`S19h a run-on frame still ${t ? 'passes a true' : 'catches a false'} best reply`, t ? dir(s, DR, LDR).length === 0 : dir(s, DR, LDR).some((i) => /best reply/.test(i)), `${s} :: ${dir(s, DR, LDR).join(' | ')}`);
+
+  // S20a: every qualifier on a stated mix or an equilibrium figure. Bounds cross y* = 0.75 (x* = 0.4) on purpose: the
+  // figure alone makes each false twin true, so only the bound's direction flags it; a hedged 75% admits the tie.
+  const Q: [string, boolean][] = [];
+  const GE = ['upwards of', 'upward of', 'no less than', 'not less than', 'a minimum of', 'in excess of', 'well over', 'a little over', 'slightly more than', 'just over', 'well above', 'north of', 'no fewer than', 'greater than', 'beyond', 'at least about', 'over'];
+  const LE = ['up to', 'no more than', 'not more than', 'a maximum of', 'just under', 'a little under', 'slightly less than', 'well under', 'well below', 'not over', 'below', 'under', 'south of', 'only up to', 'no higher than'];
+  const HD = ['some', 'circa', 'approx.', 'close to', 'near', 'almost', 'about', 'something like', 'on the order of', 'in the region of', 'an estimated', 'a rough', 'just about', 'more or less', 'barely', 'an approximate', 'perhaps', 'on average'];
+  for (const q of GE) Q.push([`If B plays Advance ${q} 70% of the time, A prefers Defect.`, false], [`If B plays Advance ${q} 80% of the time, A prefers Cooperate.`, true]);
+  for (const q of LE) Q.push([`If B plays Advance ${q} 80% of the time, A prefers Cooperate.`, false], [`If B plays Advance ${q} 70% of the time, A prefers Defect.`, true]);
+  for (const q of HD) Q.push([`If B plays Advance ${q} 75% of the time, A is not indifferent.`, true], [`If B plays Advance ${q} 50% of the time, A prefers Cooperate.`, false]);
+  for (const [suf, ge] of [['or more', 1], ['or less', 0], ['or above', 1], ['or below', 0], ['and above', 1], ['and below', 0], ['or higher', 1], ['or lower', 0], ['or more often', 1], ['or less often', 0], ['and up', 1], ['or fewer', 0], ['or greater', 1], ['and over', 1], ['and under', 0], ['plus', 1]] as [string, number][])
+    for (const fig of [(f: number) => `${f}% ${suf} of the time`, (f: number) => `${f}% of the time ${suf}`])
+      Q.push([`If B plays Advance ${fig(ge ? 70 : 80)}, A prefers ${ge ? 'Defect' : 'Cooperate'}.`, false], [`If B plays Advance ${fig(ge ? 80 : 70)}, A prefers ${ge ? 'Cooperate' : 'Defect'}.`, true]);
+  for (const h of ['or so', 'give or take', 'or thereabouts', 'more or less', 'ish']) Q.push([`If B plays Advance 75% ${h} of the time, A is not indifferent.`, true], [`If B plays Advance 50% ${h} of the time, A prefers Cooperate.`, false]);
+  const SHAPES = [(q: string, f: number) => `If B puts ${q} ${f}% on Advance`, (q: string, f: number) => `If there is ${q} a ${f}% chance that B plays Advance`,
+    (q: string, f: number) => `If the probability that B plays Advance is ${q} ${f}%`, (q: string, f: number) => `If B plays Advance with probability ${q} 0.${f}`,
+    (q: string, f: number) => `If B plays Advance ${q} ${f}% of the time`, (q: string, f: number) => `If B's weight on Advance is ${q} ${f}%`];
+  for (const sh of SHAPES) {
+    for (const q of ['upwards of', 'a minimum of', 'no less than']) Q.push([`${sh(q, 70)}, A prefers Defect.`, false], [`${sh(q, 80)}, A prefers Cooperate.`, true], [`${sh(q, 75)}, A is indifferent.`, false]);
+    for (const q of ['a maximum of', 'no more than', 'up to']) Q.push([`${sh(q, 80)}, A prefers Cooperate.`, false], [`${sh(q, 70)}, A prefers Defect.`, true], [`${sh(q, 75)}, A is indifferent.`, false]);
+    for (const q of ['some', 'circa', 'roughly']) Q.push([`${sh(q, 75)}, A is not indifferent.`, true], [`${sh(q, 50)}, A prefers Cooperate.`, false], [`${sh(q, 50)}, A prefers Defect.`, true]);
+  }
+  // A loose figure is some mix, not pure Advance (where Defect loses 0 vs 1); where Cooperate dominates, no mix saves it.
+  Q.push(['If B plays Advance as little as 70% of the time, A prefers Defect.', true]);
+  const DOM = G(1, 3, 0, 0, 0, 3, 2, 0), loose = 'If B plays Advance as little as 70% of the time, A prefers Defect.';
+  check('S20a a loose figure still flags a claim false at every mix', dir(loose, DOM).length > 0, loose);
+  const EGE = ['upwards of', 'no less than', 'not less than', 'a minimum of', 'in excess of', 'well over', 'just over', 'north of', 'no fewer than', 'greater than', 'over', 'above', 'at least', 'more than'];
+  const ELE = ['up to', 'no more than', 'a maximum of', 'just under', 'a little under', 'slightly less than', 'well under', 'well below', 'not over', 'below', 'under', 'south of', 'no higher than', 'at most', 'less than'];
+  const eq = (q: string) => `In equilibrium A plays Cooperate ${q}.`;
+  for (const q of EGE) Q.push([eq(`${q} 50% of the time`), false], [eq(`${q} 30% of the time`), true]);
+  for (const q of ELE) Q.push([eq(`${q} 30% of the time`), false], [eq(`${q} 50% of the time`), true]);
+  for (const [sf, ge] of [['or more', 1], ['or above', 1], ['or higher', 1], ['and above', 1], ['and up', 1], ['or greater', 1], ['and over', 1], ['plus', 1], ['or less', 0], ['or below', 0], ['or lower', 0], ['or fewer', 0], ['and below', 0], ['and under', 0]] as [string, number][])
+    for (const fig of [(f: number) => `${f}% ${sf} of the time`, (f: number) => `${f}% of the time ${sf}`]) Q.push([eq(fig(ge ? 50 : 30)), false], [eq(fig(ge ? 30 : 50)), true]);
+  for (const q of ['some', 'circa', 'close to', 'near', 'almost', 'about', 'something like', 'on the order of', 'in the region of', 'just about', 'more or less']) Q.push([eq(`${q} 40% of the time`), true], [eq(`${q} 60% of the time`), false]);
+  for (const q of ['or so', 'give or take', 'or thereabouts', 'more or less']) Q.push([eq(`40% ${q} of the time`), true], [eq(`60% ${q} of the time`), false]);
+  Q.push([eq('at least about 42% of the time'), true], [eq('at most roughly 38% of the time'), true], [eq('at least about 50% of the time'), false], [eq('at most roughly 30% of the time'), false]);
+  for (const [s, t] of Q) check(`S20a ${t ? 'a true' : 'a false'} qualified figure is judged`, (dir(s).length === 0) === t, `${s} :: ${dir(s).join(' | ')}`);
+
+  // S20b: comparative and denied preferences on MIX (vs Advance, A: Cooperate 1 > Defect 0; vs Retreat, Defect 3 > 0).
+  // Each pair differs only in the option, so the polarity (inv: names the worse one; neg: denies) alone decides it.
+  const TIE = G(1, 0, 1, 3, 0, 3, 2, 0);   // MIX with a21 = 1: A ties against Advance
+  for (const [s, t, g] of [
+    ['Against Advance, A earns more from Cooperate.', true], ['Against Advance, A earns more from Defect.', false],
+    ['Against Retreat, Defect gives A a higher payoff.', true], ['Against Retreat, Cooperate gives A a higher payoff.', false],
+    ['Against Advance, A does worse with Defect.', true], ['Against Advance, A does worse with Cooperate.', false],
+    ['Against Retreat, Cooperate pays A less.', true], ['Against Retreat, Defect pays A less.', false],
+    ['Against Advance, Defect is worse for A.', true], ['Against Advance, Cooperate is worse for A.', false],
+    ['Against Retreat, Defect is more profitable for A.', true], ['Against Retreat, Cooperate is more profitable for A.', false],
+    ['Against Retreat, Defect is less costly for A.', true], ['Against Retreat, Cooperate is less costly for A.', false],
+    ['Against Advance, A does not prefer Defect.', true], ['Against Advance, A does not prefer Cooperate.', false],
+    ['Against Retreat, Cooperate is not better for A.', true], ['Against Retreat, Defect is not better for A.', false],
+    ['Against Advance, A never favors Defect.', true], ['Against Advance, A never favors Cooperate.', false],
+    ['Against Retreat, A has no reason to choose Cooperate.', true], ['Against Retreat, A has no reason to choose Defect.', false],
+    ['Against Advance, A gains nothing by switching to Defect.', true], ['Against Advance, A gains nothing by switching to Cooperate.', false],
+    ['Against Advance, A does not lose by switching to Cooperate.', true], ['Against Retreat, A does not lose by switching to Cooperate.', false],
+    ['Against Advance, neither Cooperate nor Defect is better for A.', true, TIE], ['Against Advance, neither Cooperate nor Defect is better for A.', false],
+    // under a stated mix, and a bound held throughout
+    ['If B plays Advance 90% of the time, A does worse with Defect.', true], ['If B plays Advance 90% of the time, A does worse with Cooperate.', false],
+    ['If B plays Advance 50% of the time, A does not prefer Cooperate.', true], ['If B plays Advance 50% of the time, A does not prefer Defect.', false],
+    ['If B plays Advance at least 80% of the time, A does not prefer Defect.', true], ['If B plays Advance at least 70% of the time, A does not prefer Cooperate.', false],
+    // "gives B …" from A's option names B's payoff: no claim about A (read as A's, the first is false: 0 < 1)
+    ['Against Advance, Defect gives B a better result.', true], ['Against Advance, Defect gives A a better result.', false],
+    // the elided verb keeps its polarity; a contrast after a denial may flip it (not judged); a consequence is no ellipsis
+    ['Against Retreat, A does worse with Cooperate, and with Defect against Advance.', true], ['Against Retreat, A does worse with Cooperate, and with Cooperate against Advance.', false],
+    ['A does not favor Cooperate against Retreat, and Defect against Advance.', true], ['A does not favor Cooperate against Retreat, and Cooperate against Advance.', false],
+    ['Against Retreat, A does not favor Cooperate, but Defect against Advance.', true], ['Against Retreat, A does not favor Cooperate, but Cooperate against Advance.', true],
+    ['Against Advance A prefers Cooperate, but Defect against Retreat.', true], ['Against Advance A prefers Cooperate, but Cooperate against Retreat.', false],
+  ] as [string, boolean, GamePayoffs?][]) check(`S20b ${t ? 'a true' : 'a false'} comparative or denied preference is judged`, (dir(s, g ?? MIX).length === 0) === t, `${s} :: ${dir(s, g ?? MIX).join(' | ')}`);
+  // A consequence naming a (false) equilibrium is judged as one, never as an elliptical preference for its option.
+  const EQI = /as an equilibrium/;
+  for (const [s, t] of [['A prefers Cooperate against Advance, so the only equilibrium pairs Advance with Defect.', true], ['A prefers Defect against Advance, so the only equilibrium pairs Advance with Defect.', false]] as [string, boolean][])
+    check(`S20b a consequence is no ellipsis (${t ? 'only' : 'not only'} the equilibrium issue)`, dir(s).some((i) => EQI.test(i)) && dir(s).every((i) => EQI.test(i)) === t, `${s} :: ${dir(s).join(' | ')}`);
+
+  // S20b/c: real report sentences (verbatim; a twin changes one option). Each was misjudged before; payoffs worked by hand.
+  const RR: [string, boolean, GamePayoffs, typeof L][] = [
+    // B ties -7/-7 at Audit, so "prefers Waive Review to Audit" is false where the courier takes Express Route (reach-back frame)
+    ['The courier does not favor Economy Route against Audit, but when the courier takes Express Route, the regulator prefers Waive Review to Audit; with Audit, the courier does not favor Express Route.', false, G(-1, -4, -1, -7, -7, -7, -9, 5), Lb('Express Route', 'Economy Route', 'Audit', 'Waive Review')],
+    ['The courier does not favor Economy Route against Audit, but when the courier takes Economy Route, the regulator prefers Waive Review to Audit; with Audit, the courier does not favor Express Route.', true, G(-1, -4, -1, -7, -7, -7, -9, 5), Lb('Express Route', 'Economy Route', 'Audit', 'Waive Review')],
+    ['The coordinator has no reason to favor Full Deployment: Standard Deployment gives it a higher payoff whether the dispatch uses Central Dispatch or Decentralized Dispatch.', true, G(-7, -4, 9, 8, 1, -9, -7, -5), Lb('Full Deployment', 'Standard Deployment', 'Central Dispatch', 'Decentralized Dispatch')],
+    ['With the officer’s grant size fixed, the researcher does better with the Full Test than the Quick Test against the Large Grant, but with the Large Grant fixed, the researcher does better with the Quick Test.', false, G(-2, -1, -2, 7, 2, 2, 4, 6), Lb('Quick Test', 'Full Test', 'Basic Grant', 'Large Grant')],
+    ['The regulator prefers Audit whether the manager chooses Inspect or Waive, while the manager gains nothing by switching to Inspect against Audit, so the two pure equilibria pair Audit with Waive and Audit with Inspect.', true, G(-2, 4, -2, -6, 7, 2, -7, -9), Lb('Inspect', 'Waive', 'Audit', 'Waive')],
+    ['Once the manager chooses Automated, Skip gives the manager a better operational result than Inspect, so Automated with Skip is one equilibrium, while Automated with Inspect is another.', false, G(-1, -8, 5, -5, -2, 0, -6, -6), Lb('Manual', 'Automated', 'Inspect', 'Skip')],
+    ['Courier B prefers West to East whether A chooses North or South, while courier A receives a higher score from South than from North when B chooses West.', false, G(-1, 6, 7, 6, 1, 3, 7, 9), Lb('North', 'South', 'East', 'West')],
+    ['When A uses the Lean Fleet, B does not lose by switching to the Late Shift, so both equilibria pair A with B on the Early Shift.', false, G(6, -4, 6, 4, -6, -6, 5, -5), Lb('Standard Fleet', 'Lean Fleet', 'Early Shift', 'Late Shift')],
+    // S20c: "South" alone is the South route (a12 = a22 = -7 is a tie); against North, Flexible pays 7 vs -6
+    ['Once B chooses South, A does better with the Flexible plan.', false, G(-6, -7, 7, -7, -7, -5, -8, -3), Lb('Standard plan', 'Flexible plan', 'North route', 'South route')],
+    ['Once B chooses North, A does better with the Flexible plan.', true, G(-6, -7, 7, -7, -7, -5, -8, -3), Lb('Standard plan', 'Flexible plan', 'North route', 'South route')],
+    // the tie's own conjunct frames it: A ties -2/-2 at Closed and strictly prefers Deep (7 > 0) at Open
+    ['A does better with Deep against Open and ties between its audits against Closed.', true, G(0, -2, 7, -2, 2, 2, -6, -6), Lb('Quick audit', 'Deep audit', 'Open review', 'Closed review')],
+    ['A does better with Deep against Closed and ties between its audits against Open.', false, G(0, -2, 7, -2, 2, 2, -6, -6), Lb('Quick audit', 'Deep audit', 'Open review', 'Closed review')],
+    // "whether Orion launches Bold or Cautiously" is both ways though only Bold resolves: Late ties -8/-8 against Cautious
+    ['Nova does better with a Late response whether Orion launches Bold or Cautiously.', false, G(7, -6, -2, 4, -9, -5, -8, -8), Lb('Bold launch', 'Cautious launch', 'Early response', 'Late response')],
+    ['Nova does better with a Late response whether Orion launches Bold or Cautiously.', true, G(7, -6, -2, 4, -9, -5, -8, -6), Lb('Bold launch', 'Cautious launch', 'Early response', 'Late response')],
+    ['Nova does better with a Late response whether Orion launches Bold or not.', false, G(7, -6, -2, 4, -9, -5, -8, -8), Lb('Bold launch', 'Cautious launch', 'Early response', 'Late response')],
+    // the equilibrium list after "so" is no elliptical claim (read as one, "Rush with Bold" says B prefers Bold at Rush: 7 = 7)
+    ['For the studio, Rush and Quiet are equally attractive when the publisher chooses Bold, while Quiet is better against Cautious; for the publisher, Bold is better against Quiet, so the two pure equilibria are Quiet with Bold and Rush with Bold.', true, G(5, 4, 5, 5, 7, 7, 2, -8), Lb('Rush', 'Quiet', 'Bold', 'Cautious')],
+  ];
+  for (const [s, t, g, l] of RR) check(`S20 ${t ? 'a true' : 'a false'} real report sentence is judged`, (dir(s, g, l).length === 0) === t, `${s} :: ${dir(s, g, l).join(' | ')}`);
+  // 7901: B's -7 > -8 at Detour is true; Detour–Split Hub is no equilibrium (A: -9 vs 2), flagged as that and only that.
+  const s7901 = 'When A takes the Detour, B does better with Central Hub, so the Detour–Split Hub equilibrium is pinned to one plan rather than balanced.', d7901 = dir(s7901, G(-2, 2, -2, -9, 3, 3, -7, -8), Lb('Direct Route', 'Detour', 'Central Hub', 'Split Hub'));
+  check('S20 a consequence is judged as an equilibrium only', d7901.length > 0 && d7901.every((i) => EQI.test(i)), `${s7901} :: ${d7901.join(' | ')}`);
+  // The head alias is capitalised only ("heads south" is a direction) and off when the head occurs in another label
+  // ("Stay South"): read as the South route, each of these would claim a -7/-7 tie as a preference.
+  const RT = G(-6, -7, 7, -7, -7, -5, -8, -3);
+  for (const [s, l] of [['Once B heads south, A does better with the Flexible plan.', Lb('Standard plan', 'Flexible plan', 'North route', 'South route')],
+    ['Against Go North, A does better with South.', Lb('North route', 'South route', 'Stay South', 'Go North')]] as [string, typeof L][])
+    check('S20c a head word that is a direction or another label is no alias', dir(s, RT, l).length === 0, `${s} :: ${dir(s, RT, l).join(' | ')}`);
+}
+
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────
 const rnd = seededRandom(0x5715), rnd6 = seededRandom(0x5716), rnd7 = seededRandom(0x5717);   // F6/F7 draw apart: earlier fuzz stays as measured
 const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
