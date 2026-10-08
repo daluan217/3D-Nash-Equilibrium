@@ -2294,3 +2294,148 @@ F	Defect isn't more costly for A against Advance.
 T	Cooperate isn't more costly for A against Advance.
 T	Cooperate is not any more profitable for A against Retreat.
 F	Defect is not any more profitable for A against Retreat.
+# S26b: an unframed strict claim ("Cooperate is better for A", "B prefers Advance", "Defect is not better for A") reads
+# existentially: false only if strictly false against EVERY opponent option, hence at every mix. Each DOM F names the strictly
+# dominated option (or denies the dominant one) and its T twin swaps that one label; on MIX every row is T (each option wins
+# one column), so no F passes by an unread frame. HEAD (45d7d8e) missed 17 of these 44.
+@ DOM
+F	Cooperate is better for A.
+T	Defect is better for A.
+F	Cooperate is not worse for A.
+T	Cooperate is worse for A.
+F	Cooperate is never worse for A.
+T	Defect is never worse for A.
+F	Defect is not better for A.
+T	Cooperate is not better for A.
+F	A prefers Cooperate.
+T	A prefers Defect.
+F	A does not prefer Defect.
+T	A does not prefer Cooperate.
+F	A does better with Cooperate.
+T	A does better with Defect.
+F	Cooperate pays A more.
+T	Defect pays A more.
+F	Defect is worse for A.
+T	Defect is not worse for A.
+F	B prefers Advance.
+T	B prefers Retreat.
+F	Advance is better for B.
+T	Retreat is better for B.
+F	Retreat is not better for B.
+T	Advance is not better for B.
+F	Advance is the better option for B.
+T	Retreat is the better option for B.
+F	B does better with Advance.
+T	B does better with Retreat.
+F	When B mixes, Cooperate is better for A.
+T	When B mixes, Defect is better for A.
+F	Cooperate is better for A, and Retreat is better for B.
+T	Defect is better for A, and Retreat is better for B.
+F	Defect is better for A, and Advance is better for B.
+@ MIX
+T	Cooperate is better for A.
+T	Defect is better for A.
+T	A prefers Cooperate.
+T	A prefers Defect.
+T	Cooperate is not better for A.
+T	Defect is not better for A.
+T	B prefers Advance.
+T	B prefers Retreat.
+T	Advance is not better for B.
+T	Retreat is not better for B.
+T	When B mixes, Cooperate is better for A.
+# S26j: labelless indifference ("A is indifferent between its two options", "whatever B does", "whether B plays X or Y"),
+# a denied existence ("no flat shelf where A is indifferent", real xl_luna#81, b213#121) and mix-induced indifference (some mix
+# ties the subject's options: false when one strictly beats the other in both columns). @ G 2,5,2,5,… ties A in both columns;
+# @ G 1,0,1,3,… ties A against Advance only. HEAD (45d7d8e) missed 22 of these 50.
+@ DOM
+F	A is indifferent between its two options.
+F	A is indifferent between its options.
+F	A is indifferent between the two choices.
+F	Player A is indifferent.
+F	A is indifferent whatever B does.
+F	A is indifferent whether B plays Advance or Retreat.
+F	B is indifferent between its two options.
+F	B remains indifferent between its moves.
+T	A is not indifferent between its two options.
+T	B is not indifferent.
+T	A is never indifferent.
+@ MIX
+T	A is indifferent between its two options.
+T	B is indifferent between its options.
+T	A is not indifferent between its two options.
+F	A is indifferent whatever B does.
+F	A is indifferent between its options whether B plays Advance or Retreat.
+@ G 2,5,2,5,0,3,2,0
+T	A is indifferent between its two options.
+T	A is indifferent whatever B does.
+T	A is indifferent between its options whether B plays Advance or Retreat.
+F	A is not indifferent between its two options.
+F	A is never indifferent.
+T	B is not indifferent between its two options.
+@ G 1,0,1,3,0,3,2,0
+T	A is indifferent between its two options.
+F	A is indifferent whatever B does.
+T	A is not indifferent between its two options.
+@ DOM
+F	A is indifferent between Cooperate and Defect whether B plays Advance or Retreat.
+T	A is not indifferent whether B plays Advance or Retreat.
+F	A is indifferent whether B plays Advance or not.
+@ G 2,5,2,5,0,3,2,0
+T	A is indifferent whether B plays Advance or Retreat.
+F	A is not indifferent whether B plays Advance or Retreat.
+@ G 1,0,1,3,0,3,2,0
+F	A is indifferent whether B plays Advance or Retreat.
+T	A is indifferent when B plays Advance.
+F	A is indifferent when B plays Retreat.
+@ DOM
+T	A’s payoff surface is tilted and the choices interact, so there is no flat shelf where A is indifferent.
+T	The strategic interaction warps A's payoff surface, but there is no flat shelf where A becomes indifferent.
+T	There is no point at which A is indifferent.
+T	A's surface has no level shelf on which A is indifferent between its options.
+F	A’s payoff surface is tilted, so there is a flat shelf where A is indifferent.
+F	The interaction leaves a flat shelf where A becomes indifferent between its options.
+@ G 2,5,2,5,0,3,2,0
+F	There is no flat shelf where A is indifferent between its options.
+T	There is a flat shelf where A is indifferent between its options.
+@ DOM
+F	B's mix makes A indifferent between Cooperate and Defect.
+F	B mixes so that A is indifferent.
+T	No mix by B makes A indifferent.
+T	B's mix cannot make A indifferent.
+T	If A were indifferent, B's mix would not matter.
+F	B mixes half and half, which leaves B's rival A indifferent.
+@ MIX
+T	The interaction leaves a flat shelf where A becomes indifferent between its options.
+T	B's mix makes A indifferent between Cooperate and Defect.
+T	B mixes so that A is indifferent.
+# S27a: a claim stating its own mix ("A does not play Defect 42% of the time", verbatim F6 fuzz text) is the probability
+# judges', never S26b's unframed preference; and "A should play X 40% of the time" is a claim, not a "Should B play…" frame.
+# Defect strictly dominates for A, Retreat answers it: the only equilibrium is pure (Defect, Retreat), so no figure here sits
+# at a cut. 45d7d8e+S26j flagged the first three T rows; main and 45d7d8e missed the three "should" F rows.
+@ G 5,-8,8,1,-6,-9,-8,-5
+T	A does not play Defect 42% of the time.
+T	A does not play Cooperate 42% of the time.
+T	A never plays Cooperate with probability 0.42.
+F	A does not play Defect 100% of the time.
+F	A does not play Defect.
+F	A should play Cooperate with probability 0.4.
+F	A should play Defect 40% of the time.
+F	A should then play Cooperate 40% of the time.
+T	A should play Defect with probability 1.
+T	B should play Retreat with probability 1.
+T	Should Ben play Advance 40% of the time, A prefers Defect.
+T	Should the officer play Advance 40% of the time, A prefers Defect.
+T	Should B play Advance 40% of the time, A prefers Defect.
+F	Should B play Advance 40% of the time, A prefers Cooperate.
+T	A does not play Defect in 42% of rounds.
+T	A does not play Defect with probability 0.42.
+T	A does not play Defect 42 percent of rounds.
+T	A does not play Defect any of the time.
+T	A does not play Defect with certainty.
+T	A does not play Defect with any frequency.
+T	A does not play Defect at high odds.
+T	A does not play Defect half the time.
+T	A does not play Defect a third of rounds.
+T	A does not play Defect a quarter of rounds.
+T	A does not play Defect a fifth of rounds.

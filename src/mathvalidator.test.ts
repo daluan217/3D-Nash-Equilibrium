@@ -786,10 +786,14 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   // S24: +235 twins (complement frames for every judge, avoidance-verb own claims, ", since it pays N rather than M").
   // S25: +1090 twins (complement parity, exceptive heads, asides, appositive heads, "X, not Y,", dominance nouns, hedges/modals).
   // S26a: +143 twins (degree/hedge words before a comparative, denying degree words, inverted "Never is X better", hedge asides).
+  // S26b: +44 twins (an unframed strict claim is false only when strictly false against every opponent option).
+  // S26j: +50 twins (labelless and mix-induced indifference; "@ G a11,a12,a21,a22,b11,b12,b21,b22" sets any game).
+  // S27a: +25 twins (a claim stating its own mix is the probability judges'; "A should play X 40%…" is a claim, not a frame).
   const DOM23 = G(1, 0, 3, 2, 0, 3, 1, 2);
   let g23 = MIX;
   for (const ln of readFileSync('src/fixtures/mathvalidator-s23.txt', 'utf8').split('\n')) {
-    if (ln.startsWith('@ ')) g23 = ln === '@ DOM' ? DOM23 : MIX;
+    if (ln.startsWith('@ G ')) g23 = G(...(ln.slice(4).split(',').map(Number) as [number, number, number, number, number, number, number, number]));
+    else if (ln.startsWith('@ ')) g23 = ln === '@ DOM' ? DOM23 : MIX;
     else if (/^[TF]\t/.test(ln)) check(`S23 ${ln[0] === 'T' ? 'a true' : 'a false'} twin is judged`, (dir(ln.slice(2), g23).length === 0) === (ln[0] === 'T'), `${ln} :: ${dir(ln.slice(2), g23).join(' | ')}`);
   }
   // S23: real report sentences (verbatim). Worked by hand: Economy vs Late pays 5 vs -9; the Light Review figures are the Full
@@ -819,7 +823,22 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
       ['B prefers Avoid against anything other than Plainclothes security.', true], ['B prefers Enter against anything other than Plainclothes security.', false],
       ['Apart from that, B prefers Avoid against Visible patrol.', true], ['Apart from that, B prefers Enter against Visible patrol.', false],
     ] as [string, boolean][]).map(([s, t]) => [s, t, G(-1, 0, -1, 0, -7, -2, 2, -1), Lb('Visible patrol', 'Plainclothes security', 'Enter', 'Avoid')]),
+    // S26b: an unframed claim is judged across both columns. Convoy pays the officer 4 vs 7 and -5 vs 7 (false); the rest tie in
+    // one or both columns ("pinned to X" at an equilibrium) or win one (bold launch), so a non-strict reading would flag them.
+    ['Geometrically, A’s warped payoff surface has a level shelf when the officer assigns probability 0.1429 to Airlift, but there is no interior joint flat spot: the equilibrium lies on the edge because the officer is pinned to Convoy.', false, G(-9, -3, 3, -5, 7, 4, 7, -5), Lb('Direct Route', 'Detour', 'Airlift', 'Convoy')],
+    ['The firm’s choice is pinned to Economy by the other firm’s network; if Firm B chooses Direct, Firm A does better with Express, while Firm B does better with Hub against Economy.', true, G(9, -4, 9, -7, 4, -1, -5, -9), Lb('Express', 'Economy', 'Hub', 'Direct')],
+    ['Geometrically, A’s payoff surface is a flat plane with no level shelf, so there is no interior joint flat spot; the equilibrium lies on the edge at the corner where A is pinned to Indoor.', true, G(1, 8, 1, 8, -2, 2, 9, -5), Lb('Indoor', 'Outdoor', 'Full Crew', 'Lean Crew')],
+    ['At Indoor–Day, Indoor is A’s better response to Day and Day is B’s better response to Indoor; at Outdoor–Night, Night is B’s better response to Outdoor, while A gains nothing by switching to Indoor.', true, G(0, 9, -6, 9, 4, -6, -2, 3), Lb('Indoor', 'Outdoor', 'Day', 'Night')],
+    ['There is no payoff tradeoff here: neither applicant needs to favor Online filing over Paper filing, nor does the clerk need to favor Automated review over Manual review.', true, G(-2, -2, -2, -2, -3, -3, -3, -3), Lb('Online filing', 'Paper filing', 'Automated review', 'Manual review')],
+    ['The product manager prefers a bold launch whether the auditor conducts a full or light review, while the auditor prefers a full review whether the manager chooses a bold or cautious launch.', true, G(1, 8, -3, 7, -4, -9, -4, -8), Lb('Bold launch', 'Cautious launch', 'Full review', 'Light review')],
   ] as [string, boolean, GamePayoffs, typeof L][]) check(`S23 ${t ? 'a true' : 'a false'} real report sentence is judged`, (dir(s, g, l).length === 0) === t, `${s} :: ${dir(s, g, l).join(' | ')}`);
+  // S26: verbatim real report sentences with their twins (src/fixtures/mathvalidator-s26-real.tsv; its header has the sources).
+  for (const ln of readFileSync('src/fixtures/mathvalidator-s26-real.tsv', 'utf8').split('\n')) {
+    const [v, gj, lj, s] = ln.split('\t');
+    if (!/^[TF]$/.test(v) || !s) continue;
+    const [row1, row2, col1, col2] = JSON.parse(lj) as string[], is = dir(s, commitPayoffs(JSON.parse(gj)), { ...L, row1, row2, col1, col2 });
+    check(`S26 ${v === 'T' ? 'a true' : 'a false'} real sentence or twin is judged`, (is.length === 0) === (v === 'T'), `${s} :: ${is.join(' | ')}`);
+  }
 }
 
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────
