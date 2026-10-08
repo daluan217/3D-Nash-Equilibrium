@@ -1027,3 +1027,1118 @@ T	B's best reply, except against Cooperate, is Advance.
 F	B's best reply, except against Cooperate, is Retreat.
 T	B earns 2 from Advance when A plays no Cooperate.
 F	B earns 0 from Advance when A plays no Cooperate.
+
+# S25: with two options a complement ("anything but Q", "other than when Q", "unless B is locked into Q") names the OTHER one; an
+# exceptive head, a commit verb or a reply noun frames it. Asides with no frame, negation, contrast or claim word (", of course,",
+# "(the bold move)", ", it seems,") drop out; "B's best reply to Q, X, pays", "A's dominant option, X," and "X, not Y, is" are
+# judged as written, and a hedge or modal ("X would/might/seems to be better") is a claim like its lead form. Each T has an F twin
+# differing in one label or figure (MIX or DOM); none passes by coincidence: HEAD (3bf039b) missed 294 of these 1090, main 620.
+@ MIX
+T	Anything but when B plays Retreat, A prefers Cooperate.
+F	Anything but when B plays Retreat, A prefers Defect.
+T	A prefers Cooperate in every case but when B plays Retreat.
+F	A prefers Defect in every case but when B plays Retreat.
+T	In all cases but when B plays Retreat, A prefers Cooperate.
+F	In all cases but when B plays Retreat, A prefers Defect.
+T	At any time but when B plays Retreat, A's best reply is Cooperate.
+F	At any time but when B plays Retreat, A's best reply is Defect.
+T	Anything but when A plays Cooperate, B's best reply is Advance.
+F	Anything but when A plays Cooperate, B's best reply is Retreat.
+T	Everything but when B plays Advance, Defect is better for A.
+F	Everything but when B plays Advance, Cooperate is better for A.
+T	A prefers Cooperate, but when B plays Retreat, A prefers Defect.
+F	A prefers Cooperate, but when B plays Retreat, A prefers Cooperate.
+T	Against Advance A prefers Cooperate, but when B plays Retreat, Defect.
+F	Against Advance A prefers Cooperate, but when B plays Retreat, Cooperate.
+T	Except when B plays Retreat, A prefers Cooperate.
+F	Except when B plays Retreat, A prefers Defect.
+T	A prefers Cooperate whenever B plays anything but Retreat.
+F	A prefers Defect whenever B plays anything but Retreat.
+T	A prefers Cooperate in every case except when B plays Retreat.
+F	A prefers Defect in every case except when B plays Retreat.
+T	A prefers Cooperate all the time but when B plays Retreat.
+F	A prefers Defect all the time but when B plays Retreat.
+T	Other than when B plays Retreat, A prefers Cooperate.
+F	Other than when B plays Retreat, A prefers Defect.
+T	Other than when B plays Retreat, A's best reply is Cooperate.
+F	Other than when B plays Retreat, A's best reply is Defect.
+T	Other than when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Other than when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate other than when B plays Retreat.
+F	A prefers Defect other than when B plays Retreat.
+T	A's best reply is Cooperate other than when B plays Retreat.
+F	A's best reply is Defect other than when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 other than when B plays Retreat.
+F	Defect pays A 3 rather than 0 other than when B plays Retreat.
+T	Apart from when B plays Retreat, A prefers Cooperate.
+F	Apart from when B plays Retreat, A prefers Defect.
+T	Apart from when B plays Retreat, A's best reply is Cooperate.
+F	Apart from when B plays Retreat, A's best reply is Defect.
+T	Apart from when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Apart from when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate apart from when B plays Retreat.
+F	A prefers Defect apart from when B plays Retreat.
+T	A's best reply is Cooperate apart from when B plays Retreat.
+F	A's best reply is Defect apart from when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 apart from when B plays Retreat.
+F	Defect pays A 3 rather than 0 apart from when B plays Retreat.
+T	Except if B plays Retreat, A prefers Cooperate.
+F	Except if B plays Retreat, A prefers Defect.
+T	Except if B plays Retreat, A's best reply is Cooperate.
+F	Except if B plays Retreat, A's best reply is Defect.
+T	Except if B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Except if B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except if B plays Retreat.
+F	A prefers Defect except if B plays Retreat.
+T	A's best reply is Cooperate except if B plays Retreat.
+F	A's best reply is Defect except if B plays Retreat.
+T	Cooperate pays A 1 rather than 0 except if B plays Retreat.
+F	Defect pays A 3 rather than 0 except if B plays Retreat.
+T	Excepting when B plays Retreat, A prefers Cooperate.
+F	Excepting when B plays Retreat, A prefers Defect.
+T	Excepting when B plays Retreat, A's best reply is Cooperate.
+F	Excepting when B plays Retreat, A's best reply is Defect.
+T	Excepting when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Excepting when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate excepting when B plays Retreat.
+F	A prefers Defect excepting when B plays Retreat.
+T	A's best reply is Cooperate excepting when B plays Retreat.
+F	A's best reply is Defect excepting when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 excepting when B plays Retreat.
+F	Defect pays A 3 rather than 0 excepting when B plays Retreat.
+T	With the exception of when B plays Retreat, A prefers Cooperate.
+F	With the exception of when B plays Retreat, A prefers Defect.
+T	With the exception of when B plays Retreat, A's best reply is Cooperate.
+F	With the exception of when B plays Retreat, A's best reply is Defect.
+T	With the exception of when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	With the exception of when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate with the exception of when B plays Retreat.
+F	A prefers Defect with the exception of when B plays Retreat.
+T	A's best reply is Cooperate with the exception of when B plays Retreat.
+F	A's best reply is Defect with the exception of when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 with the exception of when B plays Retreat.
+F	Defect pays A 3 rather than 0 with the exception of when B plays Retreat.
+T	Aside from when B plays Retreat, A prefers Cooperate.
+F	Aside from when B plays Retreat, A prefers Defect.
+T	Aside from when B plays Retreat, A's best reply is Cooperate.
+F	Aside from when B plays Retreat, A's best reply is Defect.
+T	Aside from when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Aside from when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate aside from when B plays Retreat.
+F	A prefers Defect aside from when B plays Retreat.
+T	A's best reply is Cooperate aside from when B plays Retreat.
+F	A's best reply is Defect aside from when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 aside from when B plays Retreat.
+F	Defect pays A 3 rather than 0 aside from when B plays Retreat.
+T	Save if B plays Retreat, A prefers Cooperate.
+F	Save if B plays Retreat, A prefers Defect.
+T	Save if B plays Retreat, A's best reply is Cooperate.
+F	Save if B plays Retreat, A's best reply is Defect.
+T	Save if B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Save if B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate save if B plays Retreat.
+F	A prefers Defect save if B plays Retreat.
+T	A's best reply is Cooperate save if B plays Retreat.
+F	A's best reply is Defect save if B plays Retreat.
+T	Cooperate pays A 1 rather than 0 save if B plays Retreat.
+F	Defect pays A 3 rather than 0 save if B plays Retreat.
+T	Except for when B plays Retreat, A prefers Cooperate.
+F	Except for when B plays Retreat, A prefers Defect.
+T	Except for when B plays Retreat, A's best reply is Cooperate.
+F	Except for when B plays Retreat, A's best reply is Defect.
+T	Except for when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Except for when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except for when B plays Retreat.
+F	A prefers Defect except for when B plays Retreat.
+T	A's best reply is Cooperate except for when B plays Retreat.
+F	A's best reply is Defect except for when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 except for when B plays Retreat.
+F	Defect pays A 3 rather than 0 except for when B plays Retreat.
+T	Except whenever B plays Retreat, A prefers Cooperate.
+F	Except whenever B plays Retreat, A prefers Defect.
+T	Except whenever B plays Retreat, A's best reply is Cooperate.
+F	Except whenever B plays Retreat, A's best reply is Defect.
+T	Except whenever B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Except whenever B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except whenever B plays Retreat.
+F	A prefers Defect except whenever B plays Retreat.
+T	A's best reply is Cooperate except whenever B plays Retreat.
+F	A's best reply is Defect except whenever B plays Retreat.
+T	Cooperate pays A 1 rather than 0 except whenever B plays Retreat.
+F	Defect pays A 3 rather than 0 except whenever B plays Retreat.
+T	Unless and until B plays Retreat, A prefers Cooperate.
+F	Unless and until B plays Retreat, A prefers Defect.
+T	Unless and until B plays Retreat, A's best reply is Cooperate.
+F	Unless and until B plays Retreat, A's best reply is Defect.
+T	Unless and until B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Unless and until B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless and until B plays Retreat.
+F	A prefers Defect unless and until B plays Retreat.
+T	A's best reply is Cooperate unless and until B plays Retreat.
+F	A's best reply is Defect unless and until B plays Retreat.
+T	Cooperate pays A 1 rather than 0 unless and until B plays Retreat.
+F	Defect pays A 3 rather than 0 unless and until B plays Retreat.
+T	Except in the case that B plays Retreat, A prefers Cooperate.
+F	Except in the case that B plays Retreat, A prefers Defect.
+T	Except in the case that B plays Retreat, A's best reply is Cooperate.
+F	Except in the case that B plays Retreat, A's best reply is Defect.
+T	Except in the case that B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Except in the case that B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except in the case that B plays Retreat.
+F	A prefers Defect except in the case that B plays Retreat.
+T	A's best reply is Cooperate except in the case that B plays Retreat.
+F	A's best reply is Defect except in the case that B plays Retreat.
+T	Cooperate pays A 1 rather than 0 except in the case that B plays Retreat.
+F	Defect pays A 3 rather than 0 except in the case that B plays Retreat.
+T	Except where B plays Retreat, A prefers Cooperate.
+F	Except where B plays Retreat, A prefers Defect.
+T	Except where B plays Retreat, A's best reply is Cooperate.
+F	Except where B plays Retreat, A's best reply is Defect.
+T	Except where B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Except where B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except where B plays Retreat.
+F	A prefers Defect except where B plays Retreat.
+T	A's best reply is Cooperate except where B plays Retreat.
+F	A's best reply is Defect except where B plays Retreat.
+T	Cooperate pays A 1 rather than 0 except where B plays Retreat.
+F	Defect pays A 3 rather than 0 except where B plays Retreat.
+T	Except once B plays Retreat, A prefers Cooperate.
+F	Except once B plays Retreat, A prefers Defect.
+T	Except once B plays Retreat, A's best reply is Cooperate.
+F	Except once B plays Retreat, A's best reply is Defect.
+T	Except once B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Except once B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except once B plays Retreat.
+F	A prefers Defect except once B plays Retreat.
+T	A's best reply is Cooperate except once B plays Retreat.
+F	A's best reply is Defect except once B plays Retreat.
+T	Cooperate pays A 1 rather than 0 except once B plays Retreat.
+F	Defect pays A 3 rather than 0 except once B plays Retreat.
+T	Except as long as B plays Retreat, A prefers Cooperate.
+F	Except as long as B plays Retreat, A prefers Defect.
+T	Except as long as B plays Retreat, A's best reply is Cooperate.
+F	Except as long as B plays Retreat, A's best reply is Defect.
+T	Except as long as B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Except as long as B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except as long as B plays Retreat.
+F	A prefers Defect except as long as B plays Retreat.
+T	A's best reply is Cooperate except as long as B plays Retreat.
+F	A's best reply is Defect except as long as B plays Retreat.
+T	Cooperate pays A 1 rather than 0 except as long as B plays Retreat.
+F	Defect pays A 3 rather than 0 except as long as B plays Retreat.
+T	Except at Retreat, A prefers Cooperate.
+F	Except at Retreat, A prefers Defect.
+T	Except at Retreat, A's best reply is Cooperate.
+F	Except at Retreat, A's best reply is Defect.
+T	Except at Retreat, Cooperate pays A 1 rather than 0.
+F	Except at Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except at Retreat.
+F	A prefers Defect except at Retreat.
+T	A's best reply is Cooperate except at Retreat.
+F	A's best reply is Defect except at Retreat.
+T	Cooperate pays A 1 rather than 0 except at Retreat.
+F	Defect pays A 3 rather than 0 except at Retreat.
+T	Except facing Retreat, A prefers Cooperate.
+F	Except facing Retreat, A prefers Defect.
+T	Except facing Retreat, A's best reply is Cooperate.
+F	Except facing Retreat, A's best reply is Defect.
+T	Except facing Retreat, Cooperate pays A 1 rather than 0.
+F	Except facing Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except facing Retreat.
+F	A prefers Defect except facing Retreat.
+T	A's best reply is Cooperate except facing Retreat.
+F	A's best reply is Defect except facing Retreat.
+T	Cooperate pays A 1 rather than 0 except facing Retreat.
+F	Defect pays A 3 rather than 0 except facing Retreat.
+T	Excluding when B plays Retreat, A prefers Cooperate.
+F	Excluding when B plays Retreat, A prefers Defect.
+T	Excluding when B plays Retreat, A's best reply is Cooperate.
+F	Excluding when B plays Retreat, A's best reply is Defect.
+T	Excluding when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Excluding when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate excluding when B plays Retreat.
+F	A prefers Defect excluding when B plays Retreat.
+T	A's best reply is Cooperate excluding when B plays Retreat.
+F	A's best reply is Defect excluding when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 excluding when B plays Retreat.
+F	Defect pays A 3 rather than 0 excluding when B plays Retreat.
+T	Outside of when B plays Retreat, A prefers Cooperate.
+F	Outside of when B plays Retreat, A prefers Defect.
+T	Outside of when B plays Retreat, A's best reply is Cooperate.
+F	Outside of when B plays Retreat, A's best reply is Defect.
+T	Outside of when B plays Retreat, Cooperate pays A 1 rather than 0.
+F	Outside of when B plays Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate outside of when B plays Retreat.
+F	A prefers Defect outside of when B plays Retreat.
+T	A's best reply is Cooperate outside of when B plays Retreat.
+F	A's best reply is Defect outside of when B plays Retreat.
+T	Cooperate pays A 1 rather than 0 outside of when B plays Retreat.
+F	Defect pays A 3 rather than 0 outside of when B plays Retreat.
+T	Other than against Retreat, A's best reply is Cooperate.
+F	Other than against Retreat, A's best reply is Defect.
+T	Other than against Retreat, Cooperate pays A 1 rather than 0.
+F	Other than against Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate other than against Retreat.
+F	A prefers Defect other than against Retreat.
+T	A's best reply is Cooperate other than against Retreat.
+F	A's best reply is Defect other than against Retreat.
+T	Cooperate pays A 1 rather than 0 other than against Retreat.
+F	Defect pays A 3 rather than 0 other than against Retreat.
+T	Except versus Retreat, A prefers Cooperate.
+F	Except versus Retreat, A prefers Defect.
+T	Except versus Retreat, A's best reply is Cooperate.
+F	Except versus Retreat, A's best reply is Defect.
+T	Except versus Retreat, Cooperate pays A 1 rather than 0.
+F	Except versus Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except versus Retreat.
+F	A prefers Defect except versus Retreat.
+T	A's best reply is Cooperate except versus Retreat.
+F	A's best reply is Defect except versus Retreat.
+T	Cooperate pays A 1 rather than 0 except versus Retreat.
+F	Defect pays A 3 rather than 0 except versus Retreat.
+T	Save against Retreat, A prefers Cooperate.
+F	Save against Retreat, A prefers Defect.
+T	Save against Retreat, A's best reply is Cooperate.
+F	Save against Retreat, A's best reply is Defect.
+T	Save against Retreat, Cooperate pays A 1 rather than 0.
+F	Save against Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate save against Retreat.
+F	A prefers Defect save against Retreat.
+T	A's best reply is Cooperate save against Retreat.
+F	A's best reply is Defect save against Retreat.
+T	Cooperate pays A 1 rather than 0 save against Retreat.
+F	Defect pays A 3 rather than 0 save against Retreat.
+T	Unless B goes for Retreat, A prefers Cooperate.
+F	Unless B goes for Retreat, A prefers Defect.
+T	Unless B goes for Retreat, A's best reply is Cooperate.
+F	Unless B goes for Retreat, A's best reply is Defect.
+T	Unless B goes for Retreat, Cooperate pays A 1 rather than 0.
+F	Unless B goes for Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless B goes for Retreat.
+F	A prefers Defect unless B goes for Retreat.
+T	A's best reply is Cooperate unless B goes for Retreat.
+F	A's best reply is Defect unless B goes for Retreat.
+T	Cooperate pays A 1 rather than 0 unless B goes for Retreat.
+F	Defect pays A 3 rather than 0 unless B goes for Retreat.
+T	Unless B opts for Retreat, A prefers Cooperate.
+F	Unless B opts for Retreat, A prefers Defect.
+T	Unless B opts for Retreat, A's best reply is Cooperate.
+F	Unless B opts for Retreat, A's best reply is Defect.
+T	Unless B opts for Retreat, Cooperate pays A 1 rather than 0.
+F	Unless B opts for Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless B opts for Retreat.
+F	A prefers Defect unless B opts for Retreat.
+T	A's best reply is Cooperate unless B opts for Retreat.
+F	A's best reply is Defect unless B opts for Retreat.
+T	Cooperate pays A 1 rather than 0 unless B opts for Retreat.
+F	Defect pays A 3 rather than 0 unless B opts for Retreat.
+T	Unless B settles on Retreat, A prefers Cooperate.
+F	Unless B settles on Retreat, A prefers Defect.
+T	Unless B settles on Retreat, A's best reply is Cooperate.
+F	Unless B settles on Retreat, A's best reply is Defect.
+T	Unless B settles on Retreat, Cooperate pays A 1 rather than 0.
+F	Unless B settles on Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless B settles on Retreat.
+F	A prefers Defect unless B settles on Retreat.
+T	A's best reply is Cooperate unless B settles on Retreat.
+F	A's best reply is Defect unless B settles on Retreat.
+T	Cooperate pays A 1 rather than 0 unless B settles on Retreat.
+F	Defect pays A 3 rather than 0 unless B settles on Retreat.
+T	Except when B commits to Retreat, A prefers Cooperate.
+F	Except when B commits to Retreat, A prefers Defect.
+T	Except when B commits to Retreat, A's best reply is Cooperate.
+F	Except when B commits to Retreat, A's best reply is Defect.
+T	Except when B commits to Retreat, Cooperate pays A 1 rather than 0.
+F	Except when B commits to Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except when B commits to Retreat.
+F	A prefers Defect except when B commits to Retreat.
+T	A's best reply is Cooperate except when B commits to Retreat.
+F	A's best reply is Defect except when B commits to Retreat.
+T	Cooperate pays A 1 rather than 0 except when B commits to Retreat.
+F	Defect pays A 3 rather than 0 except when B commits to Retreat.
+T	Unless facing Retreat, A prefers Cooperate.
+F	Unless facing Retreat, A prefers Defect.
+T	Unless facing Retreat, A's best reply is Cooperate.
+F	Unless facing Retreat, A's best reply is Defect.
+T	Unless facing Retreat, Cooperate pays A 1 rather than 0.
+F	Unless facing Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless facing Retreat.
+F	A prefers Defect unless facing Retreat.
+T	A's best reply is Cooperate unless facing Retreat.
+F	A's best reply is Defect unless facing Retreat.
+T	Cooperate pays A 1 rather than 0 unless facing Retreat.
+F	Defect pays A 3 rather than 0 unless facing Retreat.
+T	Unless it is Retreat, A prefers Cooperate.
+F	Unless it is Retreat, A prefers Defect.
+T	Unless it is Retreat, A's best reply is Cooperate.
+F	Unless it is Retreat, A's best reply is Defect.
+T	Unless it is Retreat, Cooperate pays A 1 rather than 0.
+F	Unless it is Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless it is Retreat.
+F	A prefers Defect unless it is Retreat.
+T	A's best reply is Cooperate unless it is Retreat.
+F	A's best reply is Defect unless it is Retreat.
+T	Cooperate pays A 1 rather than 0 unless it is Retreat.
+F	Defect pays A 3 rather than 0 unless it is Retreat.
+T	Unless B is at Retreat, A prefers Cooperate.
+F	Unless B is at Retreat, A prefers Defect.
+T	Unless B is at Retreat, A's best reply is Cooperate.
+F	Unless B is at Retreat, A's best reply is Defect.
+T	Unless B is at Retreat, Cooperate pays A 1 rather than 0.
+F	Unless B is at Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless B is at Retreat.
+F	A prefers Defect unless B is at Retreat.
+T	A's best reply is Cooperate unless B is at Retreat.
+F	A's best reply is Defect unless B is at Retreat.
+T	Cooperate pays A 1 rather than 0 unless B is at Retreat.
+F	Defect pays A 3 rather than 0 unless B is at Retreat.
+T	Except when B is at Retreat, A prefers Cooperate.
+F	Except when B is at Retreat, A prefers Defect.
+T	Except when B is at Retreat, A's best reply is Cooperate.
+F	Except when B is at Retreat, A's best reply is Defect.
+T	Except when B is at Retreat, Cooperate pays A 1 rather than 0.
+F	Except when B is at Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate except when B is at Retreat.
+F	A prefers Defect except when B is at Retreat.
+T	A's best reply is Cooperate except when B is at Retreat.
+F	A's best reply is Defect except when B is at Retreat.
+T	Cooperate pays A 1 rather than 0 except when B is at Retreat.
+F	Defect pays A 3 rather than 0 except when B is at Retreat.
+T	Unless B sticks with Retreat, A prefers Cooperate.
+F	Unless B sticks with Retreat, A prefers Defect.
+T	Unless B sticks with Retreat, A's best reply is Cooperate.
+F	Unless B sticks with Retreat, A's best reply is Defect.
+T	Unless B sticks with Retreat, Cooperate pays A 1 rather than 0.
+F	Unless B sticks with Retreat, Defect pays A 3 rather than 0.
+T	A prefers Cooperate unless B sticks with Retreat.
+F	A prefers Defect unless B sticks with Retreat.
+T	A's best reply is Cooperate unless B sticks with Retreat.
+F	A's best reply is Defect unless B sticks with Retreat.
+T	Cooperate pays A 1 rather than 0 unless B sticks with Retreat.
+F	Defect pays A 3 rather than 0 unless B sticks with Retreat.
+T	A's best reply is Cooperate when B sticks with Advance.
+T	When B sticks with Advance, A's best reply is Cooperate.
+F	A's best reply is Defect when B sticks with Advance.
+F	When B sticks with Advance, A's best reply is Defect.
+F	A's best reply is Cooperate when B sticks with Retreat.
+F	When B sticks with Retreat, A's best reply is Cooperate.
+T	A's best reply is Defect when B sticks with Retreat.
+T	When B sticks with Retreat, A's best reply is Defect.
+T	A's best reply is Cooperate if B sticks with Advance.
+T	If B sticks with Advance, A's best reply is Cooperate.
+F	A's best reply is Defect if B sticks with Advance.
+F	If B sticks with Advance, A's best reply is Defect.
+F	A's best reply is Cooperate if B sticks with Retreat.
+F	If B sticks with Retreat, A's best reply is Cooperate.
+T	A's best reply is Defect if B sticks with Retreat.
+T	If B sticks with Retreat, A's best reply is Defect.
+T	A's best reply is Cooperate once B sticks with Advance.
+T	Once B sticks with Advance, A's best reply is Cooperate.
+F	A's best reply is Defect once B sticks with Advance.
+F	Once B sticks with Advance, A's best reply is Defect.
+F	A's best reply is Cooperate once B sticks with Retreat.
+F	Once B sticks with Retreat, A's best reply is Cooperate.
+T	A's best reply is Defect once B sticks with Retreat.
+T	Once B sticks with Retreat, A's best reply is Defect.
+F	A's best reply is Cooperate unless B sticks with Advance.
+F	Unless B sticks with Advance, A's best reply is Cooperate.
+T	A's best reply is Defect unless B sticks with Advance.
+T	Unless B sticks with Advance, A's best reply is Defect.
+T	A's best reply is Cooperate when B goes with Advance.
+T	When B goes with Advance, A's best reply is Cooperate.
+F	A's best reply is Defect when B goes with Advance.
+F	When B goes with Advance, A's best reply is Defect.
+F	A's best reply is Cooperate when B goes with Retreat.
+F	When B goes with Retreat, A's best reply is Cooperate.
+T	A's best reply is Defect when B goes with Retreat.
+T	When B goes with Retreat, A's best reply is Defect.
+T	A's best reply is Cooperate if B goes with Advance.
+T	If B goes with Advance, A's best reply is Cooperate.
+F	A's best reply is Defect if B goes with Advance.
+F	If B goes with Advance, A's best reply is Defect.
+F	A's best reply is Cooperate if B goes with Retreat.
+F	If B goes with Retreat, A's best reply is Cooperate.
+T	A's best reply is Defect if B goes with Retreat.
+T	If B goes with Retreat, A's best reply is Defect.
+T	A's best reply is Cooperate once B goes with Advance.
+T	Once B goes with Advance, A's best reply is Cooperate.
+F	A's best reply is Defect once B goes with Advance.
+F	Once B goes with Advance, A's best reply is Defect.
+F	A's best reply is Cooperate once B goes with Retreat.
+F	Once B goes with Retreat, A's best reply is Cooperate.
+T	A's best reply is Defect once B goes with Retreat.
+T	Once B goes with Retreat, A's best reply is Defect.
+F	A's best reply is Cooperate unless B goes with Advance.
+F	Unless B goes with Advance, A's best reply is Cooperate.
+T	A's best reply is Defect unless B goes with Advance.
+T	Unless B goes with Advance, A's best reply is Defect.
+T	A's best reply is Cooperate unless B goes with Retreat.
+T	Unless B goes with Retreat, A's best reply is Cooperate.
+F	A's best reply is Defect unless B goes with Retreat.
+F	Unless B goes with Retreat, A's best reply is Defect.
+F	A's best reply is Cooperate unless B is locked into Advance.
+F	Unless B is locked into Advance, A's best reply is Cooperate.
+T	A's best reply is Defect unless B is locked into Advance.
+T	Unless B is locked into Advance, A's best reply is Defect.
+F	A prefers Cooperate unless B is locked into Advance.
+F	Unless B is locked into Advance, A prefers Cooperate.
+T	A prefers Defect unless B is locked into Advance.
+T	Unless B is locked into Advance, A prefers Defect.
+F	Cooperate is better for A unless B is locked into Advance.
+F	Unless B is locked into Advance, Cooperate is better for A.
+T	Defect is better for A unless B is locked into Advance.
+T	Unless B is locked into Advance, Defect is better for A.
+T	A's best reply is Cooperate unless B is locked into Retreat.
+T	Unless B is locked into Retreat, A's best reply is Cooperate.
+F	A's best reply is Defect unless B is locked into Retreat.
+F	Unless B is locked into Retreat, A's best reply is Defect.
+T	A prefers Cooperate unless B is locked into Retreat.
+T	Unless B is locked into Retreat, A prefers Cooperate.
+F	A prefers Defect unless B is locked into Retreat.
+F	Unless B is locked into Retreat, A prefers Defect.
+T	Cooperate is better for A unless B is locked into Retreat.
+T	Unless B is locked into Retreat, Cooperate is better for A.
+F	Defect is better for A unless B is locked into Retreat.
+F	Unless B is locked into Retreat, Defect is better for A.
+T	A always prefers Cooperate against Advance, but against Retreat A prefers Defect.
+F	A always prefers Cooperate against Advance, but against Retreat A prefers Cooperate.
+T	Against Advance, A prefers Cooperate every time, but B prefers Retreat against Cooperate.
+F	Against Advance, A prefers Cooperate every time, but B prefers Advance against Cooperate.
+T	A prefers Cooperate against Advance in all cases, but when B plays Retreat A prefers Defect.
+T	Against Advance A prefers Cooperate always, but when B plays Retreat, Defect.
+F	Against Advance A prefers Cooperate always, but when B plays Retreat, Cooperate.
+T	B prefers Retreat against Cooperate in every case, and Advance against Defect.
+F	B prefers Retreat against Cooperate in every case, and Retreat against Defect.
+T	Nothing but Cooperate is better for A against Advance.
+F	Nothing but Defect is better for A against Advance.
+T	A prefers Cooperate unless B plays Retreat, and B prefers Advance against Defect.
+F	A prefers Cooperate unless B plays Retreat, and B prefers Retreat against Defect.
+T	Unless and until B plays Retreat, A prefers Cooperate; after that, Defect.
+T	A prefers Cooperate when B goes with Advance, but Defect when B goes with Retreat.
+F	A prefers Cooperate when B goes with Retreat, but Defect when B goes with Advance.
+T	B answers Cooperate with Retreat.
+F	B answers Cooperate with Advance.
+T	B responds to Defect with Advance.
+F	B responds to Defect with Retreat.
+T	B responds when A plays Defect with Advance.
+F	B responds when A plays Defect with Retreat.
+T	B meets A's Cooperate with Retreat.
+F	B meets A's Cooperate with Advance.
+T	Except in cases where B plays Retreat, A prefers Cooperate.
+F	Except in cases where B plays Retreat, A prefers Defect.
+T	A prefers Cooperate except if B ever plays Retreat.
+F	A prefers Defect except if B ever plays Retreat.
+T	A prefers Cooperate unless B, as expected, plays Retreat.
+T	Everything but Retreat leaves A preferring Cooperate.
+T	B's answer is Retreat when A plays Cooperate.
+F	B's answer is Advance when A plays Cooperate.
+T	B's best reply is Retreat when A sticks with Cooperate.
+F	B's best reply is Advance when A sticks with Cooperate.
+T	B's reply is always Retreat if A goes with Cooperate.
+F	B's reply is always Advance if A goes with Cooperate.
+T	B answers Cooperate, which is A's safe option, with Retreat.
+F	B answers Cooperate, which is A's safe option, with Advance.
+T	B replies to Cooperate with Retreat.
+F	B replies to Cooperate with Advance.
+T	B counters a Defect with Advance.
+F	B counters a Defect with Retreat.
+T	B would answer Cooperate with Retreat.
+F	B would answer Cooperate with Advance.
+T	B, facing Cooperate, answers with Retreat.
+F	B, facing Cooperate, answers with Advance.
+T	Against Cooperate, which is A's safe option,, B prefers Retreat.
+F	Against Cooperate, which is A's safe option,, B prefers Advance.
+T	B prefers Retreat against Cooperate, which is A's safe option,.
+F	B prefers Advance against Cooperate, which is A's safe option,.
+T	When A plays Cooperate, which is A's safe option,, B's best reply is Retreat.
+F	When A plays Cooperate, which is A's safe option,, B's best reply is Advance.
+T	B, which is A's safe option, prefers Retreat against Cooperate.
+F	B, which is A's safe option, prefers Advance against Cooperate.
+T	B prefers, which is A's safe option, Retreat against Cooperate.
+F	B prefers, which is A's safe option, Advance against Cooperate.
+T	Retreat, which is A's safe option, is better for B against Cooperate.
+F	Advance, which is A's safe option, is better for B against Cooperate.
+T	Retreat is better for B, which is A's safe option, against Cooperate.
+F	Advance is better for B, which is A's safe option, against Cooperate.
+T	Retreat pays B 3, which is A's safe option, rather than 0 against Cooperate.
+F	Advance pays B 3, which is A's safe option, rather than 0 against Cooperate.
+T	Unless A plays Defect, which is A's safe option,, B prefers Retreat.
+F	Unless A plays Defect, which is A's safe option,, B prefers Advance.
+T	B answers Cooperate (A's safe option) with Retreat.
+F	B answers Cooperate (A's safe option) with Advance.
+T	Against Cooperate (A's safe option), B prefers Retreat.
+F	Against Cooperate (A's safe option), B prefers Advance.
+T	B prefers Retreat against Cooperate (A's safe option).
+F	B prefers Advance against Cooperate (A's safe option).
+T	When A plays Cooperate (A's safe option), B's best reply is Retreat.
+F	When A plays Cooperate (A's safe option), B's best reply is Advance.
+T	B (A's safe option) prefers Retreat against Cooperate.
+F	B (A's safe option) prefers Advance against Cooperate.
+T	B prefers (A's safe option) Retreat against Cooperate.
+F	B prefers (A's safe option) Advance against Cooperate.
+T	Retreat (A's safe option) is better for B against Cooperate.
+F	Advance (A's safe option) is better for B against Cooperate.
+T	Retreat is better for B (A's safe option) against Cooperate.
+F	Advance is better for B (A's safe option) against Cooperate.
+T	Retreat pays B 3 (A's safe option) rather than 0 against Cooperate.
+F	Advance pays B 3 (A's safe option) rather than 0 against Cooperate.
+T	Unless A plays Defect (A's safe option), B prefers Retreat.
+F	Unless A plays Defect (A's safe option), B prefers Advance.
+T	B answers Cooperate — A's safe option — with Retreat.
+F	B answers Cooperate — A's safe option — with Advance.
+T	Against Cooperate — A's safe option —, B prefers Retreat.
+F	Against Cooperate — A's safe option —, B prefers Advance.
+T	B prefers Retreat against Cooperate — A's safe option —.
+F	B prefers Advance against Cooperate — A's safe option —.
+T	When A plays Cooperate — A's safe option —, B's best reply is Retreat.
+F	When A plays Cooperate — A's safe option —, B's best reply is Advance.
+T	B — A's safe option — prefers Retreat against Cooperate.
+F	B — A's safe option — prefers Advance against Cooperate.
+T	B prefers — A's safe option — Retreat against Cooperate.
+F	B prefers — A's safe option — Advance against Cooperate.
+T	Retreat — A's safe option — is better for B against Cooperate.
+F	Advance — A's safe option — is better for B against Cooperate.
+T	Retreat is better for B — A's safe option — against Cooperate.
+F	Advance is better for B — A's safe option — against Cooperate.
+T	Retreat pays B 3 — A's safe option — rather than 0 against Cooperate.
+F	Advance pays B 3 — A's safe option — rather than 0 against Cooperate.
+T	Unless A plays Defect — A's safe option —, B prefers Retreat.
+F	Unless A plays Defect — A's safe option —, B prefers Advance.
+T	B answers Cooperate, as expected, with Retreat.
+F	B answers Cooperate, as expected, with Advance.
+T	Against Cooperate, as expected,, B prefers Retreat.
+F	Against Cooperate, as expected,, B prefers Advance.
+T	B prefers Retreat against Cooperate, as expected,.
+F	B prefers Advance against Cooperate, as expected,.
+T	When A plays Cooperate, as expected,, B's best reply is Retreat.
+F	When A plays Cooperate, as expected,, B's best reply is Advance.
+T	B, as expected, prefers Retreat against Cooperate.
+F	B, as expected, prefers Advance against Cooperate.
+T	B prefers, as expected, Retreat against Cooperate.
+F	B prefers, as expected, Advance against Cooperate.
+T	Retreat, as expected, is better for B against Cooperate.
+F	Advance, as expected, is better for B against Cooperate.
+T	Retreat is better for B, as expected, against Cooperate.
+F	Advance is better for B, as expected, against Cooperate.
+T	Retreat pays B 3, as expected, rather than 0 against Cooperate.
+F	Advance pays B 3, as expected, rather than 0 against Cooperate.
+T	Unless A plays Defect, as expected,, B prefers Retreat.
+F	Unless A plays Defect, as expected,, B prefers Advance.
+T	B answers Cooperate, of course, with Retreat.
+F	B answers Cooperate, of course, with Advance.
+T	Against Cooperate, of course,, B prefers Retreat.
+F	Against Cooperate, of course,, B prefers Advance.
+T	B prefers Retreat against Cooperate, of course,.
+F	B prefers Advance against Cooperate, of course,.
+T	When A plays Cooperate, of course,, B's best reply is Retreat.
+F	When A plays Cooperate, of course,, B's best reply is Advance.
+T	B, of course, prefers Retreat against Cooperate.
+F	B, of course, prefers Advance against Cooperate.
+T	B prefers, of course, Retreat against Cooperate.
+F	B prefers, of course, Advance against Cooperate.
+T	Retreat, of course, is better for B against Cooperate.
+F	Advance, of course, is better for B against Cooperate.
+T	Retreat is better for B, of course, against Cooperate.
+F	Advance is better for B, of course, against Cooperate.
+T	Retreat pays B 3, of course, rather than 0 against Cooperate.
+F	Advance pays B 3, of course, rather than 0 against Cooperate.
+T	Unless A plays Defect, of course,, B prefers Retreat.
+F	Unless A plays Defect, of course,, B prefers Advance.
+T	B answers Cooperate, A's safe option, with Retreat.
+F	B answers Cooperate, A's safe option, with Advance.
+T	Against Cooperate, A's safe option,, B prefers Retreat.
+F	Against Cooperate, A's safe option,, B prefers Advance.
+T	B prefers Retreat against Cooperate, A's safe option,.
+F	B prefers Advance against Cooperate, A's safe option,.
+T	When A plays Cooperate, A's safe option,, B's best reply is Retreat.
+F	When A plays Cooperate, A's safe option,, B's best reply is Advance.
+T	B, A's safe option, prefers Retreat against Cooperate.
+F	B, A's safe option, prefers Advance against Cooperate.
+T	B prefers, A's safe option, Retreat against Cooperate.
+F	B prefers, A's safe option, Advance against Cooperate.
+T	Retreat, A's safe option, is better for B against Cooperate.
+F	Advance, A's safe option, is better for B against Cooperate.
+T	Retreat is better for B, A's safe option, against Cooperate.
+F	Advance is better for B, A's safe option, against Cooperate.
+T	Retreat pays B 3, A's safe option, rather than 0 against Cooperate.
+F	Advance pays B 3, A's safe option, rather than 0 against Cooperate.
+T	Unless A plays Defect, A's safe option,, B prefers Retreat.
+F	Unless A plays Defect, A's safe option,, B prefers Advance.
+T	A trades off Cooperate, which is better against Advance, against Defect, which is better against Retreat.
+F	A trades off Cooperate, which is better against Retreat, against Defect, which is better against Advance.
+F	A trades off Cooperate, which is better against Advance, against Defect, which is better against Advance.
+F	A trades off Cooperate, which is better against Retreat, against Defect, which is better against Retreat.
+T	A trades off Cooperate, which does better against Advance, against Defect, which does better against Retreat.
+F	A trades off Cooperate, which does better against Retreat, against Defect, which does better against Advance.
+T	A trades off Cooperate, which is better when B chooses Advance, against Defect, which is better when B chooses Retreat.
+F	A trades off Cooperate, which is better when B chooses Retreat, against Defect, which is better when B chooses Advance.
+T	A is balancing Cooperate, which is better against Advance, against Defect, which is better against Retreat; B similarly prefers Retreat against Cooperate and Advance against Defect.
+F	A is balancing Cooperate, which is better against Advance, against Defect, which is better against Retreat; B similarly prefers Advance against Cooperate and Advance against Defect.
+T	A trades off Cooperate, which pays 1 against Advance, against Defect, which pays 3 against Retreat.
+F	A trades off Cooperate, which pays 3 against Advance, against Defect, which pays 3 against Retreat.
+T	B trades off Retreat, which is better against Cooperate, against Advance, which is better against Defect.
+F	B trades off Retreat, which is better against Defect, against Advance, which is better against Cooperate.
+T	B is trading off Advance, which is better against Defect, against Retreat, which is better against Cooperate.
+F	B is trading off Advance, which is better against Cooperate, against Retreat, which is better against Defect.
+@ DOM
+T	A trades off Cooperate, which earns 1 against Advance, against Defect, which earns 2 against Retreat.
+F	A trades off Cooperate, which earns 2 against Advance, against Defect, which earns 2 against Retreat.
+T	A is trading off Cooperate, which pays 0 against Retreat, against Defect, which pays 2, whether B plays Retreat or not.
+@ MIX
+T	If B plays Advance A prefers Cooperate.
+F	If B plays Advance A prefers Defect.
+T	Against Advance Cooperate is better for A.
+F	Against Advance Defect is better for A.
+T	Against Cooperate Retreat is better for B.
+F	Against Cooperate Advance is better for B.
+T	When A plays Cooperate B prefers Retreat.
+F	When A plays Cooperate B prefers Advance.
+T	Against Advance, A prefers Cooperate and against Retreat Defect.
+F	Against Advance, A prefers Defect and against Retreat Cooperate.
+T	B prefers, Retreat against Cooperate.
+F	B prefers, Advance against Cooperate.
+T	Against Advance, Cooperate, is better for A.
+F	Against Advance, Defect, is better for A.
+T	Against Advance Cooperate pays A 1.
+F	Against Advance Defect pays A 3.
+T	Retreat, however, is better for B against Cooperate.
+F	Advance, however, is better for B against Cooperate.
+T	Retreat, by contrast, is better for B against Cooperate.
+F	Advance, by contrast, is better for B against Cooperate.
+T	B, by contrast, prefers Retreat against Cooperate.
+F	B, by contrast, prefers Advance against Cooperate.
+T	B, the column player, prefers Retreat against Cooperate.
+F	B, the column player, prefers Advance against Cooperate.
+T	B (the column player) prefers Retreat against Cooperate.
+F	B (the column player) prefers Advance against Cooperate.
+T	Retreat, in turn, is better for B against Cooperate.
+F	Advance, in turn, is better for B against Cooperate.
+T	B, too, prefers Retreat against Cooperate.
+F	B, too, prefers Advance against Cooperate.
+T	Retreat, too, is better for B against Cooperate.
+F	Advance, too, is better for B against Cooperate.
+T	Retreat is, likewise, better for B against Cooperate.
+F	Advance is, likewise, better for B against Cooperate.
+T	B, meanwhile, prefers Retreat against Cooperate.
+F	B, meanwhile, prefers Advance against Cooperate.
+T	Retreat is, however, better for B against Cooperate.
+F	Advance is, however, better for B against Cooperate.
+T	B, though, prefers Retreat against Cooperate.
+F	B, though, prefers Advance against Cooperate.
+T	Against Cooperate, however, B prefers Retreat.
+F	Against Cooperate, however, B prefers Advance.
+T	Against Cooperate, then, B prefers Retreat.
+F	Against Cooperate, then, B prefers Advance.
+T	B, in other words, prefers Retreat against Cooperate.
+F	B, in other words, prefers Advance against Cooperate.
+T	B's best reply to Cooperate, of course, is Retreat.
+F	B's best reply to Cooperate, of course, is Advance.
+T	B's best reply to Cooperate is, of course, Retreat.
+F	B's best reply to Cooperate is, of course, Advance.
+T	Retreat is better for B against Cooperate.
+F	Advance is better for B against Cooperate.
+T	Retreat is better for B, against Cooperate.
+F	Advance is better for B, against Cooperate.
+T	Retreat pays B 3 rather than 0 against Cooperate.
+F	Advance pays B 3 rather than 0 against Cooperate.
+T	A prefers Cooperate against Advance, however, against Retreat it prefers Defect.
+F	A prefers Cooperate against Advance, however, against Retreat it prefers Cooperate.
+T	A prefers Cooperate against Advance, however, Defect against Retreat.
+F	A prefers Cooperate against Advance, however, Cooperate against Retreat.
+T	A prefers Cooperate against Advance; Defect, however, is better against Retreat.
+F	A prefers Cooperate against Advance; Cooperate, however, is better against Retreat.
+T	A prefers Cooperate against Advance, though, against Retreat, Defect.
+F	A prefers Cooperate against Advance, though, against Retreat, Cooperate.
+T	If B plays Advance, then, A prefers Cooperate.
+F	If B plays Advance, then, A prefers Defect.
+F	B prefers Advance, against Cooperate.
+F	Advance is better, against Cooperate.
+F	Advance pays B more, against Cooperate.
+F	B does better with Advance, against Cooperate.
+F	B's best reply is Advance, against Cooperate.
+F	B prefers Advance, when A plays Cooperate.
+F	Advance is better for B, when A plays Cooperate.
+F	Advance is B's better option, if A plays Cooperate.
+T	B prefers Retreat, against Cooperate.
+T	Retreat is better for B, when A plays Cooperate.
+T	Against Advance, A's other option, Defect, is worse.
+F	Against Advance, A's other option, Defect, is better.
+T	Against Advance, A's safer option, Cooperate, is better.
+F	Against Advance, A's safer option, Cooperate, is worse.
+T	A's safer option, Cooperate, is better against Advance.
+F	A's safer option, Cooperate, is worse against Advance.
+T	B's aggressive option, Advance, is better against Defect.
+F	B's aggressive option, Advance, is worse against Defect.
+T	B's best reply to Cooperate, Retreat, pays 3 rather than 0.
+F	B's best reply to Cooperate, Retreat, pays 0 rather than 3.
+F	B's best reply to Cooperate, Advance, pays 3 rather than 0.
+T	Against Advance, Cooperate, A's safer option, is better.
+F	Against Advance, Defect, A's riskier option, is better.
+T	Whatever A chooses, Retreat is not always better for B.
+T	Whatever A plays, B's choice matters.
+T	If A plays Cooperate, Retreat, the cautious move, is better for B.
+F	If A plays Cooperate, Advance, the bold move, is better for B.
+T	B prefers Retreat against Cooperate, the safe option, and Advance against Defect.
+F	B prefers Advance against Cooperate, the safe option, and Retreat against Defect.
+T	B prefers Retreat against Cooperate, the safe option.
+F	B prefers Advance against Cooperate, the safe option.
+T	B's best reply to Cooperate is Retreat, which pays 3 rather than 0.
+F	B's best reply to Cooperate is Retreat, which pays 0 rather than 3.
+F	B's best reply to Cooperate is Advance, which pays 3 rather than 0.
+T	B's best reply to Cooperate is Retreat.
+F	B's best reply to Cooperate is Advance.
+@ DOM
+T	B has one better option, Retreat, whether A chooses Cooperate or Defect.
+F	B has one better option, Advance, whether A chooses Cooperate or Defect.
+T	B has one better option, Retreat, against Cooperate.
+F	B has one better option, Advance, against Cooperate.
+T	B's better option, Retreat, wins whether A chooses Cooperate or Defect.
+F	B's better option, Advance, wins whether A chooses Cooperate or Defect.
+T	B's dominant option, Retreat, is better whether A chooses Cooperate or Defect.
+F	B's dominant option, Advance, is better whether A chooses Cooperate or Defect.
+T	B has a better option, Retreat, whatever A does.
+F	B has a better option, Advance, whatever A does.
+T	B's best reply is Retreat whether A chooses Cooperate or Defect.
+F	B's best reply is Advance whether A chooses Cooperate or Defect.
+T	B's better option is Retreat whether A chooses Cooperate or Defect.
+F	B's better option is Advance whether A chooses Cooperate or Defect.
+T	B's dominant option is Retreat.
+F	B's dominant option is Advance.
+T	The column player's better option is Retreat whether A chooses Cooperate or Defect.
+F	The column player's better option is Advance whether A chooses Cooperate or Defect.
+T	B's better option is Retreat against Cooperate.
+F	B's better option is Advance against Cooperate.
+T	B's better option is Retreat, which wins whether A chooses Cooperate or Defect.
+F	B's better option is Advance, which wins whether A chooses Cooperate or Defect.
+T	B's better option is Retreat whatever A does.
+F	B's better option is Advance whatever A does.
+@ MIX
+T	Cooperate is worse against Retreat.
+F	Cooperate is worse against Advance.
+@ DOM
+T	Retreat is B's dominant option.
+F	Advance is B's dominant option.
+T	Retreat is dominant for B.
+F	Advance is dominant for B.
+T	Retreat is B's dominant strategy.
+F	Advance is B's dominant strategy.
+T	B's dominant strategy is Retreat.
+F	B's dominant strategy is Advance.
+T	B has a dominant strategy: Retreat.
+F	B has a dominant strategy: Advance.
+T	For B, Retreat is dominant.
+F	For B, Advance is dominant.
+T	Retreat dominates Advance for B.
+F	Advance dominates Retreat for B.
+@ MIX
+F	B's dominant strategy is Retreat.
+F	A's dominant choice is Cooperate.
+F	A's dominant choice is Defect.
+T	B has no dominant strategy.
+T	B's dominant strategy, if it had one, would matter.
+T	Neither player has a dominant strategy: A prefers Cooperate against Advance.
+F	Neither player has a dominant strategy: A prefers Defect against Advance.
+@ DOM
+T	A’s dominant choice is Defect.
+F	A’s dominant choice is Cooperate.
+T	Defect does better than Cooperate whether B chooses Advance or Retreat, so A’s dominant choice is Defect.
+F	Defect does better than Cooperate whether B chooses Advance or Retreat, so A’s dominant choice is Cooperate.
+T	B's dominant strategy is to play Retreat.
+F	B's dominant strategy is to play Advance.
+T	B's strictly dominant strategy is Retreat.
+F	B's strictly dominant strategy is Advance.
+T	B's dominant strategy is not Advance.
+T	If B had a dominant strategy, B's dominant strategy would be Advance.
+T	B has no dominant strategy, and neither does A.
+T	Whether or not A cooperates, B's dominant strategy is Retreat.
+F	Whether or not A cooperates, B's dominant strategy is Advance.
+T	B does not have a dominant strategy; A's dominant strategy is Defect.
+F	B does not have a dominant strategy; A's dominant strategy is Cooperate.
+@ MIX
+T	If either player had a dominant strategy, it would be obvious; neither does.
+T	Neither player's dominant strategy is Cooperate or Advance, because neither has one.
+T	B has no dominant choice: Retreat is better against Cooperate.
+F	B has no dominant choice: Advance is better against Cooperate.
+@ DOM
+T	B's better option is Retreat, which is better whether A chooses Cooperate or Defect.
+F	B's better option is Advance, which is better whether A chooses Cooperate or Defect.
+T	Retreat, which wins whether A chooses Cooperate or Defect, is B's choice.
+T	Retreat wins whether A chooses Cooperate or Defect.
+F	Advance wins whether A chooses Cooperate or Defect.
+T	Retreat wins for B against Cooperate.
+F	Advance wins for B against Cooperate.
+@ MIX
+T	Against Cooperate, Retreat wins for B.
+F	Against Cooperate, Advance wins for B.
+@ DOM
+T	B picks Retreat, which is better whether A chooses Cooperate or Defect.
+F	B picks Advance, which is better whether A chooses Cooperate or Defect.
+T	B goes with Retreat, which does better whether A chooses Cooperate or Defect.
+F	B goes with Advance, which does better whether A chooses Cooperate or Defect.
+T	B's choice is Retreat, which is better whether A chooses Cooperate or Defect.
+F	B's choice is Advance, which is better whether A chooses Cooperate or Defect.
+@ MIX
+T	B picks Retreat, which is better against Cooperate.
+F	B picks Advance, which is better against Cooperate.
+T	B's best reply is Retreat, which is better against Cooperate.
+F	B's best reply is Advance, which is better against Cooperate.
+@ DOM
+T	Retreat is better for B, whether A chooses Cooperate or Defect.
+F	Advance is better for B, whether A chooses Cooperate or Defect.
+T	B prefers Retreat, whether A chooses Cooperate or Defect.
+F	B prefers Advance, whether A chooses Cooperate or Defect.
+T	B's better option is Retreat, whether A chooses Cooperate or Defect.
+F	B's better option is Advance, whether A chooses Cooperate or Defect.
+T	B does better with Retreat, whatever A does.
+F	B does better with Advance, whatever A does.
+T	Retreat is better for B, regardless of what A does.
+F	Advance is better for B, regardless of what A does.
+T	Retreat is better for B, no matter which option A picks.
+F	Advance is better for B, no matter which option A picks.
+T	B always does better with Retreat, whether A chooses Cooperate or Defect.
+F	B always does better with Advance, whether A chooses Cooperate or Defect.
+T	B always prefers Retreat to Advance, whether A chooses Cooperate or Defect.
+F	B always prefers Advance to Retreat, whether A chooses Cooperate or Defect.
+T	B does better with Retreat than Advance, whether A chooses Cooperate or Defect.
+F	B does better with Advance than Retreat, whether A chooses Cooperate or Defect.
+T	B prefers Retreat to Advance, whether A chooses Cooperate or Defect.
+F	B prefers Advance to Retreat, whether A chooses Cooperate or Defect.
+T	B, however, prefers Retreat, whether A chooses Cooperate or Defect.
+F	B, however, prefers Advance, whether A chooses Cooperate or Defect.
+T	B prefers Retreat, whichever option A picks.
+F	B prefers Advance, whichever option A picks.
+T	B prefers Retreat, regardless of A's choice.
+F	B prefers Advance, regardless of A's choice.
+T	B prefers Retreat, against either of A's options.
+F	B prefers Advance, against either of A's options.
+T	A prefers Defect, whether B chooses Advance or Retreat.
+F	A prefers Cooperate, whether B chooses Advance or Retreat.
+@ MIX
+T	B prefers Retreat against Cooperate, whether or not that helps A.
+F	A prefers Defect, whether B chooses Advance or Retreat.
+T	A prefers Cooperate against Advance, whether B likes it or not.
+@ DOM
+T	B always does better with Retreat whether A chooses Cooperate or Defect.
+F	B always does better with Advance whether A chooses Cooperate or Defect.
+T	B always prefers Retreat to Advance whether A chooses Cooperate or Defect.
+F	B always prefers Advance to Retreat whether A chooses Cooperate or Defect.
+T	B does better with Retreat than Advance whether A chooses Cooperate or Defect.
+F	B does better with Advance than Retreat whether A chooses Cooperate or Defect.
+T	B prefers Retreat to Advance whether A chooses Cooperate or Defect.
+F	B prefers Advance to Retreat whether A chooses Cooperate or Defect.
+T	B, however, prefers Retreat whether A chooses Cooperate or Defect.
+F	B, however, prefers Advance whether A chooses Cooperate or Defect.
+T	B prefers Retreat whichever option A picks.
+F	B prefers Advance whichever option A picks.
+T	B prefers Retreat regardless of A's choice.
+F	B prefers Advance regardless of A's choice.
+T	B prefers Retreat against either of A's options.
+F	B prefers Advance against either of A's options.
+T	A prefers Defect whether B chooses Advance or Retreat.
+F	A prefers Cooperate whether B chooses Advance or Retreat.
+@ MIX
+F	A's safer option, Cooperate, is better against Retreat.
+T	A's riskier option, Defect, is better against Retreat.
+F	A's riskier option, Defect, is better against Advance.
+T	B's best reply to Defect, Advance, pays 2 rather than 0.
+F	B's best reply to Defect, Retreat, pays 2 rather than 0.
+T	Against Advance, Defect, of course, is worse for A.
+F	Against Advance, Cooperate, of course, is worse for A.
+T	When B plays Retreat, Defect, A's riskier option, is better for A.
+F	When B plays Retreat, Cooperate, A's safer option, is better for A.
+T	Defect, of course, is, as expected, better for A against Retreat.
+F	Cooperate, of course, is, as expected, better for A against Retreat.
+T	Defect, however, is better for A against Retreat.
+F	Cooperate, however, is better for A against Retreat.
+T	A prefers, of course, Defect against Retreat.
+F	A prefers, of course, Cooperate against Retreat.
+T	A prefers, Cooperate against Advance.
+F	A prefers, Defect against Advance.
+T	Defect is better for A, against Retreat.
+F	Cooperate is better for A, against Retreat.
+T	Defect is better for A, not Cooperate, against Retreat.
+F	Cooperate is better for A, not Defect, against Retreat.
+T	A, as before, prefers Defect, against Retreat.
+F	A, as before, prefers Cooperate, against Retreat.
+T	The payoffs differ. Against Retreat, Cooperate, is worse for A.
+F	The payoffs differ. Against Retreat, Defect, is worse for A.
+T	B's best reply to Cooperate, Retreat, beats Advance.
+F	B's best reply to Cooperate, Advance, beats Retreat.
+T	B's better option against Defect, Advance, wins.
+F	B's better option against Defect, Retreat, wins.
+T	Against Defect, B's better option, Advance, pays 2.
+F	Against Defect, B's better option, Retreat, pays 2.
+T	Retreat wins for B whenever A plays Cooperate.
+F	Advance wins for B whenever A plays Cooperate.
+T	Against Retreat, Defect wins for A, as expected.
+F	Against Retreat, Cooperate wins for A, as expected.
+T	The row player's best reply to Retreat is Defect.
+F	The row player's best reply to Retreat is Cooperate.
+@ DOM
+T	A's better choice, Defect, wins whether B advances or retreats.
+F	A's better choice, Cooperate, wins whether B advances or retreats.
+T	Player A's dominant option, Defect, is better for A.
+F	Player A's dominant option, Cooperate, is better for A.
+T	A's riskier option, Defect, is better, whether B picks Advance or Retreat.
+F	A's safer option, Cooperate, is better, whether B picks Advance or Retreat.
+@ MIX
+T	Defect, not Cooperate, is better for A against Retreat.
+F	Cooperate, not Defect, is better for A against Retreat.
+T	Cooperate, rather than Defect, is better for A against Advance.
+F	Defect, rather than Cooperate, is better for A against Advance.
+T	Retreat, not Advance, is B's better reply to Cooperate.
+F	Advance, not Retreat, is B's better reply to Cooperate.
+T	Against Defect, Advance, not Retreat, pays B more.
+F	Against Defect, Retreat, not Advance, pays B more.
+T	Defect, not Cooperate, is worse for A against Advance.
+F	Cooperate, not Defect, is worse for A against Advance.
+T	Retreat is better for B, not Advance, against Cooperate.
+F	Advance is better for B, not Retreat, against Cooperate.
+T	Retreat is better for player B, rather than Advance, against Cooperate.
+F	Advance is better for player B, rather than Retreat, against Cooperate.
+T	Defect, not Advance, is what A should play against Retreat.
+T	Defect, not Cooperate, against Retreat.
+T	A plays Defect, not Cooperate, when B plays Retreat.
+T	Cooperate, not Retreat, is A's reply to Advance.
+F	Defect is better for A, not Cooperate, against Advance.
+T	Cooperate is better for A, not Defect, against Advance.
+T	Cooperate, not Defect, does better for A against Advance.
+F	Defect, not Cooperate, does better for A against Advance.
+F	Advance, it seems, is better for B against Cooperate.
+T	Retreat, it seems, is better for B against Cooperate.
+F	It seems Advance is better for B against Cooperate.
+T	It seems Retreat is better for B against Cooperate.
+F	Advance, perhaps, is better for B against Cooperate.
+T	Retreat, perhaps, is better for B against Cooperate.
+F	Perhaps Advance is better for B against Cooperate.
+T	Perhaps Retreat is better for B against Cooperate.
+F	Advance is perhaps better for B against Cooperate.
+T	Retreat is perhaps better for B against Cooperate.
+F	Advance is apparently better for B against Cooperate.
+T	Retreat is apparently better for B against Cooperate.
+F	Advance, apparently, is better for B against Cooperate.
+T	Retreat, apparently, is better for B against Cooperate.
+F	Advance, arguably, is better for B against Cooperate.
+T	Retreat, arguably, is better for B against Cooperate.
+F	Arguably, Advance is better for B against Cooperate.
+T	Arguably, Retreat is better for B against Cooperate.
+F	Advance, naively, is better for B against Cooperate.
+T	Retreat, naively, is better for B against Cooperate.
+F	Advance, at first glance, is better for B against Cooperate.
+T	Retreat, at first glance, is better for B against Cooperate.
+F	Advance, intuitively, is better for B against Cooperate.
+T	Retreat, intuitively, is better for B against Cooperate.
+F	Advance, presumably, is better for B against Cooperate.
+T	Retreat, presumably, is better for B against Cooperate.
+F	B, it seems, prefers Advance against Cooperate.
+T	B, it seems, prefers Retreat against Cooperate.
+F	B prefers, it seems, Advance against Cooperate.
+T	B prefers, it seems, Retreat against Cooperate.
+F	Advance, one might think, is better for B against Cooperate.
+T	Retreat, one might think, is better for B against Cooperate.
+F	Advance, in theory, is better for B against Cooperate.
+T	Retreat, in theory, is better for B against Cooperate.
+F	Advance would be better for B against Cooperate.
+T	Retreat would be better for B against Cooperate.
+F	Advance might be better for B against Cooperate.
+T	Retreat might be better for B against Cooperate.
+F	Advance may be better for B against Cooperate.
+T	Retreat may be better for B against Cooperate.
+F	Advance seems better for B against Cooperate.
+T	Retreat seems better for B against Cooperate.
+F	Advance appears better for B against Cooperate.
+T	Retreat appears better for B against Cooperate.
+F	Advance looks better for B against Cooperate.
+T	Retreat looks better for B against Cooperate.
+F	Advance seems to be better for B against Cooperate.
+T	Retreat seems to be better for B against Cooperate.
+F	Advance is probably better for B against Cooperate.
+T	Retreat is probably better for B against Cooperate.
+F	Advance is likely better for B against Cooperate.
+T	Retreat is likely better for B against Cooperate.
+F	Advance is supposedly better for B against Cooperate.
+T	Retreat is supposedly better for B against Cooperate.
+F	Advance is certainly better for B against Cooperate.
+T	Retreat is certainly better for B against Cooperate.
+F	Advance is obviously better for B against Cooperate.
+T	Retreat is obviously better for B against Cooperate.
+F	Advance is evidently better for B against Cooperate.
+T	Retreat is evidently better for B against Cooperate.
+F	Advance is indeed better for B against Cooperate.
+T	Retreat is indeed better for B against Cooperate.
+F	Advance is actually better for B against Cooperate.
+T	Retreat is actually better for B against Cooperate.
+F	Advance is definitely better for B against Cooperate.
+T	Retreat is definitely better for B against Cooperate.
+F	Advance should be better for B against Cooperate.
+T	Retreat should be better for B against Cooperate.
+F	Advance will be better for B against Cooperate.
+T	Retreat will be better for B against Cooperate.
+F	Advance can be better for B against Cooperate.
+F	Advance would do better for B against Cooperate.
+T	Retreat would do better for B against Cooperate.
+F	Advance seems to pay B more against Cooperate.
+T	Retreat seems to pay B more against Cooperate.
+F	B would prefer Advance against Cooperate.
+T	B would prefer Retreat against Cooperate.
+F	B seems to prefer Advance against Cooperate.
+T	B seems to prefer Retreat against Cooperate.
+F	B probably prefers Advance against Cooperate.
+T	B probably prefers Retreat against Cooperate.
+F	Advance, the gutsy play, is better for B against Cooperate.
+T	Retreat, the gutsy play, is better for B against Cooperate.
+F	Advance, B's bolder bet, is better against Cooperate.
+T	Retreat, B's bolder bet, is better against Cooperate.
+F	Advance, unsurprisingly enough, is better for B against Cooperate.
+T	Retreat, unsurprisingly enough, is better for B against Cooperate.
+F	Advance, to be sure, is better for B against Cooperate.
+T	Retreat, to be sure, is better for B against Cooperate.
+F	Advance, as the numbers show, is better for B against Cooperate.
+T	Retreat, as the numbers show, is better for B against Cooperate.
+F	Advance, the aggressive line, is better for B against Cooperate.
+T	Retreat, the cautious line, is better for B against Cooperate.
+F	Advance, in short, is better for B against Cooperate.
+T	Retreat, in short, is better for B against Cooperate.
+F	Advance, simply put, is better for B against Cooperate.
+T	Retreat, simply put, is better for B against Cooperate.
+F	Advance, B's riskier route, is better against Cooperate.
+T	Retreat, B's safer route, is better against Cooperate.
+F	Advance (the bolder route) is better for B against Cooperate.
+T	Retreat (the safer route) is better for B against Cooperate.
+F	Advance — the bolder route — is better for B against Cooperate.
+T	Retreat — the safer route — is better for B against Cooperate.
+T	If B played Retreat, Defect would be better for A.
+F	If B played Retreat, Cooperate would be better for A.
+T	Were B to play Advance, Cooperate would pay A more.
+F	Were B to play Advance, Defect would pay A more.
+T	Defect would be better for A if B played Retreat.
+F	Cooperate would be better for A if B played Retreat.
+T	Against Retreat, Defect would do better for A.
+F	Against Retreat, Cooperate would do better for A.
+T	Defect would not be better for A against Advance.
+F	Defect would not be better for A against Retreat.
+T	Cooperate could never be better for A against Retreat.
+F	Cooperate could never be better for A against Advance.
+T	Retreat is no worse for B against Cooperate.
+F	Advance is no worse for B against Cooperate.
+T	Advance isn't worse for B against Defect.
+F	Retreat isn't worse for B against Defect.
+T	Would Advance be better for B against Cooperate? No.
+T	A switch to Advance would hurt B against Cooperate.
+T	Defect seems to give A more against Retreat.
+F	Cooperate seems to give A more against Retreat.
+T	Cooperate might be worse for A against Retreat.
+F	Defect might be worse for A against Retreat.
+T	Retreat would surely be better for B against Cooperate.
+F	Advance would surely be better for B against Cooperate.
+T	Even if Advance might be better for B against Defect, Retreat is better against Cooperate.
+F	Even if Advance might be better for B against Defect, Advance is better against Cooperate.
+F	Advance pays B more against Cooperate.
+F	Advance would not be worse for B against Cooperate.
+F	Advance is not worse for B against Cooperate.
+F	B would do better with Advance against Cooperate.
+F	Advance does better for B against Cooperate.
+F	Advance would pay B more against Cooperate.
+T	Retreat is not worse for B against Cooperate.
+F	Retreat is not better for B against Cooperate.
+T	Advance is not better for B against Cooperate.
