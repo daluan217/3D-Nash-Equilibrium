@@ -2142,3 +2142,155 @@ F	Advance would pay B more against Cooperate.
 T	Retreat is not worse for B against Cooperate.
 F	Retreat is not better for B against Cooperate.
 T	Advance is not better for B against Cooperate.
+# S26a: a degree or hedge before a comparative ("a bit / far / noticeably / no doubt / of course better") carries no
+# direction; a denying one ("in no way / by no means / rarely better") is "not"; "hardly/scarcely better" (barely? not?) is
+# unread, so T both ways. "Never / In no way is X better" and "(Only) against Q is X better" are the plain claims; a hedge
+# aside (", not surprisingly,", ", more likely,") is dropped; "not much better" keeps its negation; "is not/no more profitable"
+# is a denial. Each other T has an F twin differing in one label (MIX or DOM); none passes by coincidence: HEAD (5a73f8d)
+# missed 60 of these 143.
+@ MIX
+F	Cooperate is, in no way, better for A against Advance.
+T	Defect is, in no way, better for A against Advance.
+F	Cooperate is in no way better for A against Advance.
+T	Defect is in no way better for A against Advance.
+F	Cooperate is, by no means, better for A against Advance.
+F	Cooperate is by no means better for A against Advance.
+F	Cooperate is, not at all, better for A against Advance.
+T	Cooperate is, more often than not, better for A against Advance.
+F	Defect is, more often than not, better for A against Advance.
+T	Cooperate is, all the more, better for A against Advance.
+F	Defect is, all the more, better for A against Advance.
+F	Defect, less surprisingly, is better for A against Advance.
+F	Defect is, less obviously, better for A against Advance.
+T	Cooperate is, less obviously, better for A against Advance.
+F	Defect is, more clearly, better for A against Advance.
+T	Cooperate, sometimes worse, is A's choice against Advance.
+F	Cooperate is not better for A against Advance.
+T	Defect is not better for A against Advance.
+F	Defect is usually better for A against Advance.
+F	Defect is often better for A against Advance.
+F	Defect is, usually, better for A against Advance.
+T	Cooperate is hardly better for A against Advance.
+T	Cooperate is, hardly, better for A against Advance.
+F	Defect is, more likely, better for A against Advance.
+F	Defect is, most likely, better for A against Advance.
+F	Defect is no doubt better for A against Advance.
+F	Defect is not surprisingly better for A against Advance.
+F	Defect, not surprisingly, is better for A against Advance.
+F	Not surprisingly, Defect is better for A against Advance.
+F	No doubt, Defect is better for A against Advance.
+F	No wonder A prefers Defect against Advance.
+F	It is no wonder that A prefers Defect against Advance.
+F	There is no doubt that A prefers Defect against Advance.
+F	Without a doubt, Defect is better for A against Advance.
+F	Defect is, without doubt, better for A against Advance.
+F	Defect is better for A against Advance, no doubt.
+F	Defect is better for A against Advance, not surprisingly.
+T	In no way is Cooperate worse for A against Advance.
+F	Defect is unsurprisingly better for A against Advance.
+F	Defect is predictably better for A against Advance.
+F	Defect is noticeably better for A against Advance.
+F	Defect is considerably better for A against Advance.
+F	Defect is significantly better for A against Advance.
+F	Defect is marginally better for A against Advance.
+F	Defect is slightly better for A against Advance.
+F	Defect is somewhat better for A against Advance.
+F	Defect is a bit better for A against Advance.
+F	Defect is a little better for A against Advance.
+F	Defect is far better for A against Advance.
+F	Defect is much better for A against Advance.
+F	Defect is even better for A against Advance.
+F	Defect is typically better for A against Advance.
+F	Defect is generally better for A against Advance.
+F	Defect is barely better for A against Advance.
+F	Defect is still better for A against Advance.
+F	Defect does noticeably better for A against Advance.
+F	Defect is noticeably worse for B against Advance.
+T	Cooperate is noticeably worse for A against Retreat.
+F	Defect would be noticeably better for A against Advance.
+F	Defect is, predictably, better for A against Advance.
+F	Defect is, unsurprisingly, better for A against Advance.
+F	Defect, unsurprisingly, is better for A against Advance.
+F	Defect, predictably enough, is better for A against Advance.
+T	Defect is usually better for A.
+T	Cooperate is usually better for A.
+T	Defect is often better for A.
+T	Never is Defect better for A against Advance.
+T	Nowhere is Defect better for A against Advance.
+T	In no way is Defect better for A against Advance.
+T	Only against Retreat is Defect better for A.
+F	Only against Advance is Defect better for A.
+F	Against Advance is Defect better for A.
+T	Rarely is Defect better for A against Advance.
+T	Defect is by no means better for A against Advance.
+T	Defect is hardly better for A against Advance.
+T	Defect is scarcely better for A against Advance.
+T	Defect is barely better for A against Retreat.
+T	Defect is noticeably better for A against Retreat.
+T	Defect is not significantly better for A against Advance.
+T	Cooperate is not significantly better for A against Advance.
+F	Defect is of course better for A against Advance.
+F	Defect is without question better for A against Advance.
+F	Defect is by far better for A against Advance.
+F	Defect is by far the better choice for A against Advance.
+F	Defect is a lot better for A against Advance.
+F	Defect gives A a noticeably higher payoff against Advance.
+F	Defect gives A a far higher payoff against Advance.
+F	A gets noticeably more from Defect against Advance.
+F	A earns far more with Defect against Advance.
+T	Defect is not much better for A against Retreat.
+F	Cooperate is never better for A against Advance.
+T	Defect is never better for A against Advance.
+@ DOM
+T	B never plays Advance.
+@ MIX
+T	Cooperate is not much better for A against Advance.
+T	Cooperate is not far better for A against Advance.
+T	Cooperate is not a lot better for A against Advance.
+T	Cooperate is only slightly better for A against Advance.
+F	Cooperate is only slightly better for A against Retreat.
+T	Cooperate isn't much better for A against Advance.
+T	Defect is not much worse for A against Advance.
+T	Cooperate is no doubt better for A against Advance.
+F	Cooperate is no doubt better for A against Retreat.
+T	There is no doubt Cooperate is better for A against Advance.
+T	Cooperate is better, no doubt, for A against Advance.
+T	Cooperate does a bit better for A against Advance.
+F	Cooperate does a bit better for A against Retreat.
+T	Cooperate gives A a noticeably higher payoff against Advance.
+F	Cooperate gives A a noticeably higher payoff against Retreat.
+T	A gets noticeably more from Cooperate against Advance.
+F	A gets noticeably more from Cooperate against Retreat.
+T	The gap is far more than 1.
+T	Cooperate is even worse for A against Retreat.
+F	Cooperate is even worse for A against Advance.
+F	Never is Defect better for A against Retreat.
+F	In no way is Defect worse for A against Advance.
+T	Against Retreat is Defect better for A.
+T	Only against Advance is Cooperate better for A.
+T	When B plays Retreat is Defect better for A?
+T	Against Advance is Defect better for A?
+T	When B plays Advance, is Defect better for A?
+T	Cooperate is, hardly, worse for A against Advance.
+T	Cooperate is, scarcely, better for A against Retreat.
+T	Never is Defect more profitable for A against Advance.
+F	Never is Cooperate more profitable for A against Advance.
+T	Only against Retreat is Defect more profitable for A.
+F	Only against Retreat is Cooperate more profitable for A.
+T	Against Advance is Defect less profitable for A.
+F	Against Advance is Cooperate less profitable for A.
+T	If there is no less than an 80% chance that B plays Advance, A prefers Cooperate.
+F	If there is no less than an 80% chance that B plays Advance, A prefers Defect.
+F	Cooperate is not more profitable for A against Advance.
+T	Defect is not more profitable for A against Advance.
+F	Defect is more profitable for A against Advance.
+T	Cooperate is more profitable for A against Advance.
+F	Cooperate isn't more profitable for A against Advance.
+F	Cooperate is no more profitable for A against Advance.
+T	Defect is no more profitable for A against Advance.
+F	Defect is not less profitable for A against Advance.
+T	Defect is not less profitable for A against Retreat.
+F	Defect isn't more costly for A against Advance.
+T	Cooperate isn't more costly for A against Advance.
+T	Cooperate is not any more profitable for A against Retreat.
+F	Defect is not any more profitable for A against Retreat.

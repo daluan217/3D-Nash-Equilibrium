@@ -785,6 +785,7 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   // complement frames) in src/fixtures/mathvalidator-s23.txt; its header records how the twins are built. HEAD missed 253.
   // S24: +235 twins (complement frames for every judge, avoidance-verb own claims, ", since it pays N rather than M").
   // S25: +1090 twins (complement parity, exceptive heads, asides, appositive heads, "X, not Y,", dominance nouns, hedges/modals).
+  // S26a: +143 twins (degree/hedge words before a comparative, denying degree words, inverted "Never is X better", hedge asides).
   const DOM23 = G(1, 0, 3, 2, 0, 3, 1, 2);
   let g23 = MIX;
   for (const ln of readFileSync('src/fixtures/mathvalidator-s23.txt', 'utf8').split('\n')) {
