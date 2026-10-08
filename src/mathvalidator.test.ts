@@ -783,6 +783,7 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   ] as [string, boolean, GamePayoffs, typeof L][]) check(`S22 ${t ? 'a true' : 'a false'} real report sentence is judged`, (dir(s, g, l).length === 0) === t, `${s} :: ${dir(s, g, l).join(' | ')}`);
   // S23: 731 twins (ellipses, frame-interposed labels, "it pays N" after a frame, ", earning N rather than M [from Q]",
   // complement frames) in src/fixtures/mathvalidator-s23.txt; its header records how the twins are built. HEAD missed 253.
+  // S24: +235 twins (complement frames for every judge, avoidance-verb own claims, ", since it pays N rather than M").
   const DOM23 = G(1, 0, 3, 2, 0, 3, 1, 2);
   let g23 = MIX;
   for (const ln of readFileSync('src/fixtures/mathvalidator-s23.txt', 'utf8').split('\n')) {
