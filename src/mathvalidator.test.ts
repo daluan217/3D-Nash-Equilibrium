@@ -5,6 +5,7 @@
  * endpoints in {0, 1, interior roots}, so zero-regret tests at breakpoints and midpoints find every component.
  *   npx tsx src/mathvalidator.test.ts
  */
+import { readFileSync } from 'node:fs';
 import { validateReport, validateProseClaims, validateProseDirections } from './utils/nashValidator';
 import { computeAllNE, commitPayoffs, continuumComponents, pointInRect, hasEquilibriumContinuum } from './utils/gameEngine';
 import { tieProseFull } from './utils/tieProse';
@@ -296,8 +297,10 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   }
   // Each would flag if read as a level: (C,R) pays A 0, and 2 is no cell of Retreat's column; a second subject ends a list.
   for (const s of ['Against Retreat, A gets 2 points less from Cooperate.', 'Against Retreat, Cooperate earns A 3 points less than Defect.',
-    'Against Retreat, A gets 2 over Cooperate by playing Defect.', 'A gets 3 against Retreat and B gets 0 and 2 against Advance.', 'Retreat against Defect earns 2.'])
+    'Against Retreat, A gets 2 over Cooperate by playing Defect.', 'A gets 3 against Retreat and B gets 0 and 2 against Advance.', 'Retreat against Defect earns 0.'])
     check('S18d a difference or foreign figure stands', validateProseDirections(s, L, MIX).length === 0, s);
+  // S23: "Retreat against Defect earns 2" stood here unread; B's Retreat pays 0 there (A's Defect 3), so it is false either way.
+  check('S23 a frame-interposed figure is judged as its own option', validateProseDirections('Retreat against Defect earns 2.', L, MIX).length > 0, 'Retreat against Defect earns 2.');
 }
 
 // ── S19: a stated opponent MIX is judged at that mix; a best reply pairs with the frame in its own segment ────────────
@@ -778,6 +781,42 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
     ['Open gate is the gatekeeper’s dominant strategy.', true, G(-8, 0, 8, -8, -7, -8, 8, -8), Lb('Wait', 'Enter', 'Open gate', 'Keep closed')],
     ['Keep closed is the gatekeeper’s dominant strategy.', false, G(-8, 0, 8, -8, -7, -8, 8, -8), Lb('Wait', 'Enter', 'Open gate', 'Keep closed')],
   ] as [string, boolean, GamePayoffs, typeof L][]) check(`S22 ${t ? 'a true' : 'a false'} real report sentence is judged`, (dir(s, g, l).length === 0) === t, `${s} :: ${dir(s, g, l).join(' | ')}`);
+  // S23: 731 twins (ellipses, frame-interposed labels, "it pays N" after a frame, ", earning N rather than M [from Q]",
+  // complement frames) in src/fixtures/mathvalidator-s23.txt; its header records how the twins are built. HEAD missed 253.
+  const DOM23 = G(1, 0, 3, 2, 0, 3, 1, 2);
+  let g23 = MIX;
+  for (const ln of readFileSync('src/fixtures/mathvalidator-s23.txt', 'utf8').split('\n')) {
+    if (ln.startsWith('@ ')) g23 = ln === '@ DOM' ? DOM23 : MIX;
+    else if (/^[TF]\t/.test(ln)) check(`S23 ${ln[0] === 'T' ? 'a true' : 'a false'} twin is judged`, (dir(ln.slice(2), g23).length === 0) === (ln[0] === 'T'), `${ln} :: ${dir(ln.slice(2), g23).join(' | ')}`);
+  }
+  // S23: real report sentences (verbatim). Worked by hand: Economy vs Late pays 5 vs -9; the Light Review figures are the Full
+  // Audit column's; Rival app vs Build plugin pays 9 vs -2; Plan West ties 4/4; Inland vs Night pays 8 vs -6. The rest are true.
+  for (const [s, t, g, l] of [
+    ['Intensive Review is better for the auditor whether the firm chooses Full or Minimal Disclosure: against Full it pays -2 rather than -9, and against Minimal it pays 5 rather than 2.', true, G(-2, 5, -9, 2, 9, 6, 4, 9), Lb('Intensive Review', 'Light Review', 'Full Disclosure', 'Minimal Disclosure')],
+    ['The distributor always does better with Express than with Standard: Express does better against Brief and against Detailed.', true, G(-8, -7, -8, -7, 5, 8, -4, 1), Lb('Brief', 'Detailed', 'Standard', 'Express')],
+    ['There is no pure equilibrium: against a Long contract, the port prefers Maintain, earning 5 rather than 1, but against the Spot market it prefers Expand, earning -5 rather than -6.', true, G(1, -5, 5, -6, 6, 3, -5, 8), Lb('Expand', 'Maintain', 'Long contract', 'Spot market')],
+    ['Birch has a dominant option: Flexible beats Tight whether Aster chooses Bold or Steady, receiving 8 rather than -9 for Bold or -5 rather than -7 for Steady.', true, G(-9, 7, -6, -6, -9, 8, -7, -5), Lb('Bold', 'Steady', 'Tight', 'Flexible')],
+    ['Against Late Dispatch, A prefers Economy, receiving 5 rather than 1 from Express, while B prefers Late Dispatch against Economy, receiving 7 rather than -2 from Early Dispatch.', false, G(1, -9, 1, 5, 8, 8, -2, 7), Lb('Express', 'Economy', 'Early Dispatch', 'Late Dispatch')],
+    ['Against a Minor Audit, the inspector does better with a Light Review, earning 0 rather than -7; against a Full Audit, the inspector gets 0 from either review.', false, G(-8, 0, -2, 8, -6, -7, 0, 0), Lb('Minor Audit', 'Full Audit', 'Light Review', 'Full Review')],
+    ['Once A chooses Closed suite, B does better with Rival app, earning 9 rather than 0 from Build plugin, so the sole equilibrium has A choose Closed suite and B choose Rival app.', false, G(9, 2, 0, 9, 0, 2, -2, 9), Lb('Open platform', 'Closed suite', 'Build plugin', 'Rival app')],
+    ['Once A commits to Full Rollout, Plan West does better for B than Plan East, so there are two equilibrium plans.', false, G(-1, -2, 4, 6, -3, 4, 4, 4), Lb('Pilot Program', 'Full Rollout', 'Plan East', 'Plan West')],
+    ['Against the Night crew, the dispatcher prefers the Inland route, earning 8 rather than 7; against the Inland route, the manager prefers the Day crew, earning 3 rather than -5.', false, G(7, -6, 7, 8, -8, -8, 3, -5), Lb('Coastal route', 'Inland route', 'Day crew', 'Night crew')],
+    // HEAD flagged these two true ones (the "than" object read as the weld's subject): Aggressive 4>2, 1>-3; Central 4>-2, 3>-8.
+    ['The project lead always does better with the Aggressive Plan than the Conservative Plan: it pays 4 rather than 2 under Strict Review and 1 rather than -3 under Light Review.', true, G(4, 1, 2, -3, -9, -8, 1, -9), Lb('Aggressive Plan', 'Conservative Plan', 'Strict Review', 'Light Review')],
+    ['Firm B likewise does better with Central than Riverside, receiving 4 rather than -2 against Standard and 3 rather than -8 against Express.', true, G(8, -4, 9, 1, 4, -2, 3, -8), Lb('Standard', 'Express', 'Central', 'Riverside')],
+    // Bare pairs after a frame label: true as written; its column-swapped twin (not real) passed at HEAD.
+    ['A’s operational tradeoff is one-sided: Express beats Economy at East Hub, 4 rather than -2, and at West Hub, 1 rather than -3, so Express is dominant.', true, G(4, 1, -2, -3, -5, 9, 6, 1), Lb('Express', 'Economy', 'East Hub', 'West Hub')],
+    ['A’s operational tradeoff is one-sided: Express beats Economy at East Hub, 1 rather than -3, and at West Hub, 4 rather than -2, so Express is dominant.', false, G(4, 1, -2, -3, -5, 9, 6, 1), Lb('Express', 'Economy', 'East Hub', 'West Hub')],
+    // A label named "Avoid" is no complement: the first (real, true) was flagged by the S23 complement arm before labels were
+    // blanked. Avoid vs Enter: -2 > -7 against Visible patrol; Enter vs Avoid: 2 > -1 against Plainclothes security.
+    ...([
+      ['The museum is indifferent between Visible patrol and Plainclothes security whether the thief chooses Enter or Avoid, while the thief prefers Avoid against Visible patrol and Enter against Plainclothes security.', true],
+      ['The thief prefers Enter against Visible patrol and Avoid against Plainclothes security.', false],
+      ['B prefers Avoid unless A plays Plainclothes security.', true], ['B prefers Enter unless A plays Plainclothes security.', false],
+      ['B prefers Avoid against anything other than Plainclothes security.', true], ['B prefers Enter against anything other than Plainclothes security.', false],
+      ['Apart from that, B prefers Avoid against Visible patrol.', true], ['Apart from that, B prefers Enter against Visible patrol.', false],
+    ] as [string, boolean][]).map(([s, t]) => [s, t, G(-1, 0, -1, 0, -7, -2, 2, -1), Lb('Visible patrol', 'Plainclothes security', 'Enter', 'Avoid')]),
+  ] as [string, boolean, GamePayoffs, typeof L][]) check(`S23 ${t ? 'a true' : 'a false'} real report sentence is judged`, (dir(s, g, l).length === 0) === t, `${s} :: ${dir(s, g, l).join(' | ')}`);
 }
 
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────
