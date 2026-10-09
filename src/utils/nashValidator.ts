@@ -2951,6 +2951,12 @@ const HALF_AFTER = new RegExp(String.raw`^\s+(?:(?:exactly\s+)?as\s+(?:often|fre
 const HALF_BEFORE = new RegExp(String.raw`(?:(?:${EVEN}|\bevenly|\bequally|\b(?:fair\s+)?coin)\s+(?:between|over|across)|\b(?:even|equal|fifty[-\s]fifty|half[-\s]and[-\s]half|50\s*[-–\/]\s*50)\s+(?:mix|split|blend|randomi[sz]ation|lottery)\s+(?:of|between|over))\s+(?:the\s+)?(?:[^,;.]{1,40}?\s+(?:and|or)\s+(?:the\s+)?)?$`, 'i');
 // "unless / except / other than / away from X" names everything BUT X (as "when B does not play X" does): a claim framed
 // so is never judged at X or its mix (S19j; "A is never indifferent unless B plays X 75% of the time" is true).
+// S28: a universal over the opponent's options in other words ("in every case", "for each choice of B", "against all of B's
+// options", "every time", "at all times", "without exception"). ANY_UNIV ("in either column", "for any choice of B") is one under
+// a negation too: "not … in either column" denies at each option, never "not all". "In any case" (anyway) is neither.
+const UNIV_NOUN = String.raw`(?:of\s+)?(?:the\s+|(?:player\s+)?[AB]['’]s\s+|(?:its|their|his|her)\s+(?:(?:opponent|rival)['’]s\s+)?)?(?:(?:two|possible|available|single)\s+)?(?:cases?|columns?|rows?|scenarios?|situations?|circumstances?|contingenc(?:y|ies)|instances?|choices?|options?|moves?|actions?|strateg(?:y|ies)|plays?|responses?|replies)\b(?:\s+(?:of|by)\s+(?:player\s+)?[AB]\b(?!['’])|\s+(?:that\s+)?(?:player\s+)?[AB]\s+(?:makes?|picks?|chooses?|plays?|takes?|has|might\s+make))?`;
+const OPP_UNIV = String.raw`\b(?:in|for|under|across|at|against|facing|versus)\s+(?:every|each|all|both)\s+${UNIV_NOUN}(?!\s+(?:but|except|save|bar|barring|other\s+than|apart\s+from|aside\s+from)\b)|\bevery\s+(?:single\s+)?time(?=\s*(?:[,.;:!?)]|$))|\bat\s+all\s+times\b|\bwithout\s+(?:any\s+)?exception\b|\bunconditionally\b|\bacross\s+the\s+board\b|\bcome\s+what\s+may\b`;
+const ANY_UNIV = String.raw`\b(?!in\s+any\s+(?:case|event)\b)(?:in|for|under|across|at|against|facing|versus)\s+(?:either|any)\s+${UNIV_NOUN}`;
 const COMPL = /\b(?:unless|except|excluding|other\s+than|apart\s+from|aside\s+from|anything\s+but|besides|save\s+(?:for|when|if|against)|barring|outside\s+of|avoid(?:s|ed|ing)?|away\s+from|elsewhere|otherwise|(?:any|every|all)\s+other)\b/i;
 // S24: ONE complement test for every judge, on text with labels blanked ("Skip Inspection", "Avoid" are names). With two
 // options a complemented label ("when B shuns X", "unless B plays X", "barring X", "B leaves X aside") names the OTHER
@@ -3078,14 +3084,21 @@ function sentential(text: string, labels: OptionLabels | null | undefined, g: Ga
   const END = /\s*(?:[;:]|,\s*(?:but|and|yet|so|while|whereas|though|although|since|because|given|nor)\b|[.!?]+\s*$|$)/i;
   const FRAME = String.raw`(?:(?:when(?:ever)?|if|once|against|versus|facing|given|under)\b[^,]*,\s*)?`;
   const VERB = new RegExp(String.raw`^(${FRAME}(?:${SUBJ})\s+)(${ADVB})(?:(${AUX})\b|([a-z]+?)(e?s)\b)`, 'i');
+  const NEGW = /\b(?:not|never|no|none|neither|nor|nothing|cannot)\b|n['’]t\b/i;
+  const UNIV_TAIL = new RegExp(String.raw`\s*,?\s*(?:(?:regardless|irrespective)\s+of\b|no\s+matter\b|whatever\b|whichever\b|either\s+way\b|${ANY_UNIV})[^,;]*$`, 'i');
   const negate = (p: string): string | null => {
     const dn = new RegExp(`^(?:${DENY})(.+)$`, 'i').exec(p);
     if (dn) return dn[1];   // "it is not true that it is not true that P" is P
+    // A leading universal ("whatever B does, P", "no matter what B plays P") is in the denial's scope: it moves after P's
+    // negated verb ("P' whatever B does"), where the judges read "not (for all)". Over a negated P, not (for all, not P) is
+    // "for some, P": the universal goes and the unframed claim reads existentially.
+    const uf = new RegExp(String.raw`^((?:(?:regardless|irrespective)\s+of\s+|no\s+matter\s+)?(?:what(?:ever)?|which(?:ever)?)\s+(?:\w+\s+)?(?:player\s+)?[AB]\s+(?:\w+\s+)?(?:does|do|did|plays?|chooses?|picks?|selects?|uses?|takes?)|(?:regardless|irrespective)\s+of\s+(?:player\s+)?[AB](?:['’]s\s+(?:choice|move|play|option|strategy|action)|(?![\w'’]))|either\s+way|${OPP_UNIV}|${ANY_UNIV})(?:\s*,\s*|\s+(?=(?:${SUBJ})\s))`, 'i').exec(p);
+    if (uf) { const q = p.slice(uf[0].length), n = negate(q); return n && (NEGW.test(q) ? n : `${n} ${new RegExp(`^(?:${ANY_UNIV})$`, 'i').test(uf[1]) ? 'in every case' : uf[1]}`); }
     const fr = new RegExp(`^${FRAME}`, 'i').exec(p)![0].length;
     const core = p.slice(fr).replace(/\([^()]*\)/g, '()').replace(/\bbetween\s+[^,;]+?\s+and\s+/gi, 'between ');
     if (/\b(?:and|or|but|while|whereas|so|because|since|although|though|unless|which)\b|[,;:]/i.test(core)) return null;
     // Only the main clause's negation is denied: "not (A prefers X when B does not play Y)" keeps "does not play Y".
-    const sub = p.slice(fr).search(/\s(?:when(?:ever)?|if|once|against|versus|facing|given|under|after|regardless|whatever)\b/i);
+    const sub = p.slice(fr).search(/\s(?:when(?:ever)?|if|once|against|versus|facing|given|under|after|regardless|irrespective|whatever|whichever|no\s+matter|either\s+way)\b/i);
     const main = sub < 0 ? p.slice(fr) : p.slice(fr, fr + sub);
     // The leftmost negation scopes over the rest: only it is removed ("not (A does not never X)" is "A does never X").
     const mm = main.replace(/\([^()]*\)/g, (x) => '_'.repeat(x.length)), n = /\b(?:not|never|no|none|neither|nor|nothing|cannot)\b|n['’]t\b/i.exec(mm);
@@ -3093,8 +3106,11 @@ function sentential(text: string, labels: OptionLabels | null | undefined, g: Ga
       const r = new RegExp(String.raw`\b(?:(${AUX})\s+not|(is|are|was|were|has|have|does|do|did|would|could|should)n['’]t|(is|are|has|have|exists?)\s+no|(can)(?:not|['’]t)|(wo)n['’]t|(never))\s+`, 'i').exec(mm);
       if (!r || n.index < r.index || n.index >= r.index + r[0].length) return null;
       const w = r[1] ?? r[2] ?? (r[3] ? `${r[3]} a` : r[4] ?? (r[5] ? 'will' : 'sometimes'));   // "not never" is "sometimes"
-      return `${p.slice(0, fr)}${main.slice(0, r.index)}${w} ${p.slice(fr + r.index + r[0].length)}`;
+      return `${p.slice(0, fr)}${main.slice(0, r.index)}${w} ${p.slice(fr + r.index + r[0].length).replace(UNIV_TAIL, '')}`;
     }
+    // "not (A sometimes / ever prefers X)" is "A never prefers X", the universal denial.
+    const so = new RegExp(String.raw`^(${FRAME}(?:${SUBJ})\s+(?:(?:${AUX})\s+)?)(?:sometimes|occasionally|at\s+times|ever)\s+`, 'i').exec(p);
+    if (so && !/^[ab]\s/.test(so[1].slice(fr))) return `${so[1]}never ${p.slice(so[0].length)}`;
     const v = VERB.exec(p);
     if (!v || /^[ab]\s/.test(v[1].slice(fr))) return null;   // "a mixed …" is the article
     const rest = p.slice(v[0].length);
@@ -3187,14 +3203,29 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // S26a: a degree or hedge before a comparative carries no direction ("is a bit / far / noticeably / no doubt better"): dropped
   // (never after a negation: "not much better"); a denying one ("rarely / in no way better") reads "not"; "hardly / scarcely
   // better" (barely? not?) is left unread. A hedge aside KEEP would hold (", not surprisingly,", ", more likely,") reads ", surely,".
+  const NLAB = [labels?.row1, labels?.row2, labels?.col1, labels?.col2].filter((x): x is string => !!x?.trim()).map(labelPattern).join('|') || '(?!)';
+  const NEVER_LEAD = String.raw`never|nowhere|not\s+once|at\s+no\s+(?:point|time)|under\s+no\s+circumstances?|on\s+no\s+occasion|in\s+no\s+(?:case|column|row|situation|scenario)|in\s+neither\s+(?:column|row|case)`;
   const CMPW = String.raw`(?=(?:the\s+)?(?:better|worse|best|worst|higher|lower|greater|larger|bigger|smaller|more|less|preferable|superior|inferior)\b)`;
   const HEDGE = String.raw`(?:not\s+(?:surprisingly|unexpectedly|unusually)|no\s+(?:doubt|wonder|question)|without\s+(?:a\s+)?(?:doubt|question)|of\s+course)`;
-  text = text.replace(new RegExp(String.raw`(?<!\b(?:not|no|never)\s+|n['’]t\s+)\b(?:noticeably|considerably|significantly|substantially|markedly|marginally|slightly|somewhat|barely|even|far|much|vastly|predictably|unsurprisingly|understandably|naturally|typically|often|a\s+(?:bit|little|lot)|by\s+far|${HEDGE})\s+${CMPW}`, 'gi'), '')
+  // S28: a universal inside the verb phrase is "always", an any-universal "ever" ("A does not in every case prefer X" is "does not
+  // always prefer X", "is not in either column better" "is not ever better"); fronted, "Not always / Not in every case does A
+  // prefer X" is "A does not always prefer X", "Not always is X better" "X is not always better".
+  const MID_AUX = String.raw`is|are|was|were|would|will|could|can|should|might|may|must|does|do|did`;
+  text = text.replace(new RegExp(String.raw`\b(${MID_AUX})((?:\s+not|n['’]t)?)\s+(?:(${OPP_UNIV})|${ANY_UNIV})\s+(?=[a-z])`, 'gi'), (_, aux: string, n: string, u: string | undefined) => `${aux}${n} ${u ? 'always' : 'ever'} `)
+    .replace(new RegExp(String.raw`\b((?:player\s+)?[AB]|${NLAB})\s+(?:${OPP_UNIV})\s+(?=[a-z]+s\b)`, 'g'), '$1 always ')
+    .replace(new RegExp(String.raw`(^|[.!;:]\s+)not\s+(?:always|${OPP_UNIV})\s+(?:(${MID_AUX})\s+((?:player\s+)?[AB]|${NLAB})|(is|are|would\s+be)\s+(?!(?:no|not|there)\b)([^,;.!?]{1,40}?))\s+(?=[a-z])`, 'gi'),
+      (_, l: string, aux?: string, subj?: string, cop?: string, x?: string) => (aux ? `${l}${subj} ${aux} not always ` : `${l}${x} ${cop} not always `));
+  text = text.replace(/\bnever\s+(?:once|ever)\b/gi, 'never').replace(new RegExp(String.raw`(?<!\b(?:not|no|never)\s+|n['’]t\s+)\b(?:noticeably|considerably|significantly|substantially|markedly|marginally|slightly|somewhat|barely|even|far|much|vastly|predictably|unsurprisingly|understandably|naturally|typically|often|a\s+(?:bit|little|lot)|by\s+far|${HEDGE})\s+${CMPW}`, 'gi'), '')
     .replace(new RegExp(String.raw`(?:\s*,\s*)?\b(hardly|scarcely)(?:\s*,)?\s+${CMPW}`, 'gi'), ' $1_')
     .replace(new RegExp(String.raw`\b(?:rarely|seldom|in\s+no\s+way|by\s+no\s+means)\s+${CMPW}`, 'gi'), 'not ')
     .replace(new RegExp(String.raw`\s*,\s*(?:in\s+no\s+way|by\s+no\s+means|not\s+at\s+all|rarely|seldom)\s*,\s*${CMPW}`, 'gi'), ' not ')
-    // "Never / In no way is X better …" is "X is not better …"; "(Only) against Q is X better" is "against Q, X is better".
-    .replace(new RegExp(String.raw`(^|[.!;:]\s+)(?:never|nowhere|in\s+no\s+way|by\s+no\s+means|rarely|seldom|hardly\s+ever|at\s+no\s+point)\s+(is|are|would\s+be)\s+(?!(?:no|not|there)\b)([^,;.!?]{1,40}?)\s+${CMPW}(?=[^?]*(?:[.!;]|$))`, 'gi'), '$1$3 $2 not ')
+    // "In no way is X better …" is "X is not better …"; "Never / At no point is X better", "Never does A prefer X" keep the
+    // universal: "X is never better", "A does never prefer X" ("Rarely does A …" is "A does rarely …"; an aside, "Never, whatever B
+    // does, does A …", leads). "(Only) against Q is X better" is "against Q, X is better".
+    .replace(new RegExp(String.raw`(^|[.!;:]\s+)(?:(${NEVER_LEAD})|in\s+no\s+way|by\s+no\s+means|rarely|seldom|hardly\s+ever)\s+(is|are|would\s+be)\s+(?!(?:no|not|there)\b)([^,;.!?]{1,40}?)\s+${CMPW}(?=[^?]*(?:[.!;]|$))`, 'gi'),
+      (_, l: string, nv: string | undefined, aux: string, x: string) => `${l}${x} ${nv && /^would/i.test(aux) ? 'would never be' : `${aux} ${nv ? 'never' : 'not'}`} `)
+    .replace(new RegExp(String.raw`(^|[.!;:]\s+)(?:(${NEVER_LEAD})|(rarely|seldom|(?:hardly|scarcely)\s+ever))(?:\s*,\s*([^,;.!?]{1,40}?)\s*,)?\s+(does|do|did|would|will|could|can|should|might|may|must)\s+((?:player\s+)?[AB]|${NLAB})\s+(?=[a-z])(?=[^?]*(?:[.!;]|$))`, 'gi'),
+      (_, l: string, nv: string | undefined, adv: string | undefined, aside: string | undefined, aux: string, subj: string) => `${l}${aside ? `${aside}, ` : ''}${subj} ${aux} ${nv ? 'never' : adv} `)
     .replace(new RegExp(String.raw`(^|[.!;:]\s+)(?:only\s+)?((?:against|versus|facing|when|if)\s+[^,;.!?]{1,40}?)\s+(is|are|would\s+be)\s+(?!(?:no|not|there)\b)([^,;.!?]{1,40}?)\s+${CMPW}(?=[^?]*(?:[.!;]|$))`, 'gi'), '$1$2, $4 $3 ')
     .replace(new RegExp(String.raw`,\s*(?:${HEDGE}|(?:more|less)\s+(?:likely|clearly|obviously|surprisingly|plainly|evidently|certainly)|all\s+the\s+more|more\s+often\s+than\s+not)\s*,`, 'gi'), ', surely,');
   const named = [
@@ -3325,7 +3356,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   const STRICT_AFTER_DESIRE = /^\s*(?:is|are|looks?|seems?|becomes?)\s+(?:(?:very|quite|highly|especially|particularly|really|rather|more|most|clearly|strictly)\s+)*(?:tempting|attractive|appealing|preferable|advantageous|worthwhile|worth\s+it)\b|^\s*(?:(?:always|also|still|clearly)\s+)?(?:(?:would|will|does|do)(?:\s+not|n['’]t)?\s+pay\s+off|pays\s+off)\b/i;
   // S22: a leading adverb ("Defect always does better"), evaluative synonyms ("A's optimal choice", "the way to go") and more
   // "beats" verbs. A recipient named after the verb ("… is better for B") is checked at the anchor.
-  const STRICT_AFTER = /^\s*(?:(?:always|also|likewise|still|clearly|strictly|then|thus|therefore|now|instead|again|similarly|consistently|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:is|are|does|works|do|doing|being|(?:would|will|might|may|could|can|should|must)(?:\s+(?:not|never)|n['’]t)?(?:\s+(?:probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely|also|still|always|clearly|then))?\s+(?:be|do)|(?:seems?|appears?|looks?)(?:\s+to\s+(?:be|do))?)\s+(?:(?:strictly|clearly|always|likewise|also|again|still|therefore|thus|only|usually|generally|simply|just|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:(?:the\s+)?[\w’'-]+['’]s|the|its|their)\s+)?(?:better|best|optimal|preferred|smarter|wiser|stronger|right\s+(?:choice|move|option|reply|response)|way\s+to\s+go)\b|^\s*(?:(?:always|also|likewise|still|clearly|strictly)\s+)?(?:beats|dominates|outperforms|outscores|outearns|outdoes|tops|trumps|wins)\b|^\s*(?:gives|yields|earns|pays)\s+(?:(?:player\s+)?[AB]|\w+)\s+(?:a\s+(?:payoff|return)\s+of\s+)?-?\d+(?:\.\d+)?\s*(?:rather\s+than|instead\s+of|vs\.?|versus|compared|over)\b/i;
+  const STRICT_AFTER = /^\s*(?:(?:always|never|also|likewise|still|clearly|strictly|then|thus|therefore|now|instead|again|similarly|consistently|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:is|are|does|works|do|doing|being|(?:would|will|might|may|could|can|should|must|does|do|did)(?:\s+(?:not|never)|n['’]t)?(?:\s+(?:probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely|also|still|always|clearly|then))?\s+(?:be|do)|(?:seems?|appears?|looks?)(?:\s+to\s+(?:be|do))?)\s+(?:(?:strictly|clearly|always|sometimes|occasionally|ever|likewise|also|again|still|therefore|thus|only|usually|generally|simply|just|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:(?:the\s+)?[\w’'-]+['’]s|the|its|their)\s+)?(?:better|best|optimal|preferred|smarter|wiser|stronger|right\s+(?:choice|move|option|reply|response)|way\s+to\s+go)\b|^\s*(?:(?:always|also|likewise|still|clearly|strictly)\s+)?(?:beats|dominates|outperforms|outscores|outearns|outdoes|tops|trumps|wins)\b|^\s*(?:gives|yields|earns|pays)\s+(?:(?:player\s+)?[AB]|\w+)\s+(?:a\s+(?:payoff|return)\s+of\s+)?-?\d+(?:\.\d+)?\s*(?:rather\s+than|instead\s+of|vs\.?|versus|compared|over)\b/i;
   // "A's best response is Row 1" / "A's best reply is Inspect" states a strict
   // preference as a noun phrase; the vocabulary only had verbs (C17 draw 4,
   // which was written in generic Row/Col names the screen always keeps).
@@ -3343,7 +3374,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   const RSN_TO = String.raw`(?:${RDET}\s+)*${RNOUN}\s+to`;
   const GETS = new RegExp(/\b(?:(?:gets?|earns?|receives?|makes?|nets?|collects?|scores?|obtains?)\s+(?:(?:strictly|clearly|always|even|much|far|slightly)\s+)?(?:(?:a|an|the|its|their|his|her)\s+)?(?:higher|greater|larger|bigger|better|more|lower|smaller|worse|less)\b(?:\s+(?!(?:from|with|by)\b)[\w’'-]+){0,4}?|(?:does|do|did|fares?|is|are)\s+(?:\w+\s+)?worse(?:\s+off)?|loses?(?:\s+out)?)\s+(?:from|with|by\s+(?:not\s+)?(?:choosing|playing|picking|using|taking|offering|selecting|switching\s+to|going\s+with))\s+(?:the\s+|an?\s+|its\s+|their\s+)?$|\b(?:RNP\s+(?:for\s+(?:player\s+)?[AB]\s+)?to\s+(?:choose|pick|play|use|select|take|adopt)|(?:gains?\s+nothing|RNP\s+(?:for\s+(?:player\s+)?[AB]\s+)?to\s+(?:switch|move|deviate))\s+(?:by\s+(?:switching|moving|deviating)\s+)?to|(?:gains?|benefits?|profits?)\s+(?:by|from)\s+(?:switching|moving|deviating|changing)\s+to|(?:(?:(?:player\s+)?[AB]|its|their|his|her)['’]?s?\s+)payoff\s+(?:is\s+|would\s+be\s+)?(?:(?:strictly|clearly|always|much)\s+)?(?:higher|greater|larger|bigger|better|lower|smaller|worse)\s+(?:under|with|from|for|by\s+(?:choosing|playing|picking|using))|(?:(?:(?:player\s+)?[AB]|its|their|his|her)['’]?s?\s+)payoff\s+(?:rises|increases|goes\s+up|improves|grows|falls|drops|decreases|goes\s+down|shrinks)\s+(?:if|when|once)\s+(?:it|they|he|she|(?:player\s+)?[AB])\s+(?:switch(?:es)?|moves?|deviates?|changes?)\s+to)\s+(?:the\s+|an?\s+|its\s+|their\s+)?$/i.source.replace(/RNP/g, RNP), 'i');
   const GIVES = /^\s*(?:(?:always|also|still|strictly|clearly|then|thus|therefore|likewise|now|instead|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:gives|yields|pays|earns|nets|brings|returns|offers|provides|secures|delivers|leaves|serves|(?:(?:would|will|might|may|could|can|should|must)|(?:seems?|appears?)\s+to)\s+(?:give|yield|pay|earn|net|bring|return|offer|provide|secure|deliver|leave|serve)|(?:does|do)(?:n['’]t|\s+not)\s+(?:give|yield|pay|earn|net|bring|return|offer|provide|secure|deliver|leave|serve))\s+(?:(?<rcp>(?:[Pp]layer\s+)?[AB]|it|them|him|her|(?:the|its|their|this|that|each)\s+[\w’'-]+(?:\s+[\w’'-]+)?|[A-Z][\w’'-]+(?:\s+[A-Z][\w’'-]+)?)\s+)?(?:(?:a|an|the|its|their|his|her)\s+)?(?:(?:strictly|clearly|much|far|slightly)\s+)?(?:higher|greater|larger|bigger|better|more|lower|smaller|worse|less)\b/;
-  const AFTER_CMP = /^\s*(?:(?:always|also|likewise|still|clearly|strictly|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:fares?|performs?|is|are|does|works|do|doing|being|(?:would|will|might|may|could|can|should|must)(?:\s+(?:not|never)|n['’]t)?(?:\s+(?:probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely|also|still|always|clearly|then))?\s+(?:be|do)|(?:seems?|appears?|looks?)(?:\s+to\s+(?:be|do))?)\s+(?:(?:strictly|clearly|always|also|still|even|much|far|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:the|its|their|(?:the\s+)?[\w’'-]+['’]s)\s+)?(?:worse|worst|weaker)|(?:is|are)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?(?:the\s+)?(?:superior|inferior)|(?:is|are)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?(?:more|less)\s+(?:profitable|lucrative|rewarding|valuable|costly)|(?:is|are|does|do)(?:n['’]t|\s+(?:not|no|never))\s+(?:(?:a|the|any|(?:the\s+)?[\w’'-]+['’]s)\s+)?(?:better|best|preferable|superior|inferior|worse|weaker|(?:any\s+)?(?:more|less)\s+(?:profitable|lucrative|rewarding|valuable|costly)))\b/i;
+  const AFTER_CMP = /^\s*(?:(?:always|never|also|likewise|still|clearly|strictly|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:fares?|performs?|is|are|does|works|do|doing|being|(?:would|will|might|may|could|can|should|must|does|do|did)(?:\s+(?:not|never)|n['’]t)?(?:\s+(?:probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely|also|still|always|clearly|then))?\s+(?:be|do)|(?:seems?|appears?|looks?)(?:\s+to\s+(?:be|do))?)\s+(?:(?:strictly|clearly|always|sometimes|occasionally|ever|also|still|even|much|far|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:the|its|their|(?:the\s+)?[\w’'-]+['’]s)\s+)?(?:worse|worst|weaker)|(?:is|are)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?(?:the\s+)?(?:superior|inferior)|(?:is|are)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?(?:more|less)\s+(?:profitable|lucrative|rewarding|valuable|costly)|(?:is|are|does|do)(?:n['’]t|\s+(?:not|no|never))\s+(?:(?:always|necessarily|strictly|clearly|really|actually|even|ever)\s+)?(?:(?:a|the|any|(?:the\s+)?[\w’'-]+['’]s)\s+)?(?:better|best|preferable|superior|inferior|worse|weaker|(?:any\s+)?(?:more|less)\s+(?:profitable|lucrative|rewarding|valuable|costly)))\b/i;
   const NARM = /^\s*(?:(?:always|also|likewise|still|clearly|strictly)\s+)?(?:gives|yields|earns|pays)\s+(?:(?:player\s+)?([AB])\s+|\w+\s+)?(?:a\s+(?:payoff|return)\s+of\s+)?(-?\d+(?:\.\d+)?)\s*(?:rather\s+than|instead\s+of|vs\.?|versus|compared\s+(?:to|with)|over)\s*(-?\d+(?:\.\d+)?)?/i;
   // S23: "it pays N [rather than M]" / "X against Q would pay only N": a figure (pair) for one option in one frame.
   const FIG = /^\s*(?:(?:would|will|could|might|can)\s+)?(?:(?:also|still|only|then|always|again)\s+)?(?:pays?|earns?|gives?|yields?|nets?|returns?)\s+(?:(?:player\s+)?([AB])\s+)?(?:only\s+|just\s+)?(?:a\s+payoff\s+of\s+)?(-?\d+(?:\.\d+)?)(?:\s*(?:rather\s+than|instead\s+of|vs\.?|versus|compared\s+(?:to|with)|over)\s*(-?\d+(?:\.\d+)?))?(?!\d|\.\d|\s*%)(?=\s*(?:[,;.)!?]|$)|\s+(?:against|when|if|there|here|either|both|whether|regardless|and|but|while|whereas|so|because)\b)/i;
@@ -3351,15 +3382,20 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   const MARGIN = /^\s*(?:with|by)\s+(?:[-−]?\d|(?:a|an|the)\s+(?:\w+\s+)?(?:margin|points?|amount|lot|mile)\b|far\b|much\b|(?:a\s+)?(?:wide|large|small|narrow|clear)\b)/i;
   const BYX = { test: (t: string) => /^\s*(?:with|by)\b/i.test(t) && !MARGIN.test(t) };
   // S28: a negated possession ("does not have / lacks / never has an incentive to play X", "has no good reason to prefer X")
-  // denies the claim it carries.
-  const NEG_GAP = new RegExp(String.raw`(?:\b(?:not|never|no\s+longer|cannot|nothing\s+(?:quite\s+)?like|(?:has|have|had|sees?|finds?)\s+no)|n['’]t|(?:\b(?:(?:not|never|no\s+longer|cannot)\s+(?:\w+\s+)?(?:have|has|had)|(?:has|have|had)\s+not\s+got|lack(?:s|ed|ing)?|(?:is|are|was|were)\s+without)|n['’]t\s+(?:\w+\s+)?(?:have|got))(?:\s+${RSN_TO})?|\bneither\s+\w+|\b(?:no|little|nothing\s+like\s+an?)\s+${RSN_TO}|\bnothing\s+(?:at\s+all\s+)?to)\s+(?:(?:always|really|necessarily|strictly|actually|then|also|even|clearly)\s+)?$`, 'i');
-  const polar = (v: string, gap: string) => ({ neg: /\b(?:not|no|never|nothing)\b|n['’]t\b|(?<!\ba\s+)\blittle\s+(?:\w+\s+)?(?:reason|incentive|need|motive|cause|grounds?|temptation|motivation)\b/i.test(v) || NEG_GAP.test(gap),
-    inv: /\b(?:worse|worst|weakest|weaker|lower|smaller|loses?|inferior|behind|falls|drops|decreases|down|shrinks)\b/i.test(v) || /\bless\b/i.test(v) !== /\bcostly\b/i.test(v) });
-  const BOTH_WAYS = /\b(?:whether|regardless|no\s+matter|either|dominant|in\s+both|both\s+(?:columns|rows|cases)|always|whatever)\b/i;
+  // denies the claim it carries. So do a modal need ("does not need / have / want to favor X") and a nor/neither with any subject
+  // ("Nor does the clerk favor X", "the firm neither prefers X"); "rarely / seldom prefers X" is "does not", as S26a's "rarely better".
+  const NEG_GAP = new RegExp(String.raw`(?:\b(?:not|never|no\s+longer|cannot|rarely|seldom|(?:hardly|scarcely)\s+ever|nothing\s+(?:quite\s+)?like|(?:has|have|had|sees?|finds?)\s+no)|n['’]t|(?:\b(?:(?:not|never|no\s+longer|cannot)\s+(?:\w+\s+)?(?:have|has|had)|(?:has|have|had)\s+not\s+got|lack(?:s|ed|ing)?|(?:is|are|was|were)\s+without)|n['’]t\s+(?:\w+\s+)?(?:have|got))(?:\s+${RSN_TO})?|\bneither(?:\s+\w+)?|\b(?:nor|neither)\s+(?:does|do|did|would|will|could|can|should|must)\s+(?:(?:the|its|their|this|that|each|either|any)\s+)?(?:[\w’'-]+\s+)?[\w’'-]+|\b(?:no|little|nothing\s+like\s+an?)\s+${RSN_TO}|\bnothing\s+(?:at\s+all\s+)?to)(?:\s+(?:(?:needs?|ha(?:ve|s)|wants?|ought)\s+)?to(?=\s))?\s+(?:(?:always|really|necessarily|strictly|actually|then|also|even|clearly|ever)\s+)?$`, 'i');
+  // S28: nev, "never"/"not ever" on a comparison ("A never prefers X", "X isn't ever better"): X loses or ties at EVERY opponent option. Not
+  // on a choice or a move ("A never plays X", "would never switch to X"): those are equilibrium play, not preference.
+  const polar = (v: string, gap: string) => { const neg = /\b(?:not|no|never|nothing)\b|n['’]t\b|(?<!\ba\s+)\blittle\s+(?:\w+\s+)?(?:reason|incentive|need|motive|cause|grounds?|temptation|motivation)\b/i.test(v) || NEG_GAP.test(gap);
+    return { neg, nev: neg && (/\bnever\b|(?:\bnot|n['’]t)\s+ever\b/i.test(v) || /(?:\bnever|(?:\bnot|n['’]t)\s+ever)\s+(?:(?:really|actually|strictly|clearly|even|then|also)\s+)?$/i.test(gap))
+      && /\b(?:prefers?|favou?rs?|better|best|worse|worst|superior|inferior|preferable|optimal|beats|dominates|outperforms|more|higher|greater|larger|less|lower|smaller)\b/i.test(v),
+    inv: /\b(?:worse|worst|weakest|weaker|lower|smaller|loses?|inferior|behind|falls|drops|decreases|down|shrinks)\b/i.test(v) || /\bless\b/i.test(v) !== /\bcostly\b/i.test(v) }; };
+  const BOTH_WAYS = new RegExp(String.raw`\b(?:whether|regardless|irrespective|no\s+matter|either|dominant|in\s+both|both\s+(?:columns|rows|cases)|always|whatever|whichever)\b|${OPP_UNIV}|${ANY_UNIV}`, 'i');
   const INDIFF = /\bindifferent\s+between\b/i;
   const SEP = /,|;|\bbut\b|\band\b|\bwhile\b|\bwhereas\b/i;
 
-  interface Claim { own: LabelHit; start: number; end: number; kind: 'strict' | 'indiff'; neg?: boolean; inv?: boolean; ell?: boolean; rcp?: boolean; fig?: number; fr?: (1 | 2)[] }
+  interface Claim { own: LabelHit; start: number; end: number; kind: 'strict' | 'indiff'; neg?: boolean; nev?: boolean; inv?: boolean; ell?: boolean; rcp?: boolean; fig?: number; fr?: (1 | 2)[] }
 
   const isPureNE = (r: 1 | 2, c: 1 | 2) =>
     cellAOf(g, r, c) >= cellAOf(g, (3 - r) as 1 | 2, c) - 1e-9 && cellBOf(g, r, c) >= cellBOf(g, r, (3 - c) as 1 | 2) - 1e-9;
@@ -5442,6 +5478,13 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         const ao = alw ? ([1, 2] as const).filter((o) => alw[1].toLowerCase().split(/\s+/).some((w) => w.length >= 4 && (labelOf[oth][o - 1] ?? '').toLowerCase().split(/\s+/).some((l) => stem(w, l)))) : [];
         if (ao.length === 1) opps.push(ao[0]);
         const targets: (1 | 2)[] = opps.length ? opps : (openBoth || BOTH_WAYS.test((leadIsHypothetical ? '' : mine1(lead, leadStart)) + mine1(trail, c.end + skip)) || /\b(?:always|regardless|no\s+matter)\b/i.test(span) ? [1, 2] : []);
+        // S28: a universal AFTER the denial is in its scope ("does not always prefer X", "is not better in both columns", "does not
+        // prefer X whatever B does"): false only if X wins at EVERY target. One before it ("Whatever B does, A does not prefer X")
+        // and "never" deny at each target. A trailing universal is read this way too: the reading a denial may be true on.
+        const win = clause.slice(leadStart, c.end + skip + trail.length), ngm = /\b(?:not|never|nothing|neither|lacks?|lacked|lacking|without(?!\s+(?:any\s+)?exception)|little)\b|\bno\b(?!\s+matter)|n['’]t\b/i.exec(win);
+        const univAfterNeg = !!ngm && new RegExp(String.raw`\b(?:always|whether|regardless|irrespective|no\s+matter|whatever|whichever|both|every|each|either\s+way)\b|${OPP_UNIV}`, 'i').test(mine1(win.slice(ngm.index), leadStart + ngm.index));
+        // "Neither X nor Y is always better / is best against both of B's choices": neither DOMINATES, false only if one wins every target.
+        const notAll = !!c.neg && !c.nev && !indiffForm && univAfterNeg, notAllI = indiffForm && univAfterNeg && /^neither$/i.test(ngm![0]);
         // S19a: a MIXED frame ("if B plays Advance 50% of the time") is judged at that mix, never as the option it names:
         // q is the opponent's option-1 probability, E(o, q) this player's expected payoff from its option o there.
         const mixAt = winHits.filter((h) => h.player !== player && opps.includes(h.option)).map((h) => {
@@ -5505,12 +5548,21 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         if (!c.ell && !targets.length && !(indiffForm && /\b(?:choose|pick|play|select|use|decide\s+between)\s+(?:the\s+|an?\s+|either\s+)?$/i.test(clause.slice(c.start, c.own.index)))
           && !/%|\b(?:probabilit\w*|percent\w*|of\s+the\s+time|certainty|frequen\w*|odds|half|third|quarter|fifth)\b/i.test(clause.slice(leadStart, nextStart))) {
           const own = (c.inv && !indiffForm ? 3 - c.own.option : c.own.option) as 1 | 2, d = ([1, 2] as const).map((q) => pay(own, q) - pay((3 - own) as 1 | 2, q));
-          if (indiffForm ? d.every((x) => x > 0) || d.every((x) => x < 0) : c.neg ? d.every((x) => x > 0) : d.every((x) => x < 0))
-            issues.push(`prose says ${player} ${indiffForm ? 'ties its options' : `${c.neg ? 'does not prefer' : 'prefers'} option ${own}`} with no frame, but against every opponent option ${desc(own, 1)}; ${desc(own, 2)}`);
+          // "A never prefers X" is false where X wins against SOME opponent option; "X is better" where X never wins (a tie is
+          // not better). Play ("A is pinned to X", "settles on X") and weak preference may rest on a one-column tie.
+          const play = /\b(?:weakly|pinned|locked|settle[sd]?|commit(?:s|ted)?|stick(?:s|ing)?|go(?:es)?\s+(?:for|with)|opts?\s+for|leans?|gravitates?|drawn|pushed|pulled)\b/i.test(clause.slice(leadStart, c.end));
+          if (indiffForm ? d.every((x) => x > 0) || d.every((x) => x < 0) : c.nev ? d.some((x) => x > 0) : c.neg ? d.every((x) => x > 0) : d.every((x) => (play ? x < 0 : x <= 0)))
+            issues.push(`prose says ${player} ${indiffForm ? 'ties its options' : `${c.nev ? 'never prefers' : c.neg ? 'does not prefer' : 'prefers'} option ${own}`} with no frame, but ${c.nev ? 'against some' : 'against every'} opponent option ${desc(own, 1)}; ${desc(own, 2)}`);
         }
         // "whatever B does, but not against Q": the denial carves Q out of a both-ways frame (an explicit one keeps it: a contradiction).
+        const own0 = (c.inv ? 3 - c.own.option : c.own.option) as 1 | 2;
+        if (notAll && !mixAt && targets.length && targets.every((q) => pay(own0, q) > pay((3 - own0) as 1 | 2, q)))
+          issues.push(`prose denies a strict preference that holds at every opponent option it quantifies over: ${targets.map((q) => desc(own0, q)).join('; ')}`);
+        if (notAllI && !mixAt && targets.length && (targets.every((q) => pay(1, q) > pay(2, q)) || targets.every((q) => pay(2, q) > pay(1, q))))
+          issues.push(`prose says neither option of ${player}'s wins at every opponent option it quantifies over, but one does: ${targets.map((q) => desc(1, q)).join('; ')}`);
         for (const opp of mixAt ? [] : targets.filter((q) => !(no && !c.fr && (trailBoth || !opps.length) && ext!.option === q))) {
           const own = (c.inv && !indiffForm ? 3 - c.own.option : c.own.option) as 1 | 2, mine = pay(own, opp), alt = pay((3 - own) as 1 | 2, opp);
+          if (notAll || notAllI) continue;
           if (indiffForm) {
             if (mine !== alt) issues.push(`prose says ${player} is indifferent against opponent option ${opp}, but ${desc(c.own.option, opp)} — a strict preference`);
           } else if (c.neg) { if (mine > alt) issues.push(`prose denies a strict preference that holds: ${desc(own, opp)}`); }

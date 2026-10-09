@@ -802,12 +802,16 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   }
   // S28: sentential operators ("It is not true that P", "That P is false", "Nor does A …", "Does A …? No.", "One might think
   // that P", open questions), judged by the full gate; src/fixtures/mathvalidator-s28.txt records why its twins cannot pass by chance.
-  let g28 = MIX;
-  for (const ln of readFileSync('src/fixtures/mathvalidator-s28.txt', 'utf8').split('\n')) {
-    if (ln.startsWith('@ G ')) g28 = G(...(ln.slice(4).split(',').map(Number) as [number, number, number, number, number, number, number, number]));
-    if (!/^[TF]\t/.test(ln)) continue;
-    const s = ln.slice(2), is = [...validateProseDirections(s, L, g28), ...validateProseClaims(null, s, g28, computeAllNE(g28), hasEquilibriumContinuum(g28), L).issues];
-    check(`S28 ${ln[0] === 'T' ? 'a true' : 'a false'} sentential operator is judged`, (is.length === 0) === (ln[0] === 'T'), `${ln} :: ${is.join(' | ')}`);
+  // S28q: +780 twins, quantifier scope ("not always" / "in every case" deny all, "never" / "in either column" deny each, unframed
+  // claims read "some"), in src/fixtures/mathvalidator-s28q.txt.
+  for (const [f, what] of [['s28', 'sentential operator'], ['s28q', 'quantifier scope']]) {
+    let g28 = MIX;
+    for (const ln of readFileSync(`src/fixtures/mathvalidator-${f}.txt`, 'utf8').split('\n')) {
+      if (ln.startsWith('@ G ')) g28 = G(...(ln.slice(4).split(',').map(Number) as [number, number, number, number, number, number, number, number]));
+      if (!/^[TF]\t/.test(ln)) continue;
+      const s = ln.slice(2), is = [...validateProseDirections(s, L, g28), ...validateProseClaims(null, s, g28, computeAllNE(g28), hasEquilibriumContinuum(g28), L).issues];
+      check(`S28 ${ln[0] === 'T' ? 'a true' : 'a false'} ${what} is judged`, (is.length === 0) === (ln[0] === 'T'), `${ln} :: ${is.join(' | ')}`);
+    }
   }
   // S23: real report sentences (verbatim). Worked by hand: Economy vs Late pays 5 vs -9; the Light Review figures are the Full
   // Audit column's; Rival app vs Build plugin pays 9 vs -2; Plan West ties 4/4; Inland vs Night pays 8 vs -6. The rest are true.
