@@ -3073,6 +3073,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // claim parser measures ("If B chooses Col 2 for sure, A's best response is
   // Row 1 for sure" parsed as a claim about the wrong column — C17 draw 4).
   // Deleting them can only remove text, never invent an anchor.
+  const sureText = text;   // S27b: the 0/1 judge still reads "A plays X for sure" as probability 1
   text = text.replace(/\s+for\s+(?:sure|certain)\b/gi, '').replace(/\bapprox\.(?=\s*\d)/gi, 'approximately');
   // S26a: a degree or hedge before a comparative carries no direction ("is a bit / far / noticeably / no doubt better"): dropped
   // (never after a negation: "not much better"); a denying one ("rarely / in no way better") reads "not"; "hardly / scarcely
@@ -3473,10 +3474,12 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // probability 0" when Silence IS the equilibrium row). Interior decimals are
   // judged in the mix block above (S17a); x=/y= citations in checkProse.
   {
-    const truthLocal = computeAllNE(g);
+    const text0 = text, truthLocal = computeAllNE(g);
+    // S27b: "with certainty" / "for sure" is probability 1 (51 real sentences); "for sure" only survives in sureText.
+    for (const [text, re] of [[text0, /\bwith\s+(?:a\s+)?probability\s+(?:of\s+)?(0|1|one|zero)\b(?!\.\d)(?!\s*[-–%/])(?!\s+(?:quarter|third|fifth|sixth|eighth|tenth|half|in|out|minus|plus))|\bwith\s+(?:complete\s+|full\s+|total\s+)?certainty\b/gi], [sureText, /\bfor\s+(?:sure|certain)\b/gi]] as const) {
     const allHits = findLabels(text, sets);
-    for (const m of text.matchAll(/\bwith\s+(?:a\s+)?probability\s+(?:of\s+)?(0|1|one|zero)\b(?!\.\d)(?!\s*[-–%/])(?!\s+(?:quarter|third|fifth|sixth|eighth|tenth|half|in|out|minus|plus))/gi)) {
-      const p = /^(?:1|one)$/i.test(m[1]) ? 1 : 0;
+    for (const m of text.matchAll(re)) {
+      const p = !m[1] || /^(?:1|one)$/i.test(m[1]) ? 1 : 0;
       const mEnd = (m.index ?? 0) + m[0].length;
       const before = text.slice(Math.max(0, (m.index ?? 0) - 40), m.index);
       // "… with probability 0 for Row 1": the probability belongs to the label AFTER for/on/of.
@@ -3491,7 +3494,8 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       if (/\b(?:not|never|no)\b/i.test(before)) continue;
       // Hypotheticals ("if B uses Relay with probability 1, A prefers …") are frames, not claims.
       const segStart = clauseStart(text, lab.index, '.;:');
-      if (/\b(?:if|when|whenever|suppose|supposing|whether|should|were)\b/i.test(text.slice(segStart, lab.index))) continue;
+      // "Should B play X…" frames; "A should play X with probability 1" is a claim (S27b).
+      if (/\b(?:if|when|whenever|suppose|supposing|whether|were)\b|\bshould\s+(?!(?:(?:always|then|still|only|also|instead)\s+)?(?:play|choose|pick|use|select)\b)/i.test(text.slice(segStart, lab.index))) continue;
       const ok = truthLocal.some((t) => {
         const p1 = lab.player === 'A' ? t.x : t.y;
         const pl = lab.option === 1 ? p1 : 1 - p1;
@@ -3500,6 +3504,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         return Math.abs(pl - p) < 1e-9;
       });
       if (!ok && truthLocal.length) issues.push(`prose gives ${lab.player}'s option ${lab.option} probability ${p}, but no equilibrium does`);
+    }
     }
   }
 

@@ -2439,3 +2439,32 @@ T	A does not play Defect half the time.
 T	A does not play Defect a third of rounds.
 T	A does not play Defect a quarter of rounds.
 T	A does not play Defect a fifth of rounds.
+# S27b: "with certainty" / "for (sure|certain)" is probability 1, judged like "with probability 1" (Daniel: any phrasing a
+# user could type is a real input). Same game: the only equilibrium is pure (Defect, Retreat), so Cooperate/Advance at
+# probability 1 is false at every equilibrium and Defect/Retreat true at it. a834f22 passed every F row; the T rows are
+# the 14 real certainty binds' shapes plus frames ("If…", "Should B play…") that state no claim.
+@ G 5,-8,8,1,-6,-9,-8,-5
+T	A plays Defect with certainty.
+T	A plays Defect for sure.
+T	B plays Retreat with certainty.
+T	B plays Retreat for certain.
+T	The unique equilibrium is therefore A plays Defect with certainty and B plays Retreat with certainty.
+T	The only equilibrium is for A to play Defect with certainty.
+T	The equilibrium sits at A playing Defect with certainty and B playing Retreat with certainty.
+T	If B plays Advance for sure, A prefers Defect.
+T	If B plays Advance with certainty, A prefers Defect.
+T	Should B play Advance with probability 1, A prefers Defect.
+T	Should B play Advance with certainty, A prefers Defect.
+T	If B chooses Col 2 for sure, A's best response is Row 2 for sure.
+T	A plays Defect with total certainty.
+F	A plays Cooperate with certainty.
+F	A plays Cooperate for sure.
+F	B plays Advance with certainty.
+F	B plays Advance for certain.
+F	A should play Cooperate with probability 1.
+F	A should play Cooperate with certainty.
+F	A plays Cooperate with complete certainty.
+F	The only equilibrium is for A to play Cooperate with certainty.
+F	The equilibrium sits at A playing Defect with certainty and B playing Advance with certainty.
+F	A plays Cooperate with full certainty.
+F	A chooses Cooperate for sure.

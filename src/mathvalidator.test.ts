@@ -789,6 +789,7 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   // S26b: +44 twins (an unframed strict claim is false only when strictly false against every opponent option).
   // S26j: +50 twins (labelless and mix-induced indifference; "@ G a11,a12,a21,a22,b11,b12,b21,b22" sets any game).
   // S27a: +25 twins (a claim stating its own mix is the probability judges'; "A should play X 40%…" is a claim, not a frame).
+  // S27b: +24 twins ("with certainty" / "for sure" is probability 1; "A should play X with probability 1" is a claim).
   const DOM23 = G(1, 0, 3, 2, 0, 3, 1, 2);
   let g23 = MIX;
   for (const ln of readFileSync('src/fixtures/mathvalidator-s23.txt', 'utf8').split('\n')) {
