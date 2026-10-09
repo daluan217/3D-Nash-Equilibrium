@@ -792,12 +792,22 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   // S27b: +24 twins ("with certainty" / "for sure" is probability 1; "A should play X with probability 1" is a claim).
   // S27c/d: +89+24 twins (own-frequency words are judged over equilibria; "Defect (Row 2) with probability 1" binds; "doesn't
   // play X with probability p" is a denial); 4 S27a rows relabelled F; +4 real rows in s26-real.tsv.
+  // S28: sentential operators read before every judge (denials set straight, opaque frames and open questions cut).
   const DOM23 = G(1, 0, 3, 2, 0, 3, 1, 2);
   let g23 = MIX;
   for (const ln of readFileSync('src/fixtures/mathvalidator-s23.txt', 'utf8').split('\n')) {
     if (ln.startsWith('@ G ')) g23 = G(...(ln.slice(4).split(',').map(Number) as [number, number, number, number, number, number, number, number]));
     else if (ln.startsWith('@ ')) g23 = ln === '@ DOM' ? DOM23 : MIX;
     else if (/^[TF]\t/.test(ln)) check(`S23 ${ln[0] === 'T' ? 'a true' : 'a false'} twin is judged`, (dir(ln.slice(2), g23).length === 0) === (ln[0] === 'T'), `${ln} :: ${dir(ln.slice(2), g23).join(' | ')}`);
+  }
+  // S28: sentential operators ("It is not true that P", "That P is false", "Nor does A …", "Does A …? No.", "One might think
+  // that P", open questions), judged by the full gate; src/fixtures/mathvalidator-s28.txt records why its twins cannot pass by chance.
+  let g28 = MIX;
+  for (const ln of readFileSync('src/fixtures/mathvalidator-s28.txt', 'utf8').split('\n')) {
+    if (ln.startsWith('@ G ')) g28 = G(...(ln.slice(4).split(',').map(Number) as [number, number, number, number, number, number, number, number]));
+    if (!/^[TF]\t/.test(ln)) continue;
+    const s = ln.slice(2), is = [...validateProseDirections(s, L, g28), ...validateProseClaims(null, s, g28, computeAllNE(g28), hasEquilibriumContinuum(g28), L).issues];
+    check(`S28 ${ln[0] === 'T' ? 'a true' : 'a false'} sentential operator is judged`, (is.length === 0) === (ln[0] === 'T'), `${ln} :: ${is.join(' | ')}`);
   }
   // S23: real report sentences (verbatim). Worked by hand: Economy vs Late pays 5 vs -9; the Light Review figures are the Full
   // Audit column's; Rival app vs Build plugin pays 9 vs -2; Plan West ties 4/4; Inland vs Night pays 8 vs -6. The rest are true.

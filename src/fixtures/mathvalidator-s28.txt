@@ -1,0 +1,276 @@
+# S28 sentential operators, read by the FULL gate (validateProseDirections + validateProseClaims, labels on) in src/mathvalidator.test.ts.
+# "@ G a11,a12,a21,a22,b11,b12,b21,b22" sets the game; labels Cooperate/Defect (A), Advance/Retreat (B).
+# PURE 5,-8,8,1,-6,-9,-8,-5: A Defect strictly dominant (8>5 vs Advance, 1>-8 vs Retreat); B Retreat vs Defect (-5>-8), Advance vs
+#   Cooperate (-6>-9); the one equilibrium is (Defect, Retreat). MIX 3,-1,-1,1,-3,1,1,-1: the one equilibrium is x=y=1/3, no pure one.
+# Worked from the cells by hand. Each denial has a twin naming the other option or figure, so the pair is T/F only if the operator is
+# read: an operator-blind judge flags both of a "not true that P" pair or neither, and a cut-everything judge passes both.
+@ G 5,-8,8,1,-6,-9,-8,-5
+T	It is not obvious that A prefers Cooperate.
+T	It is not clear that A prefers Cooperate.
+T	One might think that A prefers Cooperate, but A prefers Defect.
+T	A naive reader might expect that A prefers Cooperate.
+T	Suppose A prefers Cooperate.
+T	It would be wrong to say that A prefers Cooperate.
+F	It would be wrong to say that A prefers Defect.
+T	It is a mistake to think that A prefers Cooperate.
+F	It is a mistake to think that A prefers Defect.
+F	It is true that A prefers Cooperate.
+T	It is true that A prefers Defect.
+T	Is it true that A prefers Cooperate?
+F	It is not true that it is not true that A prefers Cooperate.
+T	It is not true that it is not true that A prefers Defect.
+T	A does not prefer Cooperate.
+F	A does not prefer Defect.
+T	That A prefers Cooperate is false.
+F	That A prefers Defect is false.
+T	The claim that A prefers Cooperate is false.
+F	The claim that A prefers Defect is false.
+T	The idea that A prefers Cooperate is wrong.
+F	It is not true that B prefers Retreat against Defect.
+T	It is not true that B prefers Advance against Defect.
+T	It isn't true that A prefers Cooperate.
+F	It isn't true that A prefers Defect.
+T	It's not the case that A prefers Cooperate.
+F	It's not the case that A prefers Defect.
+T	However, it is not true that A prefers Cooperate.
+F	However, it is not true that A prefers Defect.
+T	It is untrue that A prefers Cooperate.
+T	Nor is it true that A prefers Cooperate.
+F	Nor is it true that A prefers Defect.
+T	A prefers Defect, and it is not true that A prefers Cooperate.
+F	A prefers Defect, but it is not true that B prefers Retreat against Defect.
+T	It is not true that A prefers Cooperate; A prefers Defect.
+T	Contrary to what one might expect, A prefers Defect.
+F	Contrary to what one might expect, A prefers Cooperate.
+T	Does A prefer Cooperate?
+T	Why would A prefer Cooperate?
+T	Is Cooperate better for A against Advance?
+T	If A preferred Cooperate, B would choose Advance.
+T	Imagine that A prefers Cooperate.
+T	Even if Cooperate were better for A, A would not switch.
+T	Does A get 8 from Cooperate against Advance?
+T	Is (Cooperate, Advance) an equilibrium?
+T	Is it the case that A plays Cooperate with probability 1?
+T	Would A prefer Cooperate?
+T	A gets 8, not 5, from Defect against Advance.
+T	Cooperate does not dominate Defect.
+T	Cooperate is not a dominant strategy for A.
+T	B has no dominant strategy.
+T	(Cooperate, Advance) is not an equilibrium.
+F	There is no pure equilibrium.
+T	There is no mixed equilibrium.
+T	It is not true that A prefers Cooperate.
+F	It is not true that A prefers Defect.
+T	It is not true that Cooperate is better for A against Advance.
+F	It is not true that Defect is better for A against Advance.
+T	It is false that A plays Cooperate with probability 1.
+T	It is not true that A plays Cooperate with probability 1/2.
+F	It is not true that A plays Defect with probability 1.
+T	It is not true that A is indifferent between Cooperate and Defect.
+T	It is not true that Cooperate dominates Defect.
+T	Cooperate is not better for A against Advance.
+F	Defect is not better for A against Advance.
+T	B does not prefer Advance against Defect.
+F	B does not prefer Retreat against Defect.
+T	A does not play Cooperate with probability 1.
+F	A does not play Defect with probability 1.
+T	A does not play Cooperate with probability 1/2.
+T	A is not indifferent between Cooperate and Defect.
+T	A does prefer Defect.
+F	A does prefer Cooperate.
+T	Defect does pay A 8 against Advance.
+F	Defect does pay A 5 against Advance.
+T	A does play Defect with probability 1.
+F	A does play Cooperate with probability 1.
+F	A does not always play Defect.
+T	A does not always play Cooperate.
+T	B is not indifferent between Advance and Retreat against Cooperate.
+T	(Defect, Retreat) is an equilibrium.
+T	(Defect, Retreat) is a Nash equilibrium.
+T	The equilibrium is (Defect, Retreat).
+T	The unique equilibrium is (Defect, Retreat).
+T	A has a dominant strategy.
+T	Only A has a dominant strategy.
+T	Defect dominates Cooperate.
+F	Cooperate dominates Defect.
+T	Defect is a dominant strategy for A.
+F	Cooperate is a dominant strategy for A.
+T	There is a pure equilibrium.
+T	A plays a pure strategy.
+T	The only equilibrium is pure.
+T	In equilibrium, A plays Defect.
+T	A's equilibrium strategy is Defect.
+T	A = 8 against Advance with Defect.
+T	Defect pays A 8 against Advance.
+F	Defect pays A 5 against Advance.
+T	A doesn't play Cooperate with probability 1.
+T	A never plays Cooperate.
+F	A never plays Defect.
+T	A does not randomize.
+T	It is not surprising that A prefers Defect.
+F	It is not surprising that A prefers Cooperate.
+T	It is not true that A does not prefer Defect.
+F	It is not true that A does not prefer Cooperate.
+T	Doesn't A prefer Defect?
+F	Doesn't A prefer Cooperate?
+T	Isn't Defect better for A against Advance?
+F	Isn't Cooperate better for A against Advance?
+T	Does A prefer Defect? Yes.
+F	Does A prefer Cooperate? Yes.
+T	Does A prefer Cooperate? No.
+F	Does A prefer Defect? No.
+T	Does A prefer Cooperate? No, A prefers Defect.
+F	Does A prefer Cooperate? No, A prefers Cooperate.
+T	Is Defect better for A against Advance? It is.
+F	Is Cooperate better for A against Advance? It is.
+T	Is Cooperate better for A against Advance? It is not.
+F	Is Defect better for A against Advance? It isn't.
+T	When B plays Advance, is Defect better for A? Yes.
+F	When B plays Advance, is Cooperate better for A? Yes.
+T	We conclude that A prefers Defect.
+F	We conclude that A prefers Cooperate.
+T	We might think that A prefers Cooperate, but it does not.
+T	It is not true that A prefers Cooperate and B prefers Advance against Defect.
+F	It is not true that A prefers Defect and B prefers Retreat against Defect.
+T	Suppose B plays Advance. Then A prefers Defect.
+F	Suppose B plays Advance. Then A prefers Cooperate.
+F	Nor does A prefer Defect.
+T	Nor does A prefer Cooperate.
+T	Neither does A prefer Cooperate.
+F	A prefers Defect; nor does B prefer Retreat against Defect.
+T	A wonders: is Defect better against Advance?
+T	It is false that B prefers Advance against Defect.
+F	It is false that B prefers Retreat against Defect.
+T	Indeed, it is not true that A prefers Cooperate.
+F	Indeed, it is not true that A prefers Defect.
+T	It is simply not true that A prefers Cooperate.
+F	It is simply not true that A prefers Defect.
+T	It is not true that, against Advance, Cooperate is better for A.
+F	It is not true that, against Advance, Defect is better for A.
+T	It's false that A prefers Cooperate.
+F	It's a myth that A prefers Defect.
+T	The notion that A prefers Cooperate is mistaken.
+F	The belief that A prefers Defect is mistaken.
+T	We can see that it is not true that A prefers Cooperate.
+F	We can see that it is not true that A prefers Defect.
+T	If B plays Advance, it is not true that Cooperate is better for A.
+F	If B plays Advance, it is not true that Defect is better for A.
+T	One might expect A to prefer Cooperate, but A prefers Defect.
+F	One might expect A to prefer Defect, but A prefers Cooperate.
+T	A reader might guess A prefers Cooperate.
+T	One might naively think Cooperate is better for A against Advance.
+T	You might think that A prefers Cooperate. It does not.
+T	Is it not true that A prefers Defect?
+T	Isn't it true that A prefers Defect?
+F	Isn't it true that A prefers Cooperate?
+T	Does B prefer Advance against Defect? Not at all.
+F	Does B prefer Retreat against Defect? Not at all.
+T	Against Defect, does B prefer Retreat? Yes.
+F	Against Defect, does B prefer Advance? Yes.
+T	Against Defect, does B prefer Advance? No.
+F	Against Defect, does B prefer Retreat? No.
+T	Would B rather play Retreat against Defect? Yes.
+F	Would B rather play Advance against Defect? Yes.
+T	The claim that A prefers Cooperate is simply false.
+F	The claim that A prefers Defect is simply false.
+T	That Cooperate is better for A against Advance is false.
+F	That Defect is better for A against Advance is false.
+T	It is not true that A always plays Cooperate.
+F	It is not true that A always plays Defect.
+T	It is not true that A never plays Defect.
+F	It is not true that A never plays Cooperate.
+T	It is wrong to think that A prefers Cooperate.
+F	It is wrong to think that A prefers Defect.
+T	It is not true that either A prefers Cooperate or B prefers Advance against Defect.
+F	It is not true that either A prefers Cooperate or B prefers Retreat against Defect.
+F	It is not true that A prefers Defect or B prefers Advance against Defect.
+T	It is not true that A prefers Cooperate and B prefers Retreat against Defect.
+T	That A prefers Cooperate and B prefers Advance against Defect is false.
+F	That A prefers Defect and B prefers Retreat against Defect is false.
+F	Against Advance, A prefers Cooperate?
+T	Against Advance, A prefers Defect?
+T	It is not true that a bonus makes A prefer Cooperate.
+T	It is not true that A won't play Defect.
+F	It is not true that A won't play Cooperate.
+T	It is not true that A cannot do better by playing Defect.
+F	It is not true that A cannot do better by playing Cooperate.
+T	It is not true that A can't gain by switching to Defect against Advance.
+F	It is not true that A can't gain by switching to Cooperate against Advance.
+T	It is not true that A does not never prefer Cooperate.
+F	It is not true that A does not never prefer Defect.
+T	It is not true that A prefers Cooperate when B does not play Advance.
+F	It is not true that A prefers Defect when B does not play Advance.
+T	It is not true that A does not prefer Defect when B does not play Advance.
+F	It is not true that A does not prefer Cooperate when B does not play Advance.
+T	A does not have an incentive to play Cooperate against Advance.
+F	A does not have an incentive to play Defect against Advance.
+T	Against Defect, B doesn't have a reason to switch to Advance.
+F	Against Defect, B doesn't have a reason to switch to Retreat.
+T	A lacks a reason to choose Cooperate.
+F	A lacks a reason to choose Defect.
+T	Against Cooperate, B has not got a need to deviate to Retreat.
+F	Against Cooperate, B has not got a need to deviate to Advance.
+T	A is without an incentive to deviate to Cooperate.
+F	A is without an incentive to deviate to Defect.
+T	A never has a reason to play Cooperate.
+F	A never has a reason to play Defect.
+T	It is not true that there is no pure equilibrium.
+T	One might think there is no pure equilibrium, but (Defect, Retreat) is one.
+F	There is no pure equilibrium.
+F	The game has no pure equilibrium.
+T	It is not true that both players receive 7.
+F	Both players receive 7.
+@ G 3,-1,-1,1,-3,1,1,-1
+T	Suppose B plays Advance; then A prefers Cooperate.
+F	Suppose B plays Advance; then A prefers Defect.
+T	Suppose B plays Advance. Then A prefers Cooperate.
+F	Suppose B plays Advance. Then A prefers Defect.
+T	It is not true that A never prefers Defect when B does not play Advance.
+F	It is not true that A never prefers Cooperate when B does not play Advance.
+T	There is no pure equilibrium.
+T	It is not true that A plays Cooperate with probability 1/2.
+F	It is not true that A plays Cooperate with probability 1/3.
+T	It is not true that A always plays Defect.
+T	A does not play a pure strategy.
+T	A does not play Cooperate with probability 1/2.
+F	A does not play Cooperate with probability 1/3.
+F	A does not play Cooperate with probability 0.333.
+T	A does not play Defect with probability 1.
+T	There is a mixed equilibrium.
+T	A mixes.
+T	A randomizes.
+T	The only equilibrium is mixed.
+T	A plays Cooperate with probability 1/3.
+F	A plays Cooperate with probability 1/2.
+T	A does not prefer Cooperate.
+T	A does not prefer Defect.
+T	A does not play Cooperate with probability 1.
+T	A never plays Cooperate with probability 1.
+@ G 0,0,0,0,1,-2,3,1
+F	A is not indifferent between Cooperate and Defect.
+# Reason phrases ("has no real cause to pick X", "lacks a motive", "little reason") and "likes X better" carry the claim; twins differ only by option.
+@ G 5,-8,8,1,-6,-9,-8,-5
+F	It is not true that A has reason to pick Defect.
+T	It is not true that A has reason to pick Cooperate.
+F	It is not true that A has cause to prefer Defect.
+T	It is not true that A has cause to prefer Cooperate.
+F	A lacks a motive to pick Defect.
+T	A lacks a motive to pick Cooperate.
+F	A has no real cause to pick Defect.
+T	A has no real cause to pick Cooperate.
+F	A has nothing like a reason to pick Defect.
+T	A has nothing like a reason to pick Cooperate.
+F	A has little reason to pick Defect.
+T	A has little reason to pick Cooperate.
+T	A has a reason to pick Defect.
+F	A has a reason to pick Cooperate.
+F	A is without an incentive to want Defect.
+T	A is without an incentive to want Cooperate.
+F	A has not got a good reason to stick with Defect.
+T	A has not got a good reason to stick with Cooperate.
+T	A likes Defect better.
+F	A likes Cooperate better.
+T	A does not have a good reason to like Cooperate better.
+F	A does not have a good reason to like Defect better.
+@ G 0,0,0,0,1,-2,3,1
+T	It is not true that no pure equilibrium is not strict.

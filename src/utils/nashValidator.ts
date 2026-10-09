@@ -2519,9 +2519,11 @@ export function validateProseClaims(
 
   // Statements the declared claims cannot carry, read from the prose itself.
   if (prose) {
+    // S28: read what the prose asserts ("It is not true that there is no pure equilibrium" asserts one; "One might think…" nothing).
+    const said = sentential(prose, labels, g).text;
     // "There is no pure equilibrium" on a game that has one (L2 case 31,
     // a fully-indifferent player: the continuum's corners ARE pure equilibria).
-    if (/\b(?:no|without\s+(?:a|any))\s+pure(?:-strategy)?\s+(?:nash\s+)?equilibri(?:um|a)\b|\bhas\s+no\s+pure\b/i.test(prose)
+    if (/\b(?:no|without\s+(?:a|any))\s+pure(?:-strategy)?\s+(?:nash\s+)?equilibri(?:um|a)\b|\bhas\s+no\s+pure\b/i.test(said)
       && truth.some((t) => t.type === 'pure')) {
       issues.push(`prose says there is no pure equilibrium, but the solver lists ${truth.filter((t) => t.type === 'pure').length}`);
     }
@@ -2537,7 +2539,7 @@ export function validateProseClaims(
     //  (b) the unicode minus again: "giving payoffs of −1 and −5" (L15) captured
     //      1 rather than −1, because U+2212 is not the ASCII hyphen the pattern
     //      expects and passes straight through the gap class. Normalise first.
-    const flat = prose.replace(/[\u2212\u2013\u2012\u2014]/g, '-');
+    const flat = said.replace(/[\u2212\u2013\u2012\u2014]/g, '-');
     for (const m of flat.matchAll(/\b(?:both|each)\b[^.;]{0,60}?\b(?:payoffs?|receives?|gets?|earns?)\b[^.;\d-]{0,20}?(-?\d+(?:\.\d+)?)/gi)) {
       const v = Number(m[1]);
       if (!Number.isFinite(v)) continue;
@@ -3051,6 +3053,110 @@ function findLabels(clause: string, sets: { player: 'A' | 'B'; option: 1 | 2; re
 /** Test seam: the stated-mix reader, for its reach probe and its unit checks. */
 export const __frameMixForTest = (t: string, h: { index: number; length: number }) => frameMix(t, h);
 
+/** S28: sentential operators, read before any judge. A denial ("It is not true that P", "That P is false", "Nor does A prefer
+ *  X", "Does A prefer X? No.") becomes P with its one verb negated, for the direct-negation judges; "…? Yes." and a negative
+ *  question ("Isn't X better?") become P. An opaque frame ("One might think that P", a bare "Suppose P.") and any other
+ *  question assert nothing and are cut, as is a denial no single verb carries; "not (P and Q)" is judged here. */
+function sentential(text: string, labels: OptionLabels | null | undefined, g: GamePayoffs): { text: string; issues: string[]; claims: number } {
+  const issues: string[] = [];
+  let claims = 0;
+  const LAB = [labels?.row1, labels?.row2, labels?.col1, labels?.col2].filter((x): x is string => !!x?.trim()).map(labelPattern)
+    .concat(String.raw`\b(?:row|col(?:umn)?)\s+[12]\b`).join('|');
+  const AUX = String.raw`is|are|was|were|would|will|could|can|should|might|must|may|does|do|did|has|have`;
+  // A subject one verb can negate: a player, an option, a profile, an equilibrium, "it"/"there"; never a quantifier.
+  const SUBJ = String.raw`(?:player\s+)?[AB](?![\w'’])|(?:player\s+)?[AB]['’]s\s+(?:\w+\s+){0,2}?(?:strategy|payoff|best\s+(?:response|reply)|choice)|it|there|(?:the\s+)?(?:(?:unique|only|mixed|pure|nash)\s+)*equilibri(?:um|a)|(?:the\s+)?(?:profile\s+|outcome\s+|cell\s+|pair\s+)?\([^()]{1,60}\)|${LAB}`;
+  const ADVB = String.raw`(?:(?:always|still|also|then|thus|clearly|certainly|strictly|weakly|only|really|actually)\s+)?`;
+  const SAYV = String.raw`(?:say|think|claim|suggest|conclude|assume|believe|suppose|argue|expect|guess|imagine)`;
+  const DENY = String.raw`(?:(?:it\s+(?:is|was|would\s+be)\s+|it['’]s\s+)(?:simply\s+|plainly\s+|just\s+)?(?:not\s+(?:true|the\s+case|so|correct|right|accurate)|false|untrue|incorrect|inaccurate|wrong|by\s+no\s+means\s+(?:true|the\s+case)|an?\s+(?:mistake|error|myth|misconception|fallacy))|it\s+isn['’]t\s+(?:true|the\s+case|so|correct|right)|(?:nor|neither)\s+is\s+it\s+(?:true|the\s+case|so))(?:\s+to\s+${SAYV})?\s+that\s*,?\s+`;
+  // Opaque: a belief held by someone else or under a modal ("we might think"), never the writer's own "we conclude that".
+  const OPAQUE = String.raw`(?:it\s+(?:is|was|may\s+be|might\s+be)\s+|it['’]s\s+)(?:not\s+(?:obvious|clear|evident|certain|immediately\s+(?:obvious|clear)|a\s+given)|unclear|uncertain|doubtful|tempting\s+to\s+${SAYV}|natural\s+to\s+${SAYV}|easy\s+to\s+${SAYV})\s+that\s+|(?:(?:one|you|someone|people|many|some|(?:a|the)\s+(?:\w+\s+)?(?:reader|player|observer|student|newcomer|novice|beginner))\s+(?:(?:might|may|could|would|will|often|sometimes|initially|naively|first)\s+)*|we\s+(?:might|may|could|would)\s+(?:(?:initially|naively|first)\s+)?)${SAYV}s?\s+(?:that\s+)?`;
+  const SUPPOSE = String.raw`(?:suppose|supposing|imagine|assume|assuming|pretend)\s+(?:that\s+)?`;
+  const FALSEP = String.raw`(?:is|was)\s+(?:simply\s+|plainly\s+)?(?:false|untrue|wrong|mistaken|incorrect|inaccurate|not\s+(?:true|the\s+case|so|correct)|a\s+myth)`;
+  const LEAD = String.raw`(^|[;:]\s*|,\s*(?:(?:and|but|yet|so|while|whereas|though|although|since|because)\s+)?|\b(?:and|but|yet)\s+|\b(?=(?:it|nor|neither)\b))((?:(?:however|moreover|indeed|still|also|yet|but|and|so|thus|hence|again|of\s+course|in\s+fact|in\s+truth)\s*,?\s+)*)`;
+  // Groups: 1 lead, 2 its adverbs, 3 denial, 4 opaque, 5 supposition, 6 "nor", 7 "that" of "That P is false", 8 its P.
+  const OP = new RegExp(String.raw`${LEAD}(?:(${DENY})|(${OPAQUE})|(${SUPPOSE})|((?:nor|neither)\s+)(?=(?:${AUX})\s+(?:${SUBJ})\s)|((?:the\s+(?:claim|idea|notion|belief|view|assertion|suggestion|statement)\s+)?that\s+)(?=(.+?)\s+${FALSEP}(?=\s*(?:$|[.;:!?]|,\s*(?:but|and|since|because|as|so)\b))))`, 'gi');
+  const END = /\s*(?:[;:]|,\s*(?:but|and|yet|so|while|whereas|though|although|since|because|given|nor)\b|[.!?]+\s*$|$)/i;
+  const FRAME = String.raw`(?:(?:when(?:ever)?|if|once|against|versus|facing|given|under)\b[^,]*,\s*)?`;
+  const VERB = new RegExp(String.raw`^(${FRAME}(?:${SUBJ})\s+)(${ADVB})(?:(${AUX})\b|([a-z]+?)(e?s)\b)`, 'i');
+  const negate = (p: string): string | null => {
+    const dn = new RegExp(`^(?:${DENY})(.+)$`, 'i').exec(p);
+    if (dn) return dn[1];   // "it is not true that it is not true that P" is P
+    const fr = new RegExp(`^${FRAME}`, 'i').exec(p)![0].length;
+    const core = p.slice(fr).replace(/\([^()]*\)/g, '()').replace(/\bbetween\s+[^,;]+?\s+and\s+/gi, 'between ');
+    if (/\b(?:and|or|but|while|whereas|so|because|since|although|though|unless|which)\b|[,;:]/i.test(core)) return null;
+    // Only the main clause's negation is denied: "not (A prefers X when B does not play Y)" keeps "does not play Y".
+    const sub = p.slice(fr).search(/\s(?:when(?:ever)?|if|once|against|versus|facing|given|under|after|regardless|whatever)\b/i);
+    const main = sub < 0 ? p.slice(fr) : p.slice(fr, fr + sub);
+    // The leftmost negation scopes over the rest: only it is removed ("not (A does not never X)" is "A does never X").
+    const mm = main.replace(/\([^()]*\)/g, (x) => '_'.repeat(x.length)), n = /\b(?:not|never|no|none|neither|nor|nothing|cannot)\b|n['’]t\b/i.exec(mm);
+    if (n) {
+      const r = new RegExp(String.raw`\b(?:(${AUX})\s+not|(is|are|was|were|has|have|does|do|did|would|could|should)n['’]t|(is|are|has|have|exists?)\s+no|(can)(?:not|['’]t)|(wo)n['’]t|(never))\s+`, 'i').exec(mm);
+      if (!r || n.index < r.index || n.index >= r.index + r[0].length) return null;
+      const w = r[1] ?? r[2] ?? (r[3] ? `${r[3]} a` : r[4] ?? (r[5] ? 'will' : 'sometimes'));   // "not never" is "sometimes"
+      return `${p.slice(0, fr)}${main.slice(0, r.index)}${w} ${p.slice(fr + r.index + r[0].length)}`;
+    }
+    const v = VERB.exec(p);
+    if (!v || /^[ab]\s/.test(v[1].slice(fr))) return null;   // "a mixed …" is the article
+    const rest = p.slice(v[0].length);
+    if (v[3]) return /^ha(?:s|ve)$/i.test(v[3]) ? `${v[1]}${/^has$/i.test(v[3]) ? 'does' : 'do'} not ${v[2]}have${rest}` : `${v[1]}${v[3]} not ${v[2]}${rest.replace(/^\s+/, '')}`;
+    const base = v[5] === 'es' && /(?:x|ch|sh|ss|o)$/i.test(v[4]) ? v[4] : v[4] + (v[5] === 'es' ? 'e' : '');
+    return `${v[1]}does not ${v[2]}${base}${rest}`;
+  };
+  // "not (P and Q)" is false iff P and Q each hold (each part's denial flags); "not (either P or Q)", iff either does.
+  const denyAll = (p: string): void => {
+    const or = new RegExp(String.raw`\s+or\s+(?=(?:${SUBJ})\s)`, 'i').test(p);
+    const parts = p.replace(/^either\s+/i, '').split(new RegExp(String.raw`\s*,?\s+${or ? 'or' : 'and'}\s+(?=(?:${SUBJ})\s)`, 'i')), neg = parts.map(negate);
+    if (parts.length < 2 || neg.some((n) => !n)) return;
+    const r = neg.map((n) => validateProseDirectionsDetailed(`${n}.`, labels, g));
+    if (r.every((x) => x.claims > 0)) claims++;
+    if (or ? r.some((x) => x.issues.length > 0) : r.every((x) => x.issues.length > 0))
+      issues.push(`prose denies "${p}", but ${or ? 'a part' : 'each part'} of it holds: ${r.flatMap((x) => x.issues.slice(0, 1)).join('; ')}`);
+  };
+  // Yes/no questions ("Does A prefer X?", "When B plays Y, is X better for A?"), set straight; an answer decides them.
+  const Q = new RegExp(String.raw`^((?:(?:so|but|and|then|now|well|yet|still)\s*,?\s+)?)((?:(?:when(?:ever)?|if|once|against|versus|facing)\s+[^,?]{0,60}?(?:${LAB})\s*,?\s+)?)(${AUX})(n['’]t|\s+not)?\s+(${SUBJ})\s+([^?]+?)\s*\?$`, 'i');
+  const WHQ = new RegExp(String.raw`^(?:(?:so|but|and|then|now|well|yet|still)\s*,?\s+)?(?:(?:when(?:ever)?|if|once|against|versus|facing)\s+[^,?]{0,60}?,\s+)?(?:why|how|what|which|who|whom|whose|where|whether|(?:${AUX})(?:n['’]t)?)\b`, 'i');
+  const ANS = new RegExp(String.raw`^(?:(no|yes|not\s+(?:so|really|quite|here|at\s+all))\s*[.!,;:—–-]|(?:it|they|he|she|that)\s+(?:${AUX})(n['’]t|\s+not)?\s*[.!])\s*`, 'i');
+  const sents = text.split(/(?<=[.!?])(\s+)/);
+  for (let k = 0; k < sents.length; k += 2) {
+    let s = sents[k];
+    // "Suppose P. Then Q." is "If P, then Q": the frame judges read it.
+    const sup = new RegExp(String.raw`^${SUPPOSE}([^,;:]+?)\.$`, 'i').exec(s);
+    if (sup && /^then\b/i.test(sents[k + 2] ?? '')) [s, sents[k + 1], sents[k + 2]] = [`If ${sup[1]}, ${sents[k + 2]}`, '', ''];
+    // Only interrogative syntax is a question: "A gains nothing by X when B is at Y?" (real, false) is still a claim.
+    if (/\?\s*$/.test(s) && (Q.test(s.trim()) || WHQ.test(s.trim()))) {
+      const q = Q.exec(s.trim()), ans = ANS.exec(sents[k + 2] ?? '');
+      const p = q && !/^[ab]$/.test(q[5]) ? `${q[1]}${q[2] ? `${q[2].replace(/\s*,?\s*$/, '')}, ` : ''}${q[5]} ${q[3].toLowerCase()} ${q[6]}` : null;
+      if (p && ans) sents[k + 2] = sents[k + 2].slice(ans[0].length);
+      const no = ans && (ans[1] ? !/^yes$/i.test(ans[1]) : !!ans[2]);
+      s = p && ans ? (no ? negate(p) ?? '' : p) : p && q![4] ? p : '';
+      if (s) s = `${s[0].toUpperCase()}${s.slice(1)}.`;
+    }
+    for (let m: RegExpExecArray | null, from = 0; s && ((OP.lastIndex = from), (m = OP.exec(s))); ) {
+      const opEnd = m.index + m[0].length;
+      let pEnd: number, p: string | null;
+      if (m[7] !== undefined) {   // "That P is false": the predicate goes with it
+        pEnd = opEnd + m[8].length + new RegExp(String.raw`^\s+${FALSEP}`, 'i').exec(s.slice(opEnd + m[8].length))![0].length;
+        p = negate(m[8]);
+        if (!p) denyAll(m[8]);
+      } else {
+        const tail = s.slice(opEnd);
+        pEnd = opEnd + END.exec(tail)!.index;
+        // "Suppose P; then Q" frames Q: the frame judges read it.
+        if (m[5] !== undefined && (m.index > 0 || /[;:]|,\s*(?:then|so)\b|\bthen\b/i.test(tail))) { from = opEnd; continue; }
+        const body = m[6] !== undefined ? s.slice(opEnd, pEnd).replace(new RegExp(String.raw`^(${AUX})\s+(${SUBJ})\s+`, 'i'), '$2 $1 ') : s.slice(opEnd, pEnd);
+        p = m[3] !== undefined || m[6] !== undefined ? negate(body) : null;
+        if (!p && m[4] === undefined && m[5] === undefined) denyAll(body);
+      }
+      const head = s.slice(0, m.index), rest = s.slice(pEnd);
+      if (p && !head && !m[1]) p = `${p[0].toUpperCase()}${p.slice(1)}`;
+      s = p ? `${head}${m[1]}${p}${rest}` : head ? `${head}${rest}` : rest.replace(/^\s*[;:,]?\s*(?:(?:but|and|yet|so)\s+)?/i, '');
+      from = p ? m.index + m[1].length + p.length : head.length;
+    }
+    sents[k] = s;
+  }
+  return { text: sents.join(''), issues, claims };
+}
+
 export function validateProseDirections(text: string, labels: OptionLabels | null | undefined, g: GamePayoffs): string[] {
   return validateProseDirectionsDetailed(text, labels, g).issues;
 }
@@ -3068,6 +3174,9 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   const issues: string[] = [];
   let claimCount = 0;
   if (!text) return { issues, claims: 0 };
+  const sent = sentential(text, labels, g);   // S28: denials set straight, opaque frames and open questions cut
+  text = sent.text; issues.push(...sent.issues); claimCount += sent.claims;
+  if (!text.trim()) return { issues, claims: claimCount };
   // "for sure" / "for certain" are empty intensifiers that carry no referent,
   // but they sit between a label and its frame and break the adjacency the
   // claim parser measures ("If B chooses Col 2 for sure, A's best response is
@@ -3227,7 +3336,12 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // S20b: comparative wording ("X gives A a higher payoff", "A gets more from X", "A does worse with X") and denials
   // ("A does not favor X", "X is no better for A") are preference claims too. inv: the named option is the worse one;
   // neg: the preference is denied. GIVES is case-sensitive so the article "a" is never read as player A.
-  const GETS = /\b(?:(?:gets?|earns?|receives?|makes?|nets?|collects?|scores?|obtains?)\s+(?:(?:strictly|clearly|always|even|much|far|slightly)\s+)?(?:(?:a|an|the|its|their|his|her)\s+)?(?:higher|greater|larger|bigger|better|more|lower|smaller|worse|less)\b(?:\s+(?!(?:from|with|by)\b)[\w’'-]+){0,4}?|(?:does|do|did|fares?|is|are)\s+(?:\w+\s+)?worse(?:\s+off)?|loses?(?:\s+out)?)\s+(?:from|with|by\s+(?:not\s+)?(?:choosing|playing|picking|using|taking|offering|selecting|switching\s+to|going\s+with))\s+(?:the\s+|an?\s+|its\s+|their\s+)?$|\b(?:(?:no|an?|every|good|clear|strong)\s+(?:(?:real|strict|clear|strong|good|positive)\s+)?(?:reason|incentive|need)\s+(?:for\s+(?:player\s+)?[AB]\s+)?to\s+(?:choose|pick|play|use)|(?:gains?\s+nothing|(?:no|an?|every|good|clear|strong)\s+(?:(?:real|strict|clear|strong|good|positive)\s+)?(?:reason|incentive|need)\s+(?:for\s+(?:player\s+)?[AB]\s+)?to\s+(?:switch|move|deviate))\s+(?:by\s+(?:switching|moving|deviating)\s+)?to|(?:gains?|benefits?|profits?)\s+(?:by|from)\s+(?:switching|moving|deviating|changing)\s+to|(?:(?:(?:player\s+)?[AB]|its|their|his|her)['’]?s?\s+)payoff\s+(?:is\s+|would\s+be\s+)?(?:(?:strictly|clearly|always|much)\s+)?(?:higher|greater|larger|bigger|better|lower|smaller|worse)\s+(?:under|with|from|for|by\s+(?:choosing|playing|picking|using))|(?:(?:(?:player\s+)?[AB]|its|their|his|her)['’]?s?\s+)payoff\s+(?:rises|increases|goes\s+up|improves|grows|falls|drops|decreases|goes\s+down|shrinks)\s+(?:if|when|once)\s+(?:it|they|he|she|(?:player\s+)?[AB])\s+(?:switch(?:es)?|moves?|deviates?|changes?)\s+to)\s+(?:the\s+|an?\s+|its\s+|their\s+)?$/i;
+  // S28: a reason phrase ("a good reason", "no real incentive", "lacks reason"); RSN_TO also takes its "to".
+  const RNOUN = String.raw`(?:reason|incentive|need|motive|cause|grounds?|temptation|motivation)(?:\s+at\s+all)?`;
+  const RDET = String.raw`(?:no|an?|any|every|much|little|real|strict|good|clear|strong|positive|compelling|great|particular|obvious|single|further)`;
+  const RNP = String.raw`(?:(?:${RDET}\s+)+|(?<=\b(?:has|have|had|lacks?|lacked|lacking|without|got|sees?|finds?)\s+))${RNOUN}`;
+  const RSN_TO = String.raw`(?:${RDET}\s+)*${RNOUN}\s+to`;
+  const GETS = new RegExp(/\b(?:(?:gets?|earns?|receives?|makes?|nets?|collects?|scores?|obtains?)\s+(?:(?:strictly|clearly|always|even|much|far|slightly)\s+)?(?:(?:a|an|the|its|their|his|her)\s+)?(?:higher|greater|larger|bigger|better|more|lower|smaller|worse|less)\b(?:\s+(?!(?:from|with|by)\b)[\w’'-]+){0,4}?|(?:does|do|did|fares?|is|are)\s+(?:\w+\s+)?worse(?:\s+off)?|loses?(?:\s+out)?)\s+(?:from|with|by\s+(?:not\s+)?(?:choosing|playing|picking|using|taking|offering|selecting|switching\s+to|going\s+with))\s+(?:the\s+|an?\s+|its\s+|their\s+)?$|\b(?:RNP\s+(?:for\s+(?:player\s+)?[AB]\s+)?to\s+(?:choose|pick|play|use|select|take|adopt)|(?:gains?\s+nothing|RNP\s+(?:for\s+(?:player\s+)?[AB]\s+)?to\s+(?:switch|move|deviate))\s+(?:by\s+(?:switching|moving|deviating)\s+)?to|(?:gains?|benefits?|profits?)\s+(?:by|from)\s+(?:switching|moving|deviating|changing)\s+to|(?:(?:(?:player\s+)?[AB]|its|their|his|her)['’]?s?\s+)payoff\s+(?:is\s+|would\s+be\s+)?(?:(?:strictly|clearly|always|much)\s+)?(?:higher|greater|larger|bigger|better|lower|smaller|worse)\s+(?:under|with|from|for|by\s+(?:choosing|playing|picking|using))|(?:(?:(?:player\s+)?[AB]|its|their|his|her)['’]?s?\s+)payoff\s+(?:rises|increases|goes\s+up|improves|grows|falls|drops|decreases|goes\s+down|shrinks)\s+(?:if|when|once)\s+(?:it|they|he|she|(?:player\s+)?[AB])\s+(?:switch(?:es)?|moves?|deviates?|changes?)\s+to)\s+(?:the\s+|an?\s+|its\s+|their\s+)?$/i.source.replace(/RNP/g, RNP), 'i');
   const GIVES = /^\s*(?:(?:always|also|still|strictly|clearly|then|thus|therefore|likewise|now|instead|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:gives|yields|pays|earns|nets|brings|returns|offers|provides|secures|delivers|leaves|serves|(?:(?:would|will|might|may|could|can|should|must)|(?:seems?|appears?)\s+to)\s+(?:give|yield|pay|earn|net|bring|return|offer|provide|secure|deliver|leave|serve)|(?:does|do)(?:n['’]t|\s+not)\s+(?:give|yield|pay|earn|net|bring|return|offer|provide|secure|deliver|leave|serve))\s+(?:(?<rcp>(?:[Pp]layer\s+)?[AB]|it|them|him|her|(?:the|its|their|this|that|each)\s+[\w’'-]+(?:\s+[\w’'-]+)?|[A-Z][\w’'-]+(?:\s+[A-Z][\w’'-]+)?)\s+)?(?:(?:a|an|the|its|their|his|her)\s+)?(?:(?:strictly|clearly|much|far|slightly)\s+)?(?:higher|greater|larger|bigger|better|more|lower|smaller|worse|less)\b/;
   const AFTER_CMP = /^\s*(?:(?:always|also|likewise|still|clearly|strictly|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:fares?|performs?|is|are|does|works|do|doing|being|(?:would|will|might|may|could|can|should|must)(?:\s+(?:not|never)|n['’]t)?(?:\s+(?:probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely|also|still|always|clearly|then))?\s+(?:be|do)|(?:seems?|appears?|looks?)(?:\s+to\s+(?:be|do))?)\s+(?:(?:strictly|clearly|always|also|still|even|much|far|probably|perhaps|surely|certainly|obviously|indeed|actually|apparently|arguably|presumably|evidently|definitely|really|supposedly|seemingly|undoubtedly|plainly|likely)\s+)?(?:(?:the|its|their|(?:the\s+)?[\w’'-]+['’]s)\s+)?(?:worse|worst|weaker)|(?:is|are)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?(?:the\s+)?(?:superior|inferior)|(?:is|are)\s+(?:(?:strictly|clearly|always|also|still|even|much|far)\s+)?(?:more|less)\s+(?:profitable|lucrative|rewarding|valuable|costly)|(?:is|are|does|do)(?:n['’]t|\s+(?:not|no|never))\s+(?:(?:a|the|any|(?:the\s+)?[\w’'-]+['’]s)\s+)?(?:better|best|preferable|superior|inferior|worse|weaker|(?:any\s+)?(?:more|less)\s+(?:profitable|lucrative|rewarding|valuable|costly)))\b/i;
   const NARM = /^\s*(?:(?:always|also|likewise|still|clearly|strictly)\s+)?(?:gives|yields|earns|pays)\s+(?:(?:player\s+)?([AB])\s+|\w+\s+)?(?:a\s+(?:payoff|return)\s+of\s+)?(-?\d+(?:\.\d+)?)\s*(?:rather\s+than|instead\s+of|vs\.?|versus|compared\s+(?:to|with)|over)\s*(-?\d+(?:\.\d+)?)?/i;
@@ -3236,8 +3350,10 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
   // "does better by 3", "by a wide margin" is a margin, never the "does better with/by X" choice (the margin itself is unread).
   const MARGIN = /^\s*(?:with|by)\s+(?:[-−]?\d|(?:a|an|the)\s+(?:\w+\s+)?(?:margin|points?|amount|lot|mile)\b|far\b|much\b|(?:a\s+)?(?:wide|large|small|narrow|clear)\b)/i;
   const BYX = { test: (t: string) => /^\s*(?:with|by)\b/i.test(t) && !MARGIN.test(t) };
-  const NEG_GAP = /(?:\b(?:not|never|no\s+longer|cannot|(?:has|have|had|sees?|finds?)\s+no)|n['’]t|\bneither\s+\w+|\bno\s+(?:reason|incentive|need)\s+to|\bnothing\s+(?:at\s+all\s+)?to)\s+(?:(?:always|really|necessarily|strictly|actually|then|also|even|clearly)\s+)?$/i;
-  const polar = (v: string, gap: string) => ({ neg: /\b(?:not|no|never|nothing)\b|n['’]t\b/i.test(v) || NEG_GAP.test(gap),
+  // S28: a negated possession ("does not have / lacks / never has an incentive to play X", "has no good reason to prefer X")
+  // denies the claim it carries.
+  const NEG_GAP = new RegExp(String.raw`(?:\b(?:not|never|no\s+longer|cannot|nothing\s+(?:quite\s+)?like|(?:has|have|had|sees?|finds?)\s+no)|n['’]t|(?:\b(?:(?:not|never|no\s+longer|cannot)\s+(?:\w+\s+)?(?:have|has|had)|(?:has|have|had)\s+not\s+got|lack(?:s|ed|ing)?|(?:is|are|was|were)\s+without)|n['’]t\s+(?:\w+\s+)?(?:have|got))(?:\s+${RSN_TO})?|\bneither\s+\w+|\b(?:no|little|nothing\s+like\s+an?)\s+${RSN_TO}|\bnothing\s+(?:at\s+all\s+)?to)\s+(?:(?:always|really|necessarily|strictly|actually|then|also|even|clearly)\s+)?$`, 'i');
+  const polar = (v: string, gap: string) => ({ neg: /\b(?:not|no|never|nothing)\b|n['’]t\b|(?<!\ba\s+)\blittle\s+(?:\w+\s+)?(?:reason|incentive|need|motive|cause|grounds?|temptation|motivation)\b/i.test(v) || NEG_GAP.test(gap),
     inv: /\b(?:worse|worst|weakest|weaker|lower|smaller|loses?|inferior|behind|falls|drops|decreases|down|shrinks)\b/i.test(v) || /\bless\b/i.test(v) !== /\bcostly\b/i.test(v) });
   const BOTH_WAYS = /\b(?:whether|regardless|no\s+matter|either|dominant|in\s+both|both\s+(?:columns|rows|cases)|always|whatever)\b/i;
   const INDIFF = /\bindifferent\s+between\b/i;
@@ -3266,6 +3382,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const cellsInOpp = [1, 2].map((o) => (player === 'A' ? cellAOf(g, o as 1 | 2, opp.option) : cellBOf(g, opp.option, o as 1 | 2)));
       const ok = own ? Math.abs((player === 'A' ? cellAOf(g, own.option, opp.option) : cellBOf(g, opp.option, own.option)) - v) < 1e-9
         : cellsInOpp.some((x) => Math.abs(x - v) < 1e-9);
+      claimCount++;
       if (!ok) issues.push(`prose tags ${player}=${v} with opponent option ${opp.option}, but that ${opp.player === 'B' ? 'column' : 'row'} pays ${player} ${cellsInOpp.join(' / ')}`);
     }
   }
@@ -3388,6 +3505,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       if (prev && prev.player !== lab.player && !negated && !none) R.push(...rangesOf(prev.player, (3 - prev.option) as 1 | 2));
       // Claims hold if SOME equilibrium bears them out; a denial is false only if EVERY equilibrium contradicts it.
       const meets = R.some(([a, b]) => a <= cHi && b >= cLo);
+      claimCount++;
       const bad = negated ? R.length > 0 && R.every(([a, b]) => a >= cLo && b <= cHi) : none ? meets : truthW.length > 0 && !meets;
       if (bad) issues.push(`prose ${negated || none ? 'denies' : 'puts'} ${lab.player}'s option ${lab.option} at probability ${p.toFixed(3)}, but ${negated ? 'every equilibrium does' : none ? 'an equilibrium does' : 'no equilibrium does'}`);
     }
@@ -3439,6 +3557,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       if (level && !negated) R.push(...levelSet(c.pl));
       // Option 1 near u and option 2 near w; a denial ("does not split evenly") is false only at exactly one half.
       const ok = negated ? !(R.length > 0 && R.every(([a, b]) => a === 0.5 && b === 0.5)) : truthW.length === 0 || R.some(([a, b]) => Math.max(a, c.u - c.tol, 1 - c.w - c.tol) <= Math.min(b, c.u + c.tol, 1 - c.w + c.tol));
+      claimCount++;
       const k = `${c.at}`; said.set(k, (said.get(k) ?? false) || ok);
     }
     for (const c of claims) {
@@ -3463,6 +3582,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       const t = truthO[0];
       const ownOpt = (who === 'A' ? (t.x === 1 ? 1 : 2) : (t.y === 1 ? 1 : 2)) as 1 | 2;
       const pay = (opp: 1 | 2) => (who === 'A' ? cellAOf(g, ownOpt, opp) : cellBOf(g, opp, ownOpt));
+      claimCount++;
       if (pay(lab.option) < pay((3 - lab.option) as 1 | 2) - 1e-9) {
         issues.push(`prose says ${who} would rather ${other} play option ${lab.option}, but at ${who}'s equilibrium option that pays ${who} ${pay(lab.option)} vs ${pay((3 - lab.option) as 1 | 2)}`);
       }
@@ -3509,6 +3629,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         // a mixed equilibrium the panel prints as "less than 0.001", never 0.
         return Math.abs(pl - p) < 1e-9;
       });
+      claimCount++;
       if (denied) {
         const pOf = (t: { x: number; y: number }) => { const p1 = lab.player === 'A' ? t.x : t.y; return lab.option === 1 ? p1 : 1 - p1; };
         if (truthLocal.length && !continuumComponents(g).length && truthLocal.every((t) => Math.abs(pOf(t) - p) < 1e-9)) issues.push(`prose denies ${lab.player}'s option ${lab.option} probability ${p}, but every equilibrium gives it that`);
@@ -4881,6 +5002,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         const beforeA = sentence.slice(Math.max(0, a.index - 30), a.index);
         if (/\b(?:against|versus|vs\.?|when|if|whether|prefers?|favou?rs?|better|best|between)\b[^,;:]*$/i.test(beforeA)) continue;
         const row = (a.player === 'A' ? a : b).option, col = (a.player === 'B' ? a : b).option;
+        claimCount++;
         if (!isPureNE(row, col)) {
           issues.push(`prose presents (Row ${row}, Col ${col}) as an equilibrium, but it is not: A pays ${cellAOf(g, row, col)} vs ${cellAOf(g, (3 - row) as 1 | 2, col)} switching rows, B pays ${cellBOf(g, row, col)} vs ${cellBOf(g, row, (3 - col) as 1 | 2)} switching columns`);
         }
@@ -5035,6 +5157,9 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         if (!verbBefore) {
           const mk = /\b(?:makes?|making|renders?|leaves?)\s+(?:the\s+|an?\s+)?$/i.exec(tail);
           if (mk && /^\s+(?:the\s+)?(?:best|better|optimal)\b/i.test(afterText)) verbBefore = mk;
+          // S28: "A likes X better/more/best" ranks X; "likes X more often" is a frequency.
+          const lk = /\b(?:likes?|liked|liking)\s+(?:the\s+|an?\s+)?$/i.exec(tail);
+          if (!verbBefore && lk && /^\s+(?:(?:much|far|a\s+lot|rather)\s+)?(?:better|more|best)\b(?!\s+(?:often|frequently|of\s+the\s+time))/i.test(afterText)) verbBefore = lk;
         }
         // "<actor> is best with X" (no option label right before the verb) names X as the choice;
         // "<label> is better with Y" (label before the verb) is a frame — handled by STRICT_AFTER.
