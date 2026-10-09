@@ -1550,7 +1550,9 @@ function testRedTeamFindings9() {
   const g20: GamePayoffs = { a11: 20, a12: 0, a21: -20, a22: 0.025, b11: 0, b12: 0.025, b21: 20, b22: -20 };
   const s20 = simulate(g20, { firstMover: 'A', stepMode: 'shrink', shrinkStep: 0.1 });
   assert(computeAllNE(g20).filter((n) => n.type === 'pure').length === 0, 'fixture g20 has no pure NE');
-  assert(r3(s20.cx) === 1 && r3(s20.cy) === 0, 'fixture: the run really locks on the (1,0) boundary');
+  // Since S12 the run locks the solver root (0.99937, 0.00062), not the 3dp landing (1, 0); still within 1e-3 of it.
+  assert(Math.abs(s20.exactX - 1) < 1e-3 && Math.abs(s20.exactY) < 1e-3 && s20.exactX < 1 && s20.exactY > 0,
+    'fixture: the run converges within 1e-3 of the (1,0) boundary, at the interior root');
   const r20 = resolveProfile(g20, s20);
   assert(r20.concept === 'mixed',
     'the box must not say PURE on a game whose own report says "No pure strategy NE coordinates exist"');
@@ -2748,8 +2750,8 @@ function testNoQuadraticSnapshotting() {
     'historyStack is gone from the engine: it had exactly one reader, of the element it had just pushed');
   assert(!/historyStack/.test(codeOf('src/types.ts')),
     'and gone from SimState, so it cannot be silently repopulated by a future writer');
-  assert(/const prevCx = s\.cx, prevCy = s\.cy;/.test(eng),
-    'the delta check must read two locals captured before the move');
+  assert(/const prevX = s\.exactX, prevY = s\.exactY;/.test(eng),
+    'the delta check must read two locals captured before the move (exact, S11)');
   console.log('✓ class guard: no per-step deep copying of the trajectory');
 }
 
@@ -2887,8 +2889,9 @@ function testTourStagesTheDisplayedMethod() {
   // keeps its own line rather than being deleted as redundant.
   assert(regret.snaps.length !== shrink.snaps.length && regret.neState?.stepCount !== shrink.neState?.stepCount,
     'the two modes must stay distinguishable by BOTH discriminators, or this test stops being able to see the defect');
-  assert(regret.snaps.length - 1 === 30 && regret.neState?.stepCount === 24,
-    `fixture: regret stages 30 steps with first-find at 24 (got ${regret.snaps.length - 1}, ${regret.neState?.stepCount})`);
+  // 28/21 since F17 (2026-10-06): the position now enters each contracted regret box, so it closes sooner.
+  assert(regret.snaps.length - 1 === 28 && regret.neState?.stepCount === 21,
+    `fixture: regret stages 28 steps with first-find at 21 (got ${regret.snaps.length - 1}, ${regret.neState?.stepCount})`);
   assert(shrink.snaps.length - 1 === 58 && shrink.neState?.stepCount === 37,
     `fixture: shrink stages 58 steps with first-find at 37 (got ${shrink.snaps.length - 1}, ${shrink.neState?.stepCount})`);
 

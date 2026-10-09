@@ -23,7 +23,7 @@
  */
 import React from 'react';
 import { GamePayoffs } from '../types';
-import { splitEquilibriaByContinuum, describeContinua, fmtPayoff, EA, EB } from '../utils/gameEngine';
+import { splitEquilibriaByContinuum, describeContinua, fmtPayoff, EA, EB, commitPayoffs } from '../utils/gameEngine';
 import { savedGameColorTerms } from '../utils/colorTerms';
 import { GameGraphMiniature } from './GameGraphMiniature';
 import { ColorCoded } from './ColorCoded';
@@ -50,7 +50,7 @@ export function formatSavedGames(games: any[]): SavedGameListItem[] {
     id: g.id,
     name: g.name,
     desc: g.description,
-    payoffs: g.payoffs as GamePayoffs,
+    payoffs: commitPayoffs(g.payoffs),
     terms: savedGameColorTerms(g),
     raw: g,
   }));

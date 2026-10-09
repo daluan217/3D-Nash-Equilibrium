@@ -24,6 +24,7 @@
  */
 
 import type { GamePayoffs } from '../types';
+import { indifferenceRoot, fmtProb, fmtPayoffProse, r3 } from './gameEngine';
 
 export interface Geometry {
   /** A's twist. Zero means A's surface is a flat plane: no strategic interaction. */
@@ -158,8 +159,10 @@ export function describeGeometry(g: GamePayoffs): Geometry {
   const twistA = g.a11 - g.a12 - g.a21 + g.a22;
   const twistB = g.b11 - g.b12 - g.b21 + g.b22;
 
-  const yStar = Math.abs(twistA) < EPS ? NaN : (g.a22 - g.a12) / twistA;
-  const xStar = Math.abs(twistB) < EPS ? NaN : (g.b22 - g.b21) / twistB;
+  // The solver's own root (NaN when the twist is < 1e-9), so the briefing's
+  // shelf and the solver's x*/y* cannot round differently (11/16 vs 0.687...).
+  const yStar = indifferenceRoot(g.a11 - g.a21, g.a12 - g.a22);
+  const xStar = indifferenceRoot(g.b11 - g.b12, g.b21 - g.b22);
 
   const inUnit = (v: number) => Number.isFinite(v) && v > EPS && v < 1 - EPS;
 
@@ -217,9 +220,11 @@ export function describeGeometry(g: GamePayoffs): Geometry {
  */
 export function geometryBriefing(g: GamePayoffs): string {
   const geo = describeGeometry(g);
-  // Round for the prompt. Full float precision invites the model to quote
-  // coordinates to 16 digits, which reads badly and is not more true.
-  const r = (v: number) => (Number.isFinite(v) ? String(Math.round(v * 1e4) / 1e4) : 'undefined');
+  // The panel's own formatters (F6): a root prints as fmtProb, a payoff as fmtPayoffProse. A private
+  // 4-dp door printed "y = 1" for an interior 0.999995, "twist = 13.907999999999998", and 0.5882
+  // beside the solver line's 0.588. A root OFF the board never prints a value on it.
+  const outside = (v: number) => (!Number.isFinite(v) ? 'undefined'
+    : r3(v) > 1 || r3(v) < 0 ? String(r3(v)) : v > 1 ? 'more than 1' : 'less than 0');
 
   /**
    * Render a value as digits AND, for the common fractions, in words.
@@ -236,8 +241,10 @@ export function geometryBriefing(g: GamePayoffs): string {
   ];
   const rw = (v: number) => {
     if (!Number.isFinite(v)) return 'undefined';
-    const hit = WORDS.find(([n]) => Math.abs(v - n) < 5e-4);
-    return hit ? `${r(v)} (${hit[1]})` : r(v);
+    // EXACT fractions only: within 5e-4 printed "0.5005 (a half)". A 3dp root is p/q with
+    // q <= 400000, so any other fraction p/q sits >= 5e-7 away and 1e-9 cannot misname it.
+    const hit = WORDS.find(([n]) => Math.abs(v - n) < 1e-9);
+    return hit ? `${fmtProb(v)} (${hit[1]})` : fmtProb(v);
   };
   const lines: string[] = ['Geometry of the two expected-payoff surfaces (computed, authoritative):'];
 
@@ -260,7 +267,7 @@ export function geometryBriefing(g: GamePayoffs): string {
 
   lines.push(
     !flatPlaneA
-      ? `  A's surface is WARPED (twist = ${geo.twistA}): the players' choices genuinely interact.`
+      ? `  A's surface is WARPED (twist = ${fmtPayoffProse(geo.twistA)}): the players' choices genuinely interact.`
       // TWIST ZERO IS NOT INDEPENDENCE. This branch said "A's payoff does not
       // depend on what B does", which is false whenever a21 != a22: on
       // a=[[-5,-1],[-5,-1]], b=[[-6,-6],[0,6]] the payoff is E_A = -1 - 4y, a
@@ -270,7 +277,7 @@ export function geometryBriefing(g: GamePayoffs): string {
       // two tilts are independent of each other, not that one of them is zero.
       : Math.abs(aOppTilt) < EPS
         ? `  A's surface is a FLAT PLANE (twist = 0): A's payoff does not depend on what B does, so there is no strategic interaction to describe.`
-        : `  A's surface is a FLAT PLANE (twist = 0): there is no strategic INTERACTION to describe — how much A's own choice is worth is the same whatever B does. A's payoff does still move with B's choice (by ${r(aOppTilt)} as B shifts from Col 2 to Col 1), by the same amount whichever row A picks.`,
+        : `  A's surface is a FLAT PLANE (twist = 0): there is no strategic INTERACTION to describe — how much A's own choice is worth is the same whatever B does. A's payoff does still move with B's choice (by ${fmtPayoffProse(aOppTilt)} as B shifts from Col 2 to Col 1), by the same amount whichever row A picks.`,
   );
 
   lines.push(
@@ -307,10 +314,10 @@ export function geometryBriefing(g: GamePayoffs): string {
       : aIndifferentEverywhere
         ? `  A is indifferent between the two rows EVERYWHERE on the board: A's surface is level along A's own axis at every y, so the whole surface is a shelf rather than one line. A's payoff is decided entirely by B. Do not describe A as preferring a row.`
         : flatPlaneA
-          ? `  There is NO flat shelf for A: A's surface tilts the same way at every y — A is always better off from ${aOwnTilt > 0 ? 'Row 1' : 'Row 2'}, by ${r(Math.abs(aOwnTilt))}, whatever B does. Do not describe a shelf.`
+          ? `  There is NO flat shelf for A: A's surface tilts the same way at every y — A is always better off from ${aOwnTilt > 0 ? 'Row 1' : 'Row 2'}, by ${fmtPayoffProse(Math.abs(aOwnTilt))}, whatever B does. Do not describe a shelf.`
           : onBoundary
-            ? `  There is NO flat shelf INSIDE the board: A's surface goes level only at y = ${r(geo.yStar)}, which is the edge of the square (B playing ${geo.yStar > 0.5 ? 'Col 1' : 'Col 2'} outright), not a mix. At every genuine mixture A's surface tilts one way. Do not describe an interior shelf.`
-            : `  There is NO flat shelf for A on the board: the level point would be at y = ${r(geo.yStar)}, outside [0,1]. A's surface always tilts one way. Do not describe a shelf.`,
+            ? `  There is NO flat shelf INSIDE the board: A's surface goes level only at y = ${geo.yStar > 0.5 ? 1 : 0}, which is the edge of the square (B playing ${geo.yStar > 0.5 ? 'Col 1' : 'Col 2'} outright), not a mix. At every genuine mixture A's surface tilts one way. Do not describe an interior shelf.`
+            : `  There is NO flat shelf for A on the board: the level point would be at y = ${outside(geo.yStar)}, outside [0,1]. A's surface always tilts one way. Do not describe a shelf.`,
   );
 
   // THE FLAT-SPOT SENTENCE.

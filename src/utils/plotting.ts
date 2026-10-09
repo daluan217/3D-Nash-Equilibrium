@@ -4,7 +4,7 @@
  */
 
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
-import { EA, EB, r3, equilibriumSet, kindOf, pointInRect, fmtProb, fmtPayoff } from './gameEngine';
+import { EA, EB, equilibriumSet, kindOf, pointInRect, fmtProb, fmtPayoff, shownPoint } from './gameEngine';
 
 export interface SurfaceData {
   xs: number[];
@@ -200,10 +200,8 @@ export function makeTraces(
   // gap between where the run stopped and where the equilibrium is. The run
   // has already declared it converged on this equilibrium; at a distance the
   // readout cannot express, drawing them as one point is what that means.
-  if (s.converged) {
-    const settled = allNE.find((n) => Math.abs(n.x - px) < 1e-3 && Math.abs(n.y - py) < 1e-3);
-    if (settled) { px = settled.x; py = settled.y; }
-  }
+  // shownPoint: the same point (and 1e-3 bound) the panel, the log and the banner print (S10).
+  if (s.converged && s.exactX !== undefined) ({ x: px, y: py } = shownPoint(g, s));
   // Current-position sphere z: use the SAME unrounded EA/EB the NE diamond uses
   // (not r3-rounded). At convergence the sphere and diamond share coordinates, so
   // matching the z computation makes their depths bit-identical — then draw order
@@ -248,10 +246,13 @@ export function makeTraces(
       && allNE.some(n => n.type === 'mixed') && !allNE.some(n => n.type === 'pure');
     // Regret mode brackets each player with their own domain, so the box is the
     // rectangle [A's x-domain] × [B's y-domain], contracting onto the NE.
-    const loX = regretBox ? s.domXLo : s.domainLo;
-    const hiX = regretBox ? s.domXHi : s.domainHi;
-    const loY = regretBox ? s.domYLo : s.domainLo;
-    const hiY = regretBox ? s.domYHi : s.domainHi;
+    // Both coordinates found: the box has closed on the found point, which is where the sphere is.
+    // Shrink's shared [lo,hi] would stand the pillar at (x*,x*), away from the NE (S9).
+    const both = s.discoveredMixedX !== null && s.discoveredMixedY !== null;
+    const loX = both ? px : regretBox ? s.domXLo : s.domainLo;
+    const hiX = both ? px : regretBox ? s.domXHi : s.domainHi;
+    const loY = both ? py : regretBox ? s.domYLo : s.domainLo;
+    const hiY = both ? py : regretBox ? s.domYHi : s.domainHi;
     const zC = [
       EA(loX, loY, g), EA(loX, hiY, g), EA(hiX, loY, g), EA(hiX, hiY, g),
       EB(loX, loY, g), EB(loX, hiY, g), EB(hiX, loY, g), EB(hiX, hiY, g)
@@ -319,7 +320,8 @@ export function makeTraces(
 
       // --- Rendering on surface A ---
       if (trackingMode === 'A' || trackingMode === 'both') {
-        const zCurrentA = r3(EA(gx, gy, g));
+        // Unrounded: this z is the sphere's hover payoff, and r3 printed 0.000466 as "0" (F11).
+        const zCurrentA = EA(gx, gy, g);
 
         // Connecting lines for Ghost path segments on surface A
         s.ghostPathSegmentsA.forEach(seg => {
@@ -366,7 +368,7 @@ export function makeTraces(
 
       // --- Rendering on surface B ---
       if (trackingMode === 'B' || trackingMode === 'both') {
-        const zCurrentB = r3(EB(gx, gy, g));
+        const zCurrentB = EB(gx, gy, g);
 
         // Connecting lines for Ghost path segments on surface B
         s.ghostPathSegmentsB.forEach(seg => {
@@ -425,7 +427,7 @@ export function makeTraces(
     const fXa: number[] = [], fYa: number[] = [], fZa: number[] = [];
     for (let i = 0; i <= FLAT_STEPS; i++) {
       const xi = i / FLAT_STEPS;
-      fXa.push(xi); fYa.push(yStar); fZa.push(r3(EA(xi, yStar, g)));
+      fXa.push(xi); fYa.push(yStar); fZa.push(EA(xi, yStar, g));   // exact: an r3 z stepped the flat line (S13)
     }
     // White casing under the indifference/strategy lines. They lie on top of
     // the A-Moves/B-Moves path stripes and were getting lost in them; a halo
@@ -454,7 +456,7 @@ export function makeTraces(
     const fXb: number[] = [], fYb: number[] = [], fZb: number[] = [];
     for (let i = 0; i <= FLAT_STEPS; i++) {
       const yi = i / FLAT_STEPS;
-      fXb.push(xStar); fYb.push(yi); fZb.push(r3(EB(xStar, yi, g)));
+      fXb.push(xStar); fYb.push(yi); fZb.push(EB(xStar, yi, g));
     }
     traces.push({
       type: 'scatter3d', mode: 'lines', name: 'B indifferent (x = x*)', showlegend: false,
@@ -489,31 +491,31 @@ export function makeTraces(
     // Representative mix = each player's domain midpoint (hi+lo)/2, which eases
     // toward its own NE coordinate as that domain contracts — so each line
     // flattens gradually, one cycle at a time, instead of snapping.
-    const xRep = s.discoveredMixedX ?? r3((s.domXLo + s.domXHi) / 2);
-    const yRep = s.discoveredMixedY ?? r3((s.domYLo + s.domYHi) / 2);
-    const Dy = g.a11 - g.a12 - g.a21 + g.a22;
-    const Dx = g.b11 - g.b12 - g.b21 + g.b22;
-    const sA = yRep * (g.a11 - g.a21) + (1 - yRep) * (g.a12 - g.a22);
-    const sB = xRep * (g.b11 - g.b12) + (1 - xRep) * (g.b21 - g.b22);
-    const aFlat = Math.abs(sA) < Math.max(1e-4, Math.abs(Dy) * 0.01);
-    const bFlat = Math.abs(sB) < Math.max(1e-4, Math.abs(Dx) * 0.01);
+    // The legend names this "mid-domain": the sphere does best-response cycling at the box corners, so
+    // "at current y" named a y the sphere was not at (S13).
+    const xRep = s.discoveredMixedX ?? (s.domXLo + s.domXHi) / 2;
+    const yRep = s.discoveredMixedY ?? (s.domYLo + s.domYHi) / 2;
+    // "indifferent (y = y*)" is a claim about y*: make it only once the run has declared that
+    // coordinate. A 1% flatness band named the reset midpoint 0.5 "y = y*" for y* = 0.497 (F8).
+    const aFlat = s.discoveredMixedY !== null;
+    const bFlat = s.discoveredMixedX !== null;
 
     if (trackingMode === 'A' || trackingMode === 'both') {
       const xs: number[] = [], ys: number[] = [], zs: number[] = [];
       for (let i = 0; i <= FLAT_STEPS; i++) {
         const xi = i / FLAT_STEPS;
-        xs.push(xi); ys.push(yRep); zs.push(r3(EA(xi, yRep, g)));
+        xs.push(xi); ys.push(yRep); zs.push(EA(xi, yRep, g));
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at current y)',
+        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at mid-domain y)',
         showlegend: false,
         hoverinfo: 'skip', x: xs, y: ys, z: zs,
         line: { color: 'rgba(255,255,255,0.9)', width: aFlat ? 16 : 13 }
       });
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at current y)',
+        name: aFlat ? 'A indifferent (y = y*)' : 'A strategy line (E[A] at mid-domain y)',
         showlegend: true,
         x: xs, y: ys, z: zs,
         line: { color: '#7B241C', width: aFlat ? 10 : 8 }
@@ -523,18 +525,18 @@ export function makeTraces(
       const xs: number[] = [], ys: number[] = [], zs: number[] = [];
       for (let i = 0; i <= FLAT_STEPS; i++) {
         const yi = i / FLAT_STEPS;
-        xs.push(xRep); ys.push(yi); zs.push(r3(EB(xRep, yi, g)));
+        xs.push(xRep); ys.push(yi); zs.push(EB(xRep, yi, g));
       }
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at current x)',
+        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at mid-domain x)',
         showlegend: false,
         hoverinfo: 'skip', x: xs, y: ys, z: zs,
         line: { color: 'rgba(255,255,255,0.9)', width: bFlat ? 16 : 13 }
       });
       traces.push({
         type: 'scatter3d', mode: 'lines',
-        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at current x)',
+        name: bFlat ? 'B indifferent (x = x*)' : 'B strategy line (E[B] at mid-domain x)',
         showlegend: true,
         x: xs, y: ys, z: zs,
         line: { color: '#2563eb', width: bFlat ? 10 : 8 }

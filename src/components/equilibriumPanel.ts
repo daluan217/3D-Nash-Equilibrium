@@ -294,10 +294,11 @@ export function indifferenceLines(
   // `indifferenceAt` (job 1's tolerance-based test) is deliberately NOT
   // consulted here any more — see `indifferenceLine`'s docstring. Each line
   // decides its own ≈-vs-strict split from its own two payoffs.
-  const eRow1 = y * g.a11 + (1 - y) * g.a12;
-  const eRow2 = y * g.a21 + (1 - y) * g.a22;
-  const eCol1 = x * g.b11 + (1 - x) * g.b21;
-  const eCol2 = x * g.b12 + (1 - x) * g.b22;
+  // Through EA/EB (same float value) so an exactly-zero row payoff is 0, not dust (F10).
+  const eRow1 = EA(1, y, g);
+  const eRow2 = EA(0, y, g);
+  const eCol1 = EB(x, 1, g);
+  const eCol2 = EB(x, 0, g);
   // `EA`/`EB` are the SAME (x, y) combined into the ONE weighted expression
   // the panel's headline row renders (`payoffTexRhs(EA(resolved.x, resolved.y,
   // payoffs))` in App.tsx). Passed as the anchor, an indifferent line's shared

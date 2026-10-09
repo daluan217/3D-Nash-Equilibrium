@@ -770,15 +770,22 @@ function testTieProseDerivedPayoff() {
   };
   assert(sentence({ a11: 6, a12: -4, a21: -1, a22: 8, b11: -9, b12: 6, b21: -1, b22: -8 }).b === '-3.545',
     'the extraction helper must return whole values, decimal point included');
-  // 1. NEGATIVE ZERO. True E[A] is exactly 0; the float is -5.55e-17.
+  // 1. NEGATIVE ZERO. True E[A] is exactly 0 (a11 = a12 = 0 and Row 2 is level at y*); the raw
+  // bilinear float is -1.1e-16. It printed "-0", then "greater than -0.001" for an exact zero
+  // (BLUE-LOOP-MATH-22 F10); EA now returns the exact 0, so the honest rendering is "0".
+  const rawEA = (x: number, y: number, g: GamePayoffs) => x * y * g.a11 + x * (1 - y) * g.a12 + (1 - x) * y * g.a21 + (1 - x) * (1 - y) * g.a22;
   const negZero: GamePayoffs = { a11: 0, a12: 0, a21: -2, a22: 5, b11: -9, b12: -6, b21: -1, b22: -3 };
-  assert(EA(...(() => { const r = equilibriumSet(negZero)[0]; return [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, negZero] as const; })()) !== 0,
-    'negative-zero fixture no longer carries float noise — it can no longer exercise the defect');
-  assert(sentence(negZero).a === 'greater than -0.001',
-    `negative-zero fixture: E[A] rendered "${sentence(negZero).a}"; the shipped defect printed "-0"`);
   // second instance, a different matrix with the same shape
   const negZero2: GamePayoffs = { a11: 0, a12: 0, a21: 2, a22: -1, b11: 3, b12: -9, b21: -8, b22: -2 };
-  assert(sentence(negZero2).a === 'greater than -0.001' && sentence(negZero2).b === '-4.333',
+  for (const [g, n, d] of [[negZero, 5, 7], [negZero2, 1, 3]] as const) {
+    const r = equilibriumSet(g)[0], x = (r.x0 + r.x1) / 2, y = (r.y0 + r.y1) / 2;
+    // exact: y* = n/d and a11 = a12 = 0, a21·n + a22·(d−n) = 0 in integers, so E[A] = 0 for every x
+    assert(rawEA(x, y, g) !== 0 && y === n / d && g.a11 === 0 && g.a12 === 0 && g.a21 * n + g.a22 * (d - n) === 0,
+      'negative-zero fixture: the raw float must carry noise while the exact E[A] is 0, or it no longer exercises the defect');
+  }
+  assert(sentence(negZero).a === '0' && sentence(negZero).b === '-4.2',
+    `negative-zero fixture: E[A] rendered "${sentence(negZero).a}"; the exact value is 0 (shipped "-0", then "greater than -0.001")`);
+  assert(sentence(negZero2).a === '0' && sentence(negZero2).b === '-4.333',
     `negative-zero fixture 2: got E[A] = ${sentence(negZero2).a}, E[B] = ${sentence(negZero2).b}`);
   // A SIGNED-ZERO TOKEN, anywhere in the paragraph. `\b` is the wrong boundary
   // here — it fires INSIDE "-0.001", which is a legitimate rendering; the first
@@ -1035,7 +1042,7 @@ function testGeometryBriefingTruth() {
     // the other branch. PD's roots are both at -1, so it is the preset that
     // exercises the sentence class (d) had to leave alone.
     ['PD', PD, '  There is NO interior joint flat spot. The equilibrium sits on an edge or corner of the square, where a player is pinned to one action rather than balanced between two.'],
-    ['BoS', BOS, "  Both surfaces are level at the same interior point (x = 0.6667 (two-thirds), y = 0.3333 (a third)) — the joint flat spot, which is the mixed equilibrium."],
+    ['BoS', BOS, "  Both surfaces are level at the same interior point (x = 0.667 (two-thirds), y = 0.333 (a third)) — the joint flat spot, which is the mixed equilibrium."],
     ['matching pennies', MATCHING_PENNIES, "  A's surface goes LEVEL along A's axis when B plays y = 0.5 (a half) — that flat shelf is A's indifference."],
   ];
   for (const [name, g, line] of PRESET_LINES)

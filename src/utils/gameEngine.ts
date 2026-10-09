@@ -141,12 +141,54 @@ export const PRESETS: Record<string, PresetGame> = {
 };
 
 // ── Payoff functions ─────────────────────────────────────────────────────────
+// A payoff EXACTLY 0 at a point the app holds exactly returns 0, not float dust: a mixed NE's
+// exact zero printed "E[A]=less than 0.001" (BLUE-LOOP-MATH-22 F10). Dust is < 1e-12, so the
+// exact check only runs below 1e-9 and a nonzero value is never touched.
 export function EA(x: number, y: number, g: GamePayoffs): number {
-  return x * y * g.a11 + x * (1 - y) * g.a12 + (1 - x) * y * g.a21 + (1 - x) * (1 - y) * g.a22;
+  const v = x * y * g.a11 + x * (1 - y) * g.a12 + (1 - x) * y * g.a21 + (1 - x) * (1 - y) * g.a22;
+  return v !== 0 && Math.abs(v) < 1e-9 && exactlyZero(x, y, g, [g.a11, g.a12, g.a21, g.a22]) ? 0 : v;
 }
 
 export function EB(x: number, y: number, g: GamePayoffs): number {
-  return x * y * g.b11 + x * (1 - y) * g.b12 + (1 - x) * y * g.b21 + (1 - x) * (1 - y) * g.b22;
+  const v = x * y * g.b11 + x * (1 - y) * g.b12 + (1 - x) * y * g.b21 + (1 - x) * (1 - y) * g.b22;
+  return v !== 0 && Math.abs(v) < 1e-9 && exactlyZero(x, y, g, [g.b11, g.b12, g.b21, g.b22]) ? 0 : v;
+}
+
+const milli = (v: number): number | null => { const m = Math.round(v * 1000); return Math.abs(v * 1000 - m) < 1e-6 ? m : null; };
+/** The rational a value stands for: its 3dp decimal when it is one, else the float's own exact binary value. */
+function exactOf(v: number): [bigint, bigint] {
+  const m = milli(v);
+  if (m !== null && m / 1000 === v) return [BigInt(m), 1000n];
+  let d = 1n;
+  while (!Number.isInteger(v)) { v *= 2; d *= 2n; }
+  return [BigInt(v), d];
+}
+/**
+ * A probability as the rational the app means by it: the one with denominator ≤ 1e6 within 2^-50
+ * (roots have denominators ≤ 4e5, continuum midpoints ≤ 8e5, grid 1000; two such rationals are
+ * ≥ 1e-12 apart, so the match is unique), found among the continued-fraction convergents.
+ * ponytail: a float that is not such a rational but lies within 2^-50 of one reads as it.
+ */
+function ratOf(v: number): [bigint, bigint] {
+  const [n, d] = exactOf(v);
+  if (v < 0 || v > 1) return [n, d];
+  let a = n, b = d, h0 = 0n, h = 1n, k0 = 1n, k = 0n;
+  while (b !== 0n) {
+    const q = a / b;
+    [h0, h, k0, k] = [h, q * h + h0, k, q * k + k0];
+    if (k > 1000000n) break;
+    const err = h * d - n * k;
+    if ((err < 0n ? -err : err) * 2n ** 50n <= d * k) return [h, k];
+    [a, b] = [b, a - q * b];
+  }
+  return [n, d];
+}
+/** Exact (BigInt) test that the payoff with cells c is 0 at (x, y). */
+function exactlyZero(x: number, y: number, g: GamePayoffs, c: number[]): boolean {
+  const [xn, xd] = ratOf(x), [yn, yd] = ratOf(y);
+  const k = c.map(exactOf), D = k.reduce((a, [, d]) => a * d, 1n);   // a common denominator
+  const [k11, k12, k21, k22] = k.map(([n, d]) => n * (D / d));
+  return xn * (yn * k11 + (yd - yn) * k12) + (xd - xn) * (yn * k21 + (yd - yn) * k22) === 0n;
 }
 
 // ── Regret (independent NE oracle) ────────────────────────────────────────────
@@ -361,12 +403,23 @@ export function commitPayoffInput(raw: string | null | undefined): number {
   return commitNumericField(raw, PAYOFF_RANGE, { fallback: 0, quantise: true }).value;
 }
 
+/** A whole matrix through the one cell door. Stored rows can predate the server's
+ *  3-dp clean (2026-06-17) or be malformed, so a saved card and the game it loads
+ *  must both read THIS, never the row as stored (BLUE-LOOP-MATH-22 F4). */
+export function commitPayoffs(g: Partial<Record<keyof GamePayoffs, unknown>> | null | undefined): GamePayoffs {
+  const c = (k: keyof GamePayoffs) => commitPayoffInput(String(g?.[k]));
+  return { a11: c('a11'), a12: c('a12'), a21: c('a21'), a22: c('a22'), b11: c('b11'), b12: c('b12'), b21: c('b21'), b22: c('b22') };
+}
+
 /**
  * What a start coordinate commits. Only a genuinely unparseable field falls
  * back — 0 is a legal start point, not a missing one.
  */
 export function commitStartCoordinate(raw: string | null | undefined, fallback = 0.217): number {
-  return commitNumericField(raw, START_RANGE, { fallback }).value;
+  // Held on the 1e-6 grid, which ratOf reads exactly: EA/EB read a coordinate as the rational
+  // (denominator ≤ 1e6) within 2^-50, so a typed "0.3333333333333333" printed E[A] = 0 for a
+  // nonzero payoff (BLUE-LOOP-MATH-22 F14). 0.0004 stays 0.0004 (R5b).
+  return Math.round(commitNumericField(raw, START_RANGE, { fallback }).value * 1e6) / 1e6;
 }
 
 /**
@@ -507,6 +560,17 @@ export function resolveProfile(g: GamePayoffs, s: Pick<SimState, 'exactX' | 'exa
   return { x: best.x, y: best.y, concept: profileConcept(best.x, best.y) };
 }
 
+/** The ONE point every rendering shows (panel, Step/━━ lines, sphere, hover): the exact position, or, once
+ *  converged on an equilibrium, the member resolveProfile names (the banner's). cx/cy are r3-collapsed inputs to
+ *  the dynamics: formatting them printed "0.000" for 0.0004 and 0.219 beside a banner's 0.22 (S10). The 1e-3 bound
+ *  (measured runs settle <= 6.5e-4 away) keeps a run left over from an edited game where it stopped. */
+export function shownPoint(g: GamePayoffs, s: Pick<SimState, 'exactX' | 'exactY' | 'converged' | 'convergedIsNE'>): { x: number; y: number } {
+  const at = { x: s.exactX, y: s.exactY };
+  if (!s.converged || s.convergedIsNE === false) return at;
+  const r = resolveProfile(g, s);
+  return Math.abs(r.x - at.x) < 1e-3 && Math.abs(r.y - at.y) < 1e-3 ? { x: r.x, y: r.y } : at;
+}
+
 
 
 export function profileConcept(x: number, y: number): 'pure' | 'mixed' {
@@ -559,19 +623,32 @@ export function indifferenceAt(g: GamePayoffs, x: number, y: number): { a: boole
 }
 
 // ── NE computation ───────────────────────────────────────────────────────────
+const NE_EPS = 1e-9;
+
+/**
+ * THE root of v*d1 + (1-v)*d2 = 0 (a player's indifference point); NaN if level.
+ * One function for the solver, best-reply sets, geometry and validator: two float
+ * formulas printed 11/16 as 0.687 and 0.688, and called x*=1 "0.9999999999999999".
+ * ponytail: exact on 3dp payoffs (every shipping path quantises); float otherwise.
+ */
+export function indifferenceRoot(d1: number, d2: number): number {
+  const slope = d1 - d2;
+  if (Math.abs(slope) < NE_EPS) return NaN;
+  const d1I = Math.round(d1 * 1000);
+  const d2I = Math.round(d2 * 1000);
+  if (Math.abs(d1 * 1000 - d1I) < 1e-6 && Math.abs(d2 * 1000 - d2I) < 1e-6) {
+    const den = d1I - d2I;
+    if (den !== 0) return -d2I / den;
+  }
+  return -d2 / slope;
+}
+
 export function computeMixedNE(g: GamePayoffs): { x: number; y: number } | null {
-  const dY = g.a11 - g.a12 - g.a21 + g.a22;
-  const dX = g.b11 - g.b21 - g.b12 + g.b22;
-  if (Math.abs(dY) < 1e-9 || Math.abs(dX) < 1e-9) return null;
-  const yE = (g.a22 - g.a12) / dY;
-  const xE = (g.b22 - g.b21) / dX;
-  // Test the EXACT coordinate, then round only for reporting. Testing the
-  // ROUNDED one deleted genuine equilibria: on a=[[-2,5],[-1,3]],
-  // b=[[8.002,8],[3,7]] the equilibrium sits at x* = 0.9995002 with regret
-  // exactly 0, but r3 lifts it to 1.000 so "xS >= 1" fired and the app told the
-  // user "No standard NE found in real dimensions" while the prose named it.
-  // Same 3-decimal blind spot as the renderer's probability bug, one layer down.
-  if (xE <= 0 || xE >= 1 || yE <= 0 || yE >= 1) return null;
+  const yE = indifferenceRoot(g.a11 - g.a21, g.a12 - g.a22);
+  const xE = indifferenceRoot(g.b11 - g.b12, g.b21 - g.b22);
+  // A 3dp root inside (0,1) is >= 1/400000 from an edge, so NE_EPS cannot misclassify it.
+  if (!Number.isFinite(xE) || !Number.isFinite(yE)) return null;
+  if (xE <= NE_EPS || xE >= 1 - NE_EPS || yE <= NE_EPS || yE >= 1 - NE_EPS) return null;
   // EXACT coordinates, not rounded. Rounding here made the reported tuple
   // (x, y, eA, eB) describe a point that is not the equilibrium, and it was the
   // root of the prose/solver digit disagreement: the prose computed payoffs at
@@ -957,18 +1034,18 @@ export function computeIndifference(g: GamePayoffs): IndifferenceStatus {
  */
 export interface Rect { x0: number; x1: number; y0: number; y1: number }
 
-const NE_EPS = 1e-9;
-
 /** Rectangles covering { (x,y) : x is a best reply to y }. */
 function brA(g: GamePayoffs): Rect[] {
-  const slope = (g.a11 - g.a21) - (g.a12 - g.a22);   // DA(y) = slope*y + c
-  const c = g.a12 - g.a22;
+  const d1 = g.a11 - g.a21;
+  const d2 = g.a12 - g.a22;
+  const slope = d1 - d2;   // DA(y) = slope*y + c
+  const c = d2;
   const out: Rect[] = [];
   if (Math.abs(slope) < NE_EPS) {
     if (Math.abs(c) < NE_EPS) return [{ x0: 0, x1: 1, y0: 0, y1: 1 }];   // indifferent everywhere
     return [c > 0 ? { x0: 1, x1: 1, y0: 0, y1: 1 } : { x0: 0, x1: 0, y0: 0, y1: 1 }];
   }
-  const root = -c / slope;                                            // DA(root) = 0
+  const root = indifferenceRoot(d1, d2);                              // DA(root) = 0
   const interior = root > NE_EPS && root < 1 - NE_EPS;
   const onSquare = root >= -NE_EPS && root <= 1 + NE_EPS;                   // a root AT y=0 or y=1 is
   const sgnAt = (y: number) => slope * y + c;                         // still a real indifference
@@ -983,14 +1060,16 @@ function brA(g: GamePayoffs): Rect[] {
 
 /** Rectangles covering { (x,y) : y is a best reply to x }. */
 function brB(g: GamePayoffs): Rect[] {
-  const slope = (g.b11 - g.b12) - (g.b21 - g.b22);
-  const c = g.b21 - g.b22;
+  const d1 = g.b11 - g.b12;
+  const d2 = g.b21 - g.b22;
+  const slope = d1 - d2;
+  const c = d2;
   const out: Rect[] = [];
   if (Math.abs(slope) < NE_EPS) {
     if (Math.abs(c) < NE_EPS) return [{ x0: 0, x1: 1, y0: 0, y1: 1 }];
     return [c > 0 ? { x0: 0, x1: 1, y0: 1, y1: 1 } : { x0: 0, x1: 1, y0: 0, y1: 0 }];
   }
-  const root = -c / slope;
+  const root = indifferenceRoot(d1, d2);
   const interior = root > NE_EPS && root < 1 - NE_EPS;
   const onSquare = root >= -NE_EPS && root <= 1 + NE_EPS;
   const sgnAt = (x: number) => slope * x + c;
@@ -1002,6 +1081,9 @@ function brB(g: GamePayoffs): Rect[] {
   if (onSquare) { const r = Math.min(1, Math.max(0, root)); out.push({ x0: r, x1: r, y0: 0, y1: 1 }); }
   return out;
 }
+
+/** Each player's best-reply set (A: x given y; B: y given x) — what a drawing of the replies must show. */
+export const bestReplySets = (g: GamePayoffs): { A: Rect[]; B: Rect[] } => ({ A: brA(g), B: brB(g) });
 
 const intersect = (p: Rect, q: Rect): Rect | null => {
   const x0 = Math.max(p.x0, q.x0), x1 = Math.min(p.x1, q.x1);
@@ -1266,12 +1348,16 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
     bHi: sBFn(s.domainHi), bLo: sBFn(s.domainLo),
   };
 
-  const EPS_PAT = 1e-4;
+  // A flip smaller than discovery's own tolerance (|D| * 0.00065) is no flip. A flat 1e-4 let a
+  // bound sit past the root by 1e-4/|D| (0.01 at D = 0.01) and still count as good, so the bracket
+  // lost the root and the bisection stalled for good (F16).
+  const dA = Math.abs(g.a11 - g.a12 - g.a21 + g.a22), dB = Math.abs(g.b11 - g.b12 - g.b21 + g.b22);
+  const EPS_PAT_A = dA > 1e-9 ? dA * 0.00065 : 0.00065, EPS_PAT_B = dB > 1e-9 ? dB * 0.00065 : 0.00065;
   const patternOK = s.cyclePattern === null || (
-    !(Math.abs(pat.aHi) > EPS_PAT && Math.sign(pat.aHi) !== Math.sign(s.cyclePattern.aHi)) &&
-    !(Math.abs(pat.aLo) > EPS_PAT && Math.sign(pat.aLo) !== Math.sign(s.cyclePattern.aLo)) &&
-    !(Math.abs(pat.bHi) > EPS_PAT && Math.sign(pat.bHi) !== Math.sign(s.cyclePattern.bHi)) &&
-    !(Math.abs(pat.bLo) > EPS_PAT && Math.sign(pat.bLo) !== Math.sign(s.cyclePattern.bLo))
+    !(Math.abs(pat.aHi) > EPS_PAT_A && Math.sign(pat.aHi) !== Math.sign(s.cyclePattern.aHi)) &&
+    !(Math.abs(pat.aLo) > EPS_PAT_A && Math.sign(pat.aLo) !== Math.sign(s.cyclePattern.aLo)) &&
+    !(Math.abs(pat.bHi) > EPS_PAT_B && Math.sign(pat.bHi) !== Math.sign(s.cyclePattern.bHi)) &&
+    !(Math.abs(pat.bLo) > EPS_PAT_B && Math.sign(pat.bLo) !== Math.sign(s.cyclePattern.bLo))
   );
 
   let newLo: number;
@@ -1321,6 +1407,10 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
 
   s.cx    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
   s.cy    = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
+  // The sphere is drawn at exactX/exactY: clamp them with the readout, or a cycle frame shows
+  // the sphere at the old corner, outside the domain the log just printed (review R1, 2026-10-06).
+  s.exactX = Math.max(s.domainLo, Math.min(s.domainHi, s.exactX));
+  s.exactY = Math.max(s.domainLo, Math.min(s.domainHi, s.exactY));
   s.calcX = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcX ?? s.cx)));
   s.calcY = r3(Math.max(s.domainLo, Math.min(s.domainHi, s.calcY ?? s.cy)));
   // Squeeze the strategy-line representative into the contracted corridor so it
@@ -1337,7 +1427,7 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
     if (nA >= 0) {
       if (mover === 'A') lastA.xs[nA] = s.cx;
       else lastA.ys[nA] = s.cy;
-      lastA.zs[nA] = r3(EA(lastA.xs[nA], lastA.ys[nA], g));
+      lastA.zs[nA] = EA(lastA.xs[nA], lastA.ys[nA], g);
     }
   }
   if (s.pathSegmentsB.length > 0) {
@@ -1346,7 +1436,7 @@ function applyBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: number, 
     if (nB >= 0) {
       if (mover === 'A') lastB.xs[nB] = s.cx;
       else lastB.ys[nB] = s.cy;
-      lastB.zs[nB] = r3(EB(lastB.xs[nB], lastB.ys[nB], g));
+      lastB.zs[nB] = EB(lastB.xs[nB], lastB.ys[nB], g);
     }
   }
 }
@@ -1410,8 +1500,13 @@ function applyGhostBisectCycleStep(s: SimState, g: GamePayoffs, defaultStep: num
     newHi = advance(hi, lo, Math.sign(sHi));
     if (newLo > newHi) { const m = r3((newLo + newHi) / 2); newLo = m; newHi = m; }
   } else {
-    // Bracket lost (same sign at both ends): collapse to the midpoint.
-    newLo = newHi = r3((lo + hi) / 2);
+    // Same sign at both ends. A root ON a bound is a same-signed float residue there (fn(0.6) =
+    // 2.2e-16 for A=[[-9,-3],[-7,-6]]): that bound is the root by ghostStep's own discovery
+    // tolerance, and the midpoint stalled the run forever (F15). Else the bracket is lost.
+    const d = Math.abs(fn(1) - fn(0));
+    const eps = d > 1e-9 ? d * 0.00065 : 0.00065;
+    const near = Math.abs(sLo) <= Math.abs(sHi) ? lo : hi;
+    newLo = newHi = r3(Math.abs(fn(near)) < eps ? near : (lo + hi) / 2);
   }
 
   s.domainLo = newLo;
@@ -1472,6 +1567,19 @@ export function pickShrinkStep(
   return defaultStep;
 }
 
+// Draw the position's move to (x, y) from the path tip. The legend reads "A Moves (x)" / "B Moves (y)",
+// so a move that also changes the other axis (a discovery snap, a cycle clamp) is drawn as the
+// mover's own-axis move, then the other axis's move in that player's colour (F17/F19/F20).
+function drawMoveTo(s: SimState, g: GamePayoffs, x: number, y: number, mover: 'A' | 'B') {
+  const seg = s.pathSegmentsA[s.pathSegmentsA.length - 1], n = seg ? seg.xs.length - 1 : -1;
+  const tx = n >= 0 ? seg.xs[n] : x, ty = n >= 0 ? seg.ys[n] : y;
+  // Exact z: a path point lies on its surface (an r3 z did not; S13).
+  const at = (px: number, py: number, who: 'A' | 'B') => pushToSegs(s, px, py, EA(px, py, g), EB(px, py, g), who);
+  if (mover === 'A' ? y === ty : x === tx) return at(x, y, mover);
+  if (mover === 'A' ? x !== tx : y !== ty) at(mover === 'A' ? x : tx, mover === 'A' ? ty : y, mover);
+  at(x, y, mover === 'A' ? 'B' : 'A');
+}
+
 // ── Helper to append points into paths ────────────────────────────────────────
 export function pushToSegs(
   state: SimState,
@@ -1530,6 +1638,14 @@ export function pushToSegs(
 // - If foundAxis === 'y': x is unfound axis (controlled by A).
 //   - When A moves: A flips x to the opposite corridor boundary (lo <-> hi).
 //   - When B moves: B best-responds with y to the current x boundary.
+// A discovery LOCKS the solver root it announces, not the 3dp landing that tripped the tolerance: the landing put
+// "x=1.000" (a vertex) in every later Step line, panel and sphere under "✓ discovered: more than 0.999" (S12).
+// The tour (App.tsx) already locks mixedNE.x/y. The landing is the fallback when the closed form is unavailable.
+function lockedRoot(g: GamePayoffs, axis: 'x' | 'y', landing: number): number {
+  const m = computeMixedNE(g);
+  return m ? m[axis] : landing;
+}
+
 export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
   const lo = state.domainLo;
   const hi = state.domainHi;
@@ -1551,7 +1667,7 @@ export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
       // Check discovery of y*: does newY make Player A indifferent?
       const sAcheck = newY * (g.a11 - g.a21) + (1 - newY) * (g.a12 - g.a22);
       if (Math.abs(sAcheck) < EPS_A && state.discoveredMixedY === null) {
-        state.discoveredMixedY = newY;
+        state.discoveredMixedY = lockedRoot(g, 'y', newY);
       }
     } else {
       // Player A moves and reacts on x-axis by best-responding to current y
@@ -1571,7 +1687,7 @@ export function ghostStep(g: GamePayoffs, state: SimState, mover: 'A' | 'B') {
 // rounding it here put the sphere ~5e-4 from the NE diamond at convergence
 // (visibly off-centre, and depth-flickering because the two no longer shared
 // a depth). Rounding for READOUT happens where displayX is written.
-        state.discoveredMixedX = newX;
+        state.discoveredMixedX = lockedRoot(g, 'x', newX);
       }
     } else {
       // Player B moves and reacts on y-axis by best-responding to current x
@@ -1615,15 +1731,15 @@ export function doStep(
   // `historyStack: []`, and Back/"Go to step" are implemented by replayToStep,
   // not by undo. So the stack had exactly one consumer, reading exactly the
   // element it had just pushed.
-  const prevCx = s.cx, prevCy = s.cy;
+  const prevX = s.exactX, prevY = s.exactY;
 
   const pureNEs = allNE.filter(n => n.type === 'pure');
   const mixedNE = allNE.find(n => n.type === 'mixed');
   const mover: 'A' | 'B' = (s.stepCount % 2 === 0) ? firstMover : (firstMover === 'A' ? 'B' : 'A');
   s.stepCount++;
 
-  let nx = s.cx;
-  let ny = s.cy;
+  let nx = s.exactX;
+  let ny = s.exactY;
 
   if (pureNEs.length > 1 && committedNE) {
     if (mover === firstMover) {
@@ -1632,30 +1748,31 @@ export function doStep(
       if (mover === 'A') nx = committedNE.x;
       else ny = committedNE.y;
     } else if (mover === 'A') {
-      // Follower A best-responds to the current y.
+      // Follower A best-responds to the current y, breaking ties toward committedNE.
       const valRow1 = s.cy * g.a11 + (1 - s.cy) * g.a12;
       const valRow2 = s.cy * g.a21 + (1 - s.cy) * g.a22;
-      nx = valRow1 >= valRow2 ? 1 : 0;
+      nx = Math.abs(valRow1 - valRow2) < 1e-9 ? committedNE.x : (valRow1 > valRow2 ? 1 : 0);
     } else {
-      // Follower B best-responds to the current x.
+      // Follower B best-responds to the current x, breaking ties toward committedNE.
       const valCol1 = s.cx * g.b11 + (1 - s.cx) * g.b21;
       const valCol2 = s.cx * g.b12 + (1 - s.cx) * g.b22;
-      ny = valCol1 >= valCol2 ? 1 : 0;
+      ny = Math.abs(valCol1 - valCol2) < 1e-9 ? committedNE.y : (valCol1 > valCol2 ? 1 : 0);
     }
   } else if (pureNEs.length >= 1) {
     // Alternating best response: each mover best-responds to the opponent's
-    // CURRENT strategy (s.cy / s.cx), not a frozen reference. (calcX/calcY are
-    // kept in sync below; previously they were read here but never updated, so
+    // CURRENT strategy, EXACT (S11: r3(0.0004) = 0 flipped sB's sign and sent B to a strictly worse column),
+    // not a frozen reference. (calcX/calcY are kept in sync below; previously they were read here but never
+    // updated, so
     // both players forever best-responded to the START point — converging to the
     // mutual best response to the start rather than the equilibrium.)
     if (mover === 'A') {
-      const sY = s.cy;
+      const sY = s.exactY;
       const sA = sY * (g.a11 - g.a21) + (1 - sY) * (g.a12 - g.a22);
       if (sA > 1e-9) nx = s.domainHi;
       else if (sA < -1e-9) nx = s.domainLo;
       else if (mixedNE) nx = Math.max(s.domainLo, Math.min(s.domainHi, mixedNE.x));
     } else {
-      const sX = s.cx;
+      const sX = s.exactX;
       const sB = sX * (g.b11 - g.b12) + (1 - sX) * (g.b21 - g.b22);
       if (sB > 1e-9) ny = s.domainHi;
       else if (sB < -1e-9) ny = s.domainLo;
@@ -1782,9 +1899,12 @@ export function doStep(
         // dead no matter the game. The ghost renderer (the reason for the old
         // caution) is shrink-phase furniture and is now gated off in regret.
         if (xDone) {
-          s.stratX = landOnIndifference(s.stratX, sBfn, Dx); s.domXLo = s.stratX; s.domXHi = s.stratX;
-          if (s.discoveredMixedX === null) {
-            s.discoveredMixedX = s.stratX;
+          s.stratX = landOnIndifference(s.stratX, sBfn, Dx);
+          // The box closes on the LOCKED root, so the position clamped into it below is the discovered value (S12).
+          const firstX = s.discoveredMixedX === null;
+          if (firstX) s.discoveredMixedX = lockedRoot(g, 'x', s.stratX);
+          s.domXLo = s.discoveredMixedX!; s.domXHi = s.discoveredMixedX!;
+          if (firstX) {
             if (s.foundAxis === null) s.foundAxis = 'x';
             // The Newton landing can sit exactly ON a grid endpoint (0) while
             // the coordinate it discovered is 0.0004 — state the exact root,
@@ -1794,14 +1914,22 @@ export function doStep(
           }
         }
         if (yDone) {
-          s.stratY = landOnIndifference(s.stratY, sAfn, Dy); s.domYLo = s.stratY; s.domYHi = s.stratY;
-          if (s.discoveredMixedY === null) {
-            s.discoveredMixedY = s.stratY;
+          s.stratY = landOnIndifference(s.stratY, sAfn, Dy);
+          const firstY = s.discoveredMixedY === null;
+          if (firstY) s.discoveredMixedY = lockedRoot(g, 'y', s.stratY);
+          s.domYLo = s.discoveredMixedY!; s.domYHi = s.discoveredMixedY!;
+          if (firstY) {
             if (s.foundAxis === null) s.foundAxis = 'y';
             const _ry = computeMixedNE(g);
             addLog('✓ y-coordinate discovered: ' + fmtProb(_ry ? _ry.y : s.stratY));
           }
         }
+        // The box just contracted: bring the position into it, or the sphere and readout sit outside
+        // the box the line below prints (F17, "A∈[0.007,0.957] | Step 6 (B): x=1.000").
+        nx = Math.max(s.domXLo, Math.min(s.domXHi, nx));
+        ny = Math.max(s.domYLo, Math.min(s.domYHi, ny));
+        s.calcX = r3(nx);
+        s.calcY = r3(ny);
         addLog(`↺ Cycle ${s.cycleCount} → A∈${fmtProbInterval(s.domXLo, s.domXHi)} B∈${fmtProbInterval(s.domYLo, s.domYHi)} (regretλ=${r3(lambda)})`);
         onCycleDetected();
       } else {
@@ -1820,7 +1948,7 @@ export function doStep(
         nx = sA3 > 0 ? s.domainHi : s.domainLo;
         const sB3 = nx * (g.b11 - g.b12) + (1 - nx) * (g.b21 - g.b22);
         if (Math.abs(sB3) < EPS_B && s.discoveredMixedX === null) {
-          s.discoveredMixedX = nx;   // exact — see the note above
+          s.discoveredMixedX = lockedRoot(g, 'x', nx);   // the root it announces, not the landing (S12)
           // Speak from the EXACT solver root, not the grid landing: discovery
           // fires when the landing is within tolerance of the root, so nx can
           // BE 0.000 (a grid point) while the coordinate it discovered is
@@ -1833,7 +1961,7 @@ export function doStep(
         ny = sB3 > 0 ? s.domainHi : s.domainLo;
         const sA3 = ny * (g.a11 - g.a21) + (1 - ny) * (g.a12 - g.a22);
         if (Math.abs(sA3) < EPS_A && s.discoveredMixedY === null) {
-          s.discoveredMixedY = ny;   // exact — see the note above
+          s.discoveredMixedY = lockedRoot(g, 'y', ny);   // the root it announces, not the landing (S12)
           const _p1y = computeMixedNE(g);
           addLog('✓ y-coordinate discovered: ' + fmtProb(_p1y ? _p1y.y : ny));
         }
@@ -1926,10 +2054,10 @@ export function doStep(
       const isBMove = Math.abs(prevGY - nextGY) > 1e-7;
       if (isAMove || isBMove) {
         const ghMover = isAMove ? 'A' : 'B';
-        const ea1 = r3(EA(prevGX, prevGY, g));
-        const ea2 = r3(EA(nextGX, nextGY, g));
-        const eb1 = r3(EB(prevGX, prevGY, g));
-        const eb2 = r3(EB(nextGX, nextGY, g));
+        const ea1 = EA(prevGX, prevGY, g);
+        const ea2 = EA(nextGX, nextGY, g);
+        const eb1 = EB(prevGX, prevGY, g);
+        const eb2 = EB(nextGX, nextGY, g);
 
         s.ghostPathSegmentsA.push({
           xs: [prevGX, nextGX],
@@ -2011,9 +2139,7 @@ export function doStep(
   s.exactX = s.discoveredMixedX !== null ? s.discoveredMixedX : nx;
   s.exactY = s.discoveredMixedY !== null ? s.discoveredMixedY : ny;
 
-  const eA = r3(EA(s.cx, s.cy, g));
-  const eB = r3(EB(s.cx, s.cy, g));
-  pushToSegs(s, s.displayX, s.displayY, eA, eB, mover);
+  drawMoveTo(s, g, s.displayX, s.displayY, mover);
 
   const domStr = (s.domainLo > 0.0005 || s.domainHi < 0.9995)
     ? ' ' + fmtProbInterval(s.domainLo, s.domainHi) : '';
@@ -2029,27 +2155,28 @@ export function doStep(
   // (STRUCT-MATH-19 _gen/probe_stepline_subres). Routing it through the shared
   // formatter is what keeps it honest if that assignment ever changes, and is
   // the same contract the E[A]/E[B] halves of this very line already use.
-  addLog(`Step ${s.stepCount} (${mover})${domStr}: x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}  E[A]=${fmtPayoff(EA(s.cx, s.cy, g))}  E[B]=${fmtPayoff(EB(s.cx, s.cy, g))}`);
+  // From the EXACT position (S10): s.cx is r3-collapsed, so 0.0004 printed "x=0.000" beside a sphere at 0.0004.
+  addLog(`Step ${s.stepCount} (${mover})${domStr}: x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}  E[A]=${fmtPayoff(EA(s.exactX, s.exactY, g))}  E[B]=${fmtPayoff(EB(s.exactX, s.exactY, g))}`);
 
   // Check convergence conditions
   if (pureNEs.length > 0) {
-    // Identical values to the old snapshot read: the snapshot was taken at the
-    // top of THIS call, before any mutation, so prev.cx was s.cx at that moment.
-    const dx = Math.abs(s.cx - prevCx);
-    const dy = Math.abs(s.cy - prevCy);
+    // A fixed point of the update, on the EXACT position. The r3 delta (< 0.0003 on cx) read 0.0002 -> 0 as "no
+    // move" and stopped at "Mixed NE: x=0, y=0.217" one step before B leaves for the only NE (0, 1) (S11). Pure-
+    // branch positions are assigned (domain bounds, clamped roots, the committed NE, the start), never computed.
     // Require both players to have moved at least once (stepCount >= 2) before
     // declaring convergence. Otherwise, if the first mover starts exactly on its
     // own indifference line (sA=0 / sB=0 → it legitimately doesn't move), this
     // delta check would fire after a single non-move and freeze at the start
     // point before the opponent ever responds.
-    if (s.stepCount >= 2 && dx < 0.0003 && dy < 0.0003) {
+    if (s.stepCount >= 2 && s.exactX === prevX && s.exactY === prevY) {
       s.converged = true;
       // STATIONARY IS NOT EQUILIBRIUM. Check the independent regret oracle
       // before using the words "Nash equilibrium": the path can go stationary
       // at a point a player would leave (regret 18 on the fixture in types.ts).
-      const rq = Math.max(Math.abs(regretA(s.cx, s.cy, g)), Math.abs(regretB(s.cx, s.cy, g)));
-      s.convergedIsNE = Math.abs(regretA(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'A')
-        && Math.abs(regretB(s.cx, s.cy, g)) <= neTolerancePlayer(g, 'B');
+      const rq = Math.max(Math.abs(regretA(s.exactX, s.exactY, g)), Math.abs(regretB(s.exactX, s.exactY, g)));
+      const isPure = (s.exactX === 0 || s.exactX === 1) && (s.exactY === 0 || s.exactY === 1);
+      s.convergedIsNE = Math.abs(regretA(s.exactX, s.exactY, g)) <= (isPure ? 1e-9 : neTolerancePlayer(g, 'A'))
+        && Math.abs(regretB(s.exactX, s.exactY, g)) <= (isPure ? 1e-9 : neTolerancePlayer(g, 'B'));
       // CodeRabbit (round 9): the headline's coordinates/payoffs, and the
       // continuum-membership check inside formatConvergenceLogLine, must use
       // the EXACT (s.exactX/s.exactY), not the r3-rounded (s.cx/s.cy),
@@ -2061,8 +2188,9 @@ export function doStep(
       // `resolveProfile`/the mixed branch below already follow.
       // fmtPayoff, not `.toFixed(3)` on an r3-pre-rounded value — see
       // RED-MATH-6/001 and the identical fix in the per-step line above.
-      const finalEA = EA(s.exactX, s.exactY, g);
-      const finalEB = EB(s.exactX, s.exactY, g);
+      const sp = shownPoint(g, s);   // the banner's point, so the ━━ line names the same equilibrium (S10)
+      const finalEA = EA(sp.x, sp.y, g);
+      const finalEB = EB(sp.x, sp.y, g);
       // The noun comes from WHERE IT LANDED, not from the fact that this is the
       // pure/shrink branch. This path can converge onto a continuum at a
       // strictly interior probability, where "Pure NE" is simply false —
@@ -2070,7 +2198,7 @@ export function doStep(
       // that is one of infinitely many on a continuum component (very often
       // nothing but the run's own arbitrary start value). Shared formatter
       // so this line can never disagree with the panel's own continuum text.
-      addLog(formatConvergenceLogLine(g, s.exactX, s.exactY, s.convergedIsNE, finalEA, finalEB, rq));
+      addLog(formatConvergenceLogLine(g, sp.x, sp.y, s.convergedIsNE, finalEA, finalEB, rq));
       onConverged();
       return;
     }
@@ -2091,9 +2219,7 @@ export function doStep(
       // resolution x printed as "0", reading as a pure strategy. And the log
       // must fork on the flag exactly as the pure branch does; it previously
       // always said "Mixed NE" regardless.
-      const exact = computeMixedNE(g);
-      const exX = exact ? exact.x : s.cx;
-      const exY = exact ? exact.y : s.cy;
+      const { x: exX, y: exY } = shownPoint(g, s);   // = the exact mixed NE; same point as the banner (S10)
       // fmtPayoff/fmtProb applied INSIDE formatConvergenceLogLine, on the SAME
       // exact point (RED-MATH-6/001): a value that merely rounds to zero must
       // say so, and evaluating at exX/exY rather than s.cx/s.cy keeps the
@@ -2120,7 +2246,8 @@ export function doStep(
       s.cycleCount++;
       s.visitedPositions = [];
       applyBisectCycleStep(s, g, defaultShrinkStep, mover);
-      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
+      drawMoveTo(s, g, r3(s.exactX), r3(s.exactY), mover);   // the clamp is drawn: tip = sphere (F20)
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}`);
       onCycleDetected();
       return;
     }
@@ -2129,8 +2256,10 @@ export function doStep(
 
   // ── Pure NE cycle detection ────────────────────────────────────────────────
   if (pureNEs.length > 0) {
-    // not-a-rendering: a dedupe KEY for cycle detection, never shown.
-    const posKey = s.cx.toFixed(3) + ',' + s.cy.toFixed(3);
+    // not-a-rendering: a dedupe KEY, EXACT like the convergence test above (S11): an r3 key took a 0.0004 -> 0
+    // move for a revisit of (1, 0) and shrank the domain off the NE. Positions come from a finite set, so a
+    // real cycle still revisits a key exactly.
+    const posKey = s.exactX + ',' + s.exactY;
     if (s.visitedPositions.includes(posKey)) {
       s.cycleCount++;
       s.visitedPositions = [];
@@ -2139,7 +2268,8 @@ export function doStep(
       s.exactY = s.discoveredMixedY !== null ? s.discoveredMixedY : Math.max(s.domainLo, Math.min(s.domainHi, s.exactY));
       s.cx = s.discoveredMixedX !== null ? s.discoveredMixedX : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cx)));
       s.cy = s.discoveredMixedY !== null ? s.discoveredMixedY : r3(Math.max(s.domainLo, Math.min(s.domainHi, s.cy)));
-      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}`);
+      drawMoveTo(s, g, r3(s.exactX), r3(s.exactY), mover);   // the clamp is drawn: tip = sphere (F20)
+      addLog(`↺ Cycle ${s.cycleCount} → domain ${fmtProbInterval(s.domainLo, s.domainHi)}${s.bisecting ? ' [bisecting]' : ` (step=${defaultShrinkStep})`}, now x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}`);
       onCycleDetected();
       return;
     }

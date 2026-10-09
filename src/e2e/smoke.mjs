@@ -12,7 +12,7 @@
  * Exit 0 only if every check passes and the browser logged no console errors.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { waitForOwnServer, reuseServerAllowed } from '../integration/ownserver.mjs';
@@ -1399,9 +1399,11 @@ try {
   //      user got no indication the run had finished at all.
   //
   //      Fixture from src/test.ts's own testRedTeamFindings4():
-  //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 — settles at
-  //      (0,1) with regret ~18 for A under the app's own defaults
-  //      (firstMover A, shrink mode, step 0.1, x0=y0=0.217).
+  //      a11=9,a12=-1,a21=-9,a22=9,b11=-4,b12=-7,b21=-2,b22=-2 settled at (0,1),
+  //      regret 18 for A. B is indifferent at x = 0; since math-loop-22 the tie
+  //      breaks toward the committed NE, so the run converges on (0,0), on the
+  //      x = 0 continuum, and no run settles off the equilibrium set (D8 in
+  //      mathdynamics.test.ts). The live region must state that, never "paused".
   section('21', 'settled live-region wording', async () => {
     const settledPage = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
     await settledPage.goto(BASE, { waitUntil: 'networkidle' });
@@ -1447,10 +1449,11 @@ try {
     }
     const finalLive = await settledPage.evaluate(() =>
       document.querySelector('[aria-live="polite"][role="status"]')?.textContent ?? null);
-    record('visible pill reads "Settled (not an NE)" for the RED-APP-6/001 fixture',
-      pillText === 'Settled (not an NE)', `pillText=${JSON.stringify(pillText)}`);
-    record('live region announces the settled-not-NE state distinctly, not "Simulation paused."',
-      finalLive === 'Simulation settled — not a Nash equilibrium.', `finalLive=${JSON.stringify(finalLive)}`);
+    record('visible pill reads "Converged" for the RED-APP-6/001 fixture (it once settled at the non-NE (0,1))',
+      pillText === 'Converged', `pillText=${JSON.stringify(pillText)}`);
+    record('live region announces the run\'s terminal state (continuum at (0,0)), not "Simulation paused."',
+      finalLive === 'Settled on the equilibrium continuum at x=0, y=0: A continuum of equilibria: A plays Row 2 while B mixes with y anywhere from 0 to 0.357.',
+      `finalLive=${JSON.stringify(finalLive)}`);
 
     await settledPage.close();
   });
@@ -12079,6 +12082,450 @@ const suggestedScenario = {
         (await dlg.locator('textarea').first().inputValue()) === beforeDiscard);
     }
     await p97.close();
+  });
+
+  // ══ 109. BLUE-LOOP-MATH-22 F4/F5: a saved game's card shows the game "Load" commits.
+  //      Rows saved before cleanPayoffs (2026-06-17) hold raw 4-dp payoffs; the card solved
+  //      them raw ("x*=0.828 … E[B]=0.058"), Load committed 3-dp ("x*=0.827 … E[B]=0.059")
+  //      and the explainer lost the story. A row with `payoffs: null` crashed the whole app.
+  //      Packaged condition: env -i shape, empty cwd, rows on disk. Unit twin: mathreload.
+  section('109', 'stored rows (legacy 4-dp, payoffs:null): the card, the loaded panel and the explainer request describe one game', async () => {
+    const deskPort = String((Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000) + 3);
+    const deskBase = `http://127.0.0.1:${deskPort}`;
+    const deskData = mkdtempSync(path.join(tmpdir(), 'nash-e2e-legacyrow-'));
+    const runDir = mkdtempSync(path.join(tmpdir(), 'nash-e2e-legacyrow-cwd-'));
+    const NAME = 'Legacy 4dp';
+    writeFileSync(path.join(deskData, 'db.json'), JSON.stringify({
+      users: [{ id: 'local-owner', username: 'This device', email: 'local@device', passwordHash: '' }],
+      games: [
+        { id: 'g-legacy-4dp', userId: 'local-owner', name: NAME, description: 'Saved before 2026-06-17.', createdAt: '2026-06-10T00:00:00.000Z',
+          payoffs: { a11: -5.3067, a12: -8.854, a21: -9.2666, a22: -4.1166, b11: -0.5135, b12: -1.3647, b21: 2.8025, b22: 6.8882 } },
+        { id: 'g-null', userId: 'local-owner', name: 'Null payoffs', description: 'A malformed row.', createdAt: '2026-06-11T00:00:00.000Z', payoffs: null },
+      ],
+    }));
+    // electron-main.cjs's own env, nothing inherited (no repo .env, no credentials).
+    const desk = spawn(process.execPath, [path.join(path.resolve(import.meta.dirname, '../..'), 'dist/server.cjs')], {
+      cwd: runDir,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production', PORT: deskPort, IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: deskData,
+        NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    desk.stderr.on('data', () => {});
+    const deskCtx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36',
+    });
+    try {
+      const up = await waitForOwnServer(desk, deskBase).then(() => true, () => false);
+      record('§109 precondition: a packaged-shape server (IS_ELECTRON, empty cwd) is up on its own port', up);
+      const stored = await fetch(`${deskBase}/api/games`).then((r) => r.json()).catch(() => null);
+      record('§109 precondition: GET /api/games returns the legacy row as stored (a11 = -5.3067) and the null row',
+        Array.isArray(stored) && stored.some((g) => g.payoffs?.a11 === -5.3067) && stored.some((g) => g.payoffs === null), JSON.stringify(stored));
+      const dp = trackPage(await deskCtx.newPage());
+      const pageErrors = [];
+      dp.on('pageerror', (e) => pageErrors.push(String(e).slice(0, 160)));
+      const reports = [];
+      dp.on('request', (r) => { if (r.url().includes('/api/report') && r.method() === 'POST') reports.push(r.postData()); });
+      await dp.goto(deskBase, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(dp, 'setup: clear a possible tour before reading the saved card'); /* decided below */
+      let tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 5000 }).then(() => true).catch(() => false);
+      if (!tourGone) { await dp.keyboard.press('Escape'); tourGone = await dp.waitForFunction(() => !document.querySelector('[role="dialog"][aria-label="Guided tour"]'), null, { timeout: 10000 }).then(() => true).catch(() => false); }
+      record('§109 precondition: the guided tour is dismissed', tourGone);
+      const body = await dp.locator('body').innerText();
+      record('§109 F5: a stored row with payoffs:null does not take the app down ("Something went wrong")',
+        !/something went wrong/i.test(body) && pageErrors.length === 0, JSON.stringify(pageErrors));
+
+      await dp.getByRole('button', { name: /open workspace menu/i }).first().click();
+      await dp.getByRole('button', { name: /library/i }).first().click();
+      const card = dp.locator('[data-drawer-game]', { hasText: NAME }).first();
+      await card.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+      const cardLines = (await card.locator('li').allInnerTexts().catch(() => [])).map((l) => l.replace(/\s+/g, ' ').trim());
+      record('§109 F4: the card shows the loaded game "Mixed NE (x*=0.827, y*=0.545) val (E[A]=-6.922, E[B]=0.059)", never the raw solve',
+        cardLines.includes('Mixed NE (x*=0.827, y*=0.545) val (E[A]=-6.922, E[B]=0.059)') && !cardLines.some((l) => l.includes('x*=0.828')),
+        JSON.stringify(cardLines));
+      await dp.keyboard.press('Escape');
+      await dp.waitForFunction(() => !document.querySelector('[data-focus-fallback="drawer-games"]'), null, { timeout: 5000 }).catch(() => {});
+
+      await dp.getByRole('button', { name: NAME, exact: true }).click();
+      await dp.waitForFunction(() => /x\*=/.test(document.querySelector('[data-tour="ne"]')?.textContent || ''), null, { timeout: 8000 }).catch(() => {});
+      const panelLines = (await dp.locator('[data-tour="ne"] li').allInnerTexts()).map((l) => l.replace(/\s+/g, ' ').trim());
+      const asCard = panelLines.map((l) => l.replace(' with values ', ' val (').replace(/(E\[B\]=\S+)$/, '$1)'));
+      record('§109 F4: card lines == the panel lines after Load, one for one',
+        cardLines.length > 0 && JSON.stringify(asCard) === JSON.stringify(cardLines), `card ${JSON.stringify(cardLines)} | panel ${JSON.stringify(panelLines)}`);
+
+      await dp.getByRole('button', { name: /explain this game/i }).first().click();
+      const deadline = Date.now() + 8000;
+      while (!reports.length && Date.now() < deadline) await dp.waitForTimeout(100);
+      const req = reports.length ? JSON.parse(reports[0]) : null;
+      record('§109 F4: the explainer request carries the saved game\'s story for the loaded matrix',
+        req?.scenario?.name === NAME && req?.payoffs?.a11 === -5.307, JSON.stringify({ scenario: req?.scenario ?? null, a11: req?.payoffs?.a11 }));
+      await dp.close();
+    } finally {
+      await deskCtx.close().catch(() => {});
+      if (desk.exitCode === null) { const exited = new Promise((r) => desk.once('exit', r)); desk.kill('SIGKILL'); await exited; }
+      for (const d of [deskData, runDir]) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+    }
+  });
+
+  // ══ 110. BLUE-LOOP-MATH-22 sweep 1 angle 5: the plot under a burst. Edits, legend clicks, theme,
+  // Reset View and resizes interleaved with no settling; afterwards the surfaces are EXACTLY E_A/E_B of
+  // the committed boxes, the background is the theme's, the camera finite, a legend choice survives the
+  // next redraws, and one click flips exactly its own entry. Seeded, so a failure replays.
+  section('110', 'a burst of edits, legend clicks, theme, Reset View and resizes leaves the plot describing the committed game', async () => {
+    const bp = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    // trackPage records every console error and page error ("Plotly mutation failed" is a console.error).
+    const errorsBefore = consoleErrors.length;
+    try {
+      await bp.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(bp, '§110 setup: clear a possible tour before the burst');
+      const inputs = await bp.locator('input[aria-label$="payoff"]').all();
+      record('§110 precondition: eight payoff boxes and a Plotly legend', inputs.length === 8
+        && await bp.locator('.legend .traces').count() > 0);
+      let seed = 110;
+      const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+      const LEG = ['Starting Point', 'Pure NE', 'Domain boundary', 'Current position (A)'];
+      const legend = () => bp.evaluate(() => {
+        const by = {};
+        for (const d of document.getElementById('plotly-3d-market-simulation')?._fullData || []) {
+          const k = d.legendgroup || d.name;
+          if (k === '_' || (!d.showlegend && !(k in by))) continue;
+          (by[k] ??= []).push(d.visible === true);
+        }
+        return Object.fromEntries(Object.entries(by).map(([k, v]) => [k, v.every(Boolean) ? 'on' : v.some(Boolean) ? 'MIXED' : 'off']));
+      });
+      const clickLegend = async (n) => {
+        const item = bp.locator('.legend .traces', { hasText: n }).first();
+        if (!(await item.count())) return false;
+        await item.scrollIntoViewIfNeeded();
+        await item.locator('rect.legendtoggle').click({ force: true });
+        return true;
+      };
+      const blur = () => bp.locator('body').click({ position: { x: 2, y: 2 } });
+      let clicks = 0;
+      const themes = new Set();
+      for (let round = 0; round < 3; round++) {
+        for (let k = 0; k < 30; k++) {
+          const r = rnd();
+          if (r < 0.55) await inputs[Math.floor(rnd() * 8)].fill(String(Math.round((rnd() * 20 - 10) * 1000) / 1000));
+          else if (r < 0.7) clicks += await clickLegend(LEG[Math.floor(rnd() * LEG.length)]) ? 1 : 0;
+          else if (r < 0.8) await bp.locator('button[aria-label="Toggle dark mode"]').first().click();
+          else if (r < 0.9) await bp.locator('button', { hasText: 'Reset View' }).first().click();
+          else await bp.setViewportSize({ width: 900 + Math.floor(rnd() * 600), height: 700 + Math.floor(rnd() * 300) });
+        }
+        await blur();
+        await bp.waitForTimeout(2500);
+        const st = await bp.evaluate(() => {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const t = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface');
+          return { vals: [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => i.value),
+            zA: t('E[A]')?.z, zB: t('E[B]')?.z, visA: t('E[A]')?.visible, visB: t('E[B]')?.visible,
+            dark: document.documentElement.classList.contains('dark'), bg: gd?._fullLayout?.paper_bgcolor,
+            eye: gd?._fullLayout?.scene?.camera?.eye };
+        });
+        // Box order a11,b11,a12,b12,a21,b21,a22,b22 (row-major, A then B per cell).
+        const [a11, b11, a12, b12, a21, b21, a22, b22] = st.vals.map(Number);
+        let err = 0;
+        for (let yi = 0; yi <= 28; yi++) for (let xi = 0; xi <= 28; xi++) {
+          const x = xi / 28, y = yi / 28;
+          const ea = x * y * a11 + x * (1 - y) * a12 + (1 - x) * y * a21 + (1 - x) * (1 - y) * a22;
+          const eb = x * y * b11 + x * (1 - y) * b12 + (1 - x) * y * b21 + (1 - x) * (1 - y) * b22;
+          const d = Math.max(Math.abs(st.zA?.[yi]?.[xi] - ea), Math.abs(st.zB?.[yi]?.[xi] - eb));
+          err = Number.isNaN(d) ? Infinity : Math.max(err, d);
+        }
+        record(`§110 round ${round}: both surfaces are exactly E_A/E_B of the committed boxes after the burst`,
+          err < 1e-9 && st.visA === true && st.visB === true, `max |dz| ${err} boxes ${st.vals.join(',')}`);
+        themes.add(st.dark);
+        record(`§110 round ${round}: the plot background is the theme's`, st.bg === (st.dark ? '#000000' : '#ffffff'), `${st.dark} ${st.bg}`);
+        record(`§110 round ${round}: the camera eye is finite`, !!st.eye && [st.eye.x, st.eye.y, st.eye.z].every(Number.isFinite), JSON.stringify(st.eye));
+        // A legend choice survives the next redraws (an edit, a theme switch). New keys = a new game shape.
+        if ((await legend())['Starting Point'] === 'on') { await clickLegend('Starting Point'); await bp.waitForTimeout(900); }
+        const s1 = await legend();
+        await inputs[0].fill(st.vals[0] === '1' ? '2' : '1'); await blur(); await bp.waitForTimeout(1500);
+        const s2 = await legend();
+        await bp.locator('button[aria-label="Toggle dark mode"]').first().click(); await bp.waitForTimeout(1500);
+        const s3 = await legend();
+        const bg2 = await bp.evaluate(() => [document.documentElement.classList.contains('dark'), document.getElementById('plotly-3d-market-simulation')?._fullLayout?.paper_bgcolor]);
+        themes.add(bg2[0]);
+        record(`§110 round ${round}: after a theme switch the plot background follows it`, bg2[0] !== st.dark && bg2[1] === (bg2[0] ? '#000000' : '#ffffff'), JSON.stringify(bg2));
+        const shared = Object.keys(s1).filter((k) => k in s2 && k in s3);
+        record(`§110 round ${round}: a legend choice survives an edit and a theme switch, and no group is half-shown`,
+          s1['Starting Point'] === 'off' && shared.length >= 3 && shared.every((k) => s1[k] === s2[k] && s2[k] === s3[k])
+          && ![s1, s2, s3].some((x) => Object.values(x).includes('MIXED')), `${JSON.stringify(s1)} -> ${JSON.stringify(s2)} -> ${JSON.stringify(s3)}`);
+        for (const n of ['Starting Point', 'Domain boundary']) {
+          const before = await legend();
+          if (!(await clickLegend(n))) continue;
+          await bp.waitForTimeout(900);
+          const after = await legend();
+          const flipped = Object.keys(before).filter((k) => before[k] !== after[k]);
+          record(`§110 round ${round}: one settled click on "${n}" flips exactly that entry`, flipped.length === 1 && flipped[0] === n,
+            `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+        }
+      }
+      // A react held in flight (a slow device, made deterministic): edits typed one by one and two clicks on
+      // one legend entry all land behind it. On release the surfaces must describe the LAST edit and the
+      // two clicks must cancel out (the second reads the first's pending intent, not the stale trace).
+      await bp.evaluate(() => {
+        const P = window.Plotly, orig = P.react;
+        P.react = async (...a) => { if (window.__e2eHold) await window.__e2eHold; return orig.apply(P, a); };
+      });
+      for (let v = 0; v < 3; v++) {
+        await bp.locator('button', { hasText: 'Reset View' }).first().click();
+        await bp.waitForTimeout(800);
+        const before = await legend();
+        const rev = () => bp.evaluate(() => Number(document.getElementById('plotly-3d-market-simulation')?.dataset.plotReactRevision ?? 0));
+        const rev0 = await rev();
+        await bp.evaluate(() => { window.__e2eHold = new Promise((r) => { window.__e2eRelease = () => { window.__e2eHold = null; r(); }; }); });
+        const target = Array.from({ length: 8 }, () => String(Math.round((rnd() * 20 - 10) * 1000) / 1000));
+        for (let i = 0; i < 8; i++) {
+          await inputs[i].fill(target[i]);
+          if (i === 2) await clickLegend('Starting Point');
+        }
+        await clickLegend('Starting Point');
+        const held = (await rev()) === rev0;
+        await bp.evaluate(() => window.__e2eRelease());
+        await blur();
+        await bp.waitForFunction((r0) => Number(document.getElementById('plotly-3d-market-simulation')?.dataset.plotReactRevision ?? 0) > r0, rev0, { timeout: 15000 }).catch(() => {});
+        await bp.waitForTimeout(1500);
+        const z = await bp.evaluate(() => {
+          const gd = document.getElementById('plotly-3d-market-simulation');
+          const t = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface');
+          return { vals: [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => i.value), zA: t('E[A]')?.z, zB: t('E[B]')?.z };
+        });
+        const [a11, b11, a12, b12, a21, b21, a22, b22] = z.vals.map(Number);
+        const corner = (zz, x, y) => zz?.[y * 28]?.[x * 28];
+        const ok = JSON.stringify(z.vals) === JSON.stringify(target)
+          && corner(z.zA, 1, 1) === a11 && corner(z.zA, 1, 0) === a12 && corner(z.zA, 0, 1) === a21 && corner(z.zA, 0, 0) === a22
+          && corner(z.zB, 1, 1) === b11 && corner(z.zB, 1, 0) === b12 && corner(z.zB, 0, 1) === b21 && corner(z.zB, 0, 0) === b22;
+        record(`§110 volley ${v}: edits typed behind an in-flight react leave the surfaces' corners at the last edit's payoffs`, ok,
+          `boxes ${z.vals.join(',')} target ${target.join(',')} zA corners ${[corner(z.zA, 1, 1), corner(z.zA, 1, 0), corner(z.zA, 0, 1), corner(z.zA, 0, 0)]}`);
+        const after = await legend();
+        record(`§110 volley ${v}: two clicks on "Starting Point" behind the in-flight react cancel out`,
+          before['Starting Point'] === after['Starting Point'] && !Object.values(after).includes('MIXED'), `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+        record(`§110 volley ${v} reach: no react completed until the release (the volley really was behind one)`, held, String(held));
+      }
+      record('§110 reach: the bursts clicked the legend', clicks >= 5, String(clicks));
+      record('§110 reach: the background was checked in both themes', themes.size === 2, JSON.stringify([...themes]));
+      const errors = consoleErrors.slice(errorsBefore).filter((e) => !isAnalyticsNoise(e));
+      record('§110: no page error, console error or failed Plotly mutation during the bursts', errors.length === 0, JSON.stringify(errors.slice(0, 4)));
+    } finally {
+      await bp.close().catch(() => {});
+    }
+  });
+
+  // ══ 111. BLUE-LOOP-MATH-22 sweep 1 angle 6: desktop parity. The packaged server (electron-main's env,
+  // empty cwd, bank stories) and the hosted one (cloudbuild's rung-3 flags, no credentials) get the same
+  // matrices: status, ground truth, claims and every number the prose states agree, and the prose is
+  // byte-identical once the hosted side is handed the desktop's story. Then an Electron-UA page and a
+  // plain page show the same panel, surfaces and rendered report for the same boxes.
+  // §111 ran 264.6 s on CI (shard 25/38), so its typed UI games split as §111b behind one body; the wire corpus runs once.
+  const DESKTOP_APP_BUTTON = 'button[aria-label="Get the desktop app"], button[title="Download macOS Desktop App"]';
+  const parityAt = (sid) => async () => {
+    const portBase = Number(process.env.E2E_DESK_PORT_BASE) || Number(PORT) + 1000;
+    const deskBase = `http://127.0.0.1:${portBase + 5}`, webBase = `http://127.0.0.1:${portBase + 6}`;
+    const root = path.resolve(import.meta.dirname, '../..');
+    const dirs = ['desk', 'deskcwd', 'web'].map((k) => mkdtempSync(path.join(tmpdir(), `nash-e2e-parity-${k}-`)));
+    symlinkSync(path.join(root, 'dist'), path.join(dirs[2], 'dist'));   // hosted resolves dist/ from its cwd
+    const rung3 = { PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production', NASH_PAYOFF_TEMPLATE: '1', NASH_LLM_TIES: 'template', NASH_DIRECTION_CHECKS: '1' };
+    const boot = (cwd, env) => {
+      const p = spawn(process.execPath, [path.join(root, 'dist/server.cjs')], { cwd, env: { ...rung3, ...env }, stdio: ['ignore', 'ignore', 'pipe'] });
+      p.stderr.on('data', () => {});
+      return p;
+    };
+    const desk = boot(dirs[1], { PORT: String(portBase + 5), IS_ELECTRON: 'true', ELECTRON_USER_DATA_PATH: dirs[0] });
+    const web = boot(dirs[2], { PORT: String(portBase + 6), TRUST_PROXY: '1' });
+    const contexts = [];
+    try {
+      const up = await Promise.all([waitForOwnServer(desk, deskBase), waitForOwnServer(web, webBase)]).then(() => true, () => false);
+      record('§111 precondition: a packaged-shape server and a hosted-shape server are up on their own ports', up);
+      // ── the wire: one seeded corpus, both servers ──
+      let xff = 0;   // TRUST_PROXY=1 as on Cloud Run: one client per request keeps the 20/min limit out of the way
+      const post = (b, g, scenario) => fetch(`${b}/api/report`, { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.11.${(++xff >> 8) & 255}.${xff & 255}` },
+        body: JSON.stringify(scenario ? { payoffs: g, scenario } : { payoffs: g }) })
+        .then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }), () => ({ status: 0, json: null }));
+      const nums = (s) => (s ?? '').replace(/\b(?:Row|Col) [12]\b/g, '').match(/-?\d+(?:\.\d+)?|(?:less|more|greater) than/g) ?? [];
+      const facts = (r) => JSON.stringify({ status: r.status, source: r.json?.source, gt: r.json?.groundTruth,
+        ce: r.json?.report?.claimedEquilibria, pc: r.json?.report?.proseClaims, nums: nums(r.json?.report?.prose) });
+      const K = ['a11', 'a12', 'a21', 'a22', 'b11', 'b12', 'b21', 'b22'];
+      let seed = 111;
+      const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+      const games = [];
+      for (let i = 0; i < 100; i++) games.push(Object.fromEntries(K.map((k) => [k, Math.floor(rnd() * 7) - 3])));   // ties common
+      for (let i = 0; i < 100; i++) games.push(Object.fromEntries(K.map((k) => [k, Math.round((rnd() * 200 - 100) * 1000) / 1000])));
+      for (let i = 0; i < 40; i++) games.push(Object.fromEntries(K.map((k) => [k, rnd() * 260 - 130])));   // raw floats, some past ±100
+      games.push({ a11: 0.001, a12: -100, a21: 0, a22: 99.999, b11: 1, b12: 0, b21: 0, b22: 1 },   // y* within 5e-5 of 1
+        { a11: 3, a12: 0, a21: 0, a22: 0.001, b11: 1, b12: 3, b21: 3, b22: 1 },                    // y* = 1/3001
+        { a11: 0.2, a12: -0.1, a21: -0.1, a22: 0.7, b11: 0.2, b12: 0.2, b21: -0.1, b22: 0.1 },      // F1
+        { a11: 0.05, a12: 0.1, a21: 0.1, a22: -0.01, b11: 0.03, b12: -0.06, b21: -0.06, b22: 0 });  // F2
+      const reach = { ok: 0, tie: 0, plain: 0, story: 0, raw: 0, bounds: 0 };
+      const diffs = [], proseDiffs = [];
+      if (sid === '111') {
+      for (const g of games) {
+        const [d, w] = [await post(deskBase, g), await post(webBase, g)];
+        if (d.status === 200 && w.status === 200 && d.json?.source === 'template' && w.json?.source === 'template') reach.ok++;
+        if (nums(d.json?.report?.prose).some((t) => t.endsWith('than'))) reach.bounds++;
+        if (K.some((k) => Math.round(g[k] * 1000) / 1000 !== g[k])) reach.raw++;
+        if (/payoff tie/.test(d.json?.report?.prose ?? '')) reach.tie++; else reach.plain++;
+        if (facts(d) !== facts(w) && diffs.length < 3) diffs.push(`${JSON.stringify(g)}\n D ${facts(d).slice(0, 300)}\n W ${facts(w).slice(0, 300)}`);
+        else if (facts(d) !== facts(w)) diffs.push('…');
+        const story = d.json?.report?.suggestedScenario;
+        if (!story) continue;
+        reach.story++;
+        const w2 = await post(webBase, g, story);
+        if (w2.json?.report?.prose !== d.json?.report?.prose || JSON.stringify(w2.json?.report?.proseClaims) !== JSON.stringify(d.json?.report?.proseClaims)) {
+          proseDiffs.push(proseDiffs.length < 3 ? `${JSON.stringify(g)}\n D ${d.json?.report?.prose}\n W ${w2.json?.report?.prose}` : '…');
+        }
+      }
+      record('§111 wire: every game answers 200 "template" on both builds', reach.ok === games.length, JSON.stringify(reach));
+      record('§111 wire: ground truth, claimed equilibria, prose claims and every number in the prose agree across the builds',
+        diffs.length === 0, `${diffs.length} differ\n${diffs.join('\n')}`);
+      record('§111 wire: handed the desktop\'s bank story, the hosted build writes the same prose and claims byte for byte',
+        proseDiffs.length === 0, `${proseDiffs.length} differ\n${proseDiffs.join('\n')}`);
+      record('§111 wire reach: ties, plain games, raw floats the server must round, sub-resolution bounds and bank stories all occurred',
+        reach.tie >= 40 && reach.plain >= 100 && reach.raw >= 30 && reach.bounds >= 1 && reach.story >= 200, JSON.stringify(reach));
+      }
+
+      // ── the UI: an Electron-UA page on the desktop server, a plain page on the hosted one ──
+      const errorsBefore = consoleErrors.length;
+      const ua = { desk: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) nash-equilibrium-simulator/0.0.0 Chrome/128.0.0.0 Electron/32.0.0 Safari/537.36' };
+      const pages = [];
+      for (const [base, userAgent] of [[deskBase, ua.desk], [webBase, undefined]]) {
+        const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, ...(userAgent ? { userAgent } : {}) });
+        contexts.push(ctx);
+        const pg = trackPage(await ctx.newPage());
+        await pg.goto(base, { waitUntil: 'load' });
+        await dismissTourForSetup(pg, '§111 setup: clear a possible tour before filling the matrix');
+        pages.push(pg);
+      }
+      record('§111 precondition: the desktop page runs as Electron (no "Get the desktop app" button), the hosted page does not',
+        // Counted, never pressed: a role query reads as a press to controlcoverage. Both layouts:
+        // touch labels the button, the 1280px row titles it.
+        await pages[0].locator(DESKTOP_APP_BUTTON).count() === 0 && await pages[1].locator(DESKTOP_APP_BUTTON).count() > 0);
+      const read = (pg) => pg.evaluate(() => {
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        const z = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface')?.z;
+        const h = [...document.querySelectorAll('p')].find((p) => p.textContent?.startsWith('Generated from the solver'));
+        return { boxes: [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => i.value),
+          panel: [...document.querySelectorAll('[data-tour="ne"] li')].map((l) => l.innerText.replace(/\s+/g, ' ').trim()),
+          zA: z('E[A]'), zB: z('E[B]'), head: h?.textContent ?? null, prose: h?.nextElementSibling?.textContent ?? null };
+      });
+      // Box DOM order a11,b11,a12,b12,a21,b21,a22,b22; a surface's corner (x,y) sits at z[28y][28x].
+      const settled = (pg) => pg.waitForFunction(() => {
+        const v = [...document.querySelectorAll('input[aria-label$="payoff"]')].map((i) => Number(i.value));
+        const gd = document.getElementById('plotly-3d-market-simulation');
+        const z = (n) => (gd?._fullData || []).find((d) => d.name === n && d.type === 'surface')?.z;
+        const a = z('E[A]'), b = z('E[B]');
+        return !!a && !!b && a[28][28] === v[0] && a[0][28] === v[2] && a[28][0] === v[4] && a[0][0] === v[6]
+          && b[28][28] === v[1] && b[0][28] === v[3] && b[28][0] === v[5] && b[0][0] === v[7];
+      }, null, { timeout: 15000 }).then(() => true, () => false);
+      const UI = sid === '111'
+        ? ['Search Game', 'Battle of the Sexes', 'Prisoners Dilemma', 'Cops & Robbers', 'Spy vs. Analyst', 'Penalty Kick'].map((preset) => ({ preset }))
+        // F1/F2/the 5e-5 root are wire games above; here only what a page adds (a continuum bullet, a bound, the input door)
+        : [{ tag: 'continuum', v: [1, 1, 0, 0, 1, 0, 1, 0] },
+          { tag: 'y* = 1/3001', v: [3, 0, 0, 0.001, 1, 3, 3, 1] },
+          { tag: 'typed past the grid and the clamp', v: ['1.23456', '-0.0004', '250', '-7.0005', '0.3333', '2.5e1', '-101', '0.0005'] }];
+      let uiOk = 0;
+      for (const game of UI) {
+        const tag = game.preset ?? game.tag;
+        const st = await Promise.all(pages.map(async (pg) => {
+          if (game.preset) await pg.getByRole('button', { name: game.preset, exact: true }).first().click();
+          else {
+            const [a11, a12, a21, a22, b11, b12, b21, b22] = game.v;
+            const boxes = pg.locator('input[aria-label$="payoff"]');
+            for (const [i, val] of [a11, b11, a12, b12, a21, b21, a22, b22].entries()) { await boxes.nth(i).fill(String(val)); await boxes.nth(i).blur(); }
+          }
+          const plotted = await settled(pg);
+          await pg.getByRole('button', { name: /explain this game/i }).first().click();
+          await pg.waitForFunction(() => [...document.querySelectorAll('p')].some((p) => p.textContent?.startsWith('Generated from the solver')
+            && p.nextElementSibling?.textContent), null, { timeout: 15000 }).catch(() => {});
+          return { plotted, ...(await read(pg)) };
+        }));
+        const [d, w] = st;
+        record(`§111 ${tag}: both pages committed the same boxes and drew surfaces through them`,
+          d.plotted && w.plotted && JSON.stringify(d.boxes) === JSON.stringify(w.boxes), `${d.boxes} | ${w.boxes}`);
+        record(`§111 ${tag}: the equilibrium panel reads the same on the desktop and the web`,
+          d.panel.length > 0 && JSON.stringify(d.panel) === JSON.stringify(w.panel), `${JSON.stringify(d.panel)} | ${JSON.stringify(w.panel)}`);
+        record(`§111 ${tag}: both surfaces are the same grid on the desktop and the web`,
+          JSON.stringify([d.zA, d.zB]) === JSON.stringify([w.zA, w.zB]));
+        record(`§111 ${tag}: the rendered report states the same numbers under the same header`,
+          !!d.prose && !!w.prose && d.head === w.head && JSON.stringify(nums(d.prose)) === JSON.stringify(nums(w.prose)), `D ${d.head} ${d.prose}\n W ${w.head} ${w.prose}`);
+        uiOk += d.panel.length > 0 && !!d.prose ? 1 : 0;
+      }
+      record('§111 UI reach: every game produced a panel and a rendered report on the desktop page', uiOk === UI.length, String(uiOk));
+      const errors = consoleErrors.slice(errorsBefore).filter((e) => !isAnalyticsNoise(e));
+      record('§111: no page error or console error on either page', errors.length === 0, JSON.stringify(errors.slice(0, 4)));
+    } finally {
+      for (const c of contexts) await c.close().catch(() => {});
+      for (const p of [desk, web]) if (p.exitCode === null) { const exited = new Promise((r) => p.once('exit', r)); p.kill('SIGKILL'); await exited; }
+      for (const d of dirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+    }
+  };
+  section('111', 'the desktop and hosted builds state the same numbers for one game (report, panel, surfaces)', async () => { await parityAt('111')(); });
+  section('111b', 'the desktop and hosted builds state the same numbers for typed games (continuum, bound, input door)', async () => { await parityAt('111b')(); });
+
+  // ══ 112. BLUE-LOOP-MATH-22 F14 — a typed start coordinate is held on the 1e-6 grid EA's exact
+  //      check reads truthfully. Game E[A] = 1 - 3x (A's rows constant across columns): typing
+  //      "0.3333333333333333" printed E[A] = 0 for a payoff that is not zero. Oracle: the rendered
+  //      readout and box text; the 0.25 arm (E[A] = 0.250, a 3-dp value) is the control, so a dead
+  //      locator fails it first. "0.12345678" checks the box states the held value, not "0.123".
+  section('112', 'a typed start coordinate prints its own payoff, the box states the held value, and the readout boxes print the point the log names', async () => {
+    const p = await newTrackedPage({ viewport: { width: 1280, height: 900 } });
+    try {
+      await p.goto(BASE, { waitUntil: 'networkidle' });
+      await dismissTourForSetup(p, '§112 setup: clear a possible tour before typing');
+      const G = [-2, 0, -2, 0, 1, 0, 1, 0]; // a11,b11,a12,b12,a21,b21,a22,b22
+      for (let i = 0; i < 8; i++) { const el = p.locator('input[aria-label$="payoff"]').nth(i); await el.fill(String(G[i])); await el.blur(); }
+      const readEA = (want) => p.waitForFunction((w) => {
+        for (const s of document.querySelectorAll('span')) {
+          if ((s.textContent || '').trim() === 'Expected Payoff E[A]') {
+            const t = (s.parentElement?.querySelector('span.font-mono')?.textContent || '').trim();
+            return w === null || t === w ? t : false;
+          }
+        }
+        return false;
+      }, want, { timeout: 8000 }).then((h) => h.jsonValue(), () => null);
+      const x0 = p.locator('#field-coords-x0');
+      for (const [typed, ea, box] of [
+        ['0.25', '0.250', '0.25'],                                  // CONTROL
+        ['0.3333333333333333', 'less than 0.001', '0.333333'],      // F14 verbatim
+        ['0.12345678', '0.630', '0.123457'],
+      ]) {
+        await x0.fill(typed); await x0.blur();
+        const shown = (await readEA(ea)) ?? (await readEA(null));
+        record(`§112 E[A] readout for x₀=${typed} reads ${JSON.stringify(ea)}`, shown === ea, `got ${JSON.stringify(shown)}`);
+        const kept = await x0.inputValue();
+        record(`§112 after blur the x₀ box states the held ${box}`, kept === box, `field=${JSON.stringify(kept)}`);
+      }
+      // S10: the readout boxes print the point the Step/━━ lines name. Unfixed, Step 1 from (0.0004, 0.9996) read
+      // y "1.000" / E[B] "0.001" and the converged boxes E[A] "1.616" under "━━ Mixed NE: ... E[A]=1.615". Oracle:
+      // box text vs the rendered log (innerText collapses its double spaces); the x box ("0.000", then "0.417")
+      // reads the same before and after the fix, so a dead locator fails that CONTROL first.
+      const boxes = () => p.evaluate(() => ['x: P(A playing Row 1)', 'y: P(B playing Col 1)', 'Expected Payoff E[A]', 'Expected Payoff E[B]'].map((l) => {
+        const sp = [...document.querySelectorAll('span')].find((e) => (e.textContent || '').trim() === l);
+        return (sp?.parentElement?.querySelector('span.font-mono')?.textContent || '').trim();
+      }));
+      const logText = async () => (await p.locator('div.overflow-y-auto.font-mono p').allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
+      const G2 = [-0.5, 7, 5, 0, 2, 0.001, 1, 5];
+      for (let i = 0; i < 8; i++) { const el = p.locator('input[aria-label$="payoff"]').nth(i); await el.fill(String(G2[i])); await el.blur(); }
+      await p.getByRole('button', { name: 'Opponent Regret', exact: true }).click();
+      await p.getByLabel('Who moves first?').getByRole('button', { name: 'Player A', exact: true }).click();
+      const lam = p.getByLabel('Regret Step Weight (lambda)', { exact: true }); await lam.fill('0.25'); await lam.blur();
+      for (const [id, v] of [['#field-coords-x0', '0.0004'], ['#field-coords-y0', '0.9996']]) { const el = p.locator(id); await el.fill(v); await el.blur(); }
+      await p.waitForTimeout(500);
+      const stepBtn = p.getByRole('button', { name: /^Step$/ });
+      for (const [k, line, want] of [
+        [1, 'Step 1 (A): x=0.000, y=more than 0.999 E[A]=2.000 E[B]=0.003', ['0.000', 'more than 0.999', '2.000', '0.003']],
+        [60, '━━ Mixed NE: x=0.417, y=0.615 E[A]=1.615 E[B]=2.917', ['0.417', '0.615', '1.615', '2.917']],
+      ]) {
+        for (let n = 0; n < k && !(await logText()).includes(line) && !(await stepBtn.isDisabled()); n++) { await stepBtn.click(); await p.waitForTimeout(60); }
+        const logs = await logText(), got = await boxes();
+        record(`§112 S10 the log prints ${JSON.stringify(line)}`, logs.includes(line), JSON.stringify(logs.slice(-2)));
+        record(`§112 S10 CONTROL the x box reads ${want[0]}`, got[0] === want[0], JSON.stringify(got));
+        record(`§112 S10 the readout boxes read ${want.slice(1).join(' / ')}`, got.slice(1).join() === want.slice(1).join(), JSON.stringify(got));
+      }
+    } finally {
+      await p.close().catch(() => {});
+    }
   });
 
 await executeSections();

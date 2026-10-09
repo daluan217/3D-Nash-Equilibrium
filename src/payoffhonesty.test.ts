@@ -209,8 +209,8 @@ function parsePayoffTokens(line: string): { eaTok: string; ebTok: string } | nul
  * same root through `fmtProb` (3dp); reconstructing the root from the 3dp
  * string loses precision the branch's own computation never had. So this
  * checks against BOTH candidate ground-truth points the shipped code can
- * legitimately have evaluated at for a given line: the live (st.cx, st.cy)
- * (per-step and pure/settled convergence lines) and the exact mixed-NE root
+ * legitimately have evaluated at for a given line: the live (st.exactX, st.exactY)
+ * (per-step and pure/settled convergence lines; the r3 cx/cy since S10/S12 is a dynamics input only) and the exact mixed-NE root
  * when one exists (mixed-continuum convergence lines) — never against a
  * value reconstructed from the rendered text.
  */
@@ -223,18 +223,26 @@ function testSimLogAgreesWithGroundTruth() {
     const g: GamePayoffs = { a11: 8, a12: -2, a21: 2, a22: 0, b11: -8, b12: 2, b21: 4, b22: -1 };
     captured = [];
     const st = createInitialState(0.5, 0.5, g);
-    const addLog = (m: string) => captured.push({ line: m, cx: st.cx, cy: st.cy });
+    const addLog = (m: string) => captured.push({ line: m, cx: st.exactX, cy: st.exactY });
     const all = computeAllNE(g);
     const pure = all.filter((n) => n.type === 'pure');
     const committed = pure.length ? pure.reduce((b, n) => ((n.eB) > (b.eB) ? n : b)) : null;
-    for (let i = 0; i < 200 && !st.converged; i++) doStep(g, st, 'B', 0.1, all, committed, addLog, () => {}, () => {}, 'shrink');
+    // Step 0.5, not 0.1: since S12 the 0.1 run locks x at the exact root 1/3 (E[B] = 0 there, honestly "0")
+    // and never prints a Step line at the 3dp point; 0.5 reaches (0.333, 0.25) before discovery (Step 21).
+    for (let i = 0; i < 200 && !st.converged; i++) doStep(g, st, 'B', 0.5, all, committed, addLog, () => {}, () => {}, 'shrink');
     ok(st.converged, 'Repro B fixture must converge within 200 steps');
     const headline = captured.map((c) => c.line).filter((l) => l.startsWith('━━')).pop();
     ok(!!headline, `Repro B fixture: no convergence headline in log: ${JSON.stringify(captured.map((c) => c.line))}`);
-    ok(headline!.includes('E[B]=less than 0.001'),
-      `Repro B fixture: convergence headline must state "E[B]=less than 0.001" (true E[B]=0.00025, nonzero); got "${headline}"`);
-    ok(!headline!.includes('E[B]=0.000'),
-      `Repro B fixture: convergence headline must NOT claim E[B]=0.000 — that is false; got "${headline}"`);
+    // The headline is evaluated at the exact NE (1/3, 1/4), where E[B] = (−8 + 6 + 8 − 6)/12 = 0
+    // exactly, so "0" is honest there (it printed "less than 0.001", BLUE-LOOP-MATH-22 F10). The
+    // RED-MATH-6/001 false-zero lives on the step line at the 3dp point (0.333, 0.25): E[B]=0.00025.
+    ok(headline!.includes('E[B]=0') && !headline!.includes('E[B]=0.000') && !headline!.includes('less than'),
+      `Repro B fixture: convergence headline at the exact NE (true E[B]=0) must state "E[B]=0"; got "${headline}"`);
+    const stepLine = captured.find((c) => c.cx === 0.333 && c.cy === 0.25 && c.line.startsWith('Step '));
+    ok(!!stepLine && EB(0.333, 0.25, g) > 0 && EB(0.333, 0.25, g) < 0.0005,
+      `Repro B fixture precondition: a step line at (0.333, 0.25), where true E[B]=0.00025 is nonzero; got ${JSON.stringify(stepLine)}`);
+    ok(stepLine!.line.includes('E[B]=less than 0.001') && !stepLine!.line.includes('E[B]=0.000'),
+      `Repro B fixture: step line must state "E[B]=less than 0.001" (true 0.00025), never 0.000; got "${stepLine!.line}"`);
   }
 
   // Corpus sweep, exhaustively checking EVERY payoff-bearing log line against
@@ -251,7 +259,7 @@ function testSimLogAgreesWithGroundTruth() {
       for (const [sx0, sy0] of [[0.217, 0.217], [0.5, 0.5]] as [number, number][]) {
         captured = [];
         const st = createInitialState(sx0, sy0, g);
-        const addLog = (m: string) => captured.push({ line: m, cx: st.cx, cy: st.cy });
+        const addLog = (m: string) => captured.push({ line: m, cx: st.exactX, cy: st.exactY });   // the point the line reports (S10, S12)
         const all = computeAllNE(g);
         const pure = all.filter((n) => n.type === 'pure');
         const committed = pure.length
@@ -2785,15 +2793,18 @@ testAppTsxUsesContinuumAwareLogAndDisplay();
 function testPayloadCoordinatesUseFmtProb() {
   const tokensOf = (payload: string) => [...payload.matchAll(/\b([xy])=([^,)]+)/g)].map((m) => m[2].trim());
   const rawFloat = (tok: string) => /^-?\d*\.\d{4,}(e-?\d+)?$/.test(tok) || /e-\d+$/.test(tok);
-  // Known positive from the red's 2M-game sweep: a continuum whose mixed point sits within
-  // float noise of y=1 — fmtProb says "more than 0.999"; the raw float has 16 digits.
+  // The red's fixture: its "y=0.9999999999999987" was F1 (math-loop-22) — a root EXACTLY at y=1
+  // listed as a mixed NE. The true set is x in [0, 0.474], y = 1, so only exact corners may appear.
   const g: GamePayoffs = { a11: -70.328, a12: 80.795, a21: -70.328, a22: 91.429, b11: -19.676, b12: 34.718, b21: -36.633, b22: -85.653 };
-  const payload = buildGroundingPayload(g);
-  const toks = tokensOf(payload);
-  ok(toks.length >= 2, `fixture: the continuum payload must state at least one (x, y) point; payload="${payload.slice(0, 300)}"`);
-  ok(toks.includes('more than 0.999'),
-    `fixture: the near-boundary coordinate (y=0.9999999999999987) must print exactly "more than 0.999"; tokens=${JSON.stringify(toks)}`);
-  ok(!toks.some(rawFloat), `fixture: no raw solver float may reach the payload; tokens=${JSON.stringify(toks)}`);
+  const toks = tokensOf(buildGroundingPayload(g));
+  ok(toks.length >= 2 && toks.every((t) => t === '0' || t === '1'),
+    `fixture: the continuum payload offers only its true corner (x=0, y=1); tokens=${JSON.stringify(toks)}`);
+  // Genuine sub-resolution positive: x* = 0.9995002 exactly (regret 0), not float noise.
+  const near: GamePayoffs = { a11: -2, a12: 5, a21: -1, a22: 3, b11: 8.002, b12: 8, b21: 3, b22: 7 };
+  const nearToks = tokensOf(buildGroundingPayload(near)).map((t) => t.replace(/ \(payoffs.*$/, ''));
+  ok(nearToks.includes('more than 0.999'),
+    `fixture: x* = 0.9995002 must print exactly "more than 0.999"; tokens=${JSON.stringify(nearToks)}`);
+  ok(!nearToks.some(rawFloat), `fixture: no raw solver float may reach the payload; tokens=${JSON.stringify(nearToks)}`);
   // Sweep: 4000 random 3dp games — every coordinate token the payload states is fmtProb-shaped.
   const rnd = mk(0x19f0);
   let games = 0, continua = 0;

@@ -235,6 +235,7 @@ const RENDERING_PATH_FILES = [
   'src/utils/plotting.ts',
   'src/components/PlotlyView.tsx',
   'src/components/equilibriumPanel.ts',
+  'src/utils/geometry.ts',   // the explainer's briefing (math-loop-22 F6)
 ];
 
 /**
@@ -363,8 +364,8 @@ function testTheFixedSitesRenderThroughTheFamily(): void {
 
   // B1 — the readout boxes. Both axes, because an asymmetric guard is this
   // codebase's own recurring defect (COMMON v5 (a)).
-  ok(app.includes('{fmtProbFixed(simState.cx)}'), 'B1 the x readout renders through fmtProbFixed');
-  ok(app.includes('{fmtProbFixed(simState.cy)}'), 'B1 the y readout renders through fmtProbFixed');
+  ok(app.includes('{fmtProbFixed(shown.x)}'), 'B1 the x readout renders through fmtProbFixed');
+  ok(app.includes('{fmtProbFixed(shown.y)}'), 'B1 the y readout renders through fmtProbFixed');
   ok(!/simState\.c[xy]\.toFixed\(/.test(app), 'B1 no readout renders a coordinate with a bare toFixed');
 
   // B2 — the log's opening line, both coordinates.
@@ -373,7 +374,7 @@ function testTheFixedSitesRenderThroughTheFamily(): void {
   ok(!/startVal[XY]\.toFixed\(/.test(app), 'B2 no start coordinate is logged with a bare toFixed');
 
   // B2b — the per-step log line, in the engine.
-  ok(engine.includes('x=${fmtProbFixed(s.cx)}, y=${fmtProbFixed(s.cy)}'),
+  ok(engine.includes('x=${fmtProbFixed(s.exactX)}, y=${fmtProbFixed(s.exactY)}'),
     'B2b the Step log line renders both coordinates through fmtProbFixed');
   ok(!/s\.c[xy]\.toFixed\(3\)\s*\}/.test(engine), 'B2b no Step line interpolates a bare toFixed');
 
@@ -418,7 +419,7 @@ function testNoUnannotatedDoors(): void {
   // `.toFixed(3)` into a copy of App.tsx must be caught. Proves B3 fails for
   // the reason it claims, not because the file list is empty.
   const injected = readFileSync('src/App.tsx', 'utf8')
-    .replace('{fmtProbFixed(simState.cx)}', '{simState.cx.toFixed(3)}');
+    .replace('{fmtProbFixed(shown.x)}', '{simState.cx.toFixed(3)}');
   const injectedLines = injected.split('\n');
   const injectedCode = blankComments(injected);
   let caught = false;

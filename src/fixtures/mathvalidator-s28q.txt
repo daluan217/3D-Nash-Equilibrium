@@ -1,0 +1,794 @@
+# S28q quantifier scope, read by the FULL gate (validateProseDirections + validateProseClaims, labels on) in src/mathvalidator.test.ts.
+# "@ G a11,a12,a21,a22,b11,b12,b21,b22" sets the game; labels Cooperate/Defect (A), Advance/Retreat (B). Worked from the cells by hand:
+# MIX 3,-1,-1,1,-3,1,1,-1: A Cooperate vs Advance (3>-1), Defect vs Retreat (1>-1); B Retreat vs Cooperate, Advance vs Defect.
+# PURE 5,-8,8,1,-6,-9,-8,-5: A Defect strictly dominant; B Advance vs Cooperate (-6>-9), Retreat vs Defect (-5>-8).
+# WEAK 2,1,2,0,1,0,0,1: A ties vs Advance, Cooperate vs Retreat (1>0). The 3,-1,-1,1,-3,1,-1,1 / 3,-1,-1,1,1,-3,1,-1 games give B a
+#   dominant Retreat / Advance; 1,0,1,0,-3,1,1,-1 makes A indifferent in both columns.
+# Each row has a twin with the other label or game and the opposite verdict, so the pair splits only if the quantifier's scope is
+# read: "not always / in every case" (not all) vs "never / in either column" (none) vs unframed (some). HEAD a6841ec missed 323/780.
+@ G 3,-1,-1,1,-3,1,1,-1
+T	A does not always prefer Cooperate.
+T	A doesn't always prefer Defect.
+F	A always prefers Cooperate.
+T	Cooperate is not always better for A.
+T	Defect is not always better for A.
+T	A does not always do better with Cooperate.
+T	A does not prefer Cooperate regardless of what B plays.
+T	A does not prefer Cooperate whatever B does.
+T	A does not prefer Cooperate no matter what B plays.
+T	A does not prefer Cooperate in both columns.
+T	A does not prefer Cooperate against both Advance and Retreat.
+F	Whatever B does, A does not prefer Cooperate.
+F	Regardless of what B plays, A does not prefer Defect.
+F	A never prefers Cooperate.
+F	A never prefers Defect.
+F	Cooperate is never better for A.
+F	A never does better with Defect.
+T	It is not true that A prefers Cooperate whatever B does.
+T	It is not true that whatever B does, A prefers Cooperate.
+T	It is not true that A always prefers Cooperate.
+T	It is not true that A never prefers Cooperate.
+T	It is not true that no matter what B plays A does not prefer Cooperate.
+T	It is not true that Cooperate is always better for A.
+T	A doesn't always prefer Cooperate.
+T	A does not prefer Cooperate in every case.
+T	A prefers Cooperate only sometimes.
+F	A prefers Cooperate whatever B does.
+T	It is not true that A prefers Cooperate regardless of what B plays.
+T	It is not true that A prefers Cooperate no matter what B plays.
+T	It is not true that A prefers Cooperate whichever option B picks.
+T	It is not true that A prefers Cooperate against every option of B.
+T	It is not true that A prefers Cooperate in every case.
+T	It is not true that A prefers Cooperate in both columns.
+T	It is not true that A prefers Cooperate either way.
+T	It is not true that regardless of B, A prefers Cooperate.
+T	It is not true that Cooperate is better for A whatever B does.
+T	A won't always prefer Cooperate.
+T	A would not always prefer Cooperate.
+T	Cooperate isn't always better for A.
+T	Cooperate is not necessarily better for A.
+T	A does not necessarily prefer Cooperate.
+T	A does not strictly prefer Cooperate in both columns.
+T	Cooperate does not always do better for A.
+F	Never does A prefer Cooperate.
+F	At no point does A prefer Cooperate.
+F	Under no circumstances does A prefer Cooperate.
+F	In neither column does A prefer Defect.
+F	A would never prefer Cooperate.
+F	A never strictly prefers Defect.
+F	Cooperate never does worse for A.
+F	A is never better off with Cooperate.
+F	Against Advance, A never prefers Cooperate.
+T	Against Retreat, A never prefers Cooperate.
+F	A never prefers Cooperate whatever B does.
+F	A never prefers Cooperate against Advance.
+T	A never prefers Cooperate against Retreat.
+F	A does not always prefer Cooperate against Advance.
+T	A does not always prefer Cooperate against Retreat.
+F	Whatever B does, Cooperate is not better for A.
+F	A does not prefer Cooperate against either Advance or Retreat.
+F	A always prefers Defect.
+T	A never plays Cooperate with certainty.
+T	A would never switch to Cooperate.
+T	It is not true that A never prefers Defect.
+F	It is not true that A sometimes prefers Cooperate.
+T	It is not true that A never strictly prefers Cooperate.
+T	It is not true that whichever option B picks, A does not prefer Defect.
+T	It is not true that, whatever B does, A prefers Defect.
+F	Never is Cooperate better for A.
+F	At no point is Defect better for A.
+T	Never is Cooperate better for A against Retreat.
+F	Never is Cooperate better for A against Advance.
+F	Never would Cooperate be better for A.
+F	Not once does A prefer Defect.
+T	Not once does A prefer Defect against Advance.
+F	It is not true that A ever prefers Cooperate.
+F	It is not true that Cooperate is ever better for A.
+F	It is not true that Cooperate is sometimes better for A.
+T	It is not true that A sometimes prefers Cooperate against Retreat.
+F	It is not true that A sometimes prefers Cooperate against Advance.
+F	Cooperate does not do better for A against Advance.
+T	Cooperate does not do better for A against Retreat.
+F	Cooperate never does better for A.
+F	Defect never does worse for A.
+F	In no case does A prefer Cooperate.
+F	Under no circumstances would A prefer Defect.
+T	Under no circumstances would A prefer Defect against Advance.
+T	It is not true that Cooperate is never better for A.
+T	Is Cooperate ever better for A? Yes.
+F	Is Cooperate ever better for A? No.
+F	Never does A play Cooperate.
+F	Never does B play Advance.
+F	In neither row does B prefer Advance.
+F	In neither row does B prefer Retreat.
+T	In neither row does B prefer Retreat against Defect.
+F	Never does B prefer Retreat.
+T	Never does B prefer Retreat against Defect.
+F	Advance never does better for B.
+T	Retreat does not do better for B against Defect.
+F	Retreat does not do better for B against Cooperate.
+T	Cooperate does not do worse for A against Advance.
+F	Cooperate does not do worse for A against Retreat.
+F	Never would A prefer Cooperate.
+F	Never once does A prefer Cooperate.
+F	It is not true that A ever plays Cooperate.
+F	It is not true that B ever prefers Advance.
+T	It is not true that B ever prefers Advance against Cooperate.
+F	A never prefers Cooperate, whatever B does.
+T	Cooperate is sometimes better for A.
+T	Defect is sometimes better for A.
+T	A sometimes prefers Cooperate.
+F	A doesn't ever prefer Cooperate.
+F	Cooperate isn't ever better for A.
+T	Cooperate isn't ever better for A against Retreat.
+F	Cooperate isn't ever better for A against Advance.
+T	A rarely prefers Cooperate.
+T	Rarely does A prefer Defect.
+F	Never, against Advance, does A prefer Cooperate.
+T	Never, against Retreat, does A prefer Cooperate.
+F	In every case, A prefers Cooperate.
+F	In each case, A prefers Cooperate.
+F	In all cases, A prefers Cooperate.
+F	In every column, A prefers Cooperate.
+F	In each column, A prefers Cooperate.
+F	For every choice of B, A prefers Cooperate.
+F	For each choice B makes, A prefers Cooperate.
+F	For any choice of B, A prefers Cooperate.
+F	Against every option of B, A prefers Cooperate.
+F	Against each of B's options, A prefers Cooperate.
+F	Against any option B picks, A prefers Cooperate.
+F	At every column, A prefers Cooperate.
+F	Irrespective of B's choice, A prefers Cooperate.
+F	Whichever option B picks, A prefers Cooperate.
+F	Every time, A prefers Cooperate.
+F	At all times, A prefers Cooperate.
+F	Without exception, A prefers Cooperate.
+F	Unconditionally, A prefers Cooperate.
+F	Across the board, A prefers Cooperate.
+F	Under every choice of B, A prefers Cooperate.
+F	Against both of B's options, A prefers Cooperate.
+F	Whatever B chooses, A prefers Cooperate.
+F	In every case, Cooperate is better for A.
+F	In each case, Cooperate is better for A.
+F	In all cases, Cooperate is better for A.
+F	In every column, Cooperate is better for A.
+F	In each column, Cooperate is better for A.
+F	For every choice of B, Cooperate is better for A.
+F	For each choice B makes, Cooperate is better for A.
+F	For any choice of B, Cooperate is better for A.
+F	Against every option of B, Cooperate is better for A.
+F	Against each of B's options, Cooperate is better for A.
+F	Against any option B picks, Cooperate is better for A.
+F	At every column, Cooperate is better for A.
+F	Irrespective of B's choice, Cooperate is better for A.
+F	Whichever option B picks, Cooperate is better for A.
+F	Every time, Cooperate is better for A.
+F	At all times, Cooperate is better for A.
+F	Without exception, Cooperate is better for A.
+F	Unconditionally, Cooperate is better for A.
+F	Across the board, Cooperate is better for A.
+F	Under every choice of B, Cooperate is better for A.
+F	Against both of B's options, Cooperate is better for A.
+F	Whatever B chooses, Cooperate is better for A.
+F	A prefers Cooperate in every case.
+F	A prefers Cooperate in each case.
+F	A prefers Cooperate in all cases.
+F	A prefers Cooperate in every column.
+F	A prefers Cooperate for every choice of B.
+F	A prefers Cooperate for any choice of B.
+F	A prefers Cooperate against every option of B.
+F	A prefers Cooperate against each of B's options.
+F	A prefers Cooperate against any option B picks.
+F	A prefers Cooperate irrespective of B's choice.
+F	A prefers Cooperate whichever option B picks.
+F	A prefers Cooperate every time.
+F	A prefers Cooperate at all times.
+F	A prefers Cooperate without exception.
+F	A prefers Cooperate unconditionally.
+F	A prefers Cooperate across the board.
+F	A prefers Cooperate under every choice of B.
+F	A prefers Cooperate against both of B's options.
+F	A prefers Cooperate in both columns.
+F	Cooperate is better for A in every case.
+F	Cooperate is better for A in each case.
+F	Cooperate is better for A in all cases.
+F	Cooperate is better for A in every column.
+F	Cooperate is better for A for every choice of B.
+F	Cooperate is better for A for any choice of B.
+F	Cooperate is better for A against every option of B.
+F	Cooperate is better for A against each of B's options.
+F	Cooperate is better for A against any option B picks.
+F	Cooperate is better for A irrespective of B's choice.
+F	Cooperate is better for A whichever option B picks.
+F	Cooperate is better for A every time.
+F	Cooperate is better for A at all times.
+F	Cooperate is better for A without exception.
+F	Cooperate is better for A unconditionally.
+F	Cooperate is better for A across the board.
+F	Cooperate is better for A under every choice of B.
+F	Cooperate is better for A against both of B's options.
+F	Cooperate is better for A in both columns.
+F	In every case, A does not prefer Cooperate.
+F	In each case, A does not prefer Cooperate.
+F	In all cases, A does not prefer Cooperate.
+F	In every column, A does not prefer Cooperate.
+F	In each column, A does not prefer Cooperate.
+F	For every choice of B, A does not prefer Cooperate.
+F	For each choice B makes, A does not prefer Cooperate.
+F	For any choice of B, A does not prefer Cooperate.
+F	Against every option of B, A does not prefer Cooperate.
+F	Against each of B's options, A does not prefer Cooperate.
+F	Against any option B picks, A does not prefer Cooperate.
+F	At every column, A does not prefer Cooperate.
+F	Irrespective of B's choice, A does not prefer Cooperate.
+F	Whichever option B picks, A does not prefer Cooperate.
+F	Every time, A does not prefer Cooperate.
+F	At all times, A does not prefer Cooperate.
+F	Without exception, A does not prefer Cooperate.
+F	Unconditionally, A does not prefer Cooperate.
+F	Across the board, A does not prefer Cooperate.
+F	Under every choice of B, A does not prefer Cooperate.
+F	Against both of B's options, A does not prefer Cooperate.
+F	Whatever B chooses, A does not prefer Cooperate.
+T	A does not prefer Cooperate in each case.
+T	A does not prefer Cooperate in all cases.
+T	A does not prefer Cooperate in every column.
+T	A does not prefer Cooperate for every choice of B.
+F	A does not prefer Cooperate for any choice of B.
+T	A does not prefer Cooperate against every option of B.
+T	A does not prefer Cooperate against each of B's options.
+F	A does not prefer Cooperate against any option B picks.
+T	A does not prefer Cooperate irrespective of B's choice.
+T	A does not prefer Cooperate whichever option B picks.
+T	A does not prefer Cooperate every time.
+T	A does not prefer Cooperate at all times.
+T	A does not prefer Cooperate without exception.
+T	A does not prefer Cooperate unconditionally.
+T	A does not prefer Cooperate across the board.
+T	A does not prefer Cooperate under every choice of B.
+T	A does not prefer Cooperate against both of B's options.
+T	Cooperate is not better for A in every case.
+T	Cooperate is not better for A in each case.
+T	Cooperate is not better for A in all cases.
+T	Cooperate is not better for A in every column.
+T	Cooperate is not better for A for every choice of B.
+F	Cooperate is not better for A for any choice of B.
+T	Cooperate is not better for A against every option of B.
+T	Cooperate is not better for A against each of B's options.
+F	Cooperate is not better for A against any option B picks.
+T	Cooperate is not better for A irrespective of B's choice.
+T	Cooperate is not better for A whichever option B picks.
+T	Cooperate is not better for A every time.
+T	Cooperate is not better for A at all times.
+T	Cooperate is not better for A without exception.
+T	Cooperate is not better for A unconditionally.
+T	Cooperate is not better for A across the board.
+T	Cooperate is not better for A under every choice of B.
+T	Cooperate is not better for A against both of B's options.
+T	Cooperate is not better for A in both columns.
+T	Every time B plays Advance, A prefers Cooperate.
+F	Every time B plays Retreat, A prefers Cooperate.
+T	In any case, A prefers Cooperate.
+T	A prefers Cooperate in any event.
+T	In every case where B plays Advance, A prefers Cooperate.
+F	A does not prefer Cooperate in every case where B plays Advance.
+T	A does not prefer Cooperate in every case where B plays Retreat.
+T	A prefers Cooperate in all cases but one.
+T	A prefers Cooperate in every case except against Retreat.
+F	A prefers Cooperate in every case except against Advance.
+F	A does not prefer Cooperate in every case except against Retreat.
+T	A does not prefer Cooperate in every case, and B prefers Retreat against Cooperate.
+F	A prefers Cooperate in every case, but B prefers Retreat against Cooperate.
+F	A does not prefer Cooperate in either column.
+F	In neither column does A prefer Cooperate.
+T	Not in every case does A prefer Cooperate.
+F	A prefers Cooperate in each of B's two cases.
+F	A prefers Cooperate for all of B's options.
+F	A prefers Defect in every column.
+T	A prefers Defect in some column.
+T	A prefers Defect in one column.
+F	A never prefers Defect in any column.
+T	A does not always prefer Defect in every column.
+T	B does not prefer Advance in every row.
+F	B prefers Advance in every row.
+F	For each of A's options, B prefers Advance.
+T	A prefers Cooperate at every point where B plays Advance.
+T	Cooperate does better for A in each case where B plays Advance.
+T	A does not in every case prefer Cooperate.
+F	A in every case prefers Cooperate.
+F	Cooperate is in every case better for A.
+F	A does not in either column prefer Defect.
+T	Not always is Cooperate better for A.
+T	A doesn't in every case prefer Cooperate.
+F	Cooperate in every case does better for A.
+T	Neither Cooperate nor Defect is better for A in both columns.
+T	Neither Cooperate nor Defect is always better for A.
+T	Neither Cooperate nor Defect is better for A whatever B does.
+T	Neither Cooperate nor Defect is best against both of B's choices.
+F	In both columns, neither Cooperate nor Defect is better for A.
+F	Whatever B does, neither Cooperate nor Defect is better for A.
+T	Neither Advance nor Retreat is better for B in every case.
+T	It is not true that in every case, A prefers Cooperate.
+T	It is not true that in either column, A prefers Defect.
+F	It is not true that A does not in every case prefer Cooperate.
+T	It is not true that every time, A does not prefer Cooperate.
+T	It is not true that A never prefers Cooperate in any column.
+F	Not once does A prefer Cooperate against Advance.
+F	Under no circumstances would A prefer Cooperate against Advance.
+F	In neither row does B prefer Advance against Defect.
+F	Never does B prefer Advance against Defect.
+F	It is not true that B ever prefers Retreat against Cooperate.
+F	In every case where B plays Retreat, A prefers Cooperate.
+T	A does not prefer Defect in every case except against Retreat.
+F	A does not prefer Cooperate in every case, and B prefers Advance against Cooperate.
+F	A prefers Defect at every point where B plays Advance.
+F	Defect does better for A in each case where B plays Advance.
+T	Neither Cooperate nor Defect is better for A in every case.
+F	Never would be Defect better for A.
+F	At no point would be Cooperate better for A.
+@ G 5,-8,8,1,-6,-9,-8,-5
+F	A does not always prefer Defect.
+T	A does not always prefer Cooperate.
+F	Defect is not always better for A.
+T	Cooperate is not always better for A.
+F	A does not prefer Defect regardless of what B plays.
+T	A does not prefer Cooperate regardless of what B plays.
+F	A does not prefer Defect in both columns.
+F	Whatever B does, A does not prefer Defect.
+T	Whatever B does, A does not prefer Cooperate.
+T	A never prefers Cooperate.
+F	A never prefers Defect.
+T	Cooperate is never better for A.
+F	Defect is never better for A.
+F	It is not true that A prefers Defect whatever B does.
+T	It is not true that A prefers Cooperate whatever B does.
+F	It is not true that whatever B does, A prefers Defect.
+T	It is not true that whatever B does, A prefers Cooperate.
+F	It is not true that A always prefers Defect.
+T	It is not true that A never prefers Defect.
+F	It is not true that A never prefers Cooperate.
+T	It is not true that no matter what B plays A does not prefer Defect.
+F	It is not true that no matter what B plays A does not prefer Cooperate.
+F	A doesn't always prefer Defect.
+F	A does not prefer Defect in every case.
+F	A does not prefer Defect whatever B does.
+T	A does not prefer Cooperate whatever B does.
+F	It is not true that A prefers Defect regardless of what B plays.
+F	It is not true that A prefers Defect no matter what B plays.
+T	It is not true that A always prefers Cooperate.
+F	A won't always prefer Defect.
+F	Defect isn't always better for A.
+F	Defect is not necessarily better for A.
+F	A does not necessarily prefer Defect.
+T	Cooperate never does better for A.
+F	Defect never does better for A.
+T	Defect never does worse for A.
+F	Cooperate never does worse for A.
+T	A would never prefer Cooperate.
+F	A would never prefer Defect.
+F	Never is Defect better for A.
+T	Never is Cooperate better for A.
+F	A does not prefer Defect against both Advance and Retreat.
+F	Defect is not better for A in both columns.
+T	Cooperate is not better for A in both columns.
+F	It is not true that, whatever B does, A prefers Defect.
+T	It is not true that whichever option B picks, A does not prefer Defect.
+F	It is not true that whichever option B picks, A does not prefer Cooperate.
+T	Never does A prefer Cooperate.
+F	Never does A prefer Defect.
+T	At no point does A prefer Cooperate.
+T	It is not true that A ever prefers Cooperate.
+F	It is not true that A ever prefers Defect.
+T	Under no circumstances would A prefer Cooperate.
+F	It is not true that Cooperate is never better for A.
+T	It is not true that Defect is never better for A.
+F	Is Cooperate ever better for A? Yes.
+T	Is Cooperate ever better for A? No.
+F	Is Defect ever better for A? No.
+T	Does A ever prefer Defect? Yes.
+F	Does A ever prefer Cooperate? Yes.
+T	Does A ever prefer Cooperate? No.
+F	Does A ever prefer Defect? No.
+T	Never does A play Cooperate.
+F	Never does A play Defect.
+T	Cooperate does not do better for A.
+F	Defect does not do better for A.
+T	Defect does not do worse for A.
+F	Cooperate does not do worse for A.
+T	Under no circumstances is Cooperate better for A.
+F	Under no circumstances is Defect better for A.
+T	In neither column does A prefer Cooperate.
+F	In neither column does A prefer Defect.
+T	At no time would A prefer Cooperate.
+T	No matter what B does, A never prefers Cooperate.
+F	No matter what B does, A never prefers Defect.
+T	It is not true that A sometimes prefers Cooperate.
+F	It is not true that A sometimes prefers Defect.
+F	A doesn't ever prefer Defect.
+F	A does not ever prefer Defect.
+F	A won't ever prefer Defect.
+T	A doesn't ever prefer Cooperate.
+F	Defect isn't ever better for A.
+T	Cooperate isn't ever better for A.
+F	Cooperate is sometimes better for A.
+T	Defect is sometimes better for A.
+F	Cooperate is occasionally better for A.
+F	Cooperate is ever better for A.
+F	A does sometimes prefer Cooperate.
+F	It is not true that A doesn't ever prefer Cooperate.
+T	It is not true that A doesn't ever prefer Defect.
+F	Defect is sometimes worse for A.
+T	Cooperate is sometimes worse for A.
+T	Seldom does A prefer Cooperate.
+T	Rarely does A prefer Cooperate.
+T	Hardly ever is Cooperate better for A.
+T	A hardly ever prefers Cooperate.
+T	At no time is Cooperate better for A.
+F	At no time is Defect better for A.
+T	On no occasion does A prefer Cooperate.
+F	On no occasion does A prefer Defect.
+T	Never, whatever B does, does A prefer Cooperate.
+T	A, whatever B does, never prefers Cooperate.
+F	A, whatever B does, never prefers Defect.
+T	Never is Cooperate the better option for A.
+F	Never is Defect the better option for A.
+T	Cooperate is never the better choice for A.
+F	Defect is never the better choice for A.
+T	Cooperate is never A's best reply.
+F	Defect is never A's best reply.
+F	Rarely does A prefer Defect.
+F	A seldom prefers Defect.
+F	A hardly ever prefers Defect.
+F	Never, whatever B does, does A prefer Defect.
+F	Never, against Advance, does A prefer Defect.
+T	Never, against Advance, does A prefer Cooperate.
+T	A rarely plays Cooperate.
+T	Rarely does A play Cooperate.
+F	Rarely does A play Defect.
+F	Nor does the firm favor Defect.
+T	Nor does the firm favor Cooperate.
+T	A does not need to favor Cooperate.
+F	A does not need to favor Defect.
+T	The firm neither prefers Cooperate nor gains from it.
+F	The firm neither prefers Defect nor gains from it.
+T	In every case, A prefers Defect.
+T	In each case, A prefers Defect.
+T	In all cases, A prefers Defect.
+T	In every column, A prefers Defect.
+T	In each column, A prefers Defect.
+T	For every choice of B, A prefers Defect.
+T	For each choice B makes, A prefers Defect.
+T	For any choice of B, A prefers Defect.
+T	Against every option of B, A prefers Defect.
+T	Against each of B's options, A prefers Defect.
+T	Against any option B picks, A prefers Defect.
+T	At every column, A prefers Defect.
+T	Irrespective of B's choice, A prefers Defect.
+T	Whichever option B picks, A prefers Defect.
+T	Every time, A prefers Defect.
+T	At all times, A prefers Defect.
+T	Without exception, A prefers Defect.
+T	Unconditionally, A prefers Defect.
+T	Across the board, A prefers Defect.
+T	Under every choice of B, A prefers Defect.
+T	Against both of B's options, A prefers Defect.
+T	Whatever B chooses, A prefers Defect.
+T	Defect is better for A in every case.
+T	Defect is better for A in each case.
+T	Defect is better for A in all cases.
+T	Defect is better for A in every column.
+T	Defect is better for A for every choice of B.
+T	Defect is better for A for any choice of B.
+T	Defect is better for A against every option of B.
+T	Defect is better for A against each of B's options.
+T	Defect is better for A against any option B picks.
+T	Defect is better for A irrespective of B's choice.
+T	Defect is better for A whichever option B picks.
+T	Defect is better for A every time.
+T	Defect is better for A at all times.
+T	Defect is better for A without exception.
+T	Defect is better for A unconditionally.
+T	Defect is better for A across the board.
+T	Defect is better for A under every choice of B.
+T	Defect is better for A against both of B's options.
+T	Defect is better for A in both columns.
+T	In every case, A does not prefer Cooperate.
+T	In each case, A does not prefer Cooperate.
+T	In all cases, A does not prefer Cooperate.
+T	In every column, A does not prefer Cooperate.
+T	In each column, A does not prefer Cooperate.
+T	For every choice of B, A does not prefer Cooperate.
+T	For each choice B makes, A does not prefer Cooperate.
+T	For any choice of B, A does not prefer Cooperate.
+T	Against every option of B, A does not prefer Cooperate.
+T	Against each of B's options, A does not prefer Cooperate.
+T	Against any option B picks, A does not prefer Cooperate.
+T	At every column, A does not prefer Cooperate.
+T	Irrespective of B's choice, A does not prefer Cooperate.
+T	Whichever option B picks, A does not prefer Cooperate.
+T	Every time, A does not prefer Cooperate.
+T	At all times, A does not prefer Cooperate.
+T	Without exception, A does not prefer Cooperate.
+T	Unconditionally, A does not prefer Cooperate.
+T	Across the board, A does not prefer Cooperate.
+T	Under every choice of B, A does not prefer Cooperate.
+T	Against both of B's options, A does not prefer Cooperate.
+T	Whatever B chooses, A does not prefer Cooperate.
+F	A does not prefer Defect in each case.
+F	A does not prefer Defect in all cases.
+F	A does not prefer Defect in every column.
+F	A does not prefer Defect for every choice of B.
+F	A does not prefer Defect for any choice of B.
+F	A does not prefer Defect against every option of B.
+F	A does not prefer Defect against each of B's options.
+F	A does not prefer Defect against any option B picks.
+F	A does not prefer Defect irrespective of B's choice.
+F	A does not prefer Defect whichever option B picks.
+F	A does not prefer Defect every time.
+F	A does not prefer Defect at all times.
+F	A does not prefer Defect without exception.
+F	A does not prefer Defect unconditionally.
+F	A does not prefer Defect across the board.
+F	A does not prefer Defect under every choice of B.
+F	A does not prefer Defect against both of B's options.
+T	A prefers Defect in all cases but one.
+F	A does not prefer Defect in every case except against Retreat.
+T	A does not prefer Cooperate for any choice of B.
+T	A does not prefer Cooperate in either column.
+F	Cooperate is better for A every time.
+T	Without exception, Defect is better for A.
+F	B prefers Advance in every row.
+T	B does not prefer Advance in every row.
+T	B prefers Advance in some row.
+F	A does not in every case prefer Defect.
+F	Not always does A prefer Defect.
+F	Not in every case does A prefer Defect.
+F	Not always is Defect better for A.
+F	Defect is not in every case better for A.
+T	A does not in every case prefer Cooperate.
+T	Not always is Cooperate better for A.
+T	A in every case prefers Defect.
+F	A in every case prefers Cooperate.
+T	Defect is in every case better for A.
+T	A does not in either column prefer Cooperate.
+F	A does not in either column prefer Defect.
+F	Neither Cooperate nor Defect is better for A in both columns.
+F	Neither Cooperate nor Defect is always better for A.
+F	Neither Cooperate nor Defect is best against both of B's choices.
+F	Neither Cooperate nor Defect is better for A in every case.
+T	Neither Advance nor Retreat is always better for B.
+T	Neither Advance nor Retreat is better for B in every case.
+F	It is not true that in either column, A prefers Defect.
+T	It is not true that in either column, A prefers Cooperate.
+F	It is not true that for any choice of B, A prefers Defect.
+F	It is not true that in every case, A prefers Defect.
+T	It is not true that in every case, A prefers Cooperate.
+F	It is not true that A prefers Defect in every column.
+T	It is not true that A prefers Cooperate in every column.
+F	It is not true that in every case, A does not prefer Cooperate.
+T	It is not true that in every case, A does not prefer Defect.
+F	It is not true that, without exception, A prefers Defect.
+F	It is not true that every time, A prefers Defect.
+F	It is not true that A does not in every case prefer Cooperate.
+F	It is not true that regardless of B, A prefers Defect.
+F	It is not true that irrespective of player B, A prefers Defect.
+T	It is not true that regardless of B, A prefers Cooperate.
+F	A does not always do better with Defect.
+F	A does not prefer Defect no matter what B plays.
+F	A prefers Cooperate only sometimes.
+T	A prefers Defect whatever B does.
+F	It is not true that A prefers Defect whichever option B picks.
+F	It is not true that A prefers Defect against every option of B.
+F	It is not true that A prefers Defect in every case.
+F	It is not true that A prefers Defect in both columns.
+F	It is not true that A prefers Defect either way.
+F	It is not true that Defect is better for A whatever B does.
+F	A would not always prefer Defect.
+F	A does not strictly prefer Defect in both columns.
+F	Defect does not always do better for A.
+T	Under no circumstances does A prefer Cooperate.
+T	A is never better off with Cooperate.
+T	A never prefers Cooperate whatever B does.
+T	Whatever B does, Cooperate is not better for A.
+T	A always prefers Defect.
+F	A never plays Defect with certainty.
+F	A would never switch to Defect.
+F	It is not true that A never strictly prefers Cooperate.
+T	Never would Cooperate be better for A.
+T	In no case does A prefer Cooperate.
+T	Never does B play Advance.
+T	Never would A prefer Cooperate.
+T	Never once does A prefer Cooperate.
+T	It is not true that A ever plays Cooperate.
+T	A never prefers Cooperate, whatever B does.
+T	A does not prefer Cooperate in both columns.
+T	A does not prefer Cooperate in every case.
+T	It is not true that A prefers Cooperate regardless of what B plays.
+T	It is not true that A prefers Cooperate no matter what B plays.
+T	A won't always prefer Cooperate.
+T	Cooperate isn't always better for A.
+T	Cooperate is not necessarily better for A.
+T	A does not necessarily prefer Cooperate.
+T	A does not prefer Cooperate against both Advance and Retreat.
+F	Under no circumstances would A prefer Defect.
+F	At no time would A prefer Defect.
+T	A does not ever prefer Cooperate.
+T	A won't ever prefer Cooperate.
+T	A does sometimes prefer Defect.
+F	Seldom does A prefer Defect.
+F	Hardly ever is Defect better for A.
+T	A seldom prefers Cooperate.
+F	A rarely plays Defect.
+F	Whenever B plays Advance, A never prefers Defect.
+T	A does not prefer Cooperate against either Advance or Retreat.
+F	It is not true that Defect is always better for A.
+T	It is not true that Cooperate is ever better for A.
+T	It is not true that Cooperate is sometimes better for A.
+F	A sometimes prefers Cooperate.
+F	A rarely prefers Defect.
+T	Defect is occasionally better for A.
+T	Defect is ever better for A.
+T	In every case, Defect is better for A.
+T	In each case, Defect is better for A.
+T	In all cases, Defect is better for A.
+T	In every column, Defect is better for A.
+T	In each column, Defect is better for A.
+T	For every choice of B, Defect is better for A.
+T	For each choice B makes, Defect is better for A.
+T	For any choice of B, Defect is better for A.
+T	Against every option of B, Defect is better for A.
+T	Against each of B's options, Defect is better for A.
+T	Against any option B picks, Defect is better for A.
+T	At every column, Defect is better for A.
+T	Irrespective of B's choice, Defect is better for A.
+T	Whichever option B picks, Defect is better for A.
+T	Every time, Defect is better for A.
+T	At all times, Defect is better for A.
+T	Unconditionally, Defect is better for A.
+T	Across the board, Defect is better for A.
+T	Under every choice of B, Defect is better for A.
+T	Against both of B's options, Defect is better for A.
+T	Whatever B chooses, Defect is better for A.
+T	A prefers Defect in every case.
+T	A prefers Defect in each case.
+T	A prefers Defect in all cases.
+T	A prefers Defect in every column.
+T	A prefers Defect for every choice of B.
+T	A prefers Defect for any choice of B.
+T	A prefers Defect against every option of B.
+T	A prefers Defect against each of B's options.
+T	A prefers Defect against any option B picks.
+T	A prefers Defect irrespective of B's choice.
+T	A prefers Defect whichever option B picks.
+T	A prefers Defect every time.
+T	A prefers Defect at all times.
+T	A prefers Defect without exception.
+T	A prefers Defect unconditionally.
+T	A prefers Defect across the board.
+T	A prefers Defect under every choice of B.
+T	A prefers Defect against both of B's options.
+T	A prefers Defect in both columns.
+T	A does not prefer Cooperate against any option B picks.
+F	Defect is not better for A in every case.
+F	Defect is not better for A in each case.
+F	Defect is not better for A in all cases.
+F	Defect is not better for A in every column.
+F	Defect is not better for A for every choice of B.
+T	Cooperate is not better for A for any choice of B.
+F	Defect is not better for A against every option of B.
+F	Defect is not better for A against each of B's options.
+T	Cooperate is not better for A against any option B picks.
+F	Defect is not better for A irrespective of B's choice.
+F	Defect is not better for A whichever option B picks.
+F	Defect is not better for A every time.
+F	Defect is not better for A at all times.
+F	Defect is not better for A without exception.
+F	Defect is not better for A unconditionally.
+F	Defect is not better for A across the board.
+F	Defect is not better for A under every choice of B.
+F	Defect is not better for A against both of B's options.
+F	In any case, A prefers Cooperate.
+F	A prefers Cooperate in any event.
+F	A prefers Cooperate in all cases but one.
+T	A prefers Defect in each of B's two cases.
+T	A prefers Defect for all of B's options.
+F	A does not always prefer Defect in every column.
+T	A does not prefer Cooperate in every case except against Retreat.
+T	Not always does A prefer Cooperate.
+T	Cooperate is not in every case better for A.
+F	A doesn't in every case prefer Defect.
+T	Defect in every case does better for A.
+T	It is not true that for any choice of B, A prefers Cooperate.
+T	It is not true that, without exception, A prefers Cooperate.
+T	It is not true that every time, A prefers Cooperate.
+T	It is not true that A does not in every case prefer Defect.
+F	It is not true that every time, A does not prefer Cooperate.
+F	It is not true that A never prefers Cooperate in any column.
+T	It is not true that irrespective of player B, A prefers Cooperate.
+T	A prefers Defect in every case, but B prefers Advance against Cooperate.
+F	Neither Cooperate nor Defect is better for A whatever B does.
+T	Never would be Cooperate better for A.
+T	At no point would be Cooperate better for A.
+@ G 2,1,2,0,1,0,0,1
+T	A does not always prefer Cooperate.
+F	A always prefers Cooperate.
+T	A never prefers Defect.
+F	A never prefers Cooperate.
+T	It is not true that A always prefers Cooperate.
+T	It is not true that A never prefers Cooperate.
+T	A never strictly prefers Defect.
+T	Defect never does better for A.
+F	Cooperate never does better for A.
+T	Cooperate never does worse for A.
+F	Defect never does worse for A.
+T	A does not prefer Cooperate in both columns.
+T	Cooperate is not always better for A.
+T	A does not always prefer Defect.
+T	Cooperate is never worse for A.
+T	Defect is never better for A.
+F	Cooperate is never better for A.
+T	Cooperate is sometimes better for A.
+F	Defect is sometimes better for A.
+F	Cooperate is sometimes worse for A.
+T	Never does A prefer Defect.
+F	Never does A prefer Cooperate.
+T	In neither column is Defect better for A.
+F	In neither column is Cooperate better for A.
+T	It is not true that A ever prefers Defect.
+F	It is not true that Cooperate is never better for A against Advance.
+T	It is not true that Cooperate is never better for A against Retreat.
+T	A doesn't ever prefer Defect.
+F	A doesn't ever prefer Cooperate.
+T	Whenever B plays Advance, A never prefers Defect.
+T	Whenever B plays Advance, A never prefers Cooperate.
+F	Whenever B plays Retreat, A never prefers Cooperate.
+T	A plays Cooperate since Defect never does better for A.
+F	A plays Defect since Cooperate never does better for A.
+F	Never does B prefer Advance.
+T	Never does B prefer Advance against Defect.
+F	B never prefers Retreat.
+T	B doesn't ever prefer Retreat against Cooperate.
+F	Cooperate is better for A in every column.
+T	Cooperate is not better for A in every column.
+F	Defect is better for A in every column.
+T	Defect is never better for A in any column.
+T	Neither Cooperate nor Defect is better for A in both columns.
+T	Neither Advance nor Retreat is better for B in both rows.
+T	Regardless of what B plays, A does not prefer Defect.
+T	A never does better with Defect.
+T	In neither column does A prefer Defect.
+F	It is not true that A never prefers Defect.
+F	It is not true that whichever option B picks, A does not prefer Defect.
+T	At no point is Defect better for A.
+T	Not once does A prefer Defect.
+T	Under no circumstances would A prefer Defect.
+F	Never does B prefer Retreat against Defect.
+F	B doesn't ever prefer Advance against Cooperate.
+F	Defect is never worse for A.
+F	A prefers Defect in some column.
+F	A prefers Defect in one column.
+T	A never prefers Defect in any column.
+F	Cooperate is never better for A in any column.
+@ G 3,-1,-1,1,-3,1,-1,1
+T	In neither row does B prefer Advance.
+T	Advance never does better for B.
+T	It is not true that B ever prefers Advance.
+T	Never does B prefer Advance.
+F	B never prefers Retreat.
+F	Never does B prefer Retreat.
+F	B prefers Advance in some row.
+@ G 3,-1,-1,1,1,-3,1,-1
+T	Never does B prefer Retreat.
+T	B never prefers Retreat.
+F	B never prefers Advance.
+F	In neither row does B prefer Advance.
+T	In neither row does B prefer Retreat.
+F	B does not prefer Advance in every row.
+T	B prefers Advance in every row.
+T	For each of A's options, B prefers Advance.
+F	Neither Advance nor Retreat is better for B in every case.
+F	Neither Advance nor Retreat is always better for B.
+F	Neither Advance nor Retreat is better for B in both rows.
+@ G 1,0,1,0,-3,1,1,-1
+T	In both columns, neither Cooperate nor Defect is better for A.
+T	Whatever B does, neither Cooperate nor Defect is better for A.

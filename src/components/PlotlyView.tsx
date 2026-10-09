@@ -6,7 +6,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { GamePayoffs, SimState, NashEquilibrium } from '../types';
 import { buildSurfaces, makeTraces, plotLayout } from '../utils/plotting';
-import { EA, EB, r3, payoffProseRhs } from '../utils/gameEngine';
+import { EA, EB, payoffProseRhs } from '../utils/gameEngine';
 import { cameraBasis, zRangeOfSurface, shouldCollapseComponentAtCamera, shouldCollapseComponentAtCameraExact } from '../utils/cameraProjection';
 import { enqueuePlotMutation, PlotMutationQueue } from '../utils/plotMutationQueue';
 import { Rotate3d, Move, RefreshCw } from 'lucide-react';
@@ -127,8 +127,8 @@ export const TRACE = {
   startPoint: 'Starting Point',
   posA: 'Current position (A)',
   posB: 'Current position (B)',
-  strategyA: 'A strategy line (E[A] at current y)',
-  strategyB: 'B strategy line (E[B] at current x)',
+  strategyA: 'A strategy line (E[A] at mid-domain y)',
+  strategyB: 'B strategy line (E[B] at mid-domain x)',
 } as const;
 
 const DEFAULT_CAMERA = { eye: { x: 1.6, y: -1.6, z: 1.1 } };
@@ -1284,8 +1284,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
       // earlier cut fed the lifted height into the text and the equilibrium
       // read "A = 0.919" where the payoff is 0.727 — a made-up number on the
       // one element whose whole job is stating an exact value.
-      const zA = r3(zAraw + calloutLift);
-      const zB = r3(zBraw - calloutLift);
+      const zA = zAraw + calloutLift;   // exact: an r3 z put the callout off its surface (S13 family)
+      const zB = zBraw - calloutLift;
       // STRUCT-MATH-19 class 1: the callout label is a RENDERED PAYOFF, so it
       // goes through the payoff formatter like every other one. `r3(zAraw)`
       // interpolated a bare number: a payoff of 0.00025 printed "A = 0" (an
@@ -1347,8 +1347,8 @@ export const PlotlyView: React.FC<PlotlyViewProps> = ({
         const calloutRing = onNE ? '#ffffff' : (isDark ? '#1f2937' : '#ffffff');
         const ringWidth = onNE ? 1 : 2;
         const goldSize = isMobile ? 7 : 10.5;
-        const zGa = r3(zAraw);
-        const zGb = r3(zBraw);
+        const zGa = zAraw;
+        const zGb = zBraw;
         const zLo = Math.min(zGa, zGb);
         const zHi = Math.max(zGa, zGb);
         const GOLD_STEPS = 15;

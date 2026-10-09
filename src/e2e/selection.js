@@ -78,8 +78,12 @@ import { dirname, join } from 'node:path';
  * tables keep that maximum, so the budget is 275 s and the multi-section line
  * 247.5 s: 35 shards pack 261 s, 37 leave 0.7 s under the line, 38 pack every
  * shard at 222-235 s. Three more smoke jobs are the price of an honest table.
+ *
+ * math-loop-22 (2026-10-05): §111 measured 264.6 s on CI (shard 25/38), so its typed games split out as
+ * §111b (105.1 s + 159.5 s, the CI total in the local 54.7:83.0 ratio). 38 then packs five multi-section
+ * shards at 249-252 s; 39 packs the worst at 241 s.
  */
-export const SHARD_COUNT = 38;
+export const SHARD_COUNT = 39;
 
 // The one census of smoke.mjs's sections, read as TEXT (importing smoke.mjs boots the suite). e2esharding counts
 // section( calls without this pattern, so a shape it cannot see fails there by name, never silently unpacked.

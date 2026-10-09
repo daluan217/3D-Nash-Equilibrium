@@ -22,6 +22,7 @@ import {
   fmtProb,
   fmtProbFixed,
   resolveProfile,
+  shownPoint,
   texProb,
   // The ONE string->number conversion for typed fields. Nothing in this file may
   // call parseFloat / parseInt / Number / valueAsNumber on user-supplied text:
@@ -29,6 +30,7 @@ import {
   // themselves — a pasted U+2212 minus lost on blur, and x0 = 0 discarded by a
   // falsy-zero fallback. src/test.ts asserts no such call site survives.
   commitPayoffInput,
+  commitPayoffs,
   commitStartCoordinate,
   parseNumericInput,
   containsAmbiguousComma,
@@ -1578,7 +1580,9 @@ export default function App() {
     if (parseNumericInput(raw) !== committed) {
       // not-a-rendering: rewriting the INPUT FIELD when it misrepresents the
       // committed value; the readout beside it formats through fmtProbFixed.
-      (axis === 'x' ? setX0 : setY0)(committed.toFixed(3));
+      // Off the 3-dp grid the box states the committed 6-dp value itself: "0.123" for
+      // "0.12345678" would move the run 4.6e-4 off what was typed (F14).
+      (axis === 'x' ? setX0 : setY0)(committed === r3(committed) ? committed.toFixed(3) : String(committed));
     }
     // RED-APP-21/001: blur has made the box agree with what the run will use,
     // so this axis's range hint has nothing left to warn about.
@@ -1628,16 +1632,16 @@ export default function App() {
     converged: false,
     stepCount: 0,
     pathSegmentsA: [{
-      xs: [0.217], ys: [0.217], zs: [r3(EA(0.217, 0.217, {
+      xs: [0.217], ys: [0.217], zs: [EA(0.217, 0.217, {
         a11: 2, b11: 1, a12: 0, b12: 0,
         a21: 0, b21: 0, a22: 1, b22: 2,
-      }))], mover: 'A'
+      })], mover: 'A'
     }],
     pathSegmentsB: [{
-      xs: [0.217], ys: [0.217], zs: [r3(EB(0.217, 0.217, {
+      xs: [0.217], ys: [0.217], zs: [EB(0.217, 0.217, {
         a11: 2, b11: 1, a12: 0, b12: 0,
         a21: 0, b21: 0, a22: 1, b22: 2,
-      }))], mover: 'A'
+      })], mover: 'A'
     }],
     phase1PtsA: null, phase1PtsB: null,
     ghostPathSegmentsA: [],
@@ -1897,7 +1901,7 @@ export default function App() {
       cancelAnimationFrame(raf);
       settleTimers.forEach(clearTimeout);
     };
-  }, [simState.converged, simState.cx, simState.cy, logEntries]);
+  }, [simState.converged, simState.exactX, simState.exactY, logEntries]);
 
   // ── Memoized Nash Equilibria ───────────────────────────────────────────────
   const allNE = useMemo<NashEquilibrium[]>(() => {
@@ -2408,11 +2412,11 @@ export default function App() {
   const nearestNE = useMemo<NashEquilibrium | null>(() => {
     if (allNE.length === 0) return null;
     return allNE.reduce((best, ne) => {
-      const d = Math.hypot(ne.x - simState.cx, ne.y - simState.cy);
-      const dBest = Math.hypot(best.x - simState.cx, best.y - simState.cy);
+      const d = Math.hypot(ne.x - simState.exactX, ne.y - simState.exactY);   // not the r3 cx/cy (S10/S12)
+      const dBest = Math.hypot(best.x - simState.exactX, best.y - simState.exactY);
       return d < dBest ? ne : best;
     }, allNE[0]);
-  }, [allNE, simState.cx, simState.cy]);
+  }, [allNE, simState.exactX, simState.exactY]);
 
   // The converged box's solution concept comes from the REALISED profile, never
   // from `nearestNE` — that is the *nearest* equilibrium and can be arbitrarily
@@ -2428,6 +2432,8 @@ export default function App() {
     () => resolveProfile(payoffs, simState),
     [payoffs, simState]
   );
+  // The realtime readout boxes print this point: the same one the sphere, the Step/━━ lines and x* show (S10).
+  const shown = useMemo(() => shownPoint(payoffs, simState), [payoffs, simState]);
   const realisedConcept = resolved.concept;
 
   // RED-MATH-9/001/CodeRabbit: whether the settled point (resolved.x/y) lies
@@ -2538,8 +2544,8 @@ export default function App() {
       const startValX = commitStartCoordinate(rp.x0);
       const startValY = commitStartCoordinate(rp.y0);
 
-      const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, payoffs))], mover: 'A' as const };
-      const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, payoffs))], mover: 'A' as const };
+      const initSegA = { xs: [startValX], ys: [startValY], zs: [EA(startValX, startValY, payoffs)], mover: 'A' as const };
+      const initSegB = { xs: [startValX], ys: [startValY], zs: [EB(startValX, startValY, payoffs)], mover: 'A' as const };
 
       const initState: SimState = {
         ...simState,
@@ -4059,13 +4065,16 @@ export default function App() {
   const mergedPresets = useMemo(() => {
     const merged: Record<string, PresetGame> = { ...PRESETS };
     userCustomGames.forEach((g) => {
+      // The same door the saved card reads (F4): a legacy 4-dp row must load,
+      // and match its story, as the game its card describes.
+      const c = commitPayoffs(g.payoffs);
       merged[g.id] = {
         key: g.id,
         name: g.name,
-        a11: g.payoffs.a11, b11: g.payoffs.b11,
-        a12: g.payoffs.a12, b12: g.payoffs.b12,
-        a21: g.payoffs.a21, b21: g.payoffs.b21,
-        a22: g.payoffs.a22, b22: g.payoffs.b22,
+        a11: c.a11, b11: c.b11,
+        a12: c.a12, b12: c.b12,
+        a21: c.a21, b21: c.b21,
+        a22: c.a22, b22: c.b22,
         desc: g.description || '',
         // Saved games carry option labels exactly like presets do. Merging them
         // here rather than reading them separately downstream keeps ONE source
@@ -4257,15 +4266,9 @@ export default function App() {
   }, [regenView.preview, isEditModalOpen, editTerms, saveTerms]);
 
 
-  // Clamp a whole matrix through the one cell parser, and derive its editable
-  // string twin from the RESULT — so payoffs and rawPayoffs cannot disagree
-  // whatever a preset, a generated game or a saved game supplies.
-  const commitPayoffs = (g: GamePayoffs): GamePayoffs => ({
-    a11: commitPayoffInput(String(g.a11)), b11: commitPayoffInput(String(g.b11)),
-    a12: commitPayoffInput(String(g.a12)), b12: commitPayoffInput(String(g.b12)),
-    a21: commitPayoffInput(String(g.a21)), b21: commitPayoffInput(String(g.b21)),
-    a22: commitPayoffInput(String(g.a22)), b22: commitPayoffInput(String(g.b22)),
-  });
+  // A matrix's editable string twin, derived from the COMMITTED matrix
+  // (commitPayoffs) — so payoffs and rawPayoffs cannot disagree whatever a
+  // preset, a generated game or a saved game supplies.
   const rawOf = (g: GamePayoffs): Record<keyof GamePayoffs, string> => ({
     a11: String(g.a11), b11: String(g.b11), a12: String(g.a12), b12: String(g.b12),
     a21: String(g.a21), b21: String(g.b21), a22: String(g.a22), b22: String(g.b22),
@@ -4305,8 +4308,8 @@ export default function App() {
     const startValX = commitStartCoordinate(x0);
     const startValY = commitStartCoordinate(y0);
 
-    const initSegA = { xs: [startValX], ys: [startValY], zs: [r3(EA(startValX, startValY, rp))], mover: 'A' as const };
-    const initSegB = { xs: [startValX], ys: [startValY], zs: [r3(EB(startValX, startValY, rp))], mover: 'A' as const };
+    const initSegA = { xs: [startValX], ys: [startValY], zs: [EA(startValX, startValY, rp)], mover: 'A' as const };
+    const initSegB = { xs: [startValX], ys: [startValY], zs: [EB(startValX, startValY, rp)], mover: 'A' as const };
 
     setSimState({
       cx: startValX,
@@ -6284,8 +6287,9 @@ export default function App() {
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
                   {/* STRUCT-MATH-19/001: the shared probability formatter, the same
                       contract the E[A]/E[B] boxes beside this one already use. A bare
-                      `.toFixed(3)` printed "0.000" for a start point of 0.0004. */}
-                  {fmtProbFixed(simState.cx)}
+                      `.toFixed(3)` printed "0.000" for a start point of 0.0004. S10: `shown`, not the
+                      r3-collapsed cx/cy, which still printed it after the first step and 0.219 beside x*=0.22. */}
+                  {fmtProbFixed(shown.x)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -6293,7 +6297,7 @@ export default function App() {
                   y: P(B playing Col 1)
                 </span>
                 <span className="text-sm font-bold text-slate-800 dark:text-slate-200 font-mono">
-                  {fmtProbFixed(simState.cy)}
+                  {fmtProbFixed(shown.y)}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -6301,7 +6305,7 @@ export default function App() {
                   Expected Payoff E[A]
                 </span>
                 <span className="text-sm font-bold text-player-a-500 font-mono">
-                  {fmtPayoff(EA(simState.cx, simState.cy, payoffs))}
+                  {fmtPayoff(EA(shown.x, shown.y, payoffs))}
                 </span>
               </div>
               <div className="bg-slate-50 dark:bg-slate-950/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
@@ -6309,7 +6313,7 @@ export default function App() {
                   Expected Payoff E[B]
                 </span>
                 <span className="text-sm font-bold text-player-b-600 dark:text-player-b-400 font-mono">
-                  {fmtPayoff(EB(simState.cx, simState.cy, payoffs))}
+                  {fmtPayoff(EB(shown.x, shown.y, payoffs))}
                 </span>
               </div>
             </div>
