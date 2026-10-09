@@ -2431,10 +2431,13 @@ F	Should B play Advance 40% of the time, A prefers Cooperate.
 T	A does not play Defect in 42% of rounds.
 T	A does not play Defect with probability 0.42.
 T	A does not play Defect 42 percent of rounds.
-T	A does not play Defect any of the time.
-T	A does not play Defect with certainty.
-T	A does not play Defect with any frequency.
-T	A does not play Defect at high odds.
+# S27c/d relabel: Defect is played with probability 1 at the only equilibrium, so these four deny a true frequency (never,
+# not 1, never, not mostly). S27a kept them T only to show S26b's preference judge stays silent; the own-frequency and 0/1
+# judges now read them as the false claims they are.
+F	A does not play Defect any of the time.
+F	A does not play Defect with certainty.
+F	A does not play Defect with any frequency.
+F	A does not play Defect at high odds.
 T	A does not play Defect half the time.
 T	A does not play Defect a third of rounds.
 T	A does not play Defect a quarter of rounds.
@@ -2468,3 +2471,132 @@ F	The only equilibrium is for A to play Cooperate with certainty.
 F	The equilibrium sits at A playing Defect with certainty and B playing Advance with certainty.
 F	A plays Cooperate with full certainty.
 F	A chooses Cooperate for sure.
+# S27c: own-frequency claims with a verb are judged existentially over equilibria ("A rarely plays Defect", "A always/never/
+# only plays X", "A plays X most of the time", "X is never chosen", "A plays X and never Y", "A does not always play X",
+# "A doesn't ever play X"). In the first game the only equilibrium is pure (Defect, Retreat): Defect/Retreat are played with
+# probability 1, Cooperate/Advance with 0, so every frequency word sits on one side of its cut. In the second (zero-sum,
+# x = y = 1/3) Cooperate/Advance are played a third of the time and Defect/Retreat two thirds: "always"/"never" are false for
+# every option and "mostly"/"rarely" split by option, so a row cannot pass by a pure-equilibrium accident. 2ac338a passed
+# every F row. T rows include the frames S27c must leave alone (if/against/should/would, gerund, question, "not only",
+# "only X or Y") and figures that belong to the probability judges ("never plays X with probability 0").
+@ G 5,-8,8,1,-6,-9,-8,-5
+T	A always plays Defect.
+T	A always chooses Defect, so B always chooses Retreat.
+T	B plays Retreat every time.
+T	A plays only Defect.
+T	A plays Defect exclusively.
+T	Cooperate is never played.
+T	Advance is never chosen by B.
+T	A never plays Cooperate.
+T	A plays Defect and never Cooperate.
+T	A mostly plays Defect.
+T	A plays Defect most of the time.
+T	A rarely plays Cooperate.
+T	B hardly ever plays Advance.
+T	A does not always play Cooperate.
+T	A doesn't ever play Cooperate.
+T	A does not play Cooperate any of the time.
+T	Cooperate is not played at all.
+T	A does not mostly play Cooperate.
+T	A does not rarely play Defect.
+T	A never plays Defect with probability 0.
+T	A never plays Cooperate with positive probability.
+T	A never plays Defect 40% of the time.
+T	If A always plays Cooperate, B prefers Advance.
+T	Against Retreat, A never plays Cooperate.
+T	A should never play Cooperate.
+T	A would never play Cooperate if B were certain to play Advance.
+T	A strategy of always playing Cooperate fails.
+T	Does A always play Cooperate?
+T	Not only does A play Defect, B also plays Retreat.
+T	A only plays Cooperate or Defect.
+T	If A ever plays Cooperate, B gains.
+T	Defect is better whether B plays Advance or Retreat, so A always chooses Defect.
+F	A always plays Cooperate.
+F	A always chooses Cooperate.
+F	B plays Advance every time.
+F	A plays only Cooperate.
+F	A plays Cooperate exclusively.
+F	Defect is never played.
+F	Retreat is never chosen by B.
+F	A never plays Defect.
+F	A plays Cooperate and never Defect.
+F	A mostly plays Cooperate.
+F	A plays Cooperate most of the time.
+F	A rarely plays Defect.
+F	B hardly ever plays Retreat.
+F	A sometimes plays Cooperate.
+F	A plays Cooperate at high odds.
+F	A plays Defect with a small chance.
+F	A does not always play Defect.
+F	A doesn't ever play Defect.
+F	A does not play Defect most of the time.
+F	A does not rarely play Cooperate.
+F	A does not often play Defect.
+F	A never plays Defect with positive probability.
+F	A always plays Cooperate with positive probability.
+F	Defect is better whether B plays Advance or Retreat, so A always chooses Cooperate.
+F	Whether B plays Advance or Retreat, A always plays Cooperate.
+F	If B plays Advance, A prefers Defect, and if B plays Retreat, A prefers Defect too, so A always plays Cooperate.
+T	Should B always play Advance, A prefers Defect.
+T	A could always play Cooperate.
+T	A might rarely play Defect.
+T	A not only plays Defect but also profits from it.
+T	The question is whether A plays Cooperate at all.
+T	A doesn't expect B to play Advance with probability 1.
+@ G 3,-1,-1,1,-3,1,1,-1
+T	A mostly plays Defect.
+T	A rarely plays Cooperate.
+T	B usually plays Retreat.
+T	B seldom plays Advance.
+T	A sometimes plays Cooperate.
+T	A does not always play Defect.
+T	A does not always play Cooperate.
+T	A does not mostly play Cooperate.
+T	A plays Cooperate with positive probability.
+T	A never plays Defect with probability 0.
+T	A always plays Defect with positive probability.
+T	A plays Defect and never Advance.
+T	B uses only Advance's payoff column.
+F	A always plays Defect.
+F	A never plays Cooperate.
+F	A plays only Defect.
+F	Cooperate is never played.
+F	A rarely plays Defect.
+F	A mostly plays Cooperate.
+F	B usually plays Advance.
+F	B seldom plays Retreat.
+F	A does not play Cooperate any of the time.
+F	A doesn't ever play Cooperate.
+F	A does not rarely play Cooperate.
+F	A never plays Cooperate with positive probability.
+# S27d: a label followed by its alias in parentheses ("Defect (Row 2) with probability 1") binds the figure, and a negated
+# figure ("A doesn't play Defect with probability 1") is a judged denial, false only when every equilibrium gives that
+# probability. Same two games: (Defect, Retreat) pure, then x = y = 1/3, so each probability is true at one game and false
+# at the other. 2ac338a skipped the parenthesised rows and wrongly flagged the true "doesn't" denials as claims.
+@ G 5,-8,8,1,-6,-9,-8,-5
+T	A plays Defect (Row 2) with probability 1.
+T	B plays Retreat (Col 2) for sure.
+T	A plays Cooperate (Row 1) with probability 0.
+T	A doesn't play Cooperate with probability 1.
+T	A does not play Cooperate with certainty.
+T	A doesn't play Defect with probability 0.
+T	No equilibrium has A play Cooperate with probability 1.
+T	If A doesn't play Defect with probability 1, B prefers Advance.
+F	A plays Cooperate (Row 1) with probability 1.
+F	B plays Advance (Col 1) for sure.
+F	A plays Defect (Row 2) with probability 0.
+F	A plays Cooperate (Row 1) 90% of the time.
+F	A doesn't play Defect with probability 1.
+F	B doesn't play Retreat with certainty.
+F	A never plays Cooperate with probability 0.
+F	A never plays Defect with probability 1.
+@ G 3,-1,-1,1,-3,1,1,-1
+T	A plays Cooperate (Row 1) with probability 1/3.
+T	B plays Advance (Col 1) a third of the time.
+T	A doesn't play Defect with probability 1.
+T	A doesn't play Cooperate with probability 0.5.
+F	A plays Cooperate (Row 1) with probability 1.
+F	A plays Defect (Row 2) with probability 0.9.
+F	B plays Advance (Col 1) with probability 0.5.
+F	A doesn't play Cooperate with probability 1/3.

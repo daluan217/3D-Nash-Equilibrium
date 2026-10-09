@@ -790,6 +790,8 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
   // S26j: +50 twins (labelless and mix-induced indifference; "@ G a11,a12,a21,a22,b11,b12,b21,b22" sets any game).
   // S27a: +25 twins (a claim stating its own mix is the probability judges'; "A should play X 40%…" is a claim, not a frame).
   // S27b: +24 twins ("with certainty" / "for sure" is probability 1; "A should play X with probability 1" is a claim).
+  // S27c/d: +89+24 twins (own-frequency words are judged over equilibria; "Defect (Row 2) with probability 1" binds; "doesn't
+  // play X with probability p" is a denial); 4 S27a rows relabelled F; +4 real rows in s26-real.tsv.
   const DOM23 = G(1, 0, 3, 2, 0, 3, 1, 2);
   let g23 = MIX;
   for (const ln of readFileSync('src/fixtures/mathvalidator-s23.txt', 'utf8').split('\n')) {
@@ -840,6 +842,9 @@ const S15A = commitPayoffs({ a11: 0.001, a12: 0, a21: 0, a22: 3, b11: 0.001, b12
     const [row1, row2, col1, col2] = JSON.parse(lj) as string[], is = dir(s, commitPayoffs(JSON.parse(gj)), { ...L, row1, row2, col1, col2 });
     check(`S26 ${v === 'T' ? 'a true' : 'a false'} real sentence or twin is judged`, (is.length === 0) === (v === 'T'), `${s} :: ${is.join(' | ')}`);
   }
+  // S27c: "Row 1" is both the label and its alias (two hits at one index): one claim, one issue.
+  const once = validateProseDirections('A always plays Row 1.', { ...L, row1: 'Row 1', row2: 'Row 2', col1: 'Col 1', col2: 'Col 2' }, G(5, -8, 8, 1, -6, -9, -8, -5));
+  check('S27c a label hit twice is one claim', once.length === 1, once.join(' | '));
 }
 
 // ── Fuzz: good output must validate, false claims must not (oracle, four scales, fixed seeds) ─────────────

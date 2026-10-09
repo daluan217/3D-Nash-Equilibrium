@@ -2987,7 +2987,7 @@ const complHits = (t: string, hits: LabelHit[]): LabelHit[] => {
 };
 // A vague frequency ("rarely", "most of the time") is a range read existentially: a claim fails only if false across it.
 const MIX_END = /^(?:\s*(?:[,.;:)!?—–-]|$)|\s+(?:and|or|but|while|whereas|yet|so|then|each|apiece|respectively|occurs|when|whenever|if|once|until|because|since|though|although|against|versus|vs|instead|rather|in|at|on|over|across|throughout|overall|only|the|its|his|her|their|this|that|which|who|it|he|she|they|is|are|was|were|would|will|can|could|might|may|does|do|leaves?|makes?|keeps?|holds?|gives?|means?)\b)/i;
-const VAGUE = String.raw`(?<hi>mostly|usually|mainly|largely|predominantly|generally|typically|chiefly|primarily|(?:almost|nearly)\s+always|more\s+often\s+than\s+not|most\s+of\s+the\s+time|(?:a|the)\s+majority\s+of\s+the\s+time|with\s+(?:a\s+)?high\s+probability)|(?<lo>rarely|seldom|hardly\s+ever|(?:almost|nearly)\s+never|occasionally|(?:a|the)\s+minority\s+of\s+the\s+time|with\s+(?:a\s+)?(?:low|small)\s+probability)|(?<any>sometimes|often|frequently|at\s+times|now\s+and\s+then|(?:some|part)\s+of\s+the\s+time|with\s+(?:some|(?:a\s+)?(?:positive|nonzero|non-zero))\s+probability)`;
+const VAGUE = String.raw`(?<hi>mostly|usually|mainly|largely|predominantly|generally|typically|chiefly|primarily|(?:almost|nearly)\s+always|more\s+often\s+than\s+not|most\s+of\s+the\s+time|(?:a|the)\s+majority\s+of\s+the\s+time|(?:with|at)\s+(?:a\s+)?(?:high|large|great)\s+(?:probability|chance|likelihood|odds))|(?<lo>rarely|seldom|hardly\s+ever|(?:almost|nearly)\s+never|occasionally|(?:a|the)\s+minority\s+of\s+the\s+time|(?:with|at)\s+(?:a\s+)?(?:low|small|slight)\s+(?:probability|chance|likelihood|odds))|(?<any>sometimes|often|frequently|at\s+times|now\s+and\s+then|(?:some|part)\s+of\s+the\s+time|(?:with|at)\s+(?:some|(?:a\s+)?(?:positive|nonzero|non-zero))\s+(?:probability|chance|likelihood|odds))`;
 const VAGUE_AFTER = new RegExp(String.raw`^\s+(?:only\s+)?(?:${VAGUE})\b`, 'i');
 // Not "tilts/leans toward": in real prose that is a surface's slope or a deviation's direction, never a stated mix.
 const VAGUE_BEFORE = new RegExp(String.raw`\b(?:${VAGUE})\s+(?:\w+\s+)?(?:play|pick|choos|us|select|go|opt)\w*(?:\s+(?:with|for))?\s+(?:the\s+)?$`, 'i');
@@ -3338,7 +3338,7 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       let lab = allHitsW.find((h) => h.index >= end && h.index <= end + 24 && /^\s*(?:probability\s+)?(?:on|to|for|at|toward|towards)?\s*(?:the\s+|an?\s+)?$/i.test(text.slice(end, h.index)))
         // Backward binding must NOT cross a comma ("(one-third Strict inspection, two-thirds Lenient inspection)":
         // round C19 draw 55, the campaign's only correct-withheld). A bound or range may carry a modifier.
-        ?? allHitsW.filter((h) => h.index + h.length <= at0 && h.index + h.length >= at0 - 30 && /^\s*(?:with|at|about|roughly|around)?\s*(?:probability\s+|weight\s+|frequency\s+)?(?:of\s+)?(?:(?:only|just|slightly|well|somewhere|anywhere|a\s+(?:bit|little))\s+)*$/i.test(text.slice(h.index + h.length, at0))).pop();
+        ?? allHitsW.filter((h) => h.index + h.length <= at0 && h.index + h.length >= at0 - 40 && /^\s*(?:\([^)]*\)\s*)?(?:with|at|about|roughly|around)?\s*(?:probability\s+|weight\s+|frequency\s+)?(?:of\s+)?(?:(?:only|just|slightly|well|somewhere|anywhere|a\s+(?:bit|little))\s+)*$/i.test(text.slice(h.index + h.length, at0))).pop();
       if (!lab) continue;
       // S23: "B avoids X 25% of the time" is the other option's figure (S24: any complement verb, labels blanked).
       if (PAVOID.test(bareW.slice(Math.max(0, lab.index - 50), lab.index))) lab = { ...lab, option: (3 - lab.option) as 1 | 2 };
@@ -3487,11 +3487,17 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
       let lab: LabelHit | undefined;
       if (after) lab = allHits.find((h) => h.index >= mEnd && h.index <= mEnd + after[0].length + 1);
       else {
-        lab = allHits.filter((h) => h.index + h.length <= (m.index ?? 0) && h.index + h.length >= (m.index ?? 0) - 40).pop();
-        if (!lab || !/^\s*(?:\([^)]*\)\s*)?$/.test(text.slice(lab.index + lab.length, m.index))) continue;
+        // S27d: "Cooperate (Row 1) with probability 1" binds Cooperate; the alias's own hit is not adjacent.
+        lab = allHits.filter((h) => h.index + h.length <= (m.index ?? 0) && h.index + h.length >= (m.index ?? 0) - 40
+          && /^\s*(?:\([^)]*\)\s*)?$/.test(text.slice(h.index + h.length, m.index))).pop();
+        if (!lab) continue;
       }
       if (!lab) continue;
-      if (/\b(?:not|never|no)\b/i.test(before)) continue;
+      // S27d: a negated verb ("does not / doesn't / never play X with probability 1") denies the figure: false only when
+      // every equilibrium bears it. A negation further off ("no equilibrium has …") has no known scope: skipped.
+      const lead0 = text.slice(Math.max(0, Math.min(lab.index, m.index ?? 0) - 60), Math.min(lab.index, m.index ?? 0)).split(/[;:!?,()—–]|\.(?!\d)|\b(?:and|but|while|whereas|yet|so|then|although|though|because|since)\b/i).pop() ?? '';
+      const denied = /(?:\b(?:not|never|cannot|no\s+longer)|n['’]t)\s+(?:\w+\s+){0,2}$/i.test(lead0);
+      if (!denied && /\b(?:not|never|no)\b|n['’]t\b/i.test(before)) continue;
       // Hypotheticals ("if B uses Relay with probability 1, A prefers …") are frames, not claims.
       const segStart = clauseStart(text, lab.index, '.;:');
       // "Should B play X…" frames; "A should play X with probability 1" is a claim (S27b).
@@ -3503,7 +3509,10 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         // a mixed equilibrium the panel prints as "less than 0.001", never 0.
         return Math.abs(pl - p) < 1e-9;
       });
-      if (!ok && truthLocal.length) issues.push(`prose gives ${lab.player}'s option ${lab.option} probability ${p}, but no equilibrium does`);
+      if (denied) {
+        const pOf = (t: { x: number; y: number }) => { const p1 = lab.player === 'A' ? t.x : t.y; return lab.option === 1 ? p1 : 1 - p1; };
+        if (truthLocal.length && !continuumComponents(g).length && truthLocal.every((t) => Math.abs(pOf(t) - p) < 1e-9)) issues.push(`prose denies ${lab.player}'s option ${lab.option} probability ${p}, but every equilibrium gives it that`);
+      } else if (!ok && truthLocal.length) issues.push(`prose gives ${lab.player}'s option ${lab.option} probability ${p}, but no equilibrium does`);
     }
     }
   }
@@ -3534,6 +3543,91 @@ export function validateProseDirectionsDetailed(rawText: string, labels: OptionL
         return major ? pl > 0.5 - 1e-9 : pl < 0.5 + 1e-9;
       });
       if (!ok && truthLocal.length) issues.push(`prose says ${lab.player} ${major ? 'mostly' : 'rarely'} plays option ${lab.option}, but no equilibrium gives it ${major ? 'more' : 'less'} than half of ${lab.player}'s weight`);
+    }
+  }
+
+  // S27c: own-frequency claims with a verb ("A rarely plays Defect", "A always/never/only plays X", "A plays only X", "A plays X
+  // most of the time", "X is never chosen", "A plays X and never Y"), read existentially over equilibria and continua like the
+  // figure judges. "Does not always play X" denies probability 1. Framed, modal, negated and best-reply clauses are skipped.
+  {
+    const truthF = computeAllNE(g), compsF = continuumComponents(g), hitsF = findLabels(text, sets);
+    const ONE = String.raw`always|invariably|exclusively|only|all\s+(?:of\s+)?the\s+time|without\s+(?:exception|fail)|(?:in\s+)?(?:every|each)\s+(?:time|round|period|turn|play)`;
+    const FREQ = String.raw`(?<!(?:almost|nearly)\s+)(?:(?<one>${ONE})|(?<zero>never|none\s+of\s+the\s+time))|${VAGUE}`;
+    const VB = String.raw`(?:(?:chooses?|chose|decides?|opts?|tends?)\s+to\s+)?(?:play(?:s|ed|ing)?|pick(?:s|ed|ing)?|choos(?:e|es|ing)|chose|us(?:e|es|ed|ing)|select(?:s|ed|ing)?|opt(?:s|ed|ing)?\s+for|go(?:es|ing)?\s+(?:with|for)|stick(?:s|ing)?\s+(?:with|to)|stuck\s+(?:with|to)|adopt(?:s|ed|ing)?)`;
+    const ADV = String.raw`(?:(?:ever|just|really|actually|simply|still|consistently|reliably|ends?\s+up)\s+)?`, ART = String.raw`(?:the\s+|an?\s+)?`;
+    const STOP = String.raw`(?=\s*(?:[,.;:!?)]|$)|\s+(?:and|but|while|whereas|so|because|since|which|as)\b)`;
+    const PASS = String.raw`(?:played|chosen|picked|used|selected)`;
+    // Under a negation "any of the time" / "at all" / "ever" is "never": "A does not play X any of the time".
+    const NPI = String.raw`(?<npi>any\s+of\s+the\s+time|at\s+all|ever|in\s+any\s+(?:round|period|play|game)s?|with\s+any\s+(?:frequency|probability|chance|likelihood))`;
+    const FORMS: [RegExp, RegExp][] = [
+      [new RegExp(String.raw`(?<neg>\bnot\s+|n['’]t\s+)?\b(?:${FREQ}|(?<npi>ever))\s+${ADV}${VB}\s+${ART}$`, 'i'), /^/],
+      [new RegExp(String.raw`(?<neg>\bnot\s+|n['’]t\s+)?\b${VB}\s+(?<one>only|exclusively)\s+${ART}$`, 'i'), /^/],
+      [new RegExp(String.raw`\b${VB}\s+${ART}$`, 'i'), new RegExp(String.raw`^\s+(?:only\s+)?(?:${FREQ}|${NPI})${STOP}`, 'i')],
+      [/^/, new RegExp(String.raw`^\s+(?:is|are|was|were|gets?)\s+(?<neg>not\s+)?(?:${FREQ}|(?<npi>ever))\s+${PASS}\b`, 'i')],
+      [/^/, new RegExp(String.raw`^\s+(?:is|are|was|were|gets?)\s+(?<neg>not\s+)?${PASS}\s+(?:only\s+)?(?:${FREQ}|${NPI})${STOP}`, 'i')],
+      [new RegExp(String.raw`\b${VB}\s+(?:only\s+)?${ART}(?<other>[^,.;:!?]{1,40}?)(?:\s*,\s*|\s+(?:and|but)\s+)(?<zero>never)\s+${ART}$`, 'i'), /^/],
+    ];
+    const SHOULD = /\bshould\s+(?!(?:(?:always|never|only|rarely|seldom|mostly|usually|generally|typically|mainly|largely|often|sometimes|occasionally|exclusively|invariably|then|still|also|instead)\s+)?(?:play|choose|pick|use|select|go|opt|stick)\b)/i;
+    for (const lab of hitsF.filter((h, i) => !hitsF.slice(0, i).some((o) => o.index === h.index && o.player === h.player && o.option === h.option))) {
+      const s0 = clauseStart(text, lab.index, '.;:!?'), pre = text.slice(s0, lab.index), post = text.slice(lab.index + lab.length);
+      let G: Record<string, string | undefined> | undefined, lead = pre, from = s0, rest = post;
+      for (const [fi, [b, a]] of FORMS.entries()) {
+        const mb = b.exec(pre), ma = mb && a.exec(post);
+        if (!mb || !ma) continue;
+        G = { ...mb.groups, ...ma.groups }; rest = post.slice(ma[0].length);
+        if (b.source !== '^') { lead = pre.slice(0, mb.index); from = s0 + mb.index; }
+        // "A does not play X most of the time": the do-support negation belongs to the claim, not to a frame.
+        const dn = fi === 2 ? /\b(?:do|does|did)(?:\s+not|n['’]t)\s+$/i.exec(lead) : null;
+        if (dn) { G.neg = dn[0]; lead = lead.slice(0, dn.index); }
+        break;
+      }
+      // Not the "not only … but" idiom or a possessive ("uses only Defect's payoff"). A label both players share has no hits.
+      if (!G || (G.neg && /^(?:only|exclusively)$/i.test(G.one ?? '')) || /^['’]s\b/.test(post)) continue;
+      // A claim needs a subject and a finite verb: not an imperative, a question, a gerund ("a strategy of always playing X
+      // fails") or an infinitive ("it is a mistake to always play X") unless a choosing verb or "is/keeps" carries it.
+      const vb = new RegExp(String.raw`${VB}\s+${ART}$`, 'i').exec(pre)?.[0] ?? '';
+      if ((FORMS.findIndex(([b]) => b.test(pre)) < 3 && !lead.trim()) || /^[^.;!?]*\?/.test(post)
+        || (/^\w+ing\b/i.test(vb) && !/\b(?:is|are|was|were|keeps?|kept)\s+$/i.test(lead) && !/\b(?:has|with)\s+(?:player\s+)?[AB]\s+$/i.test(lead))
+        || (/\bto\s+$/i.test(lead) && !/\b(?:chooses?|chose|decides?|decided|opts?|opted|tends?|tended|commits?|committed|elects?|elected|continues?|continued)\s+to\s+$/i.test(lead))) continue;
+      // "A plays Cooperate and never Defect" needs the player's other option in the first half.
+      if (G.other !== undefined && !hitsF.some((o) => o.player === lab.player && o.option !== lab.option && o.index >= from && o.index < lab.index)) continue;
+      const own = lead.split(/[,;:()—–]|\b(?:and|but|so|while|whereas|yet|because|since|thus|therefore|hence|then)\b/i).pop() ?? '';
+      const tail = post.split(/[.;!?]/)[0];
+      // A conditional frames its consequent, never past "so/thus/therefore"; "whether Q or R" / "whatever B does" quantify over
+      // every opponent option, so "X is better whether B plays Q or R, so A always plays X" is an unconditional claim.
+      // "Against Retreat, A never plays Cooperate" is a best reply to Retreat, not A's equilibrium frequency.
+      const cond = pre.split(/\b(?:so|thus|therefore|hence|consequently|accordingly)\b/i).pop() ?? '';
+      if (/\b(?:if|when|whenever|suppose|supposing|assum\w*|imagine|were|unless|once|given|until|after|lest|provided|whether\s+to|against|versus|vs|facing|in\s+(?:response|reply)\s+to)\b/i.test(cond) || SHOULD.test(pre)
+        || /\b(?:would|could|might|may|can|cannot|need|needs|wants?|wish\w*|tries|try|trying|best|optimal|better|respon\w*|repl\w*|answer\w*|counter\w*|incentive|reason|against|versus|vs|facing|toward|towards)\b/i.test(own)
+        || /\b(?:not|no|never|neither|nor|nobody|none|nothing|without|rather\s+than|instead\s+of|fails?\s+to)\b|n['’]t\b/i.test(own)
+        || /\b(?:against|versus|vs|facing|when|whenever|if|once|unless|after|until|given|in\s+(?:response|reply)|as\s+long\s+as|so\s+long\s+as|provided|otherwise)\b/i.test(tail)) continue;
+      // "A only plays Cooperate or Defect" names both options: no claim.
+      if (hitsF.some((o) => o.player === lab.player && o.option !== lab.option && o.index > lab.index && /^\s*(?:,|and|or|nor|\/)\s*(?:the\s+)?$/i.test(text.slice(lab.index + lab.length, o.index)))) continue;
+      // Negated: "not always" denies 1; "not mostly" is at most half, "not rarely" at least half, "not often" at most half,
+      // "not … with positive probability" and "not … any of the time" are 0. A bare NPI ("if A ever plays X") claims nothing.
+      if (G.npi && !G.neg) continue;
+      if (G.neg && !G.one) {
+        if (G.npi || (G.any && /probab|chance|likelihood/i.test(G.any))) G = { zero: 'not any' };
+        else if (G.hi) G = { lo: 'not mostly' };
+        else if (G.lo) G = { hi: 'not rarely' };
+        else if (G.any && /often|frequent/i.test(G.any)) G = { lo: 'not often' };
+        else continue;
+      }
+      // A figure right after the option ("never plays X with probability 0", "always X 40% of the time") is the figure judges';
+      // "never/always … with positive probability" keeps its reading (probability 0 / above 0).
+      const fc = rest.split(/[,;:!?]|\.(?!\d)|\b(?:and|but|while|whereas|so|because|since|which)\b/i)[0];
+      const fig = /\d|%|\b(?:percent\w*|half|halves|thirds?|quarters?|fifths?|tenths?|probabilit\w*|chances?|likelihood|odds|frequen\w*|rate|certain\w*|sure)\b/i.test(fc)
+        ? { groups: /^\s+(?:with|at)\s+(?:an?\s+)?(?<pos>(?:any|positive|non-?zero|some|strictly\s+positive)\s+)(?:probabilit|chance|likelihood|frequenc|odds|rate)\w*\s*$/i.exec(fc)?.groups } : null;
+      if (fig && !fig.groups?.pos) continue;
+      if (fig && G.one) { G.one = undefined; G.any = 'positive'; }
+      const [lo, hi] = G.one ? [1, 1] : G.zero ? [0, 0] : G.hi ? [0.5, 1] : G.lo ? [0, 0.5] : [1e-6, 1];
+      const sp = (x: number, y: number): [number, number] => (lab.option === 1 ? [x, y] : [1 - y, 1 - x]);
+      const R = [...compsF.map((r) => (lab.player === 'A' ? sp(r.x0, r.x1) : sp(r.y0, r.y1))), ...truthF.map((t) => (lab.player === 'A' ? sp(t.x, t.x) : sp(t.y, t.y)))];
+      claimCount++;
+      const what = /^not/.test(G.hi ?? G.lo ?? '') ? `does ${G.hi ?? G.lo} play` : `${G.one ? 'always' : G.zero ? 'never' : G.hi ? 'mostly' : G.lo ? 'rarely' : 'sometimes'} plays`;
+      if (G.neg ? R.length > 0 && R.every(([x]) => x >= 1 - 1e-9) : truthF.length > 0 && !R.some(([x, y]) => x <= hi + 1e-9 && y >= lo - 1e-9))
+        issues.push(G.neg ? `prose says ${lab.player} does not always play option ${lab.option}, but every equilibrium plays it with probability 1`
+          : `prose says ${lab.player} ${what} option ${lab.option}, but no equilibrium gives it probability ${lo === hi ? lo : G.any ? 'above 0' : `${lo}–${hi}`}`);
     }
   }
 
